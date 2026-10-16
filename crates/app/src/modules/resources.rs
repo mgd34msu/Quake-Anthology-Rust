@@ -591,6 +591,19 @@ impl FrameHost {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
+        if self.modules.as_ref().is_some_and(|modules| {
+            modules.rows.iter().flatten().any(|row| {
+                row.request.phase == super::Phase::Client
+                    && row
+                        .renderer_generation
+                        .and_then(super::RendererGeneration::stamp)
+                        .is_some()
+            })
+        }) {
+            return Err(
+                "module renderer configuration requires a cold CLIENT generation".to_owned(),
+            );
+        }
         let Some(modules) = self.modules.as_mut() else {
             return Ok(());
         };
@@ -602,12 +615,20 @@ impl FrameHost {
             .filter(|row| row.request.phase == super::Phase::Client)
         {
             let source = row.request.context.native_rules as usize;
-            let seat = row.client_connection.and_then(|(client, _)| {
-                self.runtime
-                    .snapshots
-                    .get(client.0 as usize)?
-                    .as_ref()?
-                    .seat()
+            let seat = super::renderer_client(
+                &self.runtime,
+                &self.local_clients,
+                &row.request,
+                row.client_connection,
+            )
+            .map(|client| client.seat)
+            .or_else(|| {
+                row.request
+                    .program
+                    .imports()
+                    .and_then(qa_compat::abi::CallTable::command_export)
+                    .filter(|entry| entry.role == qa_compat::abi::CommandRole::Ui)
+                    .map(|_| row.request.context.console.seat)
             });
             let profile = seat
                 .and_then(|seat| seats[seat.index()][source])

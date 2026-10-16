@@ -389,9 +389,15 @@ pub(super) fn submissions(native: bool, ui: bool) {
                 let mut request =
                     request(&mut runtime, ModuleId(seat as u16 + 1), client, program());
                 request.frame.client = None;
+                request.context.console.seat = SeatId::new(seat as u8).unwrap();
                 request
             })
-            .collect();
+            .collect::<Vec<_>>();
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.frame.client.is_none())
+        );
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -516,9 +522,9 @@ pub(super) fn submissions(native: bool, ui: bool) {
     let Command::Draw2d(peer) = packet.commands()[4] else {
         panic!("peer picture")
     };
-    assert_eq!(peer.rect, [if ui { 0. } else { 160. }, 0., 90., 30.]);
+    assert_eq!(peer.rect, [160., 0., 90., 30.]);
     assert_eq!(peer.color, [255; 4]);
-    assert_eq!(peer.shader, if ui { material } else { peer_material });
+    assert_eq!(peer.shader, peer_material);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
 }
@@ -677,7 +683,7 @@ pub(super) fn ownership() {
     assert_eq!(result.drains, 2);
     assert_eq!(
         source.renderer.sample.stats.views, 3,
-        "one native client view, one builtin peer, one unbound UI preview"
+        "one native client view, one builtin peer, one renderer-only UI preview"
     );
     assert_eq!(source.renderer.sample.stats.rejected, 0);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);

@@ -32,7 +32,7 @@ use qa_console::{commands::Console, views::Context};
 use qa_core::{
     loopback::Endpoint,
     primitives::*,
-    sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
+    sys_events::{EventKind, EventTime, Peer, SeatId, SysEvent, SysEventQueue},
 };
 use qa_formats::program::qvm::Opcode;
 use qa_network::{channel::commands::write_gamestate, commands::packet::Protocol};
@@ -53,6 +53,8 @@ const REFDEF: u32 = 0x4300;
 const SOUND_PATH: u32 = 0x4500;
 const ORIGIN: u32 = 0x4600;
 const AXES: u32 = 0x4640;
+const UI_INIT_TEXT: u32 = 0x4700;
+const UI_STOP_TEXT: u32 = 0x4720;
 const COMMAND_OWNED: u32 = 0x4680;
 const COMMAND_SHARED: u32 = 0x46a0;
 const CLIENT_TEXT: u32 = 0x46c0;
@@ -65,6 +67,8 @@ fn data() -> Vec<u8> {
     for (at, text) in [
         (INIT_TEXT, b"restart init\n\0".as_slice()),
         (STOP_TEXT, b"restart shutdown\n\0".as_slice()),
+        (UI_INIT_TEXT, b"renderer ui init\n\0".as_slice()),
+        (UI_STOP_TEXT, b"renderer ui shutdown\n\0".as_slice()),
         (
             ERROR_TEXT,
             b"restart did not recreate pristine memory\0".as_slice(),
@@ -127,7 +131,7 @@ fn qvm_store(ops: &mut Vec<(Opcode, i32)>, at: u32, value: u32) {
     use Opcode::*;
     ops.extend([(Const, at as i32), (Const, value as i32), (Store4, 0)]);
 }
-fn qvm_check(ops: &mut Vec<(Opcode, i32)>, at: u32, value: u32) {
+fn qvm_check(ops: &mut Vec<(Opcode, i32)>, at: u32, value: u32, abort: i32) {
     use Opcode::*;
     ops.extend([
         (Const, at as i32),
@@ -136,11 +140,14 @@ fn qvm_check(ops: &mut Vec<(Opcode, i32)>, at: u32, value: u32) {
         (Eq, 0),
     ]);
     let branch = ops.len() - 1;
-    qvm_call(ops, 1, &[ImportArg::Pointer(ERROR_TEXT)]);
+    qvm_call(ops, abort, &[ImportArg::Pointer(ERROR_TEXT)]);
     ops.push((Pop, 0));
     ops[branch].1 = ops.len() as i32;
 }
 fn qvm_file() -> Vec<u8> {
+    qvm_role(false, false)
+}
+fn qvm_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
     use Opcode::*;
     let mut ops = vec![(Enter, 64)];
     let mut branches = Vec::new();
@@ -151,10 +158,48 @@ fn qvm_file() -> Vec<u8> {
     ops.extend([(Const, 0), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         ops[branch].1 = ops.len() as i32;
+        if ui {
+            match command {
+                0 => ops.push((Const, 6)),
+                1 => {
+                    qvm_check(&mut ops, INITIAL, 7, 0);
+                    qvm_check(&mut ops, BSS, 0, 0);
+                    qvm_call(&mut ops, 1, &[ImportArg::Pointer(UI_INIT_TEXT)]);
+                }
+                2 => {
+                    qvm_call(&mut ops, 1, &[ImportArg::Pointer(UI_STOP_TEXT)]);
+                    ops.push((Pop, 0));
+                    if fail_shutdown {
+                        qvm_call(&mut ops, 0, &[ImportArg::Pointer(ERROR_TEXT)]);
+                    } else {
+                        qvm_store(&mut ops, INITIAL, 0xdead);
+                        qvm_store(&mut ops, BSS, 0xbeef);
+                        ops.push((Const, 0));
+                    }
+                }
+                5 => {
+                    qvm_store(&mut ops, INITIAL, 99);
+                    ops.extend([
+                        (Const, BSS as i32),
+                        (Const, BSS as i32),
+                        (Load4, 0),
+                        (Const, 1),
+                        (Add, 0),
+                        (Store4, 0),
+                        (Const, 0),
+                    ]);
+                }
+                7 => ops.extend([(Const, INITIAL as i32), (Load4, 0)]),
+                10 => ops.extend([(Const, BSS as i32), (Load4, 0)]),
+                _ => ops.push((Const, 0)),
+            }
+            ops.push((Leave, 64));
+            continue;
+        }
         match command {
             0 => {
-                qvm_check(&mut ops, INITIAL, 7);
-                qvm_check(&mut ops, BSS, 0);
+                qvm_check(&mut ops, INITIAL, 7, 1);
+                qvm_check(&mut ops, BSS, 0, 1);
                 ops.extend([(Const, CLIENT as i32), (Local, 84), (Load4, 0), (Store4, 0)]);
                 ops.extend([(Const, CLIENT as i32), (Load4, 0), (Const, 44), (Ne, 0)]);
                 let healthy = ops.len() - 1;
@@ -269,6 +314,10 @@ fn qvm_file() -> Vec<u8> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_file() -> Vec<u8> {
+    native_role(false, false)
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_role(ui: bool, fail_shutdown: bool) -> Vec<u8> {
     use native_image::*;
     let mut file = lifecycle::elf_lifecycle_file();
     // Retain the shared fixture's real ELF constructor/finalizer chain, but
@@ -363,6 +412,48 @@ fn native_file() -> Vec<u8> {
     for (command, branch) in branches {
         let relative = code.len() as i32 - branch as i32 - 4;
         code[branch..branch + 4].copy_from_slice(&relative.to_le_bytes());
+        if ui {
+            match command {
+                0 => code.extend([0xb8, 6, 0, 0, 0, 0xc3]),
+                1 => {
+                    // The same fresh native child constructor already checks
+                    // initialized/BSS storage before dllEntry and this UI_INIT.
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(&mut code, 1, &[ImportArg::Pointer(UI_INIT_TEXT)], base);
+                    code.extend([0x48, 0x83, 0xc4, 8, 0x31, 0xc0, 0xc3]);
+                }
+                2 => {
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(&mut code, 1, &[ImportArg::Pointer(UI_STOP_TEXT)], base);
+                    if fail_shutdown {
+                        call(&mut code, 0, &[ImportArg::Pointer(ERROR_TEXT)], base);
+                    }
+                    code.extend([0x48, 0x83, 0xc4, 8]);
+                    // Same exact role-Shutdown/finalizer trap as the cgame.
+                    rip(&mut code, &[0xe9], 0x360c, base);
+                }
+                5 => {
+                    rip(&mut code, &[0xff, 0x05], BSS, base);
+                    rip(&mut code, &[0xc7, 0x05], INITIAL, base);
+                    let displacement = code.len() - 4;
+                    let adjusted = i32::from_le_bytes(code[displacement..].try_into().unwrap()) - 4;
+                    code[displacement..].copy_from_slice(&adjusted.to_le_bytes());
+                    code.extend(99u32.to_le_bytes());
+                    code.extend([0x31, 0xc0, 0xc3]);
+                }
+                7 | 10 => {
+                    rip(
+                        &mut code,
+                        &[0x8b, 0x05],
+                        if command == 7 { INITIAL } else { BSS },
+                        base,
+                    );
+                    code.push(0xc3);
+                }
+                _ => code.extend([0x31, 0xc0, 0xc3]),
+            }
+            continue;
+        }
         match command {
             0 => {
                 rip(&mut code, &[0x89, 0x0d], CLIENT, base);
@@ -497,6 +588,7 @@ struct Source {
     reject_reset: Option<ClientId>,
     listener_receipts: [Option<(EntityId, ModuleId)>; 2],
     play_receipts: [u32; 2],
+    reset_receipts: [u32; 2],
     views: Vec<(
         qa_render::Viewport,
         qa_render::world::WorldId,
@@ -561,6 +653,9 @@ impl FrameSource for Source {
         if self.reject_reset == Some(client) {
             return false;
         }
+        if let Some(count) = self.reset_receipts.get_mut(client.0 as usize) {
+            *count += 1;
+        }
         self.mixer.reset_client(client, lifetime, false);
         if let Some(receipt) = self.listener_receipts.get_mut(client.0 as usize) {
             *receipt = None;
@@ -613,13 +708,30 @@ fn setup(
     [ClientId; 2],
     [EntityId; 2],
 ) {
-    let mut fixture = files::Fixture::new(&[
+    setup_renderers(module, None)
+}
+fn setup_renderers(
+    module: Vec<u8>,
+    ui: Option<Vec<u8>>,
+) -> (
+    files::Fixture,
+    FrameHost,
+    Source,
+    [ClientId; 2],
+    [EntityId; 2],
+) {
+    let has_ui = ui.is_some();
+    let mut entries = vec![
         ("vm/restart", module),
         ("maps/a.bsp", files::world_map(8.)),
         ("maps/b.bsp", files::world_map(8.)),
         ("maps/c.bsp", files::world_map(8.)),
         ("sound/restart.wav", samples::wav()),
-    ]);
+    ];
+    if let Some(ui) = ui {
+        entries.push(("vm/ui", ui));
+    }
+    let mut fixture = files::Fixture::new(&entries);
     let mut runtime = Runtime::load(2, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let ids = std::array::from_fn(|seat| {
@@ -644,18 +756,32 @@ fn setup(
             .unwrap()
     });
     let mut requests = Vec::new();
+    let mut specs = vec![
+        Q3Spec::parse("cgame:0:vm/restart").unwrap(),
+        Q3Spec::parse("cgame:1:vm/restart").unwrap(),
+    ];
+    if has_ui {
+        specs.extend([
+            Q3Spec::parse("ui:0:vm/ui").unwrap(),
+            Q3Spec::parse("ui:1:vm/ui").unwrap(),
+        ]);
+    }
     load_q3(
         &mut runtime,
-        &[
-            Q3Spec::parse("cgame:0:vm/restart").unwrap(),
-            Q3Spec::parse("cgame:1:vm/restart").unwrap(),
-        ],
+        &specs,
         &mut requests,
         TickRate::FrameDriven,
         None,
     )
     .unwrap();
     assert!(requests.iter().all(|request| request.q3_image.is_some()));
+    assert!(requests.iter().skip(2).all(|request| {
+        request.frame.client.is_none()
+            && request
+                .initialize
+                .iter()
+                .all(|export| export.client.is_none())
+    }));
     let anchors = [requests[0].anchor, requests[1].anchor];
     let mut assets = Assets::load().unwrap();
     let palette = files::palette(&mut assets);
@@ -707,6 +833,7 @@ fn setup(
         reject_reset: None,
         listener_receipts: [None; 2],
         play_receipts: [0; 2],
+        reset_receipts: [0; 2],
         views: Vec::new(),
     };
     (fixture, host, source, ids, anchors)
@@ -1200,16 +1327,287 @@ fn verify_commands(module: Vec<u8>) {
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
 }
 
+fn ui_query(
+    host: &mut FrameHost,
+    module: ModuleId,
+    command: u32,
+) -> Result<u32, qa_session::dispatch::CallError> {
+    host.call_module_export(
+        module,
+        Export::words(CallbackId(command), &[]),
+        ThinkTime::Milliseconds(9000),
+    )?;
+    Ok(
+        match host.module_counts(module).unwrap().last_result.unwrap() {
+            ModuleResult::Qvm(value) => value as u32,
+            ModuleResult::Native(value) => value as u32,
+            _ => unreachable!(),
+        },
+    )
+}
+
+fn renderer_markers(host: &FrameHost) -> Vec<u8> {
+    host.console
+        .scrollback
+        .chunks(&host.runtime.server.events.texts)
+        .flat_map(|chunk| chunk.split(|&byte| byte == b'\n'))
+        .filter_map(|line| match line {
+            b"renderer ui init" => Some(b'U'),
+            b"renderer ui shutdown" => Some(b'u'),
+            b"restart init" => Some(b'C'),
+            b"restart shutdown" => Some(b'c'),
+            _ => None,
+        })
+        .collect()
+}
+
+fn verify_standalone_ui(ui: Vec<u8>) {
+    let mut fixture = files::Fixture::new(&[("vm/ui", ui)]);
+    let mut runtime = Runtime::load(2, []).unwrap();
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &[
+            Q3Spec::parse("ui:0:vm/ui").unwrap(),
+            Q3Spec::parse("ui:1:vm/ui").unwrap(),
+        ],
+        &mut requests,
+        TickRate::FrameDriven,
+        None,
+    )
+    .unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.q3_image.is_some() && request.frame.client.is_none())
+    );
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    assert!(host.runtime.scene.is_none());
+    host.initialize_modules(qa_app::modules::Phase::Client);
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(ui_query(&mut host, module, 7), Ok(7));
+    }
+    host.client_modules();
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(ui_query(&mut host, module, 7), Ok(99));
+        assert_eq!(ui_query(&mut host, module, 10), Ok(1));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+    let protocol = Protocol::NetQuake15;
+    let client = host
+        .runtime
+        .connect_client(
+            SeatId::FIRST,
+            ClientPolicy {
+                client: RuleSetId::Quake,
+                input: RuleSetId::Quake,
+                movement: RuleSetId::Quake,
+                trace: RuleSetId::Quake,
+            },
+            qa_app::snapshots::NativePlayerBinding::Awaiting,
+            qa_network::ingress::Connection {
+                phase: qa_network::ingress::ConnectionPhase::Connecting(
+                    qa_network::ingress::NqConnect::new(),
+                ),
+                route: qa_network::ingress::Route {
+                    socket: 27,
+                    peer: Peer::Socket("127.0.0.1:26000".parse().unwrap()),
+                },
+                channel: qa_network::channel::Channel::load(
+                    protocol.channel(),
+                    Endpoint::Client,
+                    8192,
+                    16,
+                )
+                .unwrap(),
+                output: None,
+                pending_output: None,
+                commands: Some(qa_network::commands::connection::Commands::load(
+                    protocol, 8192,
+                )),
+            },
+            None,
+        )
+        .unwrap();
+    host.local_clients[0] = Some(client);
+    // A reserved pending socket is not a renderer association. Both original
+    // private menu generations continue without shutdown/recreation or I/O.
+    host.client_modules();
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(ui_query(&mut host, module, 7), Ok(99));
+        assert_eq!(ui_query(&mut host, module, 10), Ok(2));
+    }
+    host.shutdown_modules();
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(module), Some(State::Stopped));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
+fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
+    let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
+    // Both real cgame requests deliberately precede both UI requests. UI owns
+    // no CLIENT service binding and needs no gamestate to initialize menus.
+    // The renderer must also tolerate an optional resource owner not yet bound.
+    let resources = host.runtime.client_resources[ids[0].0 as usize].take();
+    host.initialize_modules(qa_app::modules::Phase::Client);
+    host.runtime.client_resources[ids[0].0 as usize] = resources;
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(module), Some(State::Pending));
+    }
+    for module in [ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(ui_query(&mut host, module, 7), Ok(7));
+    }
+    let mut replacement = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    replacement.rules = RuleSetId::Quake2;
+    replacement.image_settings =
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
+    let mut defaults = [None; 5];
+    defaults[RuleSetId::Quake3 as usize] = Some(replacement);
+    assert!(
+        host.configure_native_scenes(&defaults, &[[None; 5]; SeatId::COUNT], 64, 48)
+            .is_err()
+    );
+    // Later CM/R init and exact-view assertions still use the original profile;
+    // the rejected cold configuration must not retarget any old instance.
+    source.step(&mut host);
+    assert_eq!(renderer_markers(&host), b"UU");
+    let before = renderer_markers(&host).len();
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    for module in [ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+    }
+    assert_eq!(&renderer_markers(&host)[before..], b"uuUUCC");
+    let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
+    let before = renderer_markers(&host).len();
+    source.reject_reset = Some(ids[0]);
+    queue_gamestate(&mut host, ids[0], "b", 19, false);
+    assert!(query(&mut host, ModuleId(1), 9).is_err());
+    assert!(ui_query(&mut host, ModuleId(3), 7).is_err());
+    assert!(ui_query(&mut host, ModuleId(4), 7).is_ok());
+    source.step(&mut host);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    assert_eq!(host.module_state(ModuleId(3)), Some(State::Pending));
+    assert_eq!(&renderer_markers(&host)[before..], b"cu");
+    queue_gamestate(&mut host, ids[0], "c", 33, false);
+    source.step(&mut host);
+    assert_eq!(&renderer_markers(&host)[before..], b"cu");
+    assert!(ui_query(&mut host, ModuleId(4), 10).unwrap() > peer_frames);
+    source.reject_reset = None;
+    until_running(&mut host, &mut source);
+    assert_eq!(&renderer_markers(&host)[before..], b"cuUC");
+    assert_eq!(query(&mut host, ModuleId(1), 9), Ok(33));
+    assert_eq!(host.module_state(ModuleId(3)), Some(State::Running));
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
+fn verify_ui_shutdown_failure_isolation(module: Vec<u8>, ui: Vec<u8>) {
+    let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
+    queue_gamestate(&mut host, ids[0], "b", 19, false);
+    until_running(&mut host, &mut source);
+    assert_eq!(host.module_state(ModuleId(3)), Some(State::Failed));
+    assert_eq!(host.module_state(ModuleId(4)), Some(State::Running));
+    assert_eq!(query(&mut host, ModuleId(1), 9), Ok(19));
+    assert_eq!(query(&mut host, ModuleId(2), 9), Ok(22));
+    assert!(ui_query(&mut host, ModuleId(4), 10).unwrap() > peer_frames);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
+fn verify_ui_association_replacement(module: Vec<u8>, ui: Vec<u8>) {
+    let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    let old_lifetime = host.runtime.server.clients[ids[0].0 as usize].entity;
+    let peer_ui_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
+    assert!(host.shutdown_module_with_driver(ModuleId(1), &mut source.driver()));
+    assert!(host.runtime.disconnect_client(ids[0]));
+    // Complete actual output retirement without advancing module lifecycle:
+    // the old UI still holds A's captured association while the seat is reused.
+    for _ in 0..3 {
+        host.runtime.publish_audio_retirements();
+        host.dispatch_output(&mut source, &mut FrameResult::default());
+    }
+    let replacement = host
+        .runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Vec3([32., 0., 0.]),
+                angles: Vec3([0., 180., 0.]),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy {
+                client: RuleSetId::Quake3,
+                input: RuleSetId::Quake3,
+                movement: RuleSetId::Quake3,
+                trace: RuleSetId::Quake3,
+            },
+            Protocol::Quake3_68,
+            0,
+        )
+        .unwrap();
+    let new_lifetime = host.runtime.server.clients[replacement.0 as usize].entity;
+    assert_ne!(new_lifetime, old_lifetime);
+    host.local_clients[0] = Some(replacement);
+    assert!(ui_query(&mut host, ModuleId(3), 7).is_err());
+    assert!(ui_query(&mut host, ModuleId(4), 7).is_ok());
+    let resets = source.reset_receipts;
+    let before = renderer_markers(&host).len();
+    source.step(&mut host);
+    assert_eq!(host.module_state(ModuleId(3)), Some(State::Running));
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert_eq!(host.module_state(ModuleId(4)), Some(State::Running));
+    assert_eq!(&renderer_markers(&host)[before..], b"uU");
+    assert_eq!(source.reset_receipts, resets);
+    assert!(ui_query(&mut host, ModuleId(4), 10).unwrap() > peer_ui_frames);
+    assert_eq!(host.module_counts(ModuleId(3)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    assert_eq!(
+        host.runtime.server.clients[replacement.0 as usize].entity,
+        new_lifetime
+    );
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    verify_standalone_ui(qvm_role(true, false));
+    verify_renderer_lifecycle(qvm_file(), qvm_role(true, false));
+    verify_ui_shutdown_failure_isolation(qvm_file(), qvm_role(true, true));
+    verify_ui_association_replacement(qvm_file(), qvm_role(true, false));
+    println!("actual load_q3 QVM shared UI/cgame renderer lifecycle passed");
     verify_commands(qvm_file());
     println!("actual load_q3 QVM client command imports passed");
     verify(qvm_file());
     println!("actual load_q3 QVM same-lifetime restart checks passed");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        verify_standalone_ui(native_role(true, false));
+        verify_renderer_lifecycle(native_file(), native_role(true, false));
+        verify_ui_shutdown_failure_isolation(native_file(), native_role(true, true));
+        verify_ui_association_replacement(native_file(), native_role(true, false));
+        println!("actual load_q3 owned-native shared UI/cgame renderer lifecycle passed");
         verify_commands(native_file());
         println!("actual load_q3 owned-native client command imports passed");
         verify(native_file());

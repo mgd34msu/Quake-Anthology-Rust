@@ -1759,8 +1759,11 @@ fn advance(
         models,
         &mut row.scene_role,
         services.cvars,
-        start
-            .connection
+        row.renderer_generation
+            .and_then(super::RendererGeneration::stamp)
+            .and_then(|stamp| stamp.client)
+            .map(|client| client.connection())
+            .or(start.connection)
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
     );
     scene.set_registration_available(driver.available());

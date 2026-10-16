@@ -363,6 +363,37 @@ pub struct FrameResult {
     pub output_drains: u64,
 }
 
+pub(crate) fn local_seat<'a>(
+    runtime: &'a Runtime,
+    local_clients: &[Option<qa_core::primitives::ClientId>; SeatId::COUNT],
+    seat: usize,
+) -> Option<(
+    qa_core::primitives::ClientId,
+    &'a qa_session::clients::Client,
+    &'a qa_core::primitives::PlayerState,
+)> {
+    let client = local_clients.get(seat).copied().flatten()?;
+    let row = runtime.server.clients.get(client.0 as usize)?;
+    row.connection?;
+    if !runtime
+        .network
+        .get(client, qa_core::loopback::Endpoint::Client)?
+        .phase
+        .is_connected()
+    {
+        return None;
+    }
+    if runtime
+        .snapshots
+        .get(client.0 as usize)?
+        .as_ref()?
+        .presentation_closed()
+    {
+        return None;
+    }
+    Some((client, row, &runtime.prediction.get(seat)?.player))
+}
+
 impl FrameHost {
     pub(crate) fn retain_command_producers(
         &mut self,
@@ -1343,28 +1374,7 @@ impl FrameHost {
         &qa_session::clients::Client,
         &qa_core::primitives::PlayerState,
     )> {
-        let client = self.local_clients.get(seat).copied().flatten()?;
-        let row = self.runtime.server.clients.get(client.0 as usize)?;
-        row.connection?;
-        if !self
-            .runtime
-            .network
-            .get(client, qa_core::loopback::Endpoint::Client)?
-            .phase
-            .is_connected()
-        {
-            return None;
-        }
-        if self
-            .runtime
-            .snapshots
-            .get(client.0 as usize)?
-            .as_ref()?
-            .presentation_closed()
-        {
-            return None;
-        }
-        Some((client, row, &self.runtime.prediction.get(seat)?.player))
+        local_seat(&self.runtime, &self.local_clients, seat)
     }
 
     fn mouse_capture_requested(&self) -> bool {

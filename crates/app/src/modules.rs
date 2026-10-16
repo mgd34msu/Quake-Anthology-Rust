@@ -303,12 +303,70 @@ impl ModuleResult {
         }
     }
 }
-#[derive(Clone, Copy)]
-enum CgameGeneration {
-    Uninitialized,
-    Current(Option<u64>),
-    Retired,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RendererClient {
+    client: ClientId,
+    lifetime: EntityId,
+    seat: qa_core::sys_events::SeatId,
 }
+impl RendererClient {
+    fn connection(self) -> (ClientId, EntityId) {
+        (self.client, self.lifetime)
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RendererStamp {
+    client: Option<RendererClient>,
+    reset: Option<u64>,
+}
+#[derive(Clone, Copy)]
+enum RendererGeneration {
+    Uninitialized(Option<RendererStamp>),
+    Current(RendererStamp),
+    Stopped { stamp: RendererStamp, reset: bool },
+    Retired(RendererStamp),
+}
+impl RendererGeneration {
+    fn stamp(self) -> Option<RendererStamp> {
+        match self {
+            Self::Uninitialized(stamp) => stamp,
+            Self::Current(stamp) | Self::Stopped { stamp, .. } | Self::Retired(stamp) => {
+                Some(stamp)
+            }
+        }
+    }
+}
+
+fn renderer_client(
+    runtime: &Runtime,
+    local_clients: &[Option<ClientId>; qa_core::sys_events::SeatId::COUNT],
+    request: &ModuleRequest,
+    connection: Option<(ClientId, EntityId)>,
+) -> Option<RendererClient> {
+    let role = request.program.imports()?.command_export()?.role;
+    let (client, lifetime, seat) = if role == qa_compat::abi::CommandRole::Ui {
+        let seat = request.context.console.seat;
+        let client = local_clients[seat.index()]?;
+        let lifetime = runtime.server.clients.get(client.0 as usize)?.entity;
+        (client, lifetime, seat)
+    } else {
+        let (client, lifetime) = connection?;
+        let seat = runtime.snapshots.get(client.0 as usize)?.as_ref()?.seat()?;
+        (client, lifetime, seat)
+    };
+    let (actual, row, _) = crate::host::local_seat(runtime, local_clients, seat.index())?;
+    let snapshot = runtime.snapshots.get(client.0 as usize)?.as_ref()?;
+    (actual == client
+        && row.entity == lifetime
+        && runtime.server.entities.resolve(lifetime).is_some()
+        && snapshot.seat() == Some(seat))
+    .then_some(RendererClient {
+        client,
+        lifetime,
+        seat,
+    })
+}
+
 struct Module {
     request: ModuleRequest,
     geometry: Option<qa_core::primitives::GeometryId>,
@@ -317,7 +375,7 @@ struct Module {
     counts: Counts,
     state: State,
     failure_cleanup: bool,
-    cgame_generation: Option<CgameGeneration>,
+    renderer_generation: Option<RendererGeneration>,
     client_lifecycle: Option<ClientLifecycle>,
     client_batch: Option<ClientId>,
     client_contacts: qa_core::stamps::StampSet,
@@ -926,20 +984,31 @@ impl FrameHost {
             } else {
                 None
             };
-            let cgame_generation = request
+            let renderer_generation = request
                 .q3_image
                 .as_ref()
-                .map(|_| CgameGeneration::Uninitialized);
-            if cgame_generation.is_some()
+                .map(|_| RendererGeneration::Uninitialized(None));
+            if renderer_generation.is_some()
                 && (request.phase != Phase::Client
                     || request
                         .program
                         .imports()
                         .and_then(CallTable::command_export)
-                        .is_none_or(|entry| entry.role != qa_compat::abi::CommandRole::Cgame)
-                    || client_connection.is_none())
+                        .is_none_or(|entry| {
+                            !matches!(
+                                entry.role,
+                                qa_compat::abi::CommandRole::Cgame
+                                    | qa_compat::abi::CommandRole::Ui
+                            )
+                        })
+                    || request
+                        .program
+                        .imports()
+                        .and_then(CallTable::command_export)
+                        .is_some_and(|entry| entry.role == qa_compat::abi::CommandRole::Cgame)
+                        && client_connection.is_none())
             {
-                return Err("Q3 image recreation requires a bound cgame".into());
+                return Err("Q3 image recreation requires a CLIENT renderer role".into());
             }
             rows[index] = Some(Module {
                 request,
@@ -949,7 +1018,7 @@ impl FrameHost {
                 counts: Counts::default(),
                 state,
                 failure_cleanup: false,
-                cgame_generation,
+                renderer_generation,
                 client_lifecycle,
                 client_batch: None,
                 client_contacts: qa_core::stamps::StampSet::new(
@@ -1238,7 +1307,7 @@ impl FrameHost {
             .q3_startup()
     }
 
-    fn cgame_reset_token(&self, connection: Option<(ClientId, EntityId)>) -> Option<Option<u64>> {
+    fn client_reset_token(&self, connection: Option<(ClientId, EntityId)>) -> Option<Option<u64>> {
         let (client, lifetime) = connection?;
         let row = self.runtime.server.clients.get(client.0 as usize)?;
         if row.connection.is_none()
@@ -1255,18 +1324,125 @@ impl FrameHost {
         resources.state.completed_presentation_reset()
     }
 
+    fn renderer_stamp(&self, row: &Module) -> Option<RendererStamp> {
+        let client = renderer_client(
+            &self.runtime,
+            &self.local_clients,
+            &row.request,
+            row.client_connection,
+        );
+        if client.is_none()
+            && row
+                .request
+                .program
+                .imports()
+                .and_then(CallTable::command_export)
+                .is_some_and(|entry| entry.role == qa_compat::abi::CommandRole::Cgame)
+        {
+            return None;
+        }
+        let reset = match client {
+            Some(client) => {
+                let resources = self
+                    .runtime
+                    .client_resources
+                    .get(client.client.0 as usize)?
+                    .as_ref();
+                if resources.is_none()
+                    && row
+                        .request
+                        .program
+                        .imports()
+                        .and_then(CallTable::command_export)
+                        .is_some_and(|entry| entry.role == qa_compat::abi::CommandRole::Ui)
+                {
+                    None
+                } else {
+                    self.client_reset_token(Some(client.connection()))?
+                }
+            }
+            None => None,
+        };
+        Some(RendererStamp { client, reset })
+    }
+
     fn module_generation_ready(&self, module: ModuleId) -> bool {
         let Some(row) = self.module_row(module) else {
             return false;
         };
-        match row.cgame_generation {
+        match row.renderer_generation {
             None => true,
-            Some(CgameGeneration::Current(reset)) => {
-                self.cgame_reset_token(row.client_connection) == Some(reset)
-                    && self.client_startup(row.client_connection).is_some()
+            Some(RendererGeneration::Current(stamp)) => {
+                self.renderer_stamp(row) == Some(stamp)
+                    && (!row.requires_startup
+                        || self.client_startup(row.client_connection).is_some())
             }
-            Some(CgameGeneration::Uninitialized | CgameGeneration::Retired) => false,
+            Some(
+                RendererGeneration::Uninitialized(_)
+                | RendererGeneration::Stopped { .. }
+                | RendererGeneration::Retired(_),
+            ) => false,
         }
+    }
+
+    fn renderer_context_busy(&self, module: ModuleId) -> bool {
+        let Some(row) = self.module_row(module) else {
+            return false;
+        };
+        let captured = row
+            .renderer_generation
+            .and_then(RendererGeneration::stamp)
+            .and_then(|stamp| stamp.client);
+        let desired = renderer_client(
+            &self.runtime,
+            &self.local_clients,
+            &row.request,
+            row.client_connection,
+        );
+        self.modules.as_ref().is_some_and(|modules| {
+            modules.rows.iter().flatten().any(|other| {
+                let same = other.request.context.module == module
+                    || other
+                        .renderer_generation
+                        .and_then(RendererGeneration::stamp)
+                        .and_then(|stamp| stamp.client)
+                        .is_some_and(|client| Some(client) == captured || Some(client) == desired);
+                same && other.request.program.is_active()
+            })
+        })
+    }
+
+    fn renderer_context_retiring(&self, module: ModuleId) -> bool {
+        let Some(row) = self.module_row(module) else {
+            return false;
+        };
+        let desired = renderer_client(
+            &self.runtime,
+            &self.local_clients,
+            &row.request,
+            row.client_connection,
+        );
+        self.modules.as_ref().is_some_and(|modules| {
+            modules.rows.iter().flatten().any(|other| {
+                if other.state != State::Running {
+                    return false;
+                }
+                let Some(RendererGeneration::Current(stamp)) = other.renderer_generation else {
+                    return false;
+                };
+                (other.request.context.module == module
+                    || desired.is_some_and(|client| {
+                        stamp.client == Some(client)
+                            || renderer_client(
+                                &self.runtime,
+                                &self.local_clients,
+                                &other.request,
+                                other.client_connection,
+                            ) == Some(client)
+                    }))
+                    && self.renderer_stamp(other) != Some(stamp)
+            })
+        })
     }
 
     pub fn call_module_export(
@@ -1360,73 +1536,109 @@ impl FrameHost {
             scope,
         )
     }
-    /// Accepted gamestate resets stop the old cgame before cold CLIENT admission.
+    /// Stop all old renderer instances before publishing their shared reset fence.
     pub(crate) fn restart_client_modules(&mut self, driver: &mut Driver<'_>) {
         let count = self
             .modules
             .as_ref()
             .map_or(0, |modules| modules.rows.len());
-        for index in 0..count {
-            let module = ModuleId(index as u16);
-            let Some(row) = self.module_row(module) else {
-                continue;
-            };
-            let Some(CgameGeneration::Current(reset)) = row.cgame_generation else {
-                continue;
-            };
-            if row.state != State::Running
-                || row.request.program.is_active()
-                || self.cgame_reset_token(row.client_connection) == Some(reset)
-            {
-                continue;
-            }
-            let connection = row.client_connection;
-            let time = row.time(self.time);
-            let result = self
-                .module_sequence(module, LifecycleSequence::Shutdown, time, driver)
-                .and_then(|()| {
-                    self.modules
-                        .as_mut()
-                        .ok_or(CallError::MissingModule)?
-                        .storage
-                        .reset_instance(module)
-                        .map_err(|_| CallError::Rejected)
-                });
-            if result.is_err() {
-                self.fail_cgame_restart(module, driver);
-                continue;
-            }
-            self.retire_module_input(module);
-            if let Some(row) = self.module_row_mut(module) {
-                row.state = State::Pending;
-                row.cgame_generation = Some(CgameGeneration::Retired);
-                row.scene_role.reset_instance();
-                row.collision_role.reset();
-            }
-            if let Some((client, lifetime)) = connection {
-                if let Some(binding) = self
-                    .runtime
-                    .snapshots
-                    .get_mut(client.0 as usize)
-                    .and_then(Option::as_mut)
+        for role in [
+            qa_compat::abi::CommandRole::Cgame,
+            qa_compat::abi::CommandRole::Ui,
+        ] {
+            for index in 0..count {
+                let module = ModuleId(index as u16);
+                let Some(row) = self.module_row(module) else {
+                    continue;
+                };
+                let Some(RendererGeneration::Current(stamp)) = row.renderer_generation else {
+                    continue;
+                };
+                if row.state != State::Running
+                    || row
+                        .request
+                        .program
+                        .imports()
+                        .and_then(CallTable::command_export)
+                        .is_none_or(|entry| entry.role != role)
+                    || self.renderer_stamp(row) == Some(stamp)
+                    || self.renderer_context_busy(module)
                 {
-                    binding.reset_module_audio(module, lifetime);
+                    continue;
                 }
-                if let Some(resources) = self
-                    .runtime
-                    .client_resources
-                    .get_mut(client.0 as usize)
-                    .and_then(Option::as_mut)
-                {
+                let reset = stamp.client.is_some()
+                    && renderer_client(
+                        &self.runtime,
+                        &self.local_clients,
+                        &row.request,
+                        row.client_connection,
+                    ) == stamp.client;
+                let time = row.time(self.time);
+                let result = self
+                    .module_sequence(module, LifecycleSequence::Shutdown, time, driver)
+                    .and_then(|()| {
+                        self.modules
+                            .as_mut()
+                            .ok_or(CallError::MissingModule)?
+                            .storage
+                            .reset_instance(module)
+                            .map_err(|_| CallError::Rejected)
+                    });
+                if result.is_err() {
+                    self.fail_renderer_restart(module, driver);
+                    continue;
+                }
+                self.retire_module_input(module);
+                if let Some(row) = self.module_row_mut(module) {
+                    row.state = State::Pending;
+                    row.renderer_generation = Some(RendererGeneration::Stopped { stamp, reset });
+                    row.scene_role.reset_instance();
+                    row.collision_role.reset();
+                }
+            }
+        }
+        // All old callback/finalizer vectors complete before one reset per CLIENT.
+        for client_index in 0..self.runtime.server.clients.len() {
+            let client = ClientId(client_index as u32);
+            let lifetime = self.runtime.server.clients[client_index].entity;
+            let reset = self.runtime.server.clients[client_index].connection.is_some()
+                && self.modules.as_ref().is_some_and(|modules| modules.rows.iter().flatten().any(|row| {
+                    matches!(row.renderer_generation, Some(RendererGeneration::Stopped { stamp, reset: true })
+                        if stamp.client.is_some_and(|owner| owner.connection() == (client, lifetime)))
+                }));
+            if reset {
+                if let Some(resources) = self.runtime.client_resources[client_index].as_mut() {
                     resources.state.request_presentation_reset(lifetime);
                 }
                 let _ = self.runtime.ensure_client_presentation_reset(client);
                 host_clear_feedback(&mut self.runtime, client);
             }
         }
+        for index in 0..count {
+            let module = ModuleId(index as u16);
+            let Some(RendererGeneration::Stopped { stamp, .. }) = self
+                .module_row(module)
+                .and_then(|row| row.renderer_generation)
+            else {
+                continue;
+            };
+            if let Some(client) = stamp.client {
+                if let Some(binding) = self
+                    .runtime
+                    .snapshots
+                    .get_mut(client.client.0 as usize)
+                    .and_then(Option::as_mut)
+                {
+                    binding.reset_module_audio(module, client.lifetime);
+                }
+            }
+            if let Some(row) = self.module_row_mut(module) {
+                row.renderer_generation = Some(RendererGeneration::Retired(stamp));
+            }
+        }
     }
 
-    fn fail_cgame_restart(&mut self, module: ModuleId, driver: &mut Driver<'_>) {
+    fn fail_renderer_restart(&mut self, module: ModuleId, driver: &mut Driver<'_>) {
         if let Some(row) = self.module_row_mut(module) {
             row.counts.rejected += 1;
             row.state = State::Failed;
@@ -1434,13 +1646,13 @@ impl FrameHost {
         self.cleanup_failed_module(module, driver);
     }
 
-    fn recreate_cgame(&mut self, module: ModuleId) -> Result<(), String> {
-        let row = self.module_row(module).ok_or("missing cgame")?;
+    fn recreate_client_renderer(&mut self, module: ModuleId) -> Result<(), String> {
+        let row = self.module_row(module).ok_or("missing CLIENT renderer")?;
         let mut candidate = row
             .request
             .q3_image
             .as_ref()
-            .ok_or("missing cgame image")?
+            .ok_or("missing CLIENT renderer image")?
             .instantiate()?;
         if candidate.entries != row.request.entries
             || !candidate
@@ -1449,7 +1661,7 @@ impl FrameHost {
                 .zip(row.request.program.imports())
                 .is_some_and(|(new, old)| std::ptr::eq(new, old))
         {
-            return Err("cgame callback table changed".into());
+            return Err("CLIENT renderer callback table changed".into());
         }
         candidate.program.bind_runtime(
             &self.runtime,
@@ -1461,13 +1673,15 @@ impl FrameHost {
             .program
             .imports()
             .and_then(|table| table.input_exports());
-        let row = self.module_row_mut(module).ok_or("missing cgame")?;
+        let row = self
+            .module_row_mut(module)
+            .ok_or("missing CLIENT renderer")?;
         row.request.program = candidate.program;
         row.request.prepare = candidate.prepare;
         row.request.shutdown = candidate.shutdown;
         row.command = command;
         row.input = input;
-        row.cgame_generation = Some(CgameGeneration::Uninitialized);
+        row.renderer_generation = Some(RendererGeneration::Uninitialized(None));
         Ok(())
     }
 
@@ -1535,32 +1749,56 @@ impl FrameHost {
     fn module_lifecycle(&mut self, phase: Option<Phase>, driver: &mut crate::modules::Driver<'_>) {
         let shutdown = phase.is_none();
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
-        for index in 0..count {
-            let Some(row) = self.module_row(ModuleId(index as u16)) else {
-                continue;
-            };
-            if row.state
-                != if shutdown {
-                    State::Running
-                } else {
-                    State::Pending
+        let roles = [
+            Some(qa_compat::abi::CommandRole::Ui),
+            None,
+            Some(qa_compat::abi::CommandRole::Cgame),
+        ];
+        let passes = if shutdown || phase != Some(Phase::Client) {
+            1
+        } else {
+            roles.len()
+        };
+        for &role in &roles[..passes] {
+            for index in 0..count {
+                let module = ModuleId(index as u16);
+                let Some(row) = self.module_row(module) else {
+                    continue;
+                };
+                let native_role = row
+                    .request
+                    .program
+                    .imports()
+                    .and_then(CallTable::command_export)
+                    .map(|entry| entry.role)
+                    .filter(|role| {
+                        matches!(
+                            role,
+                            qa_compat::abi::CommandRole::Ui | qa_compat::abi::CommandRole::Cgame
+                        )
+                    });
+                if !shutdown && phase == Some(Phase::Client) && native_role != role
+                    || row.state
+                        != if shutdown {
+                            State::Running
+                        } else {
+                            State::Pending
+                        }
+                    || phase.is_some_and(|phase| row.request.phase != phase)
+                {
+                    continue;
                 }
-            {
-                continue;
+                if !shutdown
+                    && ((row.requires_startup
+                        && self.client_startup(row.client_connection).is_none())
+                        || row.renderer_generation.is_some()
+                            && (self.renderer_stamp(row).is_none()
+                                || self.renderer_context_retiring(module)))
+                {
+                    continue;
+                }
+                self.module_lifecycle_row(module, shutdown, driver);
             }
-            if phase.is_some_and(|phase| row.request.phase != phase) {
-                continue;
-            }
-            if !shutdown
-                && ((row.requires_startup && self.client_startup(row.client_connection).is_none())
-                    || row.cgame_generation.is_some()
-                        && self.cgame_reset_token(row.client_connection).is_none())
-            {
-                // Await the receiving channel's completed gamestate, without
-                // trapping or claiming resources from SERVER state.
-                continue;
-            }
-            self.module_lifecycle_row(ModuleId(index as u16), shutdown, driver);
         }
         self.update_console_policy(false);
     }
@@ -1587,17 +1825,18 @@ impl FrameHost {
     ) {
         if shutdown {
             self.disconnect_module_recipients(module, driver);
-        } else if self
-            .module_row(module)
-            .is_some_and(|row| matches!(row.cgame_generation, Some(CgameGeneration::Retired)))
-        {
-            if let Err(error) = self.recreate_cgame(module) {
-                let _ = self
-                    .runtime
-                    .server
-                    .events
-                    .console_formatted(format_args!("cgame {} recreation: {error}\n", module.0));
-                self.fail_cgame_restart(module, driver);
+        } else if self.module_row(module).is_some_and(|row| {
+            matches!(
+                row.renderer_generation,
+                Some(RendererGeneration::Retired(_))
+            )
+        }) {
+            if let Err(error) = self.recreate_client_renderer(module) {
+                let _ = self.runtime.server.events.console_formatted(format_args!(
+                    "CLIENT renderer {} recreation: {error}\n",
+                    module.0
+                ));
+                self.fail_renderer_restart(module, driver);
                 return;
             }
         }
@@ -1605,10 +1844,15 @@ impl FrameHost {
             return;
         };
         let api = (!shutdown).then_some(row.request.api).flatten();
-        let reset = row
-            .cgame_generation
-            .and_then(|_| self.cgame_reset_token(row.client_connection));
+        let stamp = row
+            .renderer_generation
+            .and_then(|_| self.renderer_stamp(row));
         let time = row.time(self.time);
+        if !shutdown && let Some(stamp) = stamp {
+            if let Some(row) = self.module_row_mut(module) {
+                row.renderer_generation = Some(RendererGeneration::Uninitialized(Some(stamp)));
+            }
+        }
         let sequence = if shutdown {
             LifecycleSequence::Shutdown
         } else {
@@ -1639,9 +1883,9 @@ impl FrameHost {
             } else {
                 State::Failed
             };
-            if !shutdown && result.is_ok() && row.cgame_generation.is_some() {
-                if let Some(reset) = reset {
-                    row.cgame_generation = Some(CgameGeneration::Current(reset));
+            if !shutdown && result.is_ok() && row.renderer_generation.is_some() {
+                if let Some(stamp) = stamp {
+                    row.renderer_generation = Some(RendererGeneration::Current(stamp));
                 }
             }
             if let Program::QuakeC(qc) = &mut row.request.program {

@@ -562,12 +562,18 @@ fn console_fallback_propagates_only_the_internal_owner_scope() {
     )
     .unwrap();
     for (generation, expected) in [
-        (crate::modules::CgameGeneration::Uninitialized, 1),
-        (crate::modules::CgameGeneration::Current(Some(17)), 2),
+        (crate::modules::RendererGeneration::Uninitialized(None), 1),
+        (
+            crate::modules::RendererGeneration::Current(crate::modules::RendererStamp {
+                client: None,
+                reset: Some(17),
+            }),
+            2,
+        ),
     ] {
         let row = host.module_row_mut(MODULE).unwrap();
         row.state = crate::modules::State::Pending;
-        row.cgame_generation = Some(generation);
+        row.renderer_generation = Some(generation);
         let export = Export::words(CallbackId(0), &[]);
         assert!(matches!(
             host.call_module_export(MODULE, export, ThinkTime::Milliseconds(0)),

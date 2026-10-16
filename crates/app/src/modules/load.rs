@@ -378,7 +378,7 @@ pub fn load_q3(
             prepare,
             shutdown,
         } = image.instantiate()?;
-        let q3_image = matches!(spec.role, Q3Role::Cgame(_)).then_some(image);
+        let q3_image = matches!(spec.role, Q3Role::Cgame(_) | Q3Role::Ui(_)).then_some(image);
         let mut context = call_context(
             module,
             clock,
