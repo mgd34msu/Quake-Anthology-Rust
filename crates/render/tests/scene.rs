@@ -288,7 +288,7 @@ fn world_variants(assets: &mut Assets, variants: &[&[SurfaceMaterial]]) -> World
 }
 
 fn presentation(assets: &Assets, world: WorldId) -> qa_render::WorldPresentationId {
-    qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first)
+    assets.world(world).unwrap().presentations()[0]
 }
 
 #[test]

@@ -1,3 +1,6 @@
+#[path = "world_presentations.rs"]
+mod world_presentations;
+
 use super::*;
 use qa_compat::services::{RendererRegistration, RendererRequest};
 use qa_render::{

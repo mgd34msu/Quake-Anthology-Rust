@@ -44,6 +44,11 @@ impl Assets {
         }
         self.worlds.truncate(retained.worlds);
         self.presentations.truncate(retained.presentations);
+        for world in &mut self.worlds {
+            world
+                .presentations
+                .retain(|id| (id.0 as usize) < retained.presentations);
+        }
         self.models.truncate(retained.models);
         self.materials.truncate(retained.materials);
         self.images.truncate(retained.images);

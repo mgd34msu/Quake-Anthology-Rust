@@ -717,7 +717,8 @@ impl WorldRaster {
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
             }
-            for presentation_index in world.presentations().range() {
+            for &presentation_id in world.presentations() {
+                let presentation_index = presentation_id.0 as usize;
                 let presentation = assets
                     .world_presentations()
                     .get(presentation_index)

@@ -14,8 +14,8 @@ use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 fn only_presentation(assets: &Assets, world: WorldId) -> crate::world::WorldPresentationId {
     let span = assets.world(world).unwrap().presentations();
-    assert_eq!(span.count, 1);
-    crate::world::WorldPresentationId(span.first)
+    assert_eq!(span.len(), 1);
+    span[0]
 }
 
 fn fixture_world(

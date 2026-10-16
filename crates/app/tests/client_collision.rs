@@ -93,7 +93,7 @@ impl Fixture {
             .unwrap();
         let mut assets = Assets::load().unwrap();
         let world = support::world(&mut assets, 0.);
-        let presentation = WorldPresentationId(assets.world(world).unwrap().presentations().first);
+        let presentation = assets.world(world).unwrap().presentations()[0];
         let profile = ModelRequest::native("", protocol.rule_set(), None).profile();
         let mut builder =
             ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();

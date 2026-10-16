@@ -307,23 +307,40 @@ impl FrameHost {
             if !current() {
                 return Err("CLIENT world admission lifetime changed".to_owned());
             }
-            if let Some(world) = owner.catalog().loaded_world(request.text) {
-                if world.collision.is_none() {
-                    return Err("CLIENT world has no collision model".to_owned());
-                }
-                let presentation = scene
-                    .world_presentation(world.render, profile, None)
-                    .copied()
-                    .ok_or("CLIENT world presentation is not loaded")?;
-                return Ok((profile, world, presentation));
-            }
-            let input = crate::map::read(&runtime.vfs, path)?;
             let mut presentation =
                 qa_render::material::world_load::WorldPresentationProfile::native(
                     profile.rules,
                     profile.palette,
                 );
             presentation.image_settings = profile.image_settings;
+            if let Some(world) = owner.catalog().loaded_world(request.text) {
+                if world.collision.is_none() {
+                    return Err("CLIENT world has no collision model".to_owned());
+                }
+                if let Some(presentation) = scene
+                    .world_presentation(world.render, profile, None)
+                    .copied()
+                {
+                    return Ok((profile, world, presentation));
+                }
+                let (loaded, append, _) = owner.prepare_world_presentation(
+                    &runtime.vfs,
+                    world.render,
+                    profile,
+                    presentation,
+                    |view, loaded| scene.stage_world(view.assets, loaded),
+                    |assets, append| {
+                        if !current() {
+                            return Err("CLIENT world admission lifetime changed".to_owned());
+                        }
+                        preparer.prepare_assets(assets, Some(append.limits()))
+                    },
+                )?;
+                let presentation = loaded.presentations[0];
+                append.commit();
+                return Ok((profile, world, presentation));
+            }
+            let input = crate::map::read(&runtime.vfs, path)?;
             let (loaded, (append, scratches), _) = owner.prepare_world(
                 &runtime.vfs,
                 &mut runtime.geometry,

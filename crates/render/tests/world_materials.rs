@@ -710,7 +710,7 @@ fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() ->
     assert_eq!(assets.models().len(), 2); // The empty model and one static mesh.
     assert_eq!(loaded.presentations.len(), 4);
     assert_eq!(loaded.presentations[0].id, loaded.presentations[3].id);
-    assert_eq!(assets.world(loaded.world).unwrap().presentations().count, 3);
+    assert_eq!(assets.world(loaded.world).unwrap().presentations().len(), 3);
     let mesh_range = assets
         .surface_binding(loaded.presentations[0].id, 0)
         .unwrap()

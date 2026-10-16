@@ -1272,6 +1272,71 @@ impl ModelAssets {
         }
     }
 
+    fn validate_world_profile(
+        &self,
+        profile: ModelProfile,
+        presentation: qa_render::material::world_load::WorldPresentationProfile,
+    ) -> Result<(), String> {
+        if !self
+            .catalog
+            .profiles
+            .iter()
+            .any(|entry| entry.profile == profile)
+            || presentation.rules != profile.rules
+            || presentation.indexed_palette != profile.palette
+            || presentation.image_settings != profile.image_settings
+        {
+            return Err("world registration source/profile mismatch".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Add one presentation to the same world without revisiting BSP/collision
+    /// admission. Caller staging and backend preparation precede publication.
+    pub fn prepare_world_presentation<T>(
+        &mut self,
+        vfs: &Vfs,
+        world: WorldId,
+        profile: ModelProfile,
+        presentation: qa_render::material::world_load::WorldPresentationProfile,
+        stage: impl FnOnce(
+            ModelView<'_>,
+            &qa_render::material::world_load::LoadedWorld,
+        ) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<(qa_render::material::world_load::LoadedWorld, T, AssetCounts), String> {
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("world presentation requires a published resource prefix".to_owned());
+        }
+        self.validate_world_profile(profile, presentation)?;
+        let checkpoint = RegistrationCheckpoint::base(self)?;
+        let result = (|| {
+            let loaded = qa_render::material::world_load::append_world_presentation(
+                vfs,
+                &mut self.assets,
+                world,
+                presentation,
+            )
+            .map_err(|error| format!("world presentation: {error:?}"))?;
+            let staged = stage(self.view(), &loaded)?;
+            let counts = self.assets.counts();
+            self.validate_admission(counts)
+                .map_err(|error| format!("world publication: {error:?}"))?;
+            prepare(&self.assets, &staged)?;
+            self.apply_admission(counts);
+            Ok((loaded, staged, counts))
+        })();
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                checkpoint
+                    .rollback(self, RegistrationRollback::Retry)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
     /// Load one world through the shared BSP boundary and stage caller-owned
     /// cold state before the backend commits its appended asset prefix.
     pub fn prepare_world<T>(
@@ -1296,17 +1361,7 @@ impl ModelAssets {
             options,
             trace_rules,
         } = registration;
-        if !self
-            .catalog
-            .profiles
-            .iter()
-            .any(|entry| entry.profile == profile)
-            || presentation.rules != profile.rules
-            || presentation.indexed_palette != profile.palette
-            || presentation.image_settings != profile.image_settings
-        {
-            return Err("world registration source/profile mismatch".to_owned());
-        }
+        self.validate_world_profile(profile, presentation)?;
         let checkpoint = RegistrationCheckpoint::capture(
             self,
             &RendererRequest {

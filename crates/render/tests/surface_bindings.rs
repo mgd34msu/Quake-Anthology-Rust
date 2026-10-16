@@ -127,7 +127,7 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     for (binding, region, expected) in [
         (
             assets
-                .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+                .world_presentation(world.presentations()[0])
                 .unwrap()
                 .bindings()[0],
             red,
@@ -135,7 +135,7 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
         ),
         (
             assets
-                .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+                .world_presentation(world.presentations()[0])
                 .unwrap()
                 .bindings()[1],
             blue,
@@ -218,9 +218,7 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
         .unwrap();
     assert_eq!(
         assets
-            .world_presentation(qa_render::WorldPresentationId(
-                assets.world(id).unwrap().presentations().first
-            ))
+            .world_presentation(assets.world(id).unwrap().presentations()[0])
             .unwrap()
             .bindings()[0]
             .lightmap_region,
@@ -252,7 +250,7 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
     let world = assets.world(id).unwrap();
     assert_eq!(
         assets
-            .world_presentation(qa_render::WorldPresentationId(world.presentations().first))
+            .world_presentation(world.presentations()[0])
             .unwrap()
             .bindings()[0]
             .lightmap_region,

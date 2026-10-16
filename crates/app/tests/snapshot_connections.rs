@@ -1513,8 +1513,7 @@ fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> Geomet
         .unwrap();
     let mut assets = qa_render::Assets::load().unwrap();
     let world = assets_support::world(&mut assets, 0.);
-    let presentation =
-        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = ModelRequest::native("", RuleSetId::QuakeWorld, None).profile();
     let mut owner = ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
     owner
@@ -3073,8 +3072,7 @@ fn install_received_world_owner(
     let mut assets = qa_render::Assets::load().unwrap();
     let palette = assets_support::palette(&mut assets);
     let world = assets_support::world(&mut assets, 0.0);
-    let presentation =
-        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = ModelRequest::native("", RuleSetId::QuakeWorld, Some(palette)).profile();
     let loaded = LoadedWorld {
         world,
@@ -3347,6 +3345,86 @@ fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_cha
             .collision,
         Some(geometry)
     );
+
+    // A new CLIENT presentation reuses this accepted world after its original
+    // BSP has gone away. The native geometry and first recipe stay admitted.
+    let worlds = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts()
+        .worlds;
+    let presentations = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts()
+        .presentations;
+    let geometries = host.runtime.geometry.geometries().collect::<Vec<_>>();
+    fixture.remove("maps/unseen.bsp");
+    host.local_presentation_rules[1] = Some(RuleSetId::QuakeWorld);
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.register_client_model_assets(Some(&mut backend));
+    let (same_world, indexed_presentation) = host.local_worlds[1].unwrap();
+    assert_eq!(same_world, world);
+    assert_ne!(indexed_presentation, presentation);
+    assert!(backend.attempts > attempts);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    assert_eq!(owner.assets().counts().worlds, worlds);
+    assert_eq!(owner.assets().counts().presentations, presentations + 1);
+    assert_eq!(backend.cpu.admitted_assets(), Some(owner.assets().counts()));
+    assert_eq!(
+        owner.assets().world(world).unwrap().presentations(),
+        &[presentation, indexed_presentation]
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/unseen.bsp")
+            .unwrap()
+            .collision,
+        Some(geometry)
+    );
+    assert_eq!(
+        host.runtime.geometry.geometries().collect::<Vec<_>>(),
+        geometries
+    );
+    assert_eq!(host.runtime.collision.as_ref().unwrap().geometry, old_world);
+    assert_eq!(host.local_worlds[0], old_local);
+    assert!(matches!(
+        host.local_presentations[1].cpu,
+        qa_render::CpuPresentation::Indexed { .. }
+    ));
+    assert!(
+        !host.runtime.snapshots[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+
+    // Both exact recipes now select through the existing scene metadata. A
+    // round trip must neither prepare assets nor reopen the removed BSP.
+    let attempts = backend.attempts;
+    host.runtime.vfs.take_lookup_count();
+    for (rules, selected) in [
+        (RuleSetId::Quake3, presentation),
+        (RuleSetId::QuakeWorld, indexed_presentation),
+    ] {
+        host.local_presentation_rules[1] = Some(rules);
+        queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+        host.drain(&mut Default::default());
+        dispatch_nq_startup_reset(&mut host);
+        host.register_client_model_assets(Some(&mut backend));
+        assert_eq!(host.local_worlds[1], Some((world, selected)));
+        assert_eq!(backend.attempts, attempts);
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    }
 }
 
 #[test]

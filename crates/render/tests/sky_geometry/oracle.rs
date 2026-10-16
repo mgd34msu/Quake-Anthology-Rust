@@ -343,8 +343,7 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
         ..SurfaceMaterial::default()
     });
     let (world, points) = two_face_world(&mut assets, &[&bindings]);
-    let presentation =
-        crate::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let presentation = assets.world(world).unwrap().presentations()[0];
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     for material in [None, Some(materials[1])] {
         let mut submission = frontend.begin_frame([0; 4]).unwrap();
@@ -465,15 +464,15 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
     let (world, points) = two_face_world(&mut assets, &[&variants[0], &variants[1]]);
     assert_eq!(assets.worlds().len(), 1);
     let presentations = assets.world(world).unwrap().presentations();
-    assert_eq!(presentations.count, 2);
+    assert_eq!(presentations.len(), 2);
     for surface in 0..2 {
         assert_eq!(
             assets
-                .surface_binding(WorldPresentationId(presentations.first), surface)
+                .surface_binding(presentations[0], surface)
                 .unwrap()
                 .mesh_indices,
             assets
-                .surface_binding(WorldPresentationId(presentations.first + 1), surface)
+                .surface_binding(presentations[1], surface)
                 .unwrap()
                 .mesh_indices
         );
@@ -483,7 +482,7 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
     for order in [[0u32, 1u32], [1u32, 0u32]] {
         let mut frame = frontend.begin_frame([0; 4]).unwrap();
         for profile in order {
-            let presentation = WorldPresentationId(presentations.first + profile);
+            let presentation = presentations[profile as usize];
             assert!(frame.add_world(world, presentation, &[VisibleSurface::default()]));
             assert!(frame.add_entity(SceneEntity {
                 model: SceneModel::World {
@@ -506,7 +505,7 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
             views += 1;
             assert!(list.surfaces(view.scene.surfaces).iter().all(|reference| {
                 reference.world == world
-                    && reference.presentation == WorldPresentationId(presentations.first + profile)
+                    && reference.presentation == presentations[profile as usize]
             }));
             let mut actual = Vec::new();
             for_each_sky_triangle(&list, view.scene.draws, &assets, |material, geometry| {

@@ -21,8 +21,34 @@ pub struct WorldPresentationId(pub u32);
 pub struct WorldPresentation {
     pub world: WorldId,
     pub(crate) bindings: Box<[SurfaceBinding]>,
+    pub(crate) profile: Option<(
+        crate::material::world_load::WorldPresentationProfile,
+        crate::material::world_load::PresentationDefaults,
+    )>,
 }
 impl WorldPresentation {
+    pub(crate) fn bind(
+        world: WorldId,
+        materials: &[SurfaceMaterial],
+        mesh_ranges: impl Iterator<Item = Span>,
+    ) -> Self {
+        Self {
+            world,
+            bindings: materials
+                .iter()
+                .zip(mesh_ranges)
+                .map(|(material, mesh_indices)| SurfaceBinding {
+                    material: material.material,
+                    lightmap: material.lightmap,
+                    lightmap_region: material.lightmap_region,
+                    lightmap_conversion: material.lightmap_conversion,
+                    texture_scale: material.texture_scale,
+                    mesh_indices,
+                })
+                .collect(),
+            profile: None,
+        }
+    }
     pub fn world(&self) -> WorldId {
         self.world
     }
@@ -72,7 +98,8 @@ pub struct World {
     pub(crate) geometry: geometry::WorldGeometry,
     pub(crate) visibility: std::sync::Arc<VisibilityWorld>,
     pub(crate) mesh: ModelId,
-    pub(crate) presentations: Span,
+    pub(crate) presentations: Vec<WorldPresentationId>,
+    pub(crate) material_source: Option<crate::material::world_load::WorldMaterialSource>,
     pub(crate) light_grid: Option<crate::lighting::LightGrid>,
     pub(crate) point_lighting: Option<crate::lighting::PointLighting>,
     pub(crate) sun_direction: qa_core::primitives::Vec3,
@@ -97,8 +124,8 @@ impl World {
     pub fn mesh(&self) -> ModelId {
         self.mesh
     }
-    pub fn presentations(&self) -> Span {
-        self.presentations
+    pub fn presentations(&self) -> &[WorldPresentationId] {
+        &self.presentations
     }
 }
 

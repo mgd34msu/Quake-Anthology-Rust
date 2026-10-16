@@ -5255,7 +5255,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     let first = world_variants(&mut assets, 0.0, &[&[], &[]]);
     let second = world(&mut assets, 100.0);
     assert_eq!(assets.worlds().len(), 2);
-    assert_eq!(assets.world(first).unwrap().presentations().count, 2);
+    assert_eq!(assets.world(first).unwrap().presentations().len(), 2);
     let world_meshes = assets.models().len();
     let profile = native_profile(RuleSetId::Quake2, palette);
     let owner =
@@ -5291,14 +5291,11 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         },
         ..Default::default()
     };
-    let first_presentation = assets.world(first).unwrap().presentations().first;
+    let first_presentations = assets.world(first).unwrap().presentations();
     for (selected, presentation) in [
-        (first, WorldPresentationId(first_presentation)),
-        (first, WorldPresentationId(first_presentation + 1)),
-        (
-            second,
-            WorldPresentationId(assets.world(second).unwrap().presentations().first),
-        ),
+        (first, first_presentations[0]),
+        (first, first_presentations[1]),
+        (second, assets.world(second).unwrap().presentations()[0]),
     ] {
         assert_eq!(
             assets.world_presentation(presentation).unwrap().world(),

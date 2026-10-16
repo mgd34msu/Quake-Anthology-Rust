@@ -188,8 +188,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     let geometry = host.runtime.collision.as_ref().unwrap().geometry;
     let mut assets = qa_render::Assets::load().unwrap();
     let world = support::world(&mut assets, 0.0);
-    let presentation =
-        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = qa_app::model_assets::ModelRequest::native("", RuleSetId::Quake2, None).profile();
     let mut builder = qa_app::model_assets::ModelAssets::new(
         assets,

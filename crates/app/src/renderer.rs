@@ -319,9 +319,18 @@ pub struct SceneComposer {
 /// Cold staging retains the existing scene owner until backend preparation
 /// succeeds. Dropping this value publishes no world or arena replacement.
 pub struct SceneWorldAppend<'a> {
-    scenes: &'a mut Vec<Option<WorldScene>>,
     frontend: qa_render::scene::FrontEndCapacity<'a>,
-    scene: WorldScene,
+    action: SceneWorldAction<'a>,
+}
+enum SceneWorldAction<'a> {
+    World {
+        scenes: &'a mut Vec<Option<WorldScene>>,
+        scene: WorldScene,
+    },
+    Presentations {
+        target: &'a mut Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
+        candidate: Box<[qa_render::material::world_load::LoadedWorldPresentation]>,
+    },
 }
 impl SceneWorldAppend<'_> {
     pub fn limits(&self) -> Limits {
@@ -330,7 +339,10 @@ impl SceneWorldAppend<'_> {
 
     pub fn commit(self) {
         self.frontend.commit();
-        self.scenes.push(Some(self.scene));
+        match self.action {
+            SceneWorldAction::World { scenes, scene } => scenes.push(Some(scene)),
+            SceneWorldAction::Presentations { target, candidate } => *target = candidate,
+        }
     }
 }
 
@@ -446,9 +458,17 @@ impl SceneComposer {
         if self.frame.is_some() {
             return Err("scene frame is active".to_owned());
         }
-        if loaded.world.0 as usize != self.scenes.len()
-            || self.scenes.len().checked_add(1) != Some(assets.worlds().len())
-        {
+        let append_world = loaded.world.0 as usize == self.scenes.len();
+        if if append_world {
+            self.scenes.len().checked_add(1) != Some(assets.worlds().len())
+        } else {
+            self.scenes.len() != assets.worlds().len()
+                || self
+                    .scenes
+                    .get(loaded.world.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_none()
+        } {
             return Err("scene world prefix does not match appended world".to_owned());
         }
         let world = assets.world(loaded.world).ok_or("missing appended world")?;
@@ -464,18 +484,37 @@ impl SceneComposer {
         let limits =
             scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?;
         let frontend = self.frontend.stage_capacity(limits)?;
-        self.scenes
-            .try_reserve(1)
-            .map_err(|_| "scene world capacity".to_owned())?;
-        let scene = WorldScene {
-            views: std::array::from_fn(|_| WorldView::load(world)),
-            presentations: loaded.presentations.clone(),
+        let action = if append_world {
+            self.scenes
+                .try_reserve(1)
+                .map_err(|_| "scene world capacity".to_owned())?;
+            SceneWorldAction::World {
+                scenes: &mut self.scenes,
+                scene: WorldScene {
+                    views: std::array::from_fn(|_| WorldView::load(world)),
+                    presentations: loaded.presentations.clone(),
+                },
+            }
+        } else {
+            let index = loaded.world.0 as usize;
+            let target = &mut self
+                .scenes
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .ok_or("missing staged scene world")?
+                .presentations;
+            let mut presentations = target.to_vec();
+            for &entry in &loaded.presentations {
+                if !presentations.iter().any(|existing| existing.id == entry.id) {
+                    presentations.push(entry);
+                }
+            }
+            SceneWorldAction::Presentations {
+                target,
+                candidate: presentations.into_boxed_slice(),
+            }
         };
-        Ok(SceneWorldAppend {
-            scenes: &mut self.scenes,
-            frontend,
-            scene,
-        })
+        Ok(SceneWorldAppend { frontend, action })
     }
 
     pub fn frame_mut(&mut self) -> Option<&mut qa_render::scene::Frame> {

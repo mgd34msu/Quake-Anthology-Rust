@@ -207,17 +207,196 @@ impl From<LightmapError> for WorldMaterialError {
     }
 }
 
-/// Presentation is caller-selected; BSP decoding, flags and coordinates retain
-/// their source semantics independently of the selected view/image policy.
-pub fn load_world(
+struct MaterialMip {
+    name: qa_core::primitives::NameId,
+    width: u32,
+    height: u32,
+    levels: [Box<[u8]>; 4],
+}
+impl MaterialMip {
+    fn borrowed<'a>(&'a self, name: &'a [u8]) -> qa_formats::image::MipTexture<'a> {
+        qa_formats::image::MipTexture {
+            name,
+            width: self.width,
+            height: self.height,
+            shift: 0,
+            levels: self.levels.each_ref().map(|level| level.as_ref()),
+            animation: &[],
+            flags: 0,
+            contents: 0,
+            value: 0,
+        }
+    }
+}
+struct MaterialShader {
+    name: qa_core::primitives::NameId,
+    flags: u32,
+}
+struct MaterialSurface {
+    source_id: u32,
+    source_texture: Option<u32>,
+    source_texture_info: Option<u32>,
+    source_shader: Option<u32>,
+    source_flags: u32,
+    light_source: LightSource,
+    no_draw: bool,
+}
+/// Cold inputs retained once after the BSP boundary. Geometry, visibility and
+/// collision are already owned by their shared stores and are never rebuilt.
+pub(crate) struct WorldMaterialSource {
+    rules: RuleSetId,
+    palette: Option<crate::PaletteId>,
+    options: WorldLoadOptions,
+    textures: Vec<Option<MaterialMip>>,
+    texture_info: Vec<qa_core::primitives::NameId>,
+    shaders: Vec<MaterialShader>,
+    surfaces: Vec<MaterialSurface>,
+    legacy_kinds: Vec<(bool, bool)>,
+    layout: LightmapLayout,
+    catalog: ShaderCatalog,
+}
+impl WorldMaterialSource {
+    fn load(
+        vfs: &Vfs,
+        map: &Map<'_>,
+        assets: &mut Assets,
+        palette: Option<crate::PaletteId>,
+        options: WorldLoadOptions,
+        geometry: &WorldGeometry,
+        legacy_kinds: Vec<(bool, bool)>,
+        layout: LightmapLayout,
+    ) -> Result<Self, WorldMaterialError> {
+        let mut name = |raw: &[u8]| {
+            assets
+                .intern_resource_name(raw)
+                .map_err(WorldMaterialError::Boundary)
+        };
+        let textures = map
+            .textures
+            .iter()
+            .map(|mip| {
+                mip.as_ref()
+                    .map(|mip| {
+                        Ok(MaterialMip {
+                            name: name(mip.name)?,
+                            width: mip.width,
+                            height: mip.height,
+                            levels: mip.levels.map(Into::into),
+                        })
+                    })
+                    .transpose()
+            })
+            .collect::<Result<_, WorldMaterialError>>()?;
+        let texture_info = map
+            .texture_info
+            .iter()
+            .map(|info| name(info.name))
+            .collect::<Result<_, _>>()?;
+        let shaders = map
+            .shaders
+            .iter()
+            .map(|shader| {
+                Ok(MaterialShader {
+                    name: name(shader.name)?,
+                    flags: shader.surface_flags as u32,
+                })
+            })
+            .collect::<Result<_, WorldMaterialError>>()?;
+        let surfaces = geometry
+            .surfaces
+            .iter()
+            .map(|surface| MaterialSurface {
+                source_id: surface.source_id,
+                source_texture: surface.source_texture,
+                source_texture_info: surface.source_texture_info,
+                source_shader: surface.source_shader,
+                source_flags: surface.source_flags,
+                light_source: surface.light_source,
+                no_draw: surface.no_draw,
+            })
+            .collect();
+        Ok(Self {
+            rules: map.bsp.format.rule_set(),
+            palette,
+            options,
+            textures,
+            texture_info,
+            shaders,
+            surfaces,
+            legacy_kinds,
+            layout,
+            catalog: load_catalog(vfs).map_err(WorldMaterialError::Catalog)?,
+        })
+    }
+}
+
+struct PreparedPresentation {
+    defaults: PresentationDefaults,
+    conversion: LightmapConversion,
+    pages: Vec<Vec<u8>>,
+}
+fn prepare_presentation(
+    geometry: &WorldGeometry,
+    source: &WorldMaterialSource,
+    profile: WorldPresentationProfile,
+) -> Result<PreparedPresentation, WorldMaterialError> {
+    let defaults = presentation_defaults(profile, &source.options);
+    let conversion = if matches!(source.rules, RuleSetId::Quake) {
+        LightmapConversion::Scalar(profile.q1_gl_scale)
+    } else {
+        LightmapConversion::Rgb {
+            modulate: profile.q2_modulate,
+        }
+    };
+    let pages = prepare_lightmap_pages(
+        geometry,
+        &source.layout,
+        &source.options,
+        &defaults.lightstyles,
+        conversion,
+    )?;
+    Ok(PreparedPresentation {
+        defaults,
+        conversion,
+        pages,
+    })
+}
+fn compile_profile(
     vfs: &Vfs,
-    map: &Map<'_>,
     assets: &mut Assets,
+    source: &WorldMaterialSource,
+    profile: WorldPresentationProfile,
+    prepared: PreparedPresentation,
+    diagnostics: &mut Vec<String>,
+) -> Result<
+    (
+        Vec<SurfaceMaterial>,
+        Option<qa_core::primitives::Vec3>,
+        PresentationDefaults,
+    ),
+    WorldMaterialError,
+> {
+    let lightmaps = register_lightmap_pages(assets, &source.layout, prepared.pages)?;
+    let (bindings, sun) = compile_presentation(
+        vfs,
+        source,
+        assets,
+        profile,
+        &source.layout.regions,
+        &lightmaps,
+        prepared.conversion,
+        diagnostics,
+    )?;
+    Ok((bindings, sun, prepared.defaults))
+}
+
+fn validate_profiles(
+    assets: &Assets,
+    geometry_source: RuleSetId,
     source_palette: Option<crate::PaletteId>,
     profiles: &[WorldPresentationProfile],
-    mut options: WorldLoadOptions,
-) -> Result<LoadedWorld, WorldMaterialError> {
-    let geometry_source = map.bsp.format.rule_set();
+    options: &WorldLoadOptions,
+) -> Result<(), WorldMaterialError> {
     if profiles.is_empty() {
         return Err(WorldMaterialError::Boundary("missing world presentation"));
     }
@@ -240,6 +419,21 @@ pub fn load_world(
             "invalid world presentation profile",
         ));
     }
+    Ok(())
+}
+
+/// Presentation is caller-selected; BSP decoding, flags and coordinates retain
+/// their source semantics independently of the selected view/image policy.
+pub fn load_world(
+    vfs: &Vfs,
+    map: &Map<'_>,
+    assets: &mut Assets,
+    source_palette: Option<crate::PaletteId>,
+    profiles: &[WorldPresentationProfile],
+    mut options: WorldLoadOptions,
+) -> Result<LoadedWorld, WorldMaterialError> {
+    let geometry_source = map.bsp.format.rule_set();
+    validate_profiles(assets, geometry_source, source_palette, profiles, &options)?;
     // Nonlinear Q3 color normalization precedes patch interpolation once. These
     // geometry settings are common to every admitted presentation profile.
     if matches!(geometry_source, RuleSetId::Quake3) {
@@ -314,7 +508,16 @@ pub fn load_world(
             )?;
         }
     }
-    let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
+    let source = WorldMaterialSource::load(
+        vfs,
+        map,
+        assets,
+        source_palette,
+        options,
+        &geometry,
+        legacy_kinds,
+        layout,
+    )?;
     let mut diagnostics = Vec::new();
     let mut distinct = Vec::<WorldPresentationProfile>::new();
     let mut request_indices = Vec::with_capacity(profiles.len());
@@ -332,37 +535,9 @@ pub fn load_world(
     let mut defaults = Vec::with_capacity(distinct.len());
     let mut sun = None;
     for &profile in &distinct {
-        let presentation = presentation_defaults(profile, &options);
-        let conversion = if matches!(geometry_source, RuleSetId::Quake) {
-            LightmapConversion::Scalar(profile.q1_gl_scale)
-        } else {
-            LightmapConversion::Rgb {
-                modulate: profile.q2_modulate,
-            }
-        };
-        let lightmaps = prepare_lightmap_pages(
-            &geometry,
-            &layout,
-            assets,
-            &options,
-            &presentation.lightstyles,
-            conversion,
-        )?;
-        let (bindings, registered_sun) = compile_presentation(
-            vfs,
-            map,
-            assets,
-            source_palette,
-            profile,
-            &options,
-            &geometry,
-            &legacy_kinds,
-            &catalog,
-            &layout.regions,
-            &lightmaps,
-            conversion,
-            &mut diagnostics,
-        )?;
+        let prepared = prepare_presentation(&geometry, &source, profile)?;
+        let (bindings, registered_sun, presentation) =
+            compile_profile(vfs, assets, &source, profile, prepared, &mut diagnostics)?;
         variants.push(bindings);
         sun = registered_sun.or(sun);
         defaults.push(presentation);
@@ -379,7 +554,7 @@ pub fn load_world(
     if !matches!(geometry_source, RuleSetId::Quake3) {
         let lighting = crate::lighting::PointLighting::load(
             matches!(geometry_source, RuleSetId::Quake),
-            legacy_kinds.iter().map(|&(warp, sky)| !warp && !sky),
+            source.legacy_kinds.iter().map(|&(warp, sky)| !warp && !sky),
         );
         assets
             .set_point_lighting(world, lighting)
@@ -387,22 +562,30 @@ pub fn load_world(
     }
     match crate::lighting::LightGrid::load_map(
         map,
-        (options.map_overbright - options.renderer_overbright) as i8,
+        (source.options.map_overbright - source.options.renderer_overbright) as i8,
     ) {
         Ok(grid) => assets
             .set_light_grid(world, grid)
             .map_err(WorldMaterialError::Boundary)?,
         Err(error) => diagnostics.push(error.to_owned()),
     }
-    let first = assets
+    let ids = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing registered world"))?
         .presentations()
-        .first;
+        .to_vec();
+    for ((&id, &profile), &defaults) in ids.iter().zip(&distinct).zip(&defaults) {
+        assets
+            .set_world_presentation_profile(id, profile, defaults)
+            .map_err(WorldMaterialError::Boundary)?;
+    }
+    assets
+        .retain_world_material_source(world, source)
+        .map_err(WorldMaterialError::Boundary)?;
     let presentations = request_indices
         .into_iter()
         .map(|index| LoadedWorldPresentation {
-            id: WorldPresentationId(first + index as u32),
+            id: ids[index],
             profile: distinct[index],
             defaults: defaults[index],
         })
@@ -412,6 +595,70 @@ pub fn load_world(
         world,
         presentations,
         diagnostics: diagnostics.into_boxed_slice(),
+    })
+}
+
+/// Append an exact presentation to a previously loaded world. The retained
+/// source boundary replaces BSP I/O; geometry/visibility/model IDs stay fixed.
+/// The app asset owner wraps this cold append in its admission transaction.
+pub fn append_world_presentation(
+    vfs: &Vfs,
+    assets: &mut Assets,
+    world: WorldId,
+    profile: WorldPresentationProfile,
+) -> Result<LoadedWorld, WorldMaterialError> {
+    let existing = assets
+        .world(world)
+        .ok_or(WorldMaterialError::Boundary("missing presentation world"))?
+        .presentations()
+        .iter()
+        .find_map(|&id| {
+            assets
+                .world_presentation_registration(id)
+                .filter(|entry| entry.profile == profile)
+        });
+    if let Some(existing) = existing {
+        return Ok(LoadedWorld {
+            world,
+            presentations: vec![existing].into_boxed_slice(),
+            diagnostics: Box::new([]),
+        });
+    }
+    assets.with_world_material_source(world, |assets, source| {
+        validate_profiles(
+            assets,
+            source.rules,
+            source.palette,
+            &[profile],
+            &source.options,
+        )?;
+        let prepared = prepare_presentation(
+            assets
+                .world(world)
+                .ok_or(WorldMaterialError::Boundary("missing presentation world"))?
+                .geometry(),
+            source,
+            profile,
+        )?;
+        let mut diagnostics = Vec::new();
+        let (bindings, _, defaults) =
+            compile_profile(vfs, assets, source, profile, prepared, &mut diagnostics)?;
+        let id = assets
+            .append_world_presentation(world, &bindings)
+            .map_err(WorldMaterialError::Boundary)?;
+        assets
+            .set_world_presentation_profile(id, profile, defaults)
+            .map_err(WorldMaterialError::Boundary)?;
+        Ok(LoadedWorld {
+            world,
+            presentations: vec![LoadedWorldPresentation {
+                id,
+                profile,
+                defaults,
+            }]
+            .into_boxed_slice(),
+            diagnostics: diagnostics.into_boxed_slice(),
+        })
     })
 }
 
@@ -469,20 +716,50 @@ fn presentation_defaults(
 )]
 fn compile_presentation(
     vfs: &Vfs,
-    map: &Map<'_>,
+    source: &WorldMaterialSource,
     assets: &mut Assets,
-    palette: Option<crate::PaletteId>,
     profile: WorldPresentationProfile,
-    options: &WorldLoadOptions,
-    geometry: &WorldGeometry,
-    legacy_kinds: &[(bool, bool)],
-    catalog: &ShaderCatalog,
     regions: &[Option<AtlasRegion>],
     lightmaps: &[Option<ImageId>],
     lightmap_conversion: LightmapConversion,
     diagnostics: &mut Vec<String>,
 ) -> Result<(Vec<SurfaceMaterial>, Option<qa_core::primitives::Vec3>), WorldMaterialError> {
-    let geometry_source = map.bsp.format.rule_set();
+    let geometry_source = source.rules;
+    let palette = source.palette;
+    let options = &source.options;
+    let catalog = &source.catalog;
+    // Copy only cold name bytes to end the arena borrow before Images appends.
+    let name = |id| {
+        assets
+            .resource_name(id)
+            .map(Vec::from)
+            .ok_or(WorldMaterialError::Boundary("missing material source name"))
+    };
+    let texture_names = source
+        .textures
+        .iter()
+        .map(|mip| mip.as_ref().map(|mip| name(mip.name)).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
+    let info_names = source
+        .texture_info
+        .iter()
+        .map(|&id| name(id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let shader_names = source
+        .shaders
+        .iter()
+        .map(|shader| name(shader.name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mips = source
+        .textures
+        .iter()
+        .zip(&texture_names)
+        .map(|(mip, name)| {
+            mip.as_ref()
+                .zip(name.as_ref())
+                .map(|(mip, name)| mip.borrowed(name))
+        })
+        .collect::<Vec<_>>();
     let presentation_rules = profile.rules;
     let mut images = Images::new(
         vfs,
@@ -496,10 +773,10 @@ fn compile_presentation(
         palette,
         transparent_index: Some(255),
     }))?;
-    let mut textures = Vec::with_capacity(map.textures.len());
-    let mut layered_skies = Vec::with_capacity(map.textures.len());
+    let mut textures = Vec::with_capacity(mips.len());
+    let mut layered_skies = Vec::with_capacity(mips.len());
     if matches!(geometry_source, RuleSetId::Quake) {
-        for texture in &map.textures {
+        for texture in &mips {
             textures.push(match texture {
                 // R_InitSky uploads the two split layers directly, rather
                 // than uploading the original 256x128 texture as a surface.
@@ -521,9 +798,9 @@ fn compile_presentation(
             });
         }
     }
-    let mut bindings = Vec::with_capacity(geometry.surfaces.len());
+    let mut bindings = Vec::with_capacity(source.surfaces.len());
     let mut sun = None;
-    for (surface, &kind) in geometry.surfaces.iter().zip(legacy_kinds) {
+    for (surface, &kind) in source.surfaces.iter().zip(&source.legacy_kinds) {
         let (warp, sky) = kind;
         if surface.no_draw {
             bindings.push(SurfaceMaterial::default());
@@ -533,8 +810,7 @@ fn compile_presentation(
             let index = surface.source_texture.ok_or(WorldMaterialError::Boundary(
                 "missing embedded texture index",
             ))? as usize;
-            let mip = map
-                .textures
+            let mip = mips
                 .get(index)
                 .and_then(Option::as_ref)
                 .ok_or(WorldMaterialError::Boundary("missing embedded texture"))?;
@@ -548,11 +824,11 @@ fn compile_presentation(
                 surface.source_flags,
             )
         } else if matches!(geometry_source, RuleSetId::Quake2) {
-            let info = &map.texture_info[surface
+            let name = &info_names[surface
                 .source_texture_info
                 .ok_or(WorldMaterialError::Boundary("missing texture info"))?
                 as usize];
-            let name = std::str::from_utf8(info.name)
+            let name = std::str::from_utf8(name)
                 .map_err(|_| WorldMaterialError::Boundary("invalid texture name"))?
                 .to_owned();
             let image = if sky {
@@ -571,15 +847,16 @@ fn compile_presentation(
             let scale = [1.0 / texture.width as f32, 1.0 / texture.height as f32];
             (name, image, scale, surface.source_flags)
         } else {
-            let shader = &map.shaders[surface
+            let shader_index = surface
                 .source_shader
                 .ok_or(WorldMaterialError::Boundary("missing source shader"))?
-                as usize];
+                as usize;
+            let shader = &source.shaders[shader_index];
             let name = canonical_path(
-                std::str::from_utf8(shader.name)
+                std::str::from_utf8(&shader_names[shader_index])
                     .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?,
             );
-            (name, ImageId(0), [1.0; 2], shader.surface_flags as u32)
+            (name, ImageId(0), [1.0; 2], shader.flags)
         };
         let legacy_sky = if matches!(geometry_source, RuleSetId::Quake) {
             surface
@@ -758,11 +1035,10 @@ fn prepare_lightmap_layout(geometry: &WorldGeometry) -> Result<LightmapLayout, W
 fn prepare_lightmap_pages(
     geometry: &WorldGeometry,
     layout: &LightmapLayout,
-    assets: &mut Assets,
     options: &WorldLoadOptions,
     styles: &[LightStyle; 256],
     conversion: LightmapConversion,
-) -> Result<Vec<Option<ImageId>>, WorldMaterialError> {
+) -> Result<Vec<Vec<u8>>, WorldMaterialError> {
     let mut pages: Vec<_> = layout
         .atlas
         .pages()
@@ -805,6 +1081,14 @@ fn prepare_lightmap_pages(
         };
         write_lightmap_region(&mut pages[region.page as usize], region, &converted)?;
     }
+    Ok(pages)
+}
+
+fn register_lightmap_pages(
+    assets: &mut Assets,
+    layout: &LightmapLayout,
+    pages: Vec<Vec<u8>>,
+) -> Result<Vec<Option<ImageId>>, WorldMaterialError> {
     let mut ids = Vec::with_capacity(pages.len());
     for rgb in pages {
         let rgba: Vec<_> = rgb

@@ -17,7 +17,7 @@ fn fixture(
     samples: [[u8; 3]; 2],
 ) -> (WorldId, WorldPresentationId) {
     let world = fixture_variants(assets, &[(image, region, conversion)], samples);
-    let presentation = WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let presentation = assets.world(world).unwrap().presentations()[0];
     (world, presentation)
 }
 
@@ -417,9 +417,9 @@ fn one_world_variants_keep_conversion_uploads_and_residency_independent() {
         let world = fixture_variants(&mut assets, &variants, [[20, 40, 80], [10, 20, 40]]);
         let registrations = assets.world(world).unwrap().presentations();
         assert_eq!(assets.worlds().len(), 1);
-        assert_eq!(registrations.count, 2);
-        let q1 = WorldPresentationId(registrations.first + u32::from(reversed));
-        let q2 = WorldPresentationId(registrations.first + u32::from(!reversed));
+        assert_eq!(registrations.len(), 2);
+        let q1 = registrations[usize::from(reversed)];
+        let q2 = registrations[usize::from(!reversed)];
         assert_ne!(q1, q2);
         assert_eq!(assets.world_presentation(q1).unwrap().world(), world);
         assert_eq!(assets.world_presentation(q2).unwrap().world(), world);
@@ -660,10 +660,7 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
     );
     assets.discard_registration_suffix(retained).unwrap();
     assert_eq!(assets.counts(), retained);
-    assert_eq!(
-        assets.world(world).unwrap().presentations().first,
-        original.0
-    );
+    assert_eq!(assets.world(world).unwrap().presentations()[0], original);
     assert!(assets.world(rejected_world).is_none());
     assert!(assets.world_presentation(rejected_presentation).is_none());
     assert!(updates.prepare_append(&assets).unwrap().is_none());

@@ -543,6 +543,9 @@ impl Assets {
     pub fn intern_resource_name(&mut self, name: &[u8]) -> Result<NameId, &'static str> {
         self.names.intern(name).map_err(|_| "asset name table full")
     }
+    pub(crate) fn resource_name(&self, id: NameId) -> Option<&[u8]> {
+        self.names.get(id)
+    }
     pub fn name(&self, id: NameId) -> Option<&str> {
         std::str::from_utf8(self.names.get(id)?).ok()
     }
@@ -862,6 +865,61 @@ impl Assets {
     pub fn materials(&self) -> &[Material] {
         &self.materials
     }
+    fn world_materials_valid(&self, materials: &[SurfaceMaterial], surfaces: usize) -> bool {
+        !(materials.len() != surfaces
+            || materials.iter().any(|binding| {
+                self.material(binding.material).is_none()
+                    || !self.image(binding.lightmap).is_some_and(|image| {
+                        binding.lightmap_region.is_none_or(|region| {
+                            region.width != 0
+                                && region.height != 0
+                                && region
+                                    .x
+                                    .checked_add(region.width)
+                                    .is_some_and(|end| end <= image.width)
+                                && region
+                                    .y
+                                    .checked_add(region.height)
+                                    .is_some_and(|end| end <= image.height)
+                        })
+                    })
+                    || binding
+                        .texture_scale
+                        .iter()
+                        .any(|value| !value.is_finite() || *value <= 0.0)
+            }))
+    }
+
+    pub(crate) fn append_world_presentation(
+        &mut self,
+        world: WorldId,
+        materials: &[SurfaceMaterial],
+    ) -> Result<WorldPresentationId, &'static str> {
+        let existing = self.world(world).ok_or("missing presentation world")?;
+        if !self.world_materials_valid(materials, existing.geometry.surfaces.len()) {
+            return Err("invalid world surface bindings");
+        }
+        let id = WorldPresentationId(
+            u32::try_from(self.presentations.len()).map_err(|_| "world presentation table full")?,
+        );
+        let original = self
+            .world_presentation(
+                *existing
+                    .presentations()
+                    .first()
+                    .ok_or("world has no presentation")?,
+            )
+            .ok_or("missing original presentation")?;
+        let presentation = WorldPresentation::bind(
+            world,
+            materials,
+            original.bindings.iter().map(|binding| binding.mesh_indices),
+        );
+        self.presentations.push(presentation);
+        self.worlds[world.0 as usize].presentations.push(id);
+        Ok(id)
+    }
+
     pub fn register_world(
         &mut self,
         geometry: WorldGeometry,
@@ -870,30 +928,9 @@ impl Assets {
     ) -> Result<WorldId, &'static str> {
         if geometry.surfaces.len() != visibility.surface_count()
             || variants.is_empty()
-            || variants.iter().any(|materials| {
-                materials.len() != geometry.surfaces.len()
-                    || materials.iter().any(|binding| {
-                        self.material(binding.material).is_none()
-                            || !self.image(binding.lightmap).is_some_and(|image| {
-                                binding.lightmap_region.is_none_or(|region| {
-                                    region.width != 0
-                                        && region.height != 0
-                                        && region
-                                            .x
-                                            .checked_add(region.width)
-                                            .is_some_and(|end| end <= image.width)
-                                        && region
-                                            .y
-                                            .checked_add(region.height)
-                                            .is_some_and(|end| end <= image.height)
-                                })
-                            })
-                            || binding
-                                .texture_scale
-                                .iter()
-                                .any(|value| !value.is_finite() || *value <= 0.0)
-                    })
-            })
+            || variants
+                .iter()
+                .any(|materials| !self.world_materials_valid(materials, geometry.surfaces.len()))
         {
             return Err("invalid world surface bindings");
         }
@@ -923,25 +960,7 @@ impl Assets {
         }
         let registrations: Vec<_> = variants
             .iter()
-            .map(|materials| {
-                let bindings = materials
-                    .iter()
-                    .zip(&mesh_ranges)
-                    .map(|(material, &mesh_indices)| SurfaceBinding {
-                        material: material.material,
-                        lightmap: material.lightmap,
-                        lightmap_region: material.lightmap_region,
-                        lightmap_conversion: material.lightmap_conversion,
-                        texture_scale: material.texture_scale,
-                        mesh_indices,
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
-                WorldPresentation {
-                    world: id,
-                    bindings,
-                }
-            })
+            .map(|materials| WorldPresentation::bind(id, materials, mesh_ranges.iter().copied()))
             .collect();
         let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
         let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
@@ -949,7 +968,8 @@ impl Assets {
             geometry,
             visibility: visibility.into(),
             mesh,
-            presentations: Span { first, count },
+            presentations: (first..first + count).map(WorldPresentationId).collect(),
+            material_source: None,
             light_grid: None,
             point_lighting: None,
             sun_direction: crate::lighting::default_sun_direction(),
@@ -957,6 +977,70 @@ impl Assets {
         self.presentations.extend(registrations);
         Ok(id)
     }
+    pub(crate) fn retain_world_material_source(
+        &mut self,
+        id: WorldId,
+        source: crate::material::world_load::WorldMaterialSource,
+    ) -> Result<(), &'static str> {
+        let world = self
+            .worlds
+            .get_mut(id.0 as usize)
+            .ok_or("missing source world")?;
+        if world.material_source.is_some() {
+            return Err("world material source already retained");
+        }
+        world.material_source = Some(source);
+        Ok(())
+    }
+
+    pub(crate) fn with_world_material_source<T>(
+        &mut self,
+        id: WorldId,
+        compile: impl FnOnce(
+            &mut Self,
+            &crate::material::world_load::WorldMaterialSource,
+        ) -> Result<T, crate::material::world_load::WorldMaterialError>,
+    ) -> Result<T, crate::material::world_load::WorldMaterialError> {
+        use crate::material::world_load::WorldMaterialError;
+        let source = self
+            .worlds
+            .get_mut(id.0 as usize)
+            .and_then(|world| world.material_source.take())
+            .ok_or(WorldMaterialError::Boundary(
+                "world has no retained material source",
+            ))?;
+        let result = compile(self, &source);
+        // The compiler contains no external callback. Restore the same cold
+        // recipe before any result reaches caller staging/backend admission.
+        self.worlds[id.0 as usize].material_source = Some(source);
+        result
+    }
+
+    pub(crate) fn set_world_presentation_profile(
+        &mut self,
+        id: WorldPresentationId,
+        profile: crate::material::world_load::WorldPresentationProfile,
+        defaults: crate::material::world_load::PresentationDefaults,
+    ) -> Result<(), &'static str> {
+        self.presentations
+            .get_mut(id.0 as usize)
+            .ok_or("missing world presentation")?
+            .profile = Some((profile, defaults));
+        Ok(())
+    }
+
+    pub fn world_presentation_registration(
+        &self,
+        id: WorldPresentationId,
+    ) -> Option<crate::material::world_load::LoadedWorldPresentation> {
+        let (profile, defaults) = self.world_presentation(id)?.profile?;
+        Some(crate::material::world_load::LoadedWorldPresentation {
+            id,
+            profile,
+            defaults,
+        })
+    }
+
     pub fn world(&self, id: WorldId) -> Option<&World> {
         self.worlds.get(id.0 as usize)
     }

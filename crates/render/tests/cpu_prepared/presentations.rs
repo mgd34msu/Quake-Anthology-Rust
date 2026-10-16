@@ -53,11 +53,8 @@ fn variants() -> (Assets, WorldId, [WorldPresentationId; 2], [PaletteId; 2]) {
         instances::inline_models,
     );
     let span = assets.world(world).unwrap().presentations();
-    assert_eq!(span.count, 2);
-    let ids = [
-        WorldPresentationId(span.first),
-        WorldPresentationId(span.first + 1),
-    ];
+    assert_eq!(span.len(), 2);
+    let ids = [span[0], span[1]];
     (assets, world, ids, palettes)
 }
 

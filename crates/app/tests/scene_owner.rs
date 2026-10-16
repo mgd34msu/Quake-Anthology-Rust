@@ -73,7 +73,7 @@ fn empty_world(assets: &mut Assets) -> LoadedWorld {
     LoadedWorld {
         world,
         presentations: vec![LoadedWorldPresentation {
-            id: qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first),
+            id: assets.world(world).unwrap().presentations()[0],
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
             defaults: Default::default(),
         }]
@@ -105,7 +105,13 @@ fn cold_world_stage_waits_for_the_existing_frame_and_both_consumers() {
     let packet = owner.finish_frame().unwrap();
     assert_eq!(packet.frame, 3);
     assert!(owner.recycle(packet).is_ok());
-    assert!(owner.stage_world(&assets, &second).is_err());
+    // Existing worlds now accept staged presentation metadata as well. Dropping
+    // that candidate must preserve the same command-list owner and frame count.
+    drop(owner.stage_world(&assets, &second).unwrap());
+    assert!(owner.begin_frame());
+    let packet = owner.finish_frame().unwrap();
+    assert_eq!(packet.frame, 4);
+    assert!(owner.recycle(packet).is_ok());
 }
 
 #[test]
