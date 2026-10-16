@@ -191,7 +191,7 @@ fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied(
     for context in RuleSetId::ALL {
         let mut vars = vars(context);
         assert_eq!(
-            world_load_options(&vars)
+            world_load_options(&vars, None)
                 .unwrap()
                 .geometry
                 .patch_subdivisions,
@@ -205,7 +205,7 @@ fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied(
         });
         vars.write(subdivision, "2").unwrap();
         assert_eq!(
-            world_load_options(&vars)
+            world_load_options(&vars, None)
                 .unwrap()
                 .geometry
                 .patch_subdivisions,
@@ -216,7 +216,7 @@ fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied(
         let selected = PendingSettings::capture(&vars, [subdivision]);
         selected.apply(&mut vars).unwrap();
         assert_eq!(
-            world_load_options(&vars)
+            world_load_options(&vars, None)
                 .unwrap()
                 .geometry
                 .patch_subdivisions,
@@ -226,7 +226,7 @@ fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied(
         for value in ["0", "-1.5"] {
             vars.force_write(subdivision, value).unwrap();
             assert_eq!(
-                world_load_options(&vars)
+                world_load_options(&vars, None)
                     .unwrap()
                     .geometry
                     .patch_subdivisions,
@@ -234,6 +234,120 @@ fn subdivision_policy_is_global_and_current_until_its_selected_latch_is_applied(
             );
         }
         vars.force_write(subdivision, "nan").unwrap();
-        assert!(world_load_options(&vars).is_err());
+        assert!(world_load_options(&vars, None).is_err());
     }
+}
+
+#[test]
+fn world_lighting_reads_native_integer_requests_across_console_contexts() {
+    for context in RuleSetId::ALL {
+        let mut vars = vars(context);
+        let lighting = world_load_options(&vars, None).unwrap().lighting;
+        assert_eq!(lighting.map_overbright(), 2);
+        assert_eq!(lighting.renderer_overbright(), 0);
+        set(
+            &mut vars,
+            RuleSetId::Quake3,
+            "r_mapOverBrightBits",
+            "3.9suffix",
+        );
+        set(&mut vars, RuleSetId::Quake3, "r_overBrightBits", "99");
+        let lighting = world_load_options(&vars, None).unwrap().lighting;
+        assert_eq!(lighting.map_overbright(), 3);
+        assert_eq!(lighting.renderer_overbright(), 0);
+        assert_eq!(lighting.shift(), 3);
+        for value in ["-1", "16"] {
+            set(&mut vars, RuleSetId::Quake3, "r_mapOverBrightBits", value);
+            assert!(world_load_options(&vars, None).is_err());
+        }
+        set(&mut vars, RuleSetId::Quake3, "r_mapOverBrightBits", "15");
+        assert_eq!(
+            world_load_options(&vars, None).unwrap().lighting.shift(),
+            15
+        );
+    }
+}
+
+#[test]
+fn effective_output_overbright_follows_actual_configuration_without_changing_requests() {
+    use qa_core::presentation::RendererConfiguration;
+    let mut vars = vars(RuleSetId::Quake3);
+    set(&mut vars, RuleSetId::Quake3, "r_mapOverBrightBits", "4");
+    set(&mut vars, RuleSetId::Quake3, "r_overBrightBits", "99");
+    let mut configuration = RendererConfiguration::default();
+    configuration.display.fullscreen = true;
+    configuration.display.color_bits = 24;
+    assert_eq!(
+        world_load_options(&vars, Some(&configuration))
+            .unwrap()
+            .lighting
+            .renderer_overbright(),
+        0
+    );
+    configuration.hardware_gamma = true;
+    for (color_bits, expected) in [(24, 2), (16, 1)] {
+        configuration.display.color_bits = color_bits;
+        let lighting = world_load_options(&vars, Some(&configuration))
+            .unwrap()
+            .lighting;
+        assert_eq!(lighting.renderer_overbright(), expected);
+        assert_eq!(lighting.shift(), (4 - expected) as i8);
+    }
+    configuration.display.fullscreen = false;
+    assert_eq!(
+        world_load_options(&vars, Some(&configuration))
+            .unwrap()
+            .lighting
+            .renderer_overbright(),
+        0
+    );
+    let output = vars.bind("r_overBrightBits", Context::default()).unwrap();
+    assert_eq!(vars.integer_view(output).unwrap(), 99);
+    set(&mut vars, RuleSetId::Quake3, "r_overBrightBits", "-4");
+    configuration.display.fullscreen = true;
+    assert_eq!(
+        world_load_options(&vars, Some(&configuration))
+            .unwrap()
+            .lighting
+            .renderer_overbright(),
+        0
+    );
+}
+
+#[test]
+fn lighting_requests_stay_current_until_only_the_selected_latches_are_applied() {
+    use qa_console::{cvars::RuntimePolicy, pending::PendingSettings};
+    let mut vars = vars(RuleSetId::Quake2);
+    let map = vars
+        .bind("r_mapOverBrightBits", Context::default())
+        .unwrap();
+    let output = vars.bind("r_overBrightBits", Context::default()).unwrap();
+    for view in [map, output] {
+        vars.set_latch_active(view.canonical(), true);
+    }
+    vars.set_runtime_policy(RuntimePolicy {
+        initialized: true,
+        server_active: true,
+    });
+    vars.write(map, "1").unwrap();
+    vars.write(output, "2").unwrap();
+    let game = vars.bind("g_gametype", Context::default()).unwrap();
+    vars.write(game, "4").unwrap();
+    assert_eq!(
+        world_load_options(&vars, None)
+            .unwrap()
+            .lighting
+            .map_overbright(),
+        2
+    );
+    PendingSettings::capture(&vars, [map, output])
+        .apply(&mut vars)
+        .unwrap();
+    let lighting = world_load_options(&vars, None).unwrap().lighting;
+    assert_eq!(
+        (lighting.map_overbright(), lighting.renderer_overbright()),
+        (1, 0)
+    );
+    assert_eq!(vars.integer_view(output).unwrap(), 2);
+    assert!(vars.latched(game).unwrap().is_some());
 }

@@ -473,6 +473,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         presentations: vec![LoadedWorldPresentation {
             id: presentation,
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),
@@ -1045,6 +1046,7 @@ pub(super) fn ownership() {
         presentations: vec![LoadedWorldPresentation {
             id: presentation,
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),
@@ -1532,6 +1534,7 @@ pub(super) fn inline_entities(native: bool) {
         presentations: vec![LoadedWorldPresentation {
             id: presentation,
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),
@@ -1754,6 +1757,7 @@ fn mark_fragments(native: bool) {
         presentations: vec![LoadedWorldPresentation {
             id: presentation,
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),

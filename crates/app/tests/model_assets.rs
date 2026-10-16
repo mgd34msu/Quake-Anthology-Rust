@@ -1066,6 +1066,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
             &[qa_render::material::world_load::LoadedWorldPresentation {
                 id: assets.world(world).unwrap().presentations()[0],
                 profile: presentation,
+                lighting: Default::default(),
                 defaults: Default::default(),
             }],
         )

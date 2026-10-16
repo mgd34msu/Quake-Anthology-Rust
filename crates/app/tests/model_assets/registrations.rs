@@ -112,6 +112,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
             &[qa_render::material::world_load::LoadedWorldPresentation {
                 id: presentation,
                 profile: world_registration(profile).presentation,
+                lighting: Default::default(),
                 defaults: Default::default(),
             }],
         )

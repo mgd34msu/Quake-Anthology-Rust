@@ -3076,6 +3076,7 @@ fn install_received_world_owner(
         presentations: vec![LoadedWorldPresentation {
             id: presentation,
             profile: WorldPresentationProfile::native(profile.rules, profile.palette),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),

@@ -179,19 +179,36 @@ fn ref_gl_truncates_then_proportionally_normalizes_rgb_after_styles() {
 
 #[test]
 fn q3_overbright_shifts_and_preserves_color_ratios() {
+    use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
+    use qa_render::world::WorldLighting;
+    let configuration = RendererConfiguration {
+        display: DisplayConfiguration {
+            fullscreen: true,
+            color_bits: 24,
+            ..Default::default()
+        },
+        hardware_gamma: true,
+        ..Default::default()
+    };
+    let lighting =
+        |map, output| WorldLighting::from_requests(map, output, Some(&configuration)).unwrap();
     assert_eq!(
-        shift_quake3_rgb(&[200, 100, 50], 2, 1).unwrap(),
+        shift_quake3_rgb(&[200, 100, 50], lighting(2, 1)).unwrap(),
         [255, 127, 63]
     );
     assert_eq!(
-        shift_quake3_rgb(&[10, 20, 30], 2, 0).unwrap(),
+        shift_quake3_rgb(&[10, 20, 30], lighting(2, 0)).unwrap(),
         [40, 80, 120]
     );
     assert_eq!(
-        shift_quake3_rgb(&[200, 100, 50], 2, 2).unwrap(),
+        shift_quake3_rgb(&[200, 100, 50], lighting(2, 2)).unwrap(),
         [200, 100, 50]
     );
-    assert_eq!(shift_quake3_rgb(&[0; 3], 2, 0).unwrap(), [0; 3]);
+    assert_eq!(shift_quake3_rgb(&[0; 3], lighting(2, 0)).unwrap(), [0; 3]);
+    assert_eq!(
+        shift_quake3_rgb(&[255, 128, 1], lighting(15, 0)).unwrap(),
+        [255, 128, 1]
+    );
 }
 
 #[test]
@@ -225,15 +242,7 @@ fn dimensions_style_lengths_and_nonfinite_scalars_fail_before_page_mutation() {
         build_quake2_rgb(1, 1, &[1, 2, 3], &[[1.0; 3]], f32::INFINITY),
         Err(LightmapError::Scalar)
     );
-    assert!(shift_quake3_rgb(&[1, 2], 2, 0).is_err());
-    assert_eq!(
-        shift_quake3_rgb(&[1, 2, 3], 0, 1),
-        Err(LightmapError::Overbright)
-    );
-    assert_eq!(
-        shift_quake3_rgb(&[1, 2, 3], 9, 0),
-        Err(LightmapError::Overbright)
-    );
+    assert!(shift_quake3_rgb(&[1, 2], qa_render::world::WorldLighting::default()).is_err());
 }
 
 #[test]

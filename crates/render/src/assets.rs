@@ -1463,7 +1463,8 @@ impl Assets {
             }
         }
         for entry in entries {
-            self.presentations[entry.id.0 as usize].profile = Some((entry.profile, entry.defaults));
+            self.presentations[entry.id.0 as usize].profile =
+                Some((entry.profile, entry.defaults, entry.lighting));
         }
         Ok(())
     }
@@ -1481,11 +1482,12 @@ impl Assets {
         &self,
         id: WorldPresentationId,
     ) -> Option<crate::material::world_load::LoadedWorldPresentation> {
-        let (profile, defaults) = self.world_presentation(id)?.profile?;
+        let (profile, defaults, lighting) = self.world_presentation(id)?.profile?;
         Some(crate::material::world_load::LoadedWorldPresentation {
             id,
             profile,
             defaults,
+            lighting,
         })
     }
 

@@ -792,6 +792,7 @@ struct Source {
     reset_receipts: [u32; 2],
     video_prepares: usize,
     video_publishes: usize,
+    video_discards: usize,
     video_reject: bool,
     video_publish_reject: bool,
     video_kinds: Vec<Option<qa_app::renderer::Kind>>,
@@ -860,6 +861,12 @@ impl FrameSource for Source {
         self.video_configuration = Arc::clone(&configuration);
         self.video_publishes += 1;
         Ok(configuration)
+    }
+    fn discard_video(&mut self, candidate: qa_app::renderer::PreparedVideo) -> Result<(), String> {
+        self.video_pending_window = None;
+        self.video_discards += 1;
+        drop(candidate);
+        Ok(())
     }
     fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
         if self.backend.enabled {
@@ -1233,6 +1240,7 @@ fn setup_renderers_with_images(
         time: 0,
         video_prepares: 0,
         video_publishes: 0,
+        video_discards: 0,
         video_reject: false,
         video_publish_reject: false,
         video_kinds: Vec::new(),
@@ -2679,6 +2687,33 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
     assert!(host.console.cvars.latched(subdivisions).unwrap().is_none());
     let subdivision_generation = host.console.cvars.view_generation(subdivisions);
+    let lighting = [
+        (
+            host.console
+                .cvars
+                .bind("r_mapOverBrightBits", context)
+                .unwrap(),
+            "2",
+            "0",
+        ),
+        (
+            host.console
+                .cvars
+                .bind("r_overBrightBits", context)
+                .unwrap(),
+            "1",
+            "2",
+        ),
+    ];
+    let assert_pending_lighting = |host: &FrameHost| {
+        for (view, current, pending) in lighting {
+            assert_eq!(host.console.cvars.read(view).unwrap().as_str(), current);
+            assert_eq!(
+                host.console.cvars.latched(view).unwrap().unwrap().as_str(),
+                pending
+            );
+        }
+    };
     let width = host.console.cvars.bind("r_customwidth", context).unwrap();
     let height = host.console.cvars.bind("r_customheight", context).unwrap();
     let old_limits = host.runtime.scene.as_ref().unwrap().limits();
@@ -2696,11 +2731,12 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.video_reject = true;
     host.console
         .append(
-            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nr_subdivisions 8\nvid_restart cpu\n"),
+            &format!("r_customwidth 96\nr_customheight 80\nr_customaspect {explicit_aspect}\nr_picmip 2\nr_subdivisions 8\nr_mapOverBrightBits 0\nr_overBrightBits 2\nvid_restart cpu\n"),
             context,
         )
         .unwrap();
     host.execute_commands_with_driver(&mut source.driver());
+    assert_pending_lighting(&host);
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
     assert_eq!(
         host.console
@@ -2729,6 +2765,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     );
     source.step(&mut host);
     assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_pending_lighting(&host);
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
     assert_eq!(
         host.console
@@ -2813,6 +2850,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (2, 0));
+    assert_pending_lighting(&host);
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "4");
     assert_eq!(
         host.console
@@ -2942,6 +2980,18 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
     assert_eq!(host.console.cvars.read(subdivisions).unwrap().as_str(), "8");
+    for (view, _, requested) in lighting {
+        assert_eq!(host.console.cvars.read(view).unwrap().as_str(), requested);
+        assert!(host.console.cvars.latched(view).unwrap().is_none());
+    }
+    assert!(
+        !host
+            .runtime
+            .renderer_configuration
+            .as_ref()
+            .unwrap()
+            .hardware_gamma
+    );
     assert!(host.console.cvars.latched(subdivisions).unwrap().is_none());
     assert!(host.console.cvars.view_generation(subdivisions) > subdivision_generation);
     assert!(
@@ -3049,6 +3099,9 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
             .world_presentation_registration(world.1)
             .unwrap();
         assert_eq!(registered.profile.image_settings, settings);
+        assert_eq!(registered.lighting.map_overbright(), 0);
+        assert_eq!(registered.lighting.renderer_overbright(), 0);
+        assert_eq!(host.local_presentations[seat].identity_light, 1.0);
         let resources = &host.runtime.client_resources[ids[seat].0 as usize]
             .as_ref()
             .unwrap()
@@ -3139,6 +3192,38 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
             height: 44
         }));
     paint(&host, &mut source);
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+    let preparations = source.video_prepares;
+    let publications = source.video_publishes;
+    let discards = source.video_discards;
+    let markers = renderer_markers(&host);
+    let selected_worlds = host.local_worlds;
+    host.console
+        .append("r_mapOverBrightBits 16\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    source.step(&mut host);
+    assert_eq!(source.video_prepares, preparations + 1);
+    assert_eq!(source.video_publishes, publications);
+    assert_eq!(source.video_discards, discards + 1);
+    assert!(source.video_pending_window.is_none());
+    assert_eq!(renderer_markers(&host), markers);
+    assert_eq!(host.local_worlds, selected_worlds);
+    assert_eq!(
+        host.console.cvars.read(lighting[0].0).unwrap().as_str(),
+        "0"
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(lighting[0].0)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "16"
+    );
     for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }

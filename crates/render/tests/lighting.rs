@@ -239,6 +239,87 @@ fn grid_interpolation_renormalizes_wall_holes_and_keeps_source_row_aliases() {
 }
 
 #[test]
+fn grid_recoloring_restores_authored_rgb_and_preserves_layout_directions_and_holes() {
+    use qa_core::primitives::Bounds;
+    use qa_formats::bsp::LightGridPoint;
+    use qa_render::lighting::LightGrid;
+    let bounds = Bounds {
+        mins: Vec3([8., 16., 24.]),
+        maxs: Vec3([10., 18., 26.]),
+    };
+    let mut points = std::array::from_fn::<_, 8, _>(|index| LightGridPoint {
+        ambient: [100 + index as u8, 50 + index as u8, 25 + index as u8],
+        directed: [7 + index as u8, 11 + index as u8, 15 + index as u8],
+        latitude: 19 * index as u8,
+        longitude: 13 * index as u8,
+    });
+    points[0].ambient = [0; 3];
+    let grid = LightGrid::load(bounds, Vec3([2.; 3]), points.into_iter(), 0).unwrap();
+    let queries = [
+        bounds.mins,
+        Vec3([10., 16., 24.]),
+        Vec3([9., 16., 24.]),
+        Vec3([9., 17., 25.]),
+        Vec3([11., 16., 24.]),
+        Vec3([14., 20., 28.]),
+    ];
+    let original = queries.map(|point| grid.sample(point, 1., 1.));
+    assert_eq!(original[0].ambient, [0.; 3]);
+    assert_eq!(original[0].directed, [0.; 3]);
+    assert_eq!(original[1].ambient, [101., 51., 26.]);
+    assert_eq!(original[1].directed, [8., 12., 16.]);
+    // A hole contributes no light or direction; the adjacent valid corner is
+    // renormalized to full strength at their midpoint.
+    assert_eq!(original[2], original[1]);
+
+    let shifted = grid.recolored(2).unwrap();
+    let bright = queries.map(|point| shifted.sample(point, 1., 1.));
+    assert_eq!(bright[0], original[0]);
+    assert_eq!(bright[1].ambient, [255., 128., 65.]);
+    assert_eq!(bright[1].directed, [32., 48., 64.]);
+    for (before, after) in original.iter().zip(bright) {
+        assert_eq!(before.direction, after.direction);
+    }
+    assert_eq!(queries.map(|point| grid.sample(point, 1., 1.)), original);
+    let restored = shifted.recolored(0).unwrap();
+    assert_eq!(
+        queries.map(|point| restored.sample(point, 1., 1.)),
+        original
+    );
+    let initially_shifted = LightGrid::load(bounds, Vec3([2.; 3]), points.into_iter(), 2).unwrap();
+    let initially_restored = initially_shifted.recolored(0).unwrap();
+    assert_eq!(
+        queries.map(|point| initially_restored.sample(point, 1., 1.)),
+        original
+    );
+    assert_eq!(
+        shifted
+            .recolored(-1)
+            .unwrap()
+            .sample(queries[1], 1., 1.)
+            .ambient,
+        [50., 25., 13.]
+    );
+    assert_eq!(
+        shifted
+            .recolored(15)
+            .unwrap()
+            .sample(queries[1], 1., 1.)
+            .ambient,
+        [255., 128., 65.]
+    );
+    for shift in [-8, 15] {
+        assert!(grid.recolored(shift).is_ok());
+        assert!(LightGrid::load(bounds, Vec3([2.; 3]), points.into_iter(), shift).is_ok());
+    }
+    for shift in [-9, 16] {
+        assert!(grid.recolored(shift).is_err());
+        assert!(LightGrid::load(bounds, Vec3([2.; 3]), points.into_iter(), shift).is_err());
+    }
+    assert_eq!(queries.map(|point| grid.sample(point, 1., 1.)), original);
+}
+
+#[test]
 fn native_unlit_sample_keeps_minimum_add_clamp_and_model_local_direction() {
     let sun = math::normalized(Vec3([0.45, 0.3, 0.9]));
     for identity in [0.0, 0.25, 0.5, 1.0] {

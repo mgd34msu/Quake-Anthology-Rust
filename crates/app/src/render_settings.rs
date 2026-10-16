@@ -5,6 +5,7 @@ use qa_console::{
     views::{Context, Role, RuleSetId},
 };
 use qa_content::vfs::Vfs;
+use qa_core::presentation::RendererConfiguration;
 use qa_render::{
     Assets,
     assets::{PaletteId, upload},
@@ -12,6 +13,7 @@ use qa_render::{
         resources::{ImageSettings, PaletteSource, ResourceError, load_palette},
         world_load::WorldPresentationProfile,
     },
+    world::{WorldLighting, WorldRenderSettings},
 };
 
 #[derive(Default)]
@@ -88,43 +90,71 @@ pub fn world_profile(
     Ok(profile)
 }
 
-/// World geometry reads the renderer's one native subdivision policy,
-/// independently of its source map or selected presentation.
+/// World geometry and lighting use one renderer policy, independently of the
+/// source map or selected presentation.
 pub fn world_load_options(
     vars: &Cvars,
+    configuration: Option<&RendererConfiguration>,
 ) -> Result<qa_render::material::world_load::WorldLoadOptions, &'static str> {
+    let settings = read_world_settings(vars, false, configuration)?;
     let mut options = qa_render::material::world_load::WorldLoadOptions::default();
-    options.geometry.patch_subdivisions = read_subdivisions(vars, false)?;
+    options.geometry.patch_subdivisions = settings.patch_subdivisions;
+    options.lighting = settings.lighting;
     Ok(options)
 }
 
-pub(crate) struct SubdivisionSettingsPlan {
-    value: f32,
+pub(crate) struct WorldSettingsPlan {
+    settings: WorldRenderSettings,
     pending: PendingSettings,
 }
-impl SubdivisionSettingsPlan {
-    pub(crate) fn prepare(vars: &Cvars) -> Result<Self, &'static str> {
+impl WorldSettingsPlan {
+    pub(crate) fn prepare(
+        vars: &Cvars,
+        configuration: Option<&RendererConfiguration>,
+    ) -> Result<Self, &'static str> {
         Ok(Self {
-            value: read_subdivisions(vars, true)?,
+            settings: read_world_settings(vars, true, configuration)?,
             pending: PendingSettings::capture(
                 vars,
-                [setting_view(vars, RuleSetId::Quake3, "r_subdivisions")?],
+                ["r_subdivisions", "r_mapOverBrightBits", "r_overBrightBits"]
+                    .map(|name| setting_view(vars, RuleSetId::Quake3, name))
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?,
             ),
         })
     }
-    pub(crate) fn value(&self) -> f32 {
-        self.value
+    pub(crate) fn settings(&self) -> WorldRenderSettings {
+        self.settings
     }
     pub(crate) fn validate(&self, vars: &Cvars) -> Result<(), &'static str> {
         if self.pending.unchanged(vars) {
             Ok(())
         } else {
-            Err("subdivision setting changed during restart")
+            Err("world render settings changed during restart")
         }
     }
     pub(crate) fn apply(&self, vars: &mut Cvars) -> Result<(), qa_console::cvars::WriteError> {
         self.pending.apply(vars)
     }
+}
+fn read_world_settings(
+    vars: &Cvars,
+    pending: bool,
+    configuration: Option<&RendererConfiguration>,
+) -> Result<WorldRenderSettings, &'static str> {
+    let integer = |name| {
+        setting_numbers(vars, RuleSetId::Quake3, name, pending)?
+            .map(|value| value.1)
+            .ok_or("missing native world setting default")
+    };
+    Ok(WorldRenderSettings {
+        patch_subdivisions: read_subdivisions(vars, pending)?,
+        lighting: WorldLighting::from_requests(
+            integer("r_mapOverBrightBits")?,
+            integer("r_overBrightBits")?,
+            configuration,
+        )?,
+    })
 }
 fn read_subdivisions(vars: &Cvars, pending: bool) -> Result<f32, &'static str> {
     let value = setting_numbers(vars, RuleSetId::Quake3, "r_subdivisions", pending)?.map_or_else(
@@ -198,7 +228,7 @@ fn setting_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'s
             ..Context::default()
         },
     )
-    .ok_or("missing image cvar")
+    .ok_or("missing render cvar")
 }
 fn setting_numbers(
     vars: &Cvars,
@@ -207,7 +237,11 @@ fn setting_numbers(
     pending: bool,
 ) -> Result<Option<(f32, i32)>, &'static str> {
     let view = setting_view(vars, source, name)?;
-    if pending && let Some(text) = vars.latched(view).map_err(|_| "image setting conversion")? {
+    if pending
+        && let Some(text) = vars
+            .latched(view)
+            .map_err(|_| "render setting conversion")?
+    {
         return Ok(Some((
             qa_console::numbers::number(text.as_str(), source),
             qa_console::numbers::integer(text.as_str()),

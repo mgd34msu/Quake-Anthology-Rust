@@ -11,7 +11,6 @@ pub enum LightmapError {
     Dimensions,
     SampleLength { expected: usize, actual: usize },
     Scalar,
-    Overbright,
     Size,
     Allocation,
 }
@@ -627,8 +626,7 @@ fn check_output(bytes: usize, output: &[u8]) -> Result<(), LightmapError> {
 )]
 pub fn shift_quake3_rgb(
     rgb: &[u8],
-    map_overbright: u8,
-    renderer_overbright: u8,
+    lighting: crate::world::WorldLighting,
 ) -> Result<Vec<u8>, LightmapError> {
     if !rgb.len().is_multiple_of(3) {
         return Err(LightmapError::SampleLength {
@@ -636,20 +634,18 @@ pub fn shift_quake3_rgb(
             actual: rgb.len(),
         });
     }
-    let shift = map_overbright
-        .checked_sub(renderer_overbright)
-        .ok_or(LightmapError::Overbright)?;
-    if shift > 8 {
-        return Err(LightmapError::Overbright);
-    }
     let mut output = vec![0; rgb.len()];
     for (pixel, destination) in rgb.chunks_exact(3).zip(output.chunks_exact_mut(3)) {
         destination.copy_from_slice(&color_shift_rgb(
             [pixel[0], pixel[1], pixel[2]],
-            shift as i8,
+            lighting.shift(),
         ));
     }
     Ok(output)
+}
+
+pub(crate) fn valid_color_shift(shift: i8) -> bool {
+    (-8..=15).contains(&shift)
 }
 
 /// Q3 R_ColorShiftLightingBytes, before patch interpolation or atlas upload.

@@ -1018,6 +1018,179 @@ fn foreign_presentation_keeps_q3_geometry_coordinates_and_source_overbright() ->
 }
 
 #[test]
+fn world_lighting_rebuild_restores_authored_bytes_and_keeps_old_presentations_immutable()
+-> Result<(), String> {
+    use qa_render::{
+        lighting::LightGrid,
+        material::world_load::append_world_presentation,
+        world::{WorldLighting, WorldRenderSettings},
+    };
+    let root = resources("world-lighting-rebuild")?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let mut map = modern_map(&bytes)?;
+    for vertex in &mut map.vertices {
+        vertex.color = [200, 100, 50, 17];
+    }
+    let mut assets = Assets::load().unwrap();
+    let loaded = load_native_world(
+        &vfs,
+        &map,
+        &mut assets,
+        RuleSetId::Quake3,
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("initial world: {error:?}"))?;
+    let world = loaded.world;
+    let original = loaded.presentations[0];
+    let source_mesh = assets.world(world).unwrap().mesh();
+    let grid = LightGrid::load(
+        Bounds {
+            mins: Vec3::default(),
+            maxs: Vec3([1.; 3]),
+        },
+        Vec3([1.; 3]),
+        [qa_formats::bsp::LightGridPoint {
+            ambient: [200, 100, 50],
+            directed: [20, 30, 40],
+            latitude: 0,
+            longitude: 0,
+        }; 8]
+            .into_iter(),
+        original.lighting.shift(),
+    )
+    .map_err(str::to_owned)?;
+    assets.set_light_grid(world, Some(grid)).unwrap();
+    let old_grid =
+        assets
+            .world(world)
+            .unwrap()
+            .light_grid()
+            .unwrap()
+            .sample(Vec3::default(), 1., 1.);
+    assert_eq!(old_grid.ambient, [255., 127., 63.]);
+    let old_binding = *assets
+        .shader_binding(assets.surface_shader(original.id, 0).unwrap())
+        .unwrap();
+    assert_eq!(
+        &assets.image(old_binding.lightmap).unwrap().rgba[..4],
+        &[255; 4]
+    );
+    let old_vertices = assets.model(source_mesh).unwrap().vertices.to_vec();
+    assert_eq!(old_vertices[0].color, [255, 127, 63, 17]);
+    let retained = assets.counts();
+    let mut cpu = CpuBackend::load_with_assets(16, 16, &assets).unwrap();
+    let original_config = cpu.raster_config();
+    let settings = WorldRenderSettings {
+        lighting: WorldLighting::from_requests(0, 0, None).unwrap(),
+        ..Default::default()
+    };
+    let rebuild = assets.rebuild_worlds(&[world], settings).unwrap();
+    assert_eq!(rebuild.worlds().collect::<Vec<_>>(), [world]);
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(assets.world(world).unwrap().mesh(), source_mesh);
+    assert_eq!(
+        assets.model(source_mesh).unwrap().vertices[0].color,
+        [200, 100, 50, 17]
+    );
+    let light = assets
+        .world(world)
+        .unwrap()
+        .light_grid()
+        .unwrap()
+        .sample(Vec3::default(), 1., 1.);
+    assert_eq!(light.ambient, [200., 100., 50.]);
+    assert_eq!(light.directed, [20., 30., 40.]);
+    let changed = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
+        .map_err(|error| format!("lighting presentation: {error:?}"))?
+        .presentations[0];
+    assert_ne!(changed.id, original.id);
+    assert_eq!(changed.profile, original.profile);
+    assert_eq!(changed.lighting, settings.lighting);
+    let binding = assets
+        .shader_binding(assets.surface_shader(changed.id, 0).unwrap())
+        .unwrap();
+    assert_ne!(binding.lightmap, old_binding.lightmap);
+    assert_eq!(
+        &assets.image(binding.lightmap).unwrap().rgba[..4],
+        &[128, 128, 128, 255]
+    );
+    assert_eq!(
+        &assets.image(old_binding.lightmap).unwrap().rgba[..4],
+        &[255; 4]
+    );
+    assert_eq!(
+        assets.world_presentation_registration(original.id),
+        Some(original)
+    );
+    assert!(
+        cpu.prepare_assets(
+            &assets,
+            Some(Limits {
+                draws: 1,
+                ..Default::default()
+            }),
+        )
+        .is_err()
+    );
+    assert_eq!(cpu.raster_config(), original_config);
+    rebuild.rollback(&mut assets).unwrap();
+    assets.discard_registration_suffix(retained).unwrap();
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(
+        assets
+            .world(world)
+            .unwrap()
+            .render_settings()
+            .unwrap()
+            .lighting,
+        original.lighting
+    );
+    assert_eq!(
+        assets.model(source_mesh).unwrap().vertices.as_ref(),
+        old_vertices
+    );
+    assert_eq!(
+        assets
+            .world(world)
+            .unwrap()
+            .light_grid()
+            .unwrap()
+            .sample(Vec3::default(), 1., 1.),
+        old_grid
+    );
+
+    let rebuild = assets.rebuild_worlds(&[world], settings).unwrap();
+    let retry = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
+        .map_err(|error| format!("retry presentation: {error:?}"))?
+        .presentations[0];
+    assert_eq!(retry, changed);
+    cpu.prepare_assets(&assets, None).unwrap();
+    rebuild.commit();
+    let retained = assets.counts();
+    let cached = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
+        .map_err(|error| format!("cached presentation: {error:?}"))?;
+    assert_eq!(cached.presentations[0], retry);
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(assets.world(world).unwrap().mesh(), source_mesh);
+    let rebuild = assets
+        .rebuild_worlds(&[world], WorldRenderSettings::default())
+        .unwrap();
+    let restored = append_world_presentation(&vfs, &mut assets, world, original.profile.into())
+        .map_err(|error| format!("restored presentation: {error:?}"))?;
+    assert_eq!(restored.presentations[0], original);
+    assert_eq!(assets.counts(), retained);
+    assert_eq!(
+        assets.model(source_mesh).unwrap().vertices.as_ref(),
+        old_vertices
+    );
+    cpu.prepare_assets(&assets, None).unwrap();
+    rebuild.commit();
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
 fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), String> {
     let root = resources("masks")?;
     let vfs = mount(&root)?;

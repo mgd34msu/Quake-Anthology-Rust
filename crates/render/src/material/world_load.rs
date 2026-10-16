@@ -25,7 +25,8 @@ use crate::{
     sky::{CloudSphere, LayeredSphere, split_layered_sky},
     surface_cache::{IndexedLighting, IndexedTexture},
     world::{
-        PreparedShader, SurfaceMaterial, WorldId, WorldPresentationId, WorldPresentationInput,
+        PreparedShader, SurfaceMaterial, WorldId, WorldLighting, WorldPresentationId,
+        WorldPresentationInput, WorldRenderSettings,
         geometry::{
             GeometryError, GeometryOptions, LightSource, WorldGeometry,
             grid::{GridFan, GridOptions, subdivide_surface},
@@ -93,16 +94,14 @@ impl Default for SkyEnvironment {
 #[derive(Clone, Debug)]
 pub struct WorldLoadOptions {
     pub geometry: GeometryOptions,
-    pub map_overbright: u8,
-    pub renderer_overbright: u8,
+    pub lighting: WorldLighting,
     pub sky_environment: SkyEnvironment,
 }
 impl Default for WorldLoadOptions {
     fn default() -> Self {
         Self {
             geometry: GeometryOptions::default(),
-            map_overbright: 2,
-            renderer_overbright: 0,
+            lighting: WorldLighting::default(),
             sky_environment: SkyEnvironment::default(),
         }
     }
@@ -190,6 +189,7 @@ pub struct LoadedWorldPresentation {
     pub id: WorldPresentationId,
     pub profile: WorldPresentationProfile,
     pub defaults: PresentationDefaults,
+    pub lighting: WorldLighting,
 }
 pub struct LoadedWorld {
     pub world: WorldId,
@@ -256,12 +256,13 @@ struct MaterialSurface {
     light_source: LightSource,
     no_draw: bool,
 }
-/// Cold inputs retained once after the BSP boundary. Geometry, visibility and
-/// collision are already owned by their shared stores and are never rebuilt.
+/// Authored cold inputs retained once after the BSP boundary. Geometry can be
+/// rebuilt without rereading the BSP; visibility and collision stay separately owned.
 pub(crate) struct WorldMaterialSource {
     rules: RuleSetId,
     palette: Option<crate::PaletteId>,
     options: WorldLoadOptions,
+    vertex_colors: Option<Box<[[u8; 4]]>>,
     textures: Vec<Option<MaterialMip>>,
     texture_info: Vec<qa_core::primitives::NameId>,
     shaders: Vec<MaterialShader>,
@@ -275,8 +276,27 @@ impl WorldMaterialSource {
     pub(crate) fn geometry_options(&self) -> GeometryOptions {
         self.options.geometry
     }
-    pub(crate) fn set_patch_subdivisions(&mut self, tolerance: f32) {
-        self.options.geometry.patch_subdivisions = tolerance;
+    pub(crate) fn load_options(&self) -> &WorldLoadOptions {
+        &self.options
+    }
+    pub(crate) fn restore_options(&mut self, options: WorldLoadOptions) {
+        self.options = options;
+    }
+    pub(crate) fn render_settings(&self) -> WorldRenderSettings {
+        WorldRenderSettings {
+            patch_subdivisions: self.options.geometry.patch_subdivisions,
+            lighting: self.options.lighting,
+        }
+    }
+    pub(crate) fn set_render_settings(&mut self, settings: WorldRenderSettings) {
+        self.options.geometry.patch_subdivisions = settings.patch_subdivisions;
+        self.options.lighting = settings.lighting;
+        if self.rules == RuleSetId::Quake3 {
+            self.options.geometry.vertex_color_shift = settings.lighting.shift();
+        }
+    }
+    pub(crate) fn vertex_colors(&self) -> Option<&[[u8; 4]]> {
+        self.vertex_colors.as_deref()
     }
 
     fn load(
@@ -347,6 +367,8 @@ impl WorldMaterialSource {
             rules: map.bsp.format.rule_set(),
             palette,
             options,
+            vertex_colors: (map.bsp.format.rule_set() == RuleSetId::Quake3)
+                .then(|| map.vertices.iter().map(|vertex| vertex.color).collect()),
             textures,
             texture_info,
             shaders,
@@ -442,16 +464,9 @@ fn validate_profiles(
     geometry_source: RuleSetId,
     source_palette: Option<crate::PaletteId>,
     profiles: &[WorldPresentationRequest],
-    options: &WorldLoadOptions,
 ) -> Result<(), WorldMaterialError> {
     if profiles.is_empty() {
         return Err(WorldMaterialError::Boundary("missing world presentation"));
-    }
-    if options.renderer_overbright > 2
-        || options.map_overbright > 8
-        || options.map_overbright < options.renderer_overbright
-    {
-        return Err(WorldMaterialError::Boundary("invalid overbright settings"));
     }
     if (!matches!(geometry_source, RuleSetId::Quake3) && source_palette.is_none())
         || source_palette.is_some_and(|id| assets.palette(id).is_none())
@@ -481,12 +496,11 @@ pub fn load_world(
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
-    validate_profiles(assets, geometry_source, source_palette, profiles, &options)?;
+    validate_profiles(assets, geometry_source, source_palette, profiles)?;
     // Nonlinear Q3 color normalization precedes patch interpolation once. These
     // geometry settings are common to every admitted presentation profile.
     if matches!(geometry_source, RuleSetId::Quake3) {
-        options.geometry.vertex_color_shift =
-            (options.map_overbright - options.renderer_overbright) as i8;
+        options.geometry.vertex_color_shift = options.lighting.shift();
     }
     let mut geometry = load_geometry(map, options.geometry)?;
     let visibility =
@@ -612,15 +626,13 @@ pub fn load_world(
             .set_point_lighting(world, lighting)
             .map_err(WorldMaterialError::Boundary)?;
     }
-    match crate::lighting::LightGrid::load_map(
-        map,
-        (source.options.map_overbright - source.options.renderer_overbright) as i8,
-    ) {
+    match crate::lighting::LightGrid::load_map(map, source.options.lighting.shift()) {
         Ok(grid) => assets
             .set_light_grid(world, grid)
             .map_err(WorldMaterialError::Boundary)?,
         Err(error) => diagnostics.push(error.to_owned()),
     }
+    let lighting = source.options.lighting;
     let ids = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing registered world"))?
@@ -634,6 +646,7 @@ pub fn load_world(
                     id,
                     profile: request.profile,
                     defaults,
+                    lighting,
                 }],
             )
             .map_err(WorldMaterialError::Boundary)?;
@@ -647,6 +660,7 @@ pub fn load_world(
             id: ids[index],
             profile: distinct[index].profile,
             defaults: defaults[index],
+            lighting,
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -667,16 +681,16 @@ pub fn append_world_presentation(
     request: WorldPresentationRequest,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let profile = request.profile;
-    let existing = assets
+    let row = assets
         .world(world)
-        .ok_or(WorldMaterialError::Boundary("missing presentation world"))?
-        .presentations()
-        .iter()
-        .find_map(|&id| {
-            assets
-                .world_presentation_registration(id)
-                .filter(|entry| entry.profile == profile)
-        });
+        .ok_or(WorldMaterialError::Boundary("missing presentation world"))?;
+    let current_lighting = row.render_settings().map(|settings| settings.lighting);
+    let existing = row.presentations().iter().find_map(|&id| {
+        assets.world_presentation_registration(id).filter(|entry| {
+            entry.profile == profile
+                && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
+        })
+    });
     if let Some(existing) = existing {
         return Ok(LoadedWorld {
             world,
@@ -685,13 +699,8 @@ pub fn append_world_presentation(
         });
     }
     assets.with_world_material_source(world, |assets, source| {
-        validate_profiles(
-            assets,
-            source.rules,
-            source.palette,
-            &[request],
-            &source.options,
-        )?;
+        let lighting = source.render_settings().lighting;
+        validate_profiles(assets, source.rules, source.palette, &[request])?;
         let prepared = prepare_presentation(
             assets
                 .world(world)
@@ -713,6 +722,7 @@ pub fn append_world_presentation(
                     id,
                     profile,
                     defaults,
+                    lighting,
                 }],
             )
             .map_err(WorldMaterialError::Boundary)?;
@@ -722,6 +732,7 @@ pub fn append_world_presentation(
                 id,
                 profile,
                 defaults,
+                lighting,
             }]
             .into_boxed_slice(),
             diagnostics: diagnostics.into_boxed_slice(),
@@ -760,7 +771,7 @@ fn presentation_defaults(
             ..PaletteTransform::default()
         });
     } else {
-        presentation.identity_light = 1.0 / (1u32 << options.renderer_overbright) as f32;
+        presentation.identity_light = 1.0 / (1u32 << options.lighting.renderer_overbright()) as f32;
     }
     if let Some(palette) = profile.indexed_palette {
         presentation.cpu = CpuPresentation::Indexed {
@@ -1407,11 +1418,7 @@ fn prepare_lightmap_pages(
             .copied()
             .collect();
         let converted = if matches!(surface.light_source, LightSource::Page(_)) {
-            shift_quake3_rgb(
-                &samples,
-                options.map_overbright,
-                options.renderer_overbright,
-            )?
+            shift_quake3_rgb(&samples, options.lighting)?
         } else {
             let (active, count) = conversion.referenced_styles(surface.styles, styles);
             let mut rgb = vec![0; crate::lightmap::rgb_bytes(region.width, region.height)?];
@@ -1438,11 +1445,7 @@ fn prepare_lightmap_pages(
             .flatten()
             .copied()
             .collect();
-        let converted = shift_quake3_rgb(
-            &samples,
-            options.map_overbright,
-            options.renderer_overbright,
-        )?;
+        let converted = shift_quake3_rgb(&samples, options.lighting)?;
         write_lightmap_region(&mut pages[region.page as usize], region, &converted)?;
     }
     Ok(pages)

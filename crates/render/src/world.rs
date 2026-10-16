@@ -19,6 +19,74 @@ pub struct WorldId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldPresentationId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldLighting {
+    map_overbright: u8,
+    renderer_overbright: u8,
+}
+impl WorldLighting {
+    pub fn from_requests(
+        map: i32,
+        output: i32,
+        configuration: Option<&qa_core::presentation::RendererConfiguration>,
+    ) -> Result<Self, &'static str> {
+        let renderer_overbright = configuration.map_or(0, |configuration| {
+            if !configuration.hardware_gamma || !configuration.display.fullscreen {
+                0
+            } else {
+                output.clamp(
+                    0,
+                    if configuration.display.color_bits > 16 {
+                        2
+                    } else {
+                        1
+                    },
+                )
+            }
+        });
+        let shift = map
+            .checked_sub(renderer_overbright)
+            .and_then(|shift| i8::try_from(shift).ok())
+            .filter(|&shift| shift >= 0 && crate::lightmap::valid_color_shift(shift))
+            .ok_or("invalid world overbright shift")?;
+        Ok(Self {
+            map_overbright: (i32::from(shift) + renderer_overbright) as u8,
+            renderer_overbright: renderer_overbright as u8,
+        })
+    }
+    pub fn map_overbright(self) -> u8 {
+        self.map_overbright
+    }
+    pub fn renderer_overbright(self) -> u8 {
+        self.renderer_overbright
+    }
+    pub fn shift(self) -> i8 {
+        (self.map_overbright - self.renderer_overbright) as i8
+    }
+}
+impl Default for WorldLighting {
+    fn default() -> Self {
+        Self {
+            map_overbright: 2,
+            renderer_overbright: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldRenderSettings {
+    pub patch_subdivisions: f32,
+    pub lighting: WorldLighting,
+}
+impl Default for WorldRenderSettings {
+    fn default() -> Self {
+        Self {
+            patch_subdivisions: geometry::GeometryOptions::default().patch_subdivisions,
+            lighting: WorldLighting::default(),
+        }
+    }
+}
+
 pub struct WorldPresentation {
     pub world: WorldId,
     pub(crate) bindings: Box<[SurfaceBinding]>,
@@ -30,6 +98,7 @@ pub struct WorldPresentation {
     pub(crate) profile: Option<(
         crate::material::world_load::WorldPresentationProfile,
         crate::material::world_load::PresentationDefaults,
+        WorldLighting,
     )>,
 }
 impl WorldPresentation {
@@ -168,6 +237,11 @@ pub struct World {
     pub(crate) point_lighting: Option<crate::lighting::PointLighting>,
 }
 impl World {
+    pub fn render_settings(&self) -> Option<WorldRenderSettings> {
+        self.material_source
+            .as_ref()
+            .map(|source| source.render_settings())
+    }
     pub fn light_grid(&self) -> Option<&crate::lighting::LightGrid> {
         self.light_grid.as_ref()
     }

@@ -56,6 +56,102 @@ fn shader_fixture() -> support::Fixture {
 }
 
 #[test]
+fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_resources() {
+    use qa_render::{
+        material::world_load::WorldPresentationProfile,
+        world::{WorldLighting, WorldRenderSettings},
+    };
+    let fixture = support::Fixture::new(&[("maps/light.bsp", support::world_map(16.0))]);
+    let profile = profile(RuleSetId::Quake3);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let mut collision = qa_world::collision::CollisionStore::new();
+    let loaded = crate::map::read(&fixture.vfs, "light")
+        .unwrap()
+        .load(
+            &fixture.vfs,
+            &mut assets,
+            &mut collision,
+            Some(palette),
+            &[WorldPresentationProfile::native(profile.rules, profile.palette).into()],
+            Default::default(),
+        )
+        .unwrap();
+    let world = loaded.render.world;
+    let previous = loaded.render.presentations[0];
+    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let (mut owner, mut cpu) = publish(owner);
+    let retained = owner.assets().counts();
+    let mesh = owner.assets().world(world).unwrap().mesh();
+    let settings = WorldRenderSettings {
+        lighting: WorldLighting::from_requests(1, 1, None).unwrap(),
+        ..WorldRenderSettings::default()
+    };
+    let rejected: Result<(), String> = owner.image_transaction(Some(settings), |owner, _| {
+        owner.refresh_images(
+            &fixture.vfs,
+            &[profile],
+            &[(world, previous.id)],
+            [None; 5],
+            |assets| {
+                assert!(assets.counts().presentations > retained.presentations);
+                Err("candidate backend rejected".to_owned())
+            },
+        )?;
+        Ok(())
+    });
+    assert!(rejected.unwrap_err().contains("candidate backend rejected"));
+    assert_eq!(owner.assets().counts(), retained);
+    assert_eq!(owner.catalog().admitted_assets, Some(retained));
+    assert_eq!(owner.assets().world(world).unwrap().mesh(), mesh);
+    assert_eq!(
+        owner
+            .assets()
+            .world(world)
+            .unwrap()
+            .render_settings()
+            .unwrap()
+            .lighting,
+        previous.lighting
+    );
+    assert_eq!(
+        owner.assets().world_presentation_registration(previous.id),
+        Some(previous)
+    );
+    let refresh = owner
+        .image_transaction(Some(settings), |owner, _| {
+            owner.refresh_images(
+                &fixture.vfs,
+                &[profile],
+                &[(world, previous.id)],
+                [None; 5],
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+        })
+        .unwrap();
+    let selected = refresh.presentation(world, previous.id).unwrap();
+    assert_eq!(refresh.profile(profile), profile);
+    assert_eq!(selected.profile, previous.profile);
+    assert_eq!(selected.lighting, settings.lighting);
+    assert_ne!(selected.id, previous.id);
+    assert_eq!(owner.assets().world(world).unwrap().mesh(), mesh);
+    assert_eq!(
+        owner.assets().world_presentation_registration(previous.id),
+        Some(previous)
+    );
+    assert_eq!(
+        owner.view().world_presentation(world, Some(profile), None),
+        Some(selected)
+    );
+    assert_eq!(
+        owner
+            .view()
+            .world_presentation(world, Some(profile), Some(previous.id)),
+        Some(previous)
+    );
+}
+
+#[test]
 fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
     let fixture = shader_fixture();
     let profile = profile(RuleSetId::Quake3);
@@ -630,6 +726,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     let entries = presentations.map(|id| LoadedWorldPresentation {
         id,
         profile: WorldPresentationProfile::native(profile.rules, profile.palette),
+        lighting: Default::default(),
         defaults: Default::default(),
     });
     assets

@@ -116,10 +116,20 @@ impl PointLighting {
     }
 }
 
+#[derive(Clone, Copy)]
 struct GridPoint {
+    source_ambient: [u8; 3],
+    source_directed: [u8; 3],
     ambient: [u8; 3],
     directed: [u8; 3],
     direction: Vec3,
+}
+impl GridPoint {
+    fn with_shift(mut self, shift: i8) -> Self {
+        self.ambient = crate::lightmap::color_shift_rgb(self.source_ambient, shift);
+        self.directed = crate::lightmap::color_shift_rgb(self.source_directed, shift);
+        self
+    }
 }
 pub struct LightGrid {
     origin: Vec3,
@@ -137,7 +147,7 @@ impl LightGrid {
         if !bounds.is_valid()
             || !size.is_finite()
             || size.0.iter().any(|&value| value <= 0.)
-            || !(-8..=8).contains(&shift)
+            || !crate::lightmap::valid_color_shift(shift)
         {
             return Err("invalid light-grid dimensions or shift");
         }
@@ -170,14 +180,17 @@ impl LightGrid {
                 let latitude = usize::from(point.latitude) * 4;
                 let longitude = usize::from(point.longitude) * 4;
                 GridPoint {
-                    ambient: crate::lightmap::color_shift_rgb(point.ambient, shift),
-                    directed: crate::lightmap::color_shift_rgb(point.directed, shift),
+                    source_ambient: point.ambient,
+                    source_directed: point.directed,
+                    ambient: point.ambient,
+                    directed: point.directed,
                     direction: Vec3([
                         table[(latitude + 256) & 1023] * table[longitude],
                         table[latitude] * table[longitude],
                         table[(longitude + 256) & 1023],
                     ]),
                 }
+                .with_shift(shift)
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -186,6 +199,23 @@ impl LightGrid {
             inverse_size: Vec3(size.0.map(|value| 1. / value)),
             bounds,
             samples,
+        })
+    }
+    /// Cold color replacement starts from authored RGB, retaining the loaded
+    /// layout and decoded directions without another BSP read.
+    pub fn recolored(&self, shift: i8) -> Result<Self, &'static str> {
+        if !crate::lightmap::valid_color_shift(shift) {
+            return Err("invalid light-grid shift");
+        }
+        Ok(Self {
+            origin: self.origin,
+            inverse_size: self.inverse_size,
+            bounds: self.bounds,
+            samples: self
+                .samples
+                .iter()
+                .map(|&point| point.with_shift(shift))
+                .collect(),
         })
     }
     pub fn sample(&self, point: Vec3, ambient_scale: f32, directed_scale: f32) -> EntityLighting {

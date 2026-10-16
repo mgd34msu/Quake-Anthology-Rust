@@ -521,13 +521,17 @@ fn run() -> Result<(), String> {
                 .map(Into::into)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let world_options = qa_app::render_settings::world_load_options(
+            &console.cvars,
+            runtime.renderer_configuration.as_deref(),
+        )?;
         let loaded = input.load(
             &runtime.vfs,
             &mut assets,
             &mut runtime.geometry,
             source_palette,
             &presentations,
-            qa_app::render_settings::world_load_options(&console.cvars)?,
+            world_options,
         )?;
         world_rate = qa_app::client_policy::tick_rate(policy.client, &mut console.cvars)?;
         let tick_ms = match world_rate {

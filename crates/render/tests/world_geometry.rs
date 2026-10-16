@@ -6,7 +6,7 @@ use qa_render::scene::Span;
 use qa_render::world::geometry::{
     GeometryError, GeometryKind, GeometryOptions, LightEncoding, LightSource, PatchGrid,
     TextureCoordinates, WorldGeometry, WorldVertex, load_geometry, prepare_patches,
-    retessellate_patches,
+    rebuild_geometry,
 };
 
 fn bsp_bytes(family: u8, lighting: &[u8]) -> Vec<u8> {
@@ -382,7 +382,7 @@ fn patch_retessellation_reuses_authored_controls_and_keeps_color_conversion_once
         patch_subdivisions: 100.0,
         ..options
     };
-    let coarse = retessellate_patches(&fine, coarse_options).unwrap();
+    let coarse = rebuild_geometry(&fine, coarse_options, None).unwrap();
     let native_coarse = load_geometry(&map, coarse_options).unwrap();
     assert_eq!(coarse.vertices, native_coarse.vertices);
     assert_eq!(coarse.indices, native_coarse.indices);
@@ -391,23 +391,36 @@ fn patch_retessellation_reuses_authored_controls_and_keeps_color_conversion_once
         coarse.surfaces[0].patch.as_ref().unwrap().dimensions,
         [3, 2]
     );
-    let restored = retessellate_patches(&coarse, options).unwrap();
+    let restored = rebuild_geometry(&coarse, options, None).unwrap();
     assert_eq!(restored.vertices, fine.vertices);
     assert_eq!(restored.indices, fine.indices);
     assert_eq!(restored.boundaries, fine.boundaries);
     assert_eq!(restored.surfaces[0].bounds, fine.surfaces[0].bounds);
+    let authored_colors: Vec<_> = map.vertices.iter().map(|vertex| vertex.color).collect();
+    for vertex_color_shift in [0, 15] {
+        let changed = GeometryOptions {
+            vertex_color_shift,
+            ..options
+        };
+        let rebuilt = rebuild_geometry(&fine, changed, Some(&authored_colors)).unwrap();
+        let initial = load_geometry(&map, changed).unwrap();
+        assert_eq!(rebuilt.vertices, initial.vertices);
+        assert_eq!(rebuilt.indices, initial.indices);
+        assert_eq!(rebuilt.boundaries, initial.boundaries);
+    }
     let zero_options = GeometryOptions {
         patch_subdivisions: 0.0,
         ..options
     };
-    let zero = retessellate_patches(&coarse, zero_options).unwrap();
+    let zero = rebuild_geometry(&coarse, zero_options, None).unwrap();
     let native_zero = load_geometry(&map, zero_options).unwrap();
-    let negative = retessellate_patches(
+    let negative = rebuild_geometry(
         &coarse,
         GeometryOptions {
             patch_subdivisions: -1.0,
             ..options
         },
+        None,
     )
     .unwrap();
     assert_eq!(zero.vertices, native_zero.vertices);
@@ -417,6 +430,63 @@ fn patch_retessellation_reuses_authored_controls_and_keeps_color_conversion_once
     let dimensions = zero.surfaces[0].patch.as_ref().unwrap().dimensions;
     assert!(dimensions[0] > 9 && dimensions[0] <= 65);
     assert!(dimensions[1] >= 2 && dimensions[1] <= 65);
+}
+
+#[test]
+fn world_lighting_validates_native_shift_after_actual_output_capabilities() {
+    use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
+    use qa_render::world::WorldLighting;
+    let mut configuration = RendererConfiguration {
+        hardware_gamma: true,
+        display: DisplayConfiguration {
+            fullscreen: true,
+            color_bits: 24,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let selected = WorldLighting::from_requests(17, 99, Some(&configuration)).unwrap();
+    assert_eq!(selected.map_overbright(), 17);
+    assert_eq!(selected.renderer_overbright(), 2);
+    assert_eq!(selected.shift(), 15);
+    assert!(WorldLighting::from_requests(18, 99, Some(&configuration)).is_err());
+    assert!(WorldLighting::from_requests(1, 2, Some(&configuration)).is_err());
+    configuration.display.color_bits = 16;
+    assert_eq!(
+        WorldLighting::from_requests(2, 99, Some(&configuration))
+            .unwrap()
+            .renderer_overbright(),
+        1
+    );
+    configuration.display.fullscreen = false;
+    assert_eq!(
+        WorldLighting::from_requests(0, 99, Some(&configuration))
+            .unwrap()
+            .shift(),
+        0
+    );
+    configuration.display.fullscreen = true;
+    configuration.hardware_gamma = false;
+    assert_eq!(
+        WorldLighting::from_requests(0, 99, Some(&configuration))
+            .unwrap()
+            .renderer_overbright(),
+        0
+    );
+    configuration.hardware_gamma = true;
+    assert_eq!(
+        WorldLighting::from_requests(15, -99, Some(&configuration))
+            .unwrap()
+            .shift(),
+        15
+    );
+    assert_eq!(
+        WorldLighting::from_requests(15, 99, None).unwrap().shift(),
+        15
+    );
+    for map in [-1, 16, i32::MIN, i32::MAX] {
+        assert!(WorldLighting::from_requests(map, 0, None).is_err());
+    }
 }
 
 fn registered_patch_world(assets: &mut qa_render::Assets) -> qa_render::world::WorldId {
@@ -502,6 +572,19 @@ fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_prepar
     let original_indices = assets.model(original_mesh).unwrap().indices.to_vec();
     let presentations = assets.world(world).unwrap().presentations().to_vec();
     let retained = assets.counts();
+    assert_eq!(assets.world(world).unwrap().render_settings(), None);
+    assert!(
+        assets
+            .rebuild_worlds(
+                &[world],
+                qa_render::world::WorldRenderSettings {
+                    lighting: qa_render::world::WorldLighting::from_requests(0, 0, None).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(assets.counts(), retained);
     let mut cpu = qa_render::cpu::CpuBackend::load_with_assets(64, 64, &assets).unwrap();
     let original_pixels = render_patch_world(&mut cpu, &assets, world);
     assert_eq!(cpu.world_stats().patch_polygons, 16);
@@ -509,7 +592,13 @@ fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_prepar
 
     assert!(
         assets
-            .retessellate_worlds(&[world, qa_render::world::WorldId(u32::MAX)], 100.0)
+            .rebuild_worlds(
+                &[world, qa_render::world::WorldId(u32::MAX)],
+                qa_render::world::WorldRenderSettings {
+                    patch_subdivisions: 100.0,
+                    ..Default::default()
+                },
+            )
             .is_err()
     );
     assert_eq!(assets.counts(), retained);
@@ -533,7 +622,15 @@ fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_prepar
         );
     }
 
-    let receipt = assets.retessellate_worlds(&[world, world], 100.0).unwrap();
+    let receipt = assets
+        .rebuild_worlds(
+            &[world, world],
+            qa_render::world::WorldRenderSettings {
+                patch_subdivisions: 100.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
     assert_eq!(receipt.worlds().collect::<Vec<_>>(), [world]);
     assert_eq!(assets.counts(), retained);
     assert_eq!(assets.world(world).unwrap().presentations(), presentations);
@@ -572,7 +669,15 @@ fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_prepar
     );
 
     for _ in 0..3 {
-        let receipt = assets.retessellate_worlds(&[world], 100.0).unwrap();
+        let receipt = assets
+            .rebuild_worlds(
+                &[world],
+                qa_render::world::WorldRenderSettings {
+                    patch_subdivisions: 100.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(assets.counts(), retained);
         assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
         cpu.prepare_assets(&assets, None).unwrap();
@@ -581,10 +686,13 @@ fn world_retessellation_updates_all_presentations_and_rolls_back_rejected_prepar
                 < original_config.preparation_capacity_bytes
         );
         receipt.commit();
+        assert_eq!(assets.world(world).unwrap().render_settings(), None);
         render_patch_world(&mut cpu, &assets, world);
         assert_eq!(cpu.world_stats().patch_polygons, 4);
         assert_eq!(assets.world(world).unwrap().geometry().vertices.len(), 15);
-        let receipt = assets.retessellate_worlds(&[world], 4.0).unwrap();
+        let receipt = assets
+            .rebuild_worlds(&[world], qa_render::world::WorldRenderSettings::default())
+            .unwrap();
         assert_eq!(assets.counts(), retained);
         assert_eq!(assets.world(world).unwrap().mesh(), original_mesh);
         cpu.prepare_assets(&assets, None).unwrap();

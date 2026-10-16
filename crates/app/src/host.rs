@@ -668,8 +668,6 @@ impl FrameHost {
                 &self.console.cvars,
                 profiles.iter().map(|profile| profile.rules),
             )?;
-            let subdivisions =
-                crate::render_settings::SubdivisionSettingsPlan::prepare(&self.console.cvars)?;
             let owner = self
                 .runtime
                 .model_assets
@@ -699,29 +697,38 @@ impl FrameHost {
             } else {
                 (None, None)
             };
-            source
-                .prepare_video(
-                    crate::renderer::VideoPolicy {
-                        kind: Some(kind),
-                        cpu_bands,
-                        window: window_plan.request(),
-                    },
-                    owner.assets(),
-                    limits,
-                )
-                .map(|candidate| {
-                    (
-                        candidate,
-                        serial,
-                        kind,
-                        band_settings,
-                        window_plan,
-                        image_plan,
-                        subdivisions,
-                        profiles,
-                        presentations,
-                    )
-                })
+            let candidate = source.prepare_video(
+                crate::renderer::VideoPolicy {
+                    kind: Some(kind),
+                    cpu_bands,
+                    window: window_plan.request(),
+                },
+                owner.assets(),
+                limits,
+            )?;
+            let world_plan = match crate::render_settings::WorldSettingsPlan::prepare(
+                &self.console.cvars,
+                Some(&candidate.configuration()),
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return Err(match source.discard_video(candidate) {
+                        Ok(()) => error.to_owned(),
+                        Err(cleanup) => format!("{error}; video candidate cleanup: {cleanup}"),
+                    });
+                }
+            };
+            Ok((
+                candidate,
+                serial,
+                kind,
+                band_settings,
+                window_plan,
+                image_plan,
+                world_plan,
+                profiles,
+                presentations,
+            ))
         })();
         let (
             candidate,
@@ -730,7 +737,7 @@ impl FrameHost {
             band_settings,
             window_plan,
             image_plan,
-            subdivisions,
+            world_plan,
             profiles,
             presentations,
         ) = match candidate {
@@ -750,7 +757,7 @@ impl FrameHost {
             .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver());
         let published = stopped.and_then(|()| {
             image_plan.validate(&self.console.cvars)?;
-            subdivisions.validate(&self.console.cvars)?;
+            world_plan.validate(&self.console.cvars)?;
             window_plan.validate(&self.console.cvars)?;
             if band_settings
                 .as_ref()
@@ -765,7 +772,7 @@ impl FrameHost {
                 .model_assets
                 .take()
                 .ok_or("missing model assets")?;
-            let result = owner.image_transaction(Some(subdivisions.value()), |owner, changed| {
+            let result = owner.image_transaction(Some(world_plan.settings()), |owner, changed| {
                 let limits = self
                     .runtime
                     .scene
@@ -778,7 +785,7 @@ impl FrameHost {
                         .as_ref()
                         .is_none_or(|scene| !scene.has_world(world))
                 }) {
-                    return Err("subdivided world has no scene scratch".into());
+                    return Err("rebuilt world has no scene scratch".into());
                 }
                 let refresh = owner.refresh_images(
                     &self.runtime.vfs,
@@ -858,7 +865,7 @@ impl FrameHost {
                     .renderer_contexts
                     .stage_graphics(staged.graphic_registrations())?;
                 image_plan.validate(&self.console.cvars)?;
-                subdivisions.validate(&self.console.cvars)?;
+                world_plan.validate(&self.console.cvars)?;
                 window_plan.validate(&self.console.cvars)?;
                 let configuration = source.publish_video(
                     candidate
@@ -928,9 +935,9 @@ impl FrameHost {
                             "Image latch publication: {error:?}\n"
                         ));
                 }
-                if let Err(error) = subdivisions.apply(&mut self.console.cvars) {
+                if let Err(error) = world_plan.apply(&mut self.console.cvars) {
                     let _ = self.runtime.server.events.console_formatted(format_args!(
-                        "Subdivision latch publication: {error:?}\n"
+                        "World rendering latch publication: {error:?}\n"
                     ));
                 }
                 match kind {

@@ -424,6 +424,7 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
                         RuleSetId::Quake3,
                         None,
                     ),
+                    lighting: Default::default(),
                     defaults: Default::default(),
                 }],
             )

@@ -833,6 +833,9 @@ impl<'a> ModelView<'a> {
                 entry.profile.rules == profile.rules
                     && entry.profile.indexed_palette == profile.palette
                     && entry.profile.image_settings == profile.image_settings
+                    && world
+                        .render_settings()
+                        .is_none_or(|settings| entry.lighting == settings.lighting)
             })
     }
 }
@@ -1560,7 +1563,7 @@ impl ModelAssets {
     /// its backend and frontend candidates have both committed.
     pub(crate) fn image_transaction<T>(
         &mut self,
-        subdivisions: Option<f32>,
+        world_settings: Option<qa_render::world::WorldRenderSettings>,
         operation: impl FnOnce(&mut Self, &[WorldId]) -> Result<T, String>,
     ) -> Result<T, String> {
         if self.image_transaction_active {
@@ -1571,20 +1574,20 @@ impl ModelAssets {
         }
         let mut checkpoint = ProfileCheckpoint::capture(self)?;
         checkpoint.registration.capture_all(self)?;
-        let mut retessellation = None;
+        let mut world_rebuild = None;
         self.image_transaction_active = true;
         let result = (|| {
-            if let Some(tolerance) = subdivisions {
+            if let Some(settings) = world_settings {
                 let worlds: Vec<_> = (0..self.assets.worlds().len())
                     .map(|index| WorldId(index as u32))
                     .collect();
-                retessellation = Some(
+                world_rebuild = Some(
                     self.assets
-                        .retessellate_worlds(&worlds, tolerance)
-                        .map_err(|error| format!("world subdivision: {error}"))?,
+                        .rebuild_worlds(&worlds, settings)
+                        .map_err(|error| format!("world render settings: {error}"))?,
                 );
             }
-            let changed: Vec<WorldId> = retessellation
+            let changed: Vec<WorldId> = world_rebuild
                 .as_ref()
                 .map(|receipt| receipt.worlds().collect())
                 .unwrap_or_default();
@@ -1593,17 +1596,17 @@ impl ModelAssets {
         self.image_transaction_active = false;
         match result {
             Ok(ready) => {
-                if let Some(receipt) = retessellation {
+                if let Some(receipt) = world_rebuild {
                     receipt.commit();
                 }
                 Ok(ready)
             }
             Err(mut error) => {
-                let world_rollback = retessellation.map_or(Ok(()), |receipt| {
+                let world_rollback = world_rebuild.map_or(Ok(()), |receipt| {
                     receipt.rollback(&mut self.assets).map_err(str::to_owned)
                 });
                 // Existing WorldIds and presentation ranges must be restored
-                // before the appended mesh/resource suffix is discarded.
+                // before the appended resource suffix is discarded.
                 let resource_rollback = checkpoint.rollback(self);
                 for rollback in [world_rollback, resource_rollback] {
                     if let Err(rollback) = rollback {
@@ -1668,17 +1671,15 @@ impl ModelAssets {
                         .is_some_and(|entry| entry.presentations().contains(&old))
                 })
                 .ok_or("image refresh world presentation")?;
-            let Some(image_settings) = settings[previous.profile.rules as usize] else {
-                continue;
-            };
-            let profile = refresh
-                .profiles
+            let image_settings = settings[previous.profile.rules as usize]
+                .unwrap_or(previous.profile.image_settings);
+            let profile = profiles
                 .iter()
-                .find_map(|&(from, to)| {
+                .find_map(|&from| {
                     (from.rules == previous.profile.rules
                         && from.palette == previous.profile.indexed_palette
                         && from.image_settings == previous.profile.image_settings)
-                        .then_some(to)
+                        .then(|| refresh.profile(from))
                 })
                 .ok_or("image refresh world profile")?;
             let policy = qa_render::material::world_load::WorldPresentationProfile {

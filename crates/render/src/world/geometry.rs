@@ -225,18 +225,19 @@ fn validate_options(options: GeometryOptions) -> Result<(), GeometryError> {
     if !options.patch_subdivisions.is_finite()
         || options.max_surface_vertices < 3
         || options.max_surface_vertices > u32::MAX as usize
-        || !(-8..=8).contains(&options.vertex_color_shift)
+        || !crate::lightmap::valid_color_shift(options.vertex_color_shift)
     {
         return Err(GeometryError::InvalidOptions);
     }
     Ok(())
 }
 
-/// Rebuild patch grids from their retained authored controls. Existing vertex
-/// colors already passed source conversion and are never normalized again.
-pub fn retessellate_patches(
+/// Rebuild grids from retained controls, optionally restoring authored colors
+/// before source conversion and patch interpolation.
+pub fn rebuild_geometry(
     source: &WorldGeometry,
     options: GeometryOptions,
+    source_colors: Option<&[[u8; 4]]>,
 ) -> Result<WorldGeometry, GeometryError> {
     validate_options(options)?;
     let mut prefix = 0;
@@ -264,6 +265,14 @@ pub fn retessellate_patches(
         models: source.models.clone(),
         patch_stats: PatchStats::default(),
     };
+    if let Some(colors) = source_colors {
+        let colors = colors
+            .get(..prefix)
+            .ok_or(GeometryError::Reference("source vertex colors", 0))?;
+        for (vertex, &color) in geometry.vertices.iter_mut().zip(colors) {
+            vertex.vertex.color = color_shift(color, options.vertex_color_shift);
+        }
+    }
     for old in &source.surfaces {
         let mut surface = old.clone();
         let first_index = geometry.indices.len();

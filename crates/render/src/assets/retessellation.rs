@@ -2,8 +2,8 @@ use super::{Assets, Model, ModelId, Vertex};
 use crate::{
     scene::Span,
     world::{
-        WorldId, WorldPresentationId,
-        geometry::{GeometryOptions, WorldGeometry, retessellate_patches},
+        WorldId, WorldPresentationId, WorldRenderSettings,
+        geometry::{GeometryOptions, WorldGeometry, rebuild_geometry},
     },
 };
 
@@ -48,7 +48,8 @@ struct PreviousWorld {
     mesh: ModelId,
     model: Model,
     presentations: Vec<(WorldPresentationId, Box<[Span]>)>,
-    tolerance: Option<f32>,
+    options: Option<crate::material::world_load::WorldLoadOptions>,
+    light_grid: Option<crate::lighting::LightGrid>,
 }
 
 /// Cold prefix replacements remain owned until the caller's backend/frontend
@@ -85,10 +86,11 @@ impl WorldRetessellation {
             let world = &mut assets.worlds[previous.world.0 as usize];
             world.geometry = previous.geometry;
             assets.models[previous.mesh.0 as usize] = previous.model;
-            if let Some(tolerance) = previous.tolerance
+            world.light_grid = previous.light_grid;
+            if let Some(options) = previous.options
                 && let Some(source) = world.material_source.as_mut()
             {
-                source.set_patch_subdivisions(tolerance);
+                source.restore_options(options);
             }
             for (id, ranges) in previous.presentations {
                 for (binding, range) in assets.presentations[id.0 as usize]
@@ -106,14 +108,14 @@ impl WorldRetessellation {
 }
 
 impl Assets {
-    /// Retessellate each selected world once, retaining source IDs, material
-    /// bindings, visibility and collision ownership. Registration remains cold.
-    pub fn retessellate_worlds(
+    /// Rebuild each selected world's retained source controls and lighting once.
+    /// Source IDs, visibility and collision ownership remain unchanged.
+    pub fn rebuild_worlds(
         &mut self,
         worlds: &[WorldId],
-        patch_subdivisions: f32,
+        settings: WorldRenderSettings,
     ) -> Result<WorldRetessellation, &'static str> {
-        if !patch_subdivisions.is_finite() {
+        if !settings.patch_subdivisions.is_finite() {
             return Err("non-finite patch subdivision threshold");
         }
         let retained = self.counts();
@@ -131,22 +133,46 @@ impl Assets {
                     .material_source
                     .as_ref()
                     .map_or_else(GeometryOptions::default, |source| source.geometry_options());
-                let tolerance = world
+                let previous_options = world
                     .material_source
                     .as_ref()
-                    .map(|source| source.geometry_options().patch_subdivisions);
-                if tolerance.is_some_and(|old| old.to_bits() == patch_subdivisions.to_bits())
-                    || !world
+                    .map(|source| source.load_options().clone());
+                let previous_settings = world.render_settings();
+                if previous_settings.is_none()
+                    && settings.lighting != crate::world::WorldLighting::default()
+                {
+                    return Err("world lighting source unavailable");
+                }
+                let lighting_changed = previous_settings
+                    .is_some_and(|previous| previous.lighting != settings.lighting);
+                let patches_changed = (previous_options.is_none()
+                    || previous_settings.is_some_and(|previous| {
+                        previous.patch_subdivisions.to_bits()
+                            != settings.patch_subdivisions.to_bits()
+                    }))
+                    && world
                         .geometry
                         .surfaces
                         .iter()
-                        .any(|surface| surface.patch.is_some())
-                {
+                        .any(|surface| surface.patch.is_some());
+                if !lighting_changed && !patches_changed {
                     continue;
                 }
-                options.patch_subdivisions = patch_subdivisions;
-                let geometry = retessellate_patches(&world.geometry, options)
-                    .map_err(|_| "world patch retessellation failed")?;
+                options.patch_subdivisions = settings.patch_subdivisions;
+                let source_colors = world
+                    .material_source
+                    .as_ref()
+                    .and_then(|source| source.vertex_colors());
+                if source_colors.is_some() {
+                    options.vertex_color_shift = settings.lighting.shift();
+                }
+                let geometry = rebuild_geometry(&world.geometry, options, source_colors)
+                    .map_err(|_| "world geometry rebuild failed")?;
+                let light_grid = world
+                    .light_grid
+                    .as_ref()
+                    .map(|grid| grid.recolored(settings.lighting.shift()))
+                    .transpose()?;
                 let mesh = world_mesh(&geometry)?;
                 let mesh_id = world.mesh;
                 let shader = self.model(mesh_id).ok_or("world mesh unavailable")?.shader;
@@ -182,10 +208,11 @@ impl Assets {
                     mesh: mesh_id,
                     model: std::mem::replace(&mut self.models[mesh_id.0 as usize], model),
                     presentations,
-                    tolerance,
+                    options: previous_options,
+                    light_grid: std::mem::replace(&mut world.light_grid, light_grid),
                 };
                 if let Some(source) = world.material_source.as_mut() {
-                    source.set_patch_subdivisions(patch_subdivisions);
+                    source.set_render_settings(settings);
                 }
                 for &(presentation, _) in &previous.presentations {
                     for (binding, &range) in self.presentations[presentation.0 as usize]

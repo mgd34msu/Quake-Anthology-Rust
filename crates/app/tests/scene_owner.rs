@@ -75,6 +75,7 @@ fn empty_world(assets: &mut Assets) -> LoadedWorld {
         presentations: vec![LoadedWorldPresentation {
             id: assets.world(world).unwrap().presentations()[0],
             profile: WorldPresentationProfile::native(RuleSetId::Quake3, None),
+            lighting: Default::default(),
             defaults: Default::default(),
         }]
         .into_boxed_slice(),
