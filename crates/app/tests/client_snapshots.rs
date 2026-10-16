@@ -1,3 +1,5 @@
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
 #[path = "support/frame_source.rs"]
 mod frame_source;
 
@@ -50,7 +52,7 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..15 {
+    for command in 0..18 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
@@ -145,15 +147,45 @@ fn qvm_with_renderer(imports: &'static qa_compat::abi::CallTable, renderer: i32)
                 let ordinal = if renderer == 49 { 48 } else { 29 };
                 operations.extend([(Const, -ordinal - 1), (Call, 0)]);
             }
+            15 => {
+                for ordinal in [18, 36] {
+                    operations.extend([
+                        (Const, 512),
+                        (Arg, 8),
+                        (Const, -ordinal - 1),
+                        (Call, 0),
+                        (Pop, 0),
+                    ]);
+                }
+                operations.extend([
+                    (Const, QVM_OUTPUT as i32 + 64),
+                    (Const, -20),
+                    (Call, 0),
+                    (Store4, 0),
+                    (Const, QVM_OUTPUT as i32 + 64),
+                    (Load4, 0),
+                ]);
+            }
+            16 => {
+                for (argument, value) in [QVM_OUTPUT as i32, 544, 560, 576, 576, 0, 1]
+                    .into_iter()
+                    .enumerate()
+                {
+                    operations.extend([(Const, value), (Arg, 8 + argument as i32 * 4)]);
+                }
+                operations.extend([(Const, -26), (Call, 0)]);
+            }
+            17 => operations.extend([(Const, 608), (Arg, 8), (Const, -45), (Call, 0)]),
             _ => unreachable!(),
         }
         operations.push((Leave, 64));
     }
-    let mut data = [0; 256];
+    let mut data = [0; 1024];
     data[128..140].copy_from_slice(b"ui/cold.tga\0");
     data[192..208].copy_from_slice(b"models/test.md2\0");
     data[224..240].copy_from_slice(b"models/test.md3\0");
     data[240..251].copy_from_slice(b"tag_weapon\0");
+    data[512..1024].copy_from_slice(&world_import_data());
     (
         Program::Qvm {
             vm: Box::new(service_program::program(&operations, &data)),
@@ -189,7 +221,7 @@ fn native_with_renderer(
     pe_text(&mut file, 0x1800, &[0xc3]);
     let mut vm = Vm::map_image(
         Image::parse(&file, None, LoadRole::Library).unwrap(),
-        &(0..15)
+        &(0..18)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -204,7 +236,7 @@ fn native_with_renderer(
     let output = vm.process.base() + 0x2000;
     let callback = vm.import_callback();
     let mut code = Vec::new();
-    for command in 0..15u8 {
+    for command in 0..18u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
@@ -214,6 +246,36 @@ fn native_with_renderer(
             code.extend([0x89, 0xd0, 0xc3]); // mov eax,edx; ret
         } else if command == 9 {
             code.extend([0x0f, 0xb6, 0x02, 0xc3]); // movzx eax,byte [rdx]; ret
+        } else if command == 15 {
+            code.extend([0x48, 0x83, 0xec, 0x28]);
+            for ordinal in [18, 36, 19] {
+                code.extend([0x48, 0xba]);
+                code.extend((vm.process.base() + 0x5100).to_le_bytes());
+                code.extend([0xb9, ordinal, 0, 0, 0, 0x48, 0xb8]);
+                code.extend(callback.to_le_bytes());
+                code.extend([0xff, 0xd0]);
+            }
+            code.extend([0x49, 0xbb]);
+            code.extend((output + 64).to_le_bytes());
+            code.extend([0x41, 0x89, 0x03, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+        } else if command == 16 {
+            code.extend([0x48, 0x83, 0xec, 0x48]);
+            for (opcode, address) in [
+                ([0x48, 0xba], output),
+                ([0x49, 0xb8], vm.process.base() + 0x5120),
+                ([0x49, 0xb9], vm.process.base() + 0x5130),
+            ] {
+                code.extend(opcode);
+                code.extend(address.to_le_bytes());
+            }
+            code.extend([0x48, 0xb8]);
+            code.extend((vm.process.base() + 0x5140).to_le_bytes());
+            code.extend([0x48, 0x89, 0x44, 0x24, 0x20, 0x48, 0x89, 0x44, 0x24, 0x28]);
+            code.extend([0x31, 0xc0, 0x48, 0x89, 0x44, 0x24, 0x30]);
+            code.extend([0xff, 0xc0, 0x48, 0x89, 0x44, 0x24, 0x38]);
+            code.extend([0xb9, 25, 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x48, 0xc3]);
         } else {
             let stack = if command == 14 { 0x38 } else { 0x28 };
             code.extend([0x48, 0x83, 0xec, stack]);
@@ -228,9 +290,11 @@ fn native_with_renderer(
                 code.extend([0x49, 0xb8]);
                 code.extend((output + if command == 0 { 4 } else { 0 }).to_le_bytes());
             }
-            if command == 11 {
+            if matches!(command, 11 | 17) {
                 code.extend([0x48, 0xba]);
-                code.extend((vm.process.base() + 0x4000).to_le_bytes());
+                code.extend(
+                    (vm.process.base() + if command == 11 { 0x4000 } else { 0x5160 }).to_le_bytes(),
+                );
             }
             let ordinal = match command {
                 2 => 52,
@@ -239,6 +303,7 @@ fn native_with_renderer(
                 8 => 53,
                 10 => renderer,
                 11 => 39,
+                17 => 44,
                 12 => {
                     if renderer == 49 {
                         37
@@ -282,6 +347,7 @@ fn native_with_renderer(
     vm.process.memory_mut().unwrap()[0x5000..0x5010].copy_from_slice(b"models/test.md2\0");
     vm.process.memory_mut().unwrap()[0x5020..0x5030].copy_from_slice(b"models/test.md3\0");
     vm.process.memory_mut().unwrap()[0x5040..0x504b].copy_from_slice(b"tag_weapon\0");
+    vm.process.memory_mut().unwrap()[0x5100..0x5300].copy_from_slice(&world_import_data());
     (
         Program::Native {
             vm: Box::new(vm),
@@ -289,6 +355,36 @@ fn native_with_renderer(
         },
         output,
     )
+}
+
+// One pointer-free payload is shared by the existing QVM and owned-child factories.
+fn world_import_data() -> [u8; 512] {
+    let mut bytes = [0; 512];
+    bytes[..16].copy_from_slice(b"maps/unseen.bsp\0");
+    for (at, value) in [
+        (32, -2.0f32),
+        (36, 0.5),
+        (40, 0.5),
+        (48, 2.0),
+        (52, 0.5),
+        (56, 0.5),
+    ] {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let refdef = &mut bytes[96..96 + qa_compat::renderer::Q3_REFDEF_BYTES];
+    refdef[8..12].copy_from_slice(&64i32.to_le_bytes());
+    refdef[12..16].copy_from_slice(&48i32.to_le_bytes());
+    for (at, value) in [
+        (16, 90.0f32),
+        (20, 75.0),
+        (24, 32.0),
+        (36, -1.0),
+        (52, -1.0),
+        (68, 1.0),
+    ] {
+        refdef[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 fn host(factory: fn() -> (Program, u64), clients: usize) -> (FrameHost, Vec<ClientId>, u64) {
@@ -375,7 +471,7 @@ fn host_with_initializer(
             rate: TickRate::FrameDriven,
             anchor,
             program,
-            entries: (0..15).collect(),
+            entries: (0..18).collect(),
             frame: Export {
                 client: Some(client),
                 ..Export::clocked(CallbackId(6))
@@ -1476,6 +1572,218 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
     }
 }
 
+fn install_cgame_world_assets(
+    host: &mut FrameHost,
+    client: ClientId,
+    files: &mut model_files::Fixture,
+) -> asset_frames::Source {
+    use qa_app::{
+        model_assets::{ModelAssets, ModelRequest},
+        renderer::SceneComposer,
+    };
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let mut assets = qa_render::Assets::load().unwrap();
+    let palette = model_files::palette(&mut assets);
+    let (scene, _) =
+        SceneComposer::load(qa_render::Limits::default(), &mut assets, vec![]).unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                None,
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
+    let source = asset_frames::Source::load(owner.assets());
+    host.runtime.model_assets = Some(owner);
+    host.runtime.scene = Some(scene);
+    host.publish_model_admission(source.cpu.admitted_assets().unwrap())
+        .unwrap();
+    host.bind_client_model_assets([(client, profile, None)]);
+    let mut defaults = [None; 5];
+    defaults[RuleSetId::Quake3 as usize] = Some(profile);
+    host.configure_native_scenes(&defaults, &[[None; 5]; SeatId::COUNT], 64, 48)
+        .unwrap();
+    source
+}
+
+fn queued_uncached_world_is_admitted_before_cgame_map_imports(factory: fn() -> (Program, u64)) {
+    use qa_compat::services::ModelLookup;
+    use qa_render::scene::Command;
+
+    let (mut host, ids, output) = host_with_initializer(
+        factory,
+        1,
+        Some(Argument::ClientNativeNumber),
+        false,
+        CallbackId(15),
+    );
+    let client = ids[0];
+    let module = ModuleId(1);
+    let mut files = model_files::Fixture::new(&[("maps/unseen.bsp", model_files::world_map(8.0))]);
+    let mut source = install_cgame_world_assets(&mut host, client, &mut files);
+    let original = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    let physical_position = host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position;
+    let packets = gamestate_packets(&mut host, client, 57, &[(0, b"\\mapname\\unseen")]);
+    receive_gamestate_packets(&mut host, client, &packets);
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_some()
+    );
+    assert!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .loaded_world(b"maps/unseen.bsp")
+            .is_none()
+    );
+    host.initialize_modules(Phase::Client);
+    assert_eq!(host.module_state(module), Some(State::Pending));
+    assert_eq!(host.module_counts(module).unwrap().calls, 0);
+
+    source.enabled = false;
+    host.runtime.vfs.take_lookup_count();
+    source.step(&mut host);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(source.attempts, 0);
+    assert_eq!(host.module_state(module), Some(State::Pending));
+    assert_eq!(host.module_counts(module).unwrap().calls, 0);
+    assert_eq!(host.local_worlds[0], None);
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        original
+    );
+
+    source.enabled = true;
+    source.step(&mut host);
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(source.attempts > 0);
+    assert_eq!(host.module_state(module), Some(State::Running));
+    assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    // CG_INIT executed both native map imports before querying their inline namespace.
+    assert_eq!(word(&mut host, 0, output + 64), 2);
+    let loaded = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .catalog()
+        .loaded_world(b"maps/unseen.bsp")
+        .unwrap();
+    let (world, presentation) = host.local_worlds[0].unwrap();
+    assert_eq!(loaded.render, world);
+    let geometry = loaded.collision.unwrap();
+    assert_eq!(host.runtime.geometry.model_count(geometry), Some(2));
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts()
+            .worlds,
+        original.worlds + 1
+    );
+    assert_eq!(
+        source.cpu.admitted_assets(),
+        Some(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .counts()
+        )
+    );
+    assert!(
+        host.runtime.collision.is_none(),
+        "CLIENT admission must not install a SERVER world"
+    );
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        lifetime
+    );
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize]
+            .player
+            .body
+            .position,
+        physical_position
+    );
+    assert_eq!(
+        (
+            host.runtime.prediction[0].player.movement_rules,
+            host.runtime.prediction[0].player.trace_rules
+        ),
+        (RuleSetId::Quake, RuleSetId::QuakeWorld)
+    );
+
+    // CM_BoxTrace uses model zero selected by CM_LoadMap. The BSP is the shared
+    // authored Q1 fixture while this module explicitly uses Q2 trace rules.
+    assert_eq!(call(&mut host, 0, 16, &[]), Ok(0));
+    assert_eq!(word(&mut host, 0, output), 0);
+    assert_eq!(word(&mut host, 0, output + 4), 0);
+    let fraction = f32::from_bits(word(&mut host, 0, output + 8));
+    assert!(fraction > 0.0 && fraction < 1.0);
+    assert_eq!(word(&mut host, 0, output + 24), (-1.0f32).to_bits());
+    assert_eq!(word(&mut host, 0, output + 48), 1);
+
+    // R_RenderScene must resolve R_LoadWorldMap's selected world and presentation,
+    // rather than drawing an empty native scene or borrowing a SERVER world.
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    assert_eq!(call(&mut host, 0, 17, &[]), Ok(0));
+    let scene = host.runtime.scene.as_mut().unwrap();
+    let packet = scene.finish_frame().unwrap();
+    let views: Vec<_> = packet
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::View(view) => Some(view),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(views.len(), 1);
+    let surfaces = packet.surfaces(views[0].scene.surfaces);
+    assert!(!surfaces.is_empty());
+    assert!(
+        surfaces
+            .iter()
+            .all(|surface| surface.world == world && surface.presentation == presentation)
+    );
+    assert!(scene.recycle(packet).is_ok());
+    let calls = host.module_counts(module).unwrap().calls;
+    host.initialize_modules(Phase::Client);
+    assert_eq!(host.module_counts(module).unwrap().calls, calls);
+    assert_eq!(host.module_counts(module).unwrap().traps, 0);
+}
+
 fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     factory: fn() -> (Program, u64),
 ) {
@@ -1485,8 +1793,12 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     struct Source {
         time: EventTime,
         polls: usize,
+        backend: asset_frames::Source,
     }
     impl FrameSource for Source {
+        fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
+            Some(&mut self.backend)
+        }
         fn begin_frame(&mut self) -> Duration {
             Duration::from_nanos(self.time.0)
         }
@@ -1510,6 +1822,9 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     let (mut host, ids, output) =
         host_with_server(factory, 1, Some(Argument::ClientNativeNumber), true);
     let client = ids[0];
+    let mut files =
+        model_files::Fixture::new(&[("maps/native_fixture.bsp", model_files::world_map(8.0))]);
+    let backend = install_cgame_world_assets(&mut host, client, &mut files);
     let owner = host.runtime.server.clients[client.0 as usize]
         .output
         .unwrap();
@@ -1534,6 +1849,7 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     let mut source = Source {
         time: EventTime::from_milliseconds(100),
         polls: 0,
+        backend,
     };
     host.frame(&mut source, true);
     assert_eq!(source.polls, 2);
@@ -1550,18 +1866,38 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     );
     let sequence = host.runtime.server.events.sequence_range().start;
     assert!(host.runtime.server.events.retained_for(owner, sequence));
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .acknowledgements,
+        0
+    );
+    let check_native_retirement = |host: &FrameHost| {
+        let retained = host.runtime.server.events.retained_for(owner, sequence);
+        let counters = host.runtime.server.events.counters(owner).unwrap();
+        // This sole reliable gamestate retires only after an actual channel ACK,
+        // even if cold world admission keeps cgame Pending for another frame.
+        assert_eq!(counters.acknowledgements, u64::from(!retained));
+        assert_eq!(counters.acknowledged_records, u64::from(!retained));
+        assert_eq!(counters.retired_on_resync, 0);
+        assert_eq!(counters.overflow, 0);
+    };
     let mut frames = 1;
     while host.module_state(ModuleId(1)) == Some(State::Pending) && frames < 32 {
-        assert!(host.runtime.server.events.retained_for(owner, sequence));
-        assert!(
-            host.runtime
-                .network
-                .get(client, Endpoint::Client)
-                .unwrap()
-                .channel
-                .current_snapshot()
-                .is_none()
-        );
+        check_native_retirement(&host);
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel;
+        if channel.q3_startup().is_none() {
+            assert!(channel.current_snapshot().is_none());
+        }
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
         frames += 1;
         source.time = EventTime::from_milliseconds(frames as u64 * 100);
         host.frame(&mut source, true);
@@ -1581,8 +1917,21 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
         .channel;
     let startup = channel.q3_startup().unwrap();
     assert_eq!(startup.client_num, 0);
-    assert!(channel.current_snapshot().is_none());
-    assert!(host.runtime.server.events.retained_for(owner, sequence));
+    check_native_retirement(&host);
+    use qa_compat::services::ModelLookup;
+    let owner_assets = host.runtime.model_assets.as_ref().unwrap();
+    assert!(
+        owner_assets
+            .catalog()
+            .loaded_world(b"maps/native_fixture.bsp")
+            .is_some()
+    );
+    assert!(host.local_worlds[0].is_some());
+    assert_eq!(
+        source.backend.cpu.admitted_assets(),
+        Some(owner_assets.assets().counts())
+    );
+    assert!(source.backend.attempts > 0);
     let configs = &host.runtime.client_resources[0]
         .as_ref()
         .unwrap()
@@ -1602,6 +1951,7 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     source.time = EventTime::from_milliseconds(frames as u64 * 100);
     host.frame(&mut source, true);
     assert_eq!(source.polls, frames * 2);
+    check_native_retirement(&host);
     assert!(!host.runtime.server.events.retained_for(owner, sequence));
     assert!(
         host.runtime
@@ -1623,11 +1973,8 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     );
 }
 
-fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
-    use qa_app::{
-        host::FrameSource,
-        model_assets::{ModelAssets, ModelProfile},
-    };
+fn queued_startup_prepares_world_and_retains_unready_output(factory: fn() -> (Program, u64)) {
+    use qa_app::host::FrameSource;
     use qa_core::{
         events::{FrameEvent, OutputTarget},
         sys_events::{EventKind, SysEvent, SysEventQueue},
@@ -1635,17 +1982,23 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
     use std::time::Duration;
     struct Source {
         time: EventTime,
-        polls: usize,
         ready: bool,
         sounds: usize,
+        backend: asset_frames::Source,
     }
     impl FrameSource for Source {
+        fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
+            if self.backend.enabled {
+                Some(&mut self.backend)
+            } else {
+                None
+            }
+        }
         fn begin_frame(&mut self) -> Duration {
             self.time = EventTime::from_milliseconds(self.time.milliseconds() + 100);
             Duration::from_nanos(self.time.0)
         }
         fn poll_events(&mut self, queue: &mut SysEventQueue) {
-            self.polls += 1;
             queue
                 .push(SysEvent {
                     time: self.time,
@@ -1672,30 +2025,49 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
         factory,
         1,
         Some(Argument::ClientNativeNumber),
-        true,
+        false,
         CallbackId(11),
     );
-    let mut files = model_files::Fixture::new(&[(
-        "ui/cold.tga",
-        model_files::tga(2, 2, &[[70, 80, 90, 255]; 4]),
-    )]);
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
-    let profile = ModelProfile {
-        source_rules: RuleSetId::Quake3,
-        rules: RuleSetId::Quake3,
-        source_palette: None,
-        palette: None,
-        image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+    let client = ids[0];
+    let mut files = model_files::Fixture::new(&[
+        ("maps/native_fixture.bsp", model_files::world_map(8.0)),
+        (
+            "ui/cold.tga",
+            model_files::tga(2, 2, &[[70, 80, 90, 255]; 4]),
+        ),
+    ]);
+    let mut backend = install_cgame_world_assets(&mut host, client, &mut files);
+    backend.enabled = false;
+    let mut source = Source {
+        time: EventTime::default(),
+        ready: true,
+        sounds: 0,
+        backend,
     };
-    host.runtime.model_assets = Some(
-        ModelAssets::new(
-            qa_render::Assets::load().unwrap(),
-            [profile],
-            [],
-            Default::default(),
-        )
-        .unwrap(),
+    assert_eq!(host.registration_pending(Phase::Client), Ok(true));
+    host.runtime.vfs.take_lookup_count();
+    let packets = gamestate_packets(&mut host, client, 57, &[(0, b"\\mapname\\native_fixture")]);
+    receive_gamestate_packets(&mut host, client, &packets);
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .q3_startup()
+            .is_some()
     );
+    host.initialize_modules(Phase::Client);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
+    let mut reset = FrameResult::default();
+    host.dispatch_output(&mut source, &mut reset);
+    assert!(reset.output.presentation_resets > 0);
+    assert_eq!(reset.output.unhandled_presentation_resets, 0);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(source.backend.attempts, 0);
+    // Observe the accepted header's reset receipt before withholding the later
+    // sound. Gamestate receipt alone does not complete the presentation fence.
     let sound_sequence = host
         .runtime
         .server
@@ -1708,17 +2080,46 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
             }),
         )
         .unwrap();
-    let mut source = Source {
-        time: EventTime::default(),
-        polls: 0,
-        ready: false,
-        sounds: 0,
-    };
-    assert_eq!(host.registration_pending(Phase::Client), Ok(true));
-    host.register_client_modules(&mut source, Duration::from_secs(10))
-        .unwrap();
+    source.ready = false;
+    host.frame(&mut source, true);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(source.backend.attempts, 0);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    assert_eq!(source.sounds, 0);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .sequence_range()
+            .contains(&sound_sequence)
+    );
+
+    source.backend.enabled = true;
+    host.frame(&mut source, true);
     assert_eq!(host.registration_pending(Phase::Client), Ok(false));
-    assert!(source.polls > 4 && source.polls % 2 == 0);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    assert_eq!(
+        source.backend.cpu.admitted_assets(),
+        Some(owner.assets().counts())
+    );
+    assert!(source.backend.attempts > 0);
+    use qa_compat::services::ModelLookup;
+    assert!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/native_fixture.bsp")
+            .is_some()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .shader_handle(b"ui/cold.tga", RuleSetId::Quake3),
+        Some(1)
+    );
+    assert!(host.local_worlds[0].is_some());
     assert_eq!(source.sounds, 0);
     assert!(
         host.runtime
@@ -1727,32 +2128,9 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
             .sequence_range()
             .contains(&sound_sequence)
     );
-    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
-    let calls = host.module_counts(ModuleId(1)).unwrap();
-    assert_eq!(
-        calls.calls, 1,
-        "no draw export may run against the cold owner"
-    );
-    assert_eq!(calls.traps, 0);
-    assert!(
-        host.runtime
-            .network
-            .get(ids[0], Endpoint::Client)
-            .unwrap()
-            .channel
-            .q3_startup()
-            .is_some()
-    );
-    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
-    use qa_compat::services::ModelLookup;
-    assert_eq!(
-        catalog.shader_handle(b"ui/cold.tga", RuleSetId::Quake3),
-        Some(1)
-    );
-    host.bind_client_model_assets([]);
+
     source.ready = true;
     host.frame(&mut source, true);
-    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
     assert_eq!(source.sounds, 1);
     assert!(
         !host
@@ -1763,8 +2141,8 @@ fn queued_startup_keeps_registration_open(factory: fn() -> (Program, u64)) {
             .contains(&sound_sequence)
     );
     host.frame(&mut source, true);
-    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
     assert_eq!(source.sounds, 1);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.registration_pending(Phase::Client), Ok(false));
 }
 
@@ -2070,7 +2448,7 @@ fn main() {
     model_registration_uses_shared_services(qvm_ui_renderer);
     model_tags_use_shared_services(qvm, true);
     model_tags_use_shared_services(qvm_ui_renderer, false);
-    queued_startup_keeps_registration_open(qvm);
+    queued_startup_prepares_world_and_retains_unready_output(qvm);
     registration_wait_rejects_unreceived_state_instead_of_freezing_it();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -2080,7 +2458,7 @@ fn main() {
         model_registration_uses_shared_services(native_ui_renderer);
         model_tags_use_shared_services(native, true);
         model_tags_use_shared_services(native_ui_renderer, false);
-        queued_startup_keeps_registration_open(native);
+        queued_startup_prepares_world_and_retains_unready_output(native);
     }
     accepted_connection_snapshot_bytes(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2099,6 +2477,9 @@ fn main() {
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(native);
+    queued_uncached_world_is_admitted_before_cgame_map_imports(qvm);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    queued_uncached_world_is_admitted_before_cgame_map_imports(native);
     server_publication_reaches_cgame_through_the_ring_channel_and_queue(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     server_publication_reaches_cgame_through_the_ring_channel_and_queue(native);

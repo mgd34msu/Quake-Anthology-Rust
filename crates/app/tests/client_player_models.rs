@@ -38,6 +38,7 @@ fn loading_with_connection(
 ) -> (support::Fixture, FrameHost, ModelProfile) {
     let long = format!("models/{}.md2", "x".repeat(84));
     let mut files = vec![
+        ("maps/player.bsp", support::world_map(8.0)),
         ("players/male/tris.md2", support::md2()),
         ("models/test/skin0.pcx", support::pcx(11)),
         ("models/test/skin1.pcx", support::pcx(22)),
@@ -73,7 +74,6 @@ fn loading_with_connection(
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", rules, Some(palette)).profile();
-    let builder = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
     let protocol = if rules == RuleSetId::Quake2 {
         Protocol::Quake2_34
     } else {
@@ -81,6 +81,32 @@ fn loading_with_connection(
     };
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let loaded = qa_app::map::read(&runtime.vfs, "maps/player.bsp")
+        .unwrap()
+        .load(
+            &runtime.vfs,
+            &mut assets,
+            &mut runtime.geometry,
+            Some(palette),
+            &[
+                qa_render::material::world_load::WorldPresentationProfile::native(
+                    rules,
+                    Some(palette),
+                ),
+            ],
+            Default::default(),
+        )
+        .unwrap();
+    let mut builder =
+        ModelAssets::new(assets, [profile], [loaded.render.world], Default::default()).unwrap();
+    builder
+        .bind_loaded_world(
+            "maps/player.bsp",
+            loaded.render.world,
+            Some(loaded.collision),
+            loaded.collision_bounds,
+        )
+        .unwrap();
     runtime.model_assets = Some(builder);
     let client = connected.then(|| {
         runtime
@@ -108,8 +134,15 @@ fn loading_with_connection(
     }
     let resources = runtime.client_resources[0].as_mut().unwrap();
     let layout = ConfigLayout::for_rules(rules);
+    // The preconfigured parsed world occupies native model1. Ordinary assets
+    // and #weapon rows then form the contiguous native precache sequence.
+    resources
+        .state
+        .configs
+        .set(layout.resources[0].get(1).unwrap(), b"maps/player.bsp")
+        .unwrap();
     assert!(resources.apply(
-        layout.resources[0].get(1).unwrap(),
+        layout.resources[0].get(10).unwrap(),
         b"players/male/tris.md2",
         None,
         None
@@ -146,7 +179,14 @@ fn loading_with_connection(
     (fixture, host, profile)
 }
 fn bind(host: &mut FrameHost, profile: ModelProfile) {
-    host.bind_client_model_assets([(ClientId(0), profile, None)]);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let world = owner
+        .catalog()
+        .loaded_world(b"maps/player.bsp")
+        .unwrap()
+        .render;
+    let presentation = owner.assets().world(world).unwrap().presentations()[0];
+    host.bind_client_model_assets([(ClientId(0), profile, Some((world, presentation)))]);
 }
 fn player_record(rules: RuleSetId, skin: i32) -> EntityRecord {
     EntityRecord {
@@ -485,7 +525,7 @@ fn rerelease_named_shell_features_are_cached_per_cell_and_frozen_for_statics() {
                 .state
                 .configs,
             Some(catalog),
-            None,
+            qa_app::client_scene::StaticWorld::Selected(None),
         )];
     let (counts, before) = draw(&host, rules, record, None);
     assert_eq!((counts.models, counts.missing_models), (3, 0));
@@ -526,13 +566,40 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
             asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
         host.publish_model_admission(source.cpu.admitted_assets().unwrap())
             .unwrap();
-        source.step(&mut host);
-        source.enabled = false;
         let layout = ConfigLayout::for_rules(rules);
+        // Parsed geometry publishes the native max-client config on the first
+        // frame. Its reliable flight must reach CLIENT and return a real ACK
+        // before the subsequent player batch can enter that same channel.
+        let mut initial_publication_acked = false;
+        for _ in 0..8 {
+            source.step(&mut host);
+            host.drain(&mut Default::default());
+            let connection = host
+                .runtime
+                .network
+                .get(client, qa_core::loopback::Endpoint::Server)
+                .unwrap();
+            if !connection.channel.has_output()
+                && host.runtime.client_resources[0]
+                    .as_ref()
+                    .unwrap()
+                    .state
+                    .configs
+                    .config(layout.max_clients().unwrap())
+                    .unwrap()
+                    .integer
+                    == 1
+            {
+                initial_publication_acked = true;
+                break;
+            }
+        }
+        assert!(initial_publication_acked);
+        source.enabled = false;
         let mut updates = vec![
             asset_frames::config(
                 protocol,
-                layout.resources[0].get(1).unwrap(),
+                layout.resources[0].get(10).unwrap(),
                 b"players/male/tris.md2",
             ),
             asset_frames::config(protocol, layout.resources[0].get(2).unwrap(), b"#w1.md2"),

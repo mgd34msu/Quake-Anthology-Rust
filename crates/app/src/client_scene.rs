@@ -49,13 +49,26 @@ struct CapturedModel {
     custom_skin: i32,
     features: ModelFeatures,
 }
+#[derive(Clone, Copy)]
+pub enum StaticWorld {
+    Selected(Option<(WorldId, WorldPresentationId)>),
+    Received { row: usize, revision: u64 },
+}
+impl StaticWorld {
+    fn selected(self) -> Option<(WorldId, WorldPresentationId)> {
+        match self {
+            Self::Selected(world) => world,
+            Self::Received { .. } => None,
+        }
+    }
+}
 #[derive(Clone)]
 enum StaticModel {
     Captured(CapturedModel),
     Pending {
         name: qa_core::text::FixedText<64>,
         profile: Option<ModelProfile>,
-        world: Option<(WorldId, WorldPresentationId)>,
+        world: StaticWorld,
         features: ModelFeatures,
         cold_dirty: bool,
     },
@@ -170,18 +183,10 @@ impl ClientModelBindings {
         self.profile
     }
 
-    pub(crate) fn pending_world<'a>(
-        &self,
-        configs: &'a ConfigStrings,
-    ) -> Option<qa_core::configstrings::ConfigRef<'a>> {
-        self.cold
-            .contains(1)
-            .then(|| self.range.get(1).and_then(|index| configs.config(index)))
-            .flatten()
-    }
-
-    pub(crate) fn take_world_attempt(&mut self) {
-        self.cold.remove(1);
+    pub(crate) fn config_prepared(&mut self, index: usize) {
+        if self.range.contains(index) {
+            self.cold.remove(index - self.range.first as usize);
+        }
     }
 
     pub(crate) fn reset_received(
@@ -549,7 +554,7 @@ impl ClientModelBindings {
         record: EntityRecord,
         configs: &ConfigStrings,
         lookup: Option<&dyn qa_compat::services::ModelLookup>,
-        world: Option<(WorldId, WorldPresentationId)>,
+        world: StaticWorld,
     ) -> StaticEntity {
         let mut rejected = 0;
         let models = std::array::from_fn(|slot| {
@@ -574,7 +579,12 @@ impl ClientModelBindings {
                         .map(StaticModel::Captured);
                 }
             };
-            if let Some(binding) = self.registrations.get(ordinal as usize).copied().flatten() {
+            let row = configs.config(self.range.get(ordinal as usize)?)?;
+            let waiting_inline =
+                row.text.starts_with(b"*") && matches!(world, StaticWorld::Received { .. });
+            if !waiting_inline
+                && let Some(binding) = self.registrations.get(ordinal as usize).copied().flatten()
+            {
                 return Some(StaticModel::Captured(CapturedModel {
                     model: ModelCapture::Bound(binding),
                     custom_skin: 0,
@@ -585,18 +595,25 @@ impl ClientModelBindings {
                         .unwrap_or_default(),
                 }));
             }
-            let row = configs.config(self.range.get(ordinal as usize)?)?;
             if row.text.is_empty() {
                 return None;
             }
-            let world = self
-                .world
-                .map(|(world, presentation)| (world.render, presentation))
-                .or(world);
+            let world = match world {
+                StaticWorld::Received { .. } if waiting_inline => world,
+                StaticWorld::Received { .. } => StaticWorld::Selected(
+                    self.world
+                        .map(|(world, presentation)| (world.render, presentation)),
+                ),
+                StaticWorld::Selected(fallback) => StaticWorld::Selected(
+                    self.world
+                        .map(|(world, presentation)| (world.render, presentation))
+                        .or(fallback),
+                ),
+            };
             let registered = lookup.filter(|_| row.text.len() >= 64).and_then(|lookup| {
                 if row.text.starts_with(b"*") {
                     let index = qa_core::text::inline_model_index(row.text)?;
-                    let (world, presentation) = world?;
+                    let (world, presentation) = world.selected()?;
                     Some((lookup.inline_handle(world, index)?, Some(presentation)))
                 } else {
                     Some((lookup.file_handle(row.text)?, None))
@@ -622,7 +639,7 @@ impl ClientModelBindings {
             }
             Some(StaticModel::Pending {
                 name,
-                profile: self.profile,
+                profile: if waiting_inline { None } else { self.profile },
                 world,
                 features,
                 cold_dirty: true,
@@ -654,6 +671,37 @@ impl ClientModelBindings {
             ..capture
         })
     }
+    pub(crate) fn admit_static_world(
+        &self,
+        entities: &mut [StaticEntity],
+        row: usize,
+        revision: u64,
+    ) {
+        let (Some(selected), Some((binding, presentation))) = (self.profile, self.world) else {
+            return;
+        };
+        for entity in entities {
+            for slot in &mut entity.models {
+                let Some(StaticModel::Pending {
+                    profile,
+                    world,
+                    cold_dirty,
+                    ..
+                }) = slot
+                else {
+                    continue;
+                };
+                if matches!(world, StaticWorld::Received { row: captured_row, revision: captured_revision }
+                    if *captured_row == row && *captured_revision == revision)
+                    && profile.is_none_or(|profile| profile == selected)
+                {
+                    *profile = Some(selected);
+                    *world = StaticWorld::Selected(Some((binding.render, presentation)));
+                    *cold_dirty = true;
+                }
+            }
+        }
+    }
     pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
         if self.profile.is_none() {
             return;
@@ -667,11 +715,14 @@ impl ClientModelBindings {
                 ..
             }) = slot
             {
+                if matches!(world, StaticWorld::Received { .. }) {
+                    continue;
+                }
                 *profile = profile.or(self.profile);
                 if let Some(capture) = Self::pending_static_capture(
                     name.as_bytes(),
                     *profile,
-                    *world,
+                    world.selected(),
                     *features,
                     &mut ClientAssets::Frozen {
                         catalog: models,
@@ -772,6 +823,13 @@ impl ClientModelBindings {
                 else {
                     continue;
                 };
+                if matches!(world, StaticWorld::Received { .. }) {
+                    if *cold_dirty {
+                        *cold_dirty = false;
+                        rejected += 1;
+                    }
+                    continue;
+                }
                 let Some(selected) = profile.or(self.profile) else {
                     continue;
                 };
@@ -790,7 +848,7 @@ impl ClientModelBindings {
                 if let Some(capture) = Self::pending_static_capture(
                     name.as_bytes(),
                     Some(selected),
-                    *world,
+                    world.selected(),
                     *features,
                     &mut assets,
                 ) {

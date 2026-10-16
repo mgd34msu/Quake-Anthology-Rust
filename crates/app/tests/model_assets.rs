@@ -2396,7 +2396,12 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
         },
         ..Default::default()
     };
-    let statics = [bindings.capture_static(record, &configs, Some(catalog), None)];
+    let statics = [bindings.capture_static(
+        record,
+        &configs,
+        Some(catalog),
+        qa_app::client_scene::StaticWorld::Selected(None),
+    )];
     let input = ClientSceneInput {
         client,
         current: None,
@@ -5307,7 +5312,12 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         );
         let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
         let mut frame = front.begin_frame([0; 4]).unwrap();
-        let statics = [bindings.capture_static(record, &configs, Some(catalog), None)];
+        let statics = [bindings.capture_static(
+            record,
+            &configs,
+            Some(catalog),
+            qa_app::client_scene::StaticWorld::Selected(None),
+        )];
         let input = ClientSceneInput {
             client,
             current: None,
@@ -5359,7 +5369,12 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     record.appearance.models[0] = ModelRef::native(ResourceNamespace::Client(ClientId(8)), 50);
     let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    let statics = [bindings.capture_static(record, &configs, Some(catalog), None)];
+    let statics = [bindings.capture_static(
+        record,
+        &configs,
+        Some(catalog),
+        qa_app::client_scene::StaticWorld::Selected(None),
+    )];
     let input = ClientSceneInput {
         client,
         current: None,

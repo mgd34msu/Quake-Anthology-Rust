@@ -7,7 +7,6 @@ mod support;
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
-    client_scene::ClientSceneInput,
     host::FrameHost,
     map::SpawnAnchor,
     model_assets::{ModelAssets, ModelProfile, ModelRequest},
@@ -15,11 +14,8 @@ use qa_app::{
 use qa_compat::services::ModelLookup;
 use qa_console::{commands::Console, views::Context};
 use qa_core::{configstrings::ConfigLayout, primitives::*, sys_events::SeatId};
-use qa_network::{
-    commands::packet::Protocol,
-    projection::{EntityProjection, PlayerProjection},
-};
-use qa_render::{Assets, FrontEnd, Refdef, SceneEntity};
+use qa_network::commands::packet::Protocol;
+use qa_render::Assets;
 use qa_session::timing::TickRate;
 
 fn setup(
@@ -92,43 +88,6 @@ fn bound_model(host: &FrameHost, ordinal: u32) -> Option<ModelId> {
         .next()
         .map(|binding| binding.model)
 }
-fn static_scene(
-    host: &FrameHost,
-    protocol: Protocol,
-) -> (qa_app::client_scene::SceneCounts, Vec<SceneEntity>) {
-    let owner = host.runtime.model_assets.as_ref().unwrap();
-    let resources = &host.runtime.client_resources[0].as_ref().unwrap().state;
-    let player = PlayerState::default();
-    let projection = EntityProjection::load(protocol);
-    let player_projection = PlayerProjection::load(protocol, &[]);
-    let input = ClientSceneInput {
-        client: ClientId(0),
-        current: None,
-        previous: None,
-        projection: &projection,
-        appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
-        player_projection: &player_projection,
-        bindings: &resources.models,
-        models: owner.catalog(),
-        static_entities: resources.static_entities(),
-        player: &player,
-        weapon_view_angles: Vec3::default(),
-        alias_roll: Default::default(),
-        interpolation: Default::default(),
-        gun_animation: None,
-        gun_previous: None,
-        view_entity: None,
-    };
-    let mut front = FrontEnd::load(Default::default()).unwrap();
-    let mut frame = front.begin_frame([0; 4]).unwrap();
-    let counts = input.append(&mut frame, owner.assets(), &Refdef::default(), true, None);
-    let packet = frame.finish();
-    let entities = (0..counts.models)
-        .map(|index| *packet.entity(index))
-        .collect();
-    (counts, entities)
-}
-
 #[test]
 fn queued_unbound_q3_config_uses_client_profile_in_the_same_frame_and_waits_for_a_backend() {
     for no_backend_first in [false, true] {
@@ -222,13 +181,13 @@ fn queued_qw_static_keeps_original_late_filename_when_the_live_alias_changes() {
         source.step(&mut host);
         // The ordinary CLIENT move must reach SERVER before QW can reply.
         host.drain(&mut Default::default());
-        let index = ConfigLayout::QUAKEWORLD.resources[0].get(1).unwrap();
+        let index = ConfigLayout::QUAKEWORLD.resources[0].get(2).unwrap();
         let record = EntityRecord {
             position: Vec3([32.0, 0.0, 0.0]),
             appearance: EntityAppearance {
                 source: RuleSetId::QuakeWorld,
                 models: [
-                    ModelRef::native(ResourceNamespace::Module(ModuleId(3)), 1),
+                    ModelRef::native(ResourceNamespace::Module(ModuleId(3)), 2),
                     None,
                     None,
                     None,
@@ -255,11 +214,11 @@ fn queued_qw_static_keeps_original_late_filename_when_the_live_alias_changes() {
             ],
         );
         source.step(&mut host);
-        let live = bound_model(&host, 1).unwrap();
+        let live = bound_model(&host, 2).unwrap();
         let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
         assert_eq!(state.configs.config(index).unwrap().text, b"progs/b.mdl");
         assert_eq!(state.static_entities().len(), 1);
-        let (counts, entities) = static_scene(&host, Protocol::QuakeWorld28);
+        let (counts, entities) = frames::static_scene(&host, ClientId(0), Protocol::QuakeWorld28);
         if failed_original {
             assert_eq!(counts.models, 0);
             assert_eq!(counts.missing_models, 1);

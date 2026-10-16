@@ -333,7 +333,7 @@ pub fn load_portals(map: &Map<'_>) -> Result<Option<qa_world::portals::AreaPorta
         .map_err(|e| format!("area portals: {e:?}"))
 }
 
-fn virtual_path(name: &str) -> Result<String, String> {
+pub(crate) fn virtual_path(name: &str) -> Result<String, String> {
     if name.starts_with('/') || name.starts_with('\\') {
         return Err("map must be a virtual VFS name".into());
     }

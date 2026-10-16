@@ -872,19 +872,6 @@ fn run() -> Result<(), String> {
         }
     }
     host.configure_native_scenes(&profiles, &seat_model_profiles, width as u32, height as u32)?;
-    if !host.runtime.quit {
-        // CLIENT precaches borrow the same asset owner as SERVER and
-        // configured profiles before the backend admits those resources.
-        host.register_client_modules(
-            &mut LiveFrame {
-                pump: &mut pump,
-                window: &mut window,
-                renderer: None,
-                audio: None,
-            },
-            Duration::from_secs(10),
-        )?;
-    }
     host.register_client_model_assets(None);
     let models = host
         .runtime
@@ -1019,6 +1006,19 @@ fn run() -> Result<(), String> {
         },
         &mut Default::default(),
     );
+    if !host.runtime.quit {
+        // Queued CLIENT startup may introduce a world and native precaches.
+        // Their cold transactions use the same live backend as later frames.
+        host.register_client_modules(
+            &mut LiveFrame {
+                pump: &mut pump,
+                window: &mut window,
+                renderer: Some(&mut renderer),
+                audio: Some(&mut audio),
+            },
+            Duration::from_secs(10),
+        )?;
+    }
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }

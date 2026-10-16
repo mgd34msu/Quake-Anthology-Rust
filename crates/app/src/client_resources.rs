@@ -106,6 +106,48 @@ enum PresentationReset {
     },
 }
 
+#[derive(Clone, Copy)]
+enum WorldReadiness {
+    Unmanaged,
+    Pending,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ReceivedWorldName<'a> {
+    Path(&'a [u8]),
+    Q3Map(&'a [u8]),
+}
+pub(crate) struct ReceivedWorldRequest<'a> {
+    pub row: usize,
+    pub revision: u64,
+    pub name: ReceivedWorldName<'a>,
+}
+impl ReceivedWorldRequest<'_> {
+    pub fn with_name<T>(&self, consume: impl FnOnce(&[u8]) -> T) -> Result<T, String> {
+        match self.name {
+            ReceivedWorldName::Path(bytes) => Ok(consume(bytes)),
+            ReceivedWorldName::Q3Map(bytes) => {
+                let mut path =
+                    qa_core::text::FixedText::<{ qa_core::configstrings::MAX_TEXT + 9 }>::default();
+                path.append_bytes(b"maps/")
+                    .and_then(|()| path.append_bytes(bytes))
+                    .and_then(|()| path.append_bytes(b".bsp"))
+                    .map_err(|_| "CLIENT map name capacity")?;
+                Ok(consume(path.as_bytes()))
+            }
+        }
+    }
+    pub fn virtual_path(&self) -> Result<String, String> {
+        self.with_name(|name| {
+            crate::map::virtual_path(
+                std::str::from_utf8(name).map_err(|_| "CLIENT world path is not UTF-8")?,
+            )
+        })?
+    }
+}
+
 pub struct ResourceState {
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
@@ -114,6 +156,7 @@ pub struct ResourceState {
     server_info: Option<ReceivedServerInfo>,
     presentation_reset: PresentationReset,
     hud_pending: bool,
+    world_readiness: WorldReadiness,
     client_capacity: u32,
     sounds: qa_audio::SoundBindings,
     sound_dirty: qa_core::bits::BitSet,
@@ -153,6 +196,7 @@ impl ClientResources {
                 server_info: None,
                 presentation_reset: PresentationReset::Complete(None),
                 hud_pending: true,
+                world_readiness: WorldReadiness::Unmanaged,
                 client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
@@ -223,10 +267,6 @@ impl ClientResources {
         self.nq_signon
             .as_ref()
             .is_some_and(|signon| !signon.resources_admitted)
-    }
-    pub(crate) fn pending_nq_world(&self) -> Option<qa_core::configstrings::ConfigRef<'_>> {
-        self.state.server_info.as_ref()?;
-        self.state.models.pending_world(&self.state.configs)
     }
     pub(crate) fn nq_resources_admitted(&mut self) {
         if let Some(signon) = &mut self.nq_signon {
@@ -319,6 +359,7 @@ impl ClientResources {
         self.joined.clear();
         self.state.server_info = None;
         self.state.hud_pending = true;
+        self.state.world_readiness = WorldReadiness::Unmanaged;
         self.nq_signon = None;
         self.state.models.reset_received(world);
         self.state.sounds.clear();
@@ -348,6 +389,7 @@ impl ClientResources {
     ) {
         self.state.rejected += u64::from(invalid);
         self.state.models.configs_replaced();
+        self.state.reset_world_request();
         if let Some(catalog) = catalog {
             self.state.rejected +=
                 u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
@@ -680,6 +722,76 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    fn world_config_row(&self) -> usize {
+        if self.layout.rules == RuleSetId::Quake3 {
+            ConfigLayout::Q3_SERVER_INFO
+        } else {
+            self.layout.resources[0].first as usize + 1
+        }
+    }
+
+    fn reset_world_request(&mut self) {
+        self.world_readiness = if self.server_info.is_some()
+            || self
+                .configs
+                .config(self.world_config_row())
+                .is_some_and(|row| {
+                    if self.layout.rules == RuleSetId::Quake3 {
+                        qa_core::text::info_value(row.text, b"mapname", true).is_some()
+                    } else {
+                        !row.text.is_empty()
+                    }
+                }) {
+            WorldReadiness::Pending
+        } else {
+            WorldReadiness::Unmanaged
+        };
+    }
+
+    pub(crate) fn world_ready(&self) -> bool {
+        matches!(
+            self.world_readiness,
+            WorldReadiness::Unmanaged | WorldReadiness::Ready
+        )
+    }
+    pub(crate) fn world_managed(&self) -> bool {
+        !matches!(self.world_readiness, WorldReadiness::Unmanaged)
+    }
+
+    pub(crate) fn pending_world(&self) -> Option<ReceivedWorldRequest<'_>> {
+        if !matches!(self.world_readiness, WorldReadiness::Pending) {
+            return None;
+        }
+        let row = self.world_config_row();
+        let config = self.configs.config(row)?;
+        let name = if self.layout.rules == RuleSetId::Quake3 {
+            let range = qa_core::text::info_value(config.text, b"mapname", true).unwrap_or(0..0);
+            ReceivedWorldName::Q3Map(&config.text[range])
+        } else {
+            ReceivedWorldName::Path(config.text)
+        };
+        Some(ReceivedWorldRequest {
+            row,
+            revision: config.revision,
+            name,
+        })
+    }
+
+    pub(crate) fn take_world_attempt(&mut self) {
+        self.world_readiness = WorldReadiness::Failed;
+        self.models.config_prepared(self.world_config_row());
+    }
+
+    pub(crate) fn world_admitted(&mut self, row: usize, revision: u64) {
+        self.world_readiness = WorldReadiness::Ready;
+        self.models.config_prepared(self.world_config_row());
+        self.models.admit_static_world(
+            &mut self.static_entities[..self.static_entity_count],
+            row,
+            revision,
+        );
+        self.static_dirty = true;
+    }
     pub(crate) fn hud_pending(&self) -> bool {
         self.hud_pending
     }
@@ -796,6 +908,22 @@ impl ResourceState {
             qa_render::world::WorldPresentationId,
         )>,
     ) -> bool {
+        let world = if matches!(
+            self.world_readiness,
+            WorldReadiness::Pending | WorldReadiness::Failed
+        ) {
+            let row = self.world_config_row();
+            let Some(config) = self.configs.config(row) else {
+                self.rejected += 1;
+                return false;
+            };
+            crate::client_scene::StaticWorld::Received {
+                row,
+                revision: config.revision,
+            }
+        } else {
+            crate::client_scene::StaticWorld::Selected(world)
+        };
         let Some(slot) = self.static_entities.get_mut(self.static_entity_count) else {
             self.rejected += 1;
             return false;
@@ -988,6 +1116,9 @@ impl ResourceState {
             Ok(changed) => {
                 if changed {
                     self.models.config_received(index);
+                    if index == self.world_config_row() {
+                        self.reset_world_request();
+                    }
                 }
                 if changed && let Some(catalog) = catalog {
                     self.rejected +=

@@ -224,7 +224,7 @@ impl FrameHost {
         preparer: &mut Option<&mut dyn crate::renderer::AssetPreparer>,
     ) -> bool {
         use qa_compat::services::{LoadedWorldBinding, ModelLookup};
-        use qa_network::{commands::packet::Protocol, ingress::ConnectionPhase};
+        use qa_network::ingress::ConnectionPhase;
         let slot = client.0 as usize;
         let Some(resources) = self
             .runtime
@@ -234,7 +234,7 @@ impl FrameHost {
         else {
             return true;
         };
-        if resources.state.server_info().is_none() {
+        if !resources.state.world_managed() {
             return true;
         }
         if self
@@ -246,24 +246,19 @@ impl FrameHost {
         {
             return false;
         }
-        let Some(request) = resources.pending_nq_world() else {
-            return resources
-                .state
-                .models
-                .world_binding()
-                .is_some_and(|(world, _)| world.collision.is_some());
+        let Some(request) = resources.state.pending_world() else {
+            return resources.state.world_ready();
         };
         let revision = request.revision;
+        let config_row = request.row;
         let epoch = resources.state.models.revision();
         let Some(binding) = self.runtime.snapshots.get(slot).and_then(Option::as_ref) else {
             return false;
         };
-        let Some(seat) = binding
-            .seat()
-            .filter(|_| binding.protocol == Protocol::NetQuake15)
-        else {
+        let Some(seat) = binding.seat() else {
             return false;
         };
+        let protocol = binding.protocol;
         let Some(row) = self.runtime.server.clients.get(slot) else {
             return false;
         };
@@ -301,18 +296,35 @@ impl FrameHost {
         {
             return false;
         }
-        if resources.state.models.profile().is_some_and(|profile| {
-            profile.source_rules == source_rules && profile.rules == presentation_rules
-        }) && let Some((selected, _)) = resources.state.models.world_binding()
-            && self
-                .runtime
-                .model_assets
-                .as_ref()
-                .is_some_and(|owner| owner.catalog().loaded_world(request.text) == Some(selected))
-        {
-            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
-                resources.state.models.take_world_attempt();
+        let cached = (|| {
+            let profile = resources.state.models.profile()?;
+            if profile.source_rules != source_rules || profile.rules != presentation_rules {
+                return None;
             }
+            let selected = resources.state.models.world_binding()?.0;
+            let owner = self.runtime.model_assets.as_ref()?;
+            let world = request
+                .with_name(|name| owner.catalog().loaded_world(name))
+                .ok()??;
+            if world != selected || world.collision.is_none() {
+                return None;
+            }
+            let presentation =
+                self.runtime
+                    .scene
+                    .as_ref()?
+                    .world_presentation(world.render, profile, None)?;
+            Some((profile, world, *presentation))
+        })();
+        if let Some((profile, world, presentation)) = cached {
+            self.activate_received_world(
+                client,
+                seat,
+                profile,
+                world,
+                presentation,
+                (config_row, revision),
+            );
             return true;
         }
         if self
@@ -366,12 +378,11 @@ impl FrameHost {
                 .ok_or("missing CLIENT resources")?;
             let request = resources
                 .state
-                .models
-                .pending_world(&resources.state.configs)
+                .pending_world()
                 .ok_or("CLIENT world request changed")?;
-            resources.state.models.take_world_attempt();
-            let path =
-                std::str::from_utf8(request.text).map_err(|_| "CLIENT world path is not UTF-8")?;
+            let path = request.virtual_path();
+            resources.state.take_world_attempt();
+            let path = path?;
             let owner = runtime
                 .model_assets
                 .as_mut()
@@ -407,17 +418,16 @@ impl FrameHost {
                 }) && runtime.snapshots[slot].as_ref().is_some_and(|binding| {
                     binding.output == output
                         && binding.seat() == Some(seat)
-                        && binding.protocol == Protocol::NetQuake15
+                        && binding.protocol == protocol
                 }) && runtime
                     .network
                     .get(client, qa_core::loopback::Endpoint::Client)
                     .is_some_and(|connection| connection.phase.is_connected())
-                    && resources.state.server_info().is_some()
                     && resources.state.models.revision() == epoch
                     && resources
                         .state
                         .configs
-                        .config(1)
+                        .config(config_row)
                         .is_some_and(|row| row.revision == revision)
                     && !resources.state.presentation_reset_pending()
             };
@@ -430,7 +440,7 @@ impl FrameHost {
                     profile.palette,
                 );
             presentation.image_settings = profile.image_settings;
-            if let Some(world) = owner.catalog().loaded_world(request.text) {
+            if let Some(world) = owner.catalog().loaded_world(path.as_bytes()) {
                 if world.collision.is_none() {
                     return Err("CLIENT world has no collision model".to_owned());
                 }
@@ -457,7 +467,7 @@ impl FrameHost {
                 append.commit();
                 return Ok((profile, world, presentation));
             }
-            let input = crate::map::read(&runtime.vfs, path)?;
+            let input = crate::map::read(&runtime.vfs, &path)?;
             let (loaded, (append, scratches), _) = owner.prepare_world(
                 &runtime.vfs,
                 &mut runtime.geometry,
@@ -513,29 +523,59 @@ impl FrameHost {
         }
         match result {
             Ok((profile, world, presentation)) => {
-                let owner = self.runtime.model_assets.as_ref();
-                if let (Some(resources), Some(owner)) =
-                    (self.runtime.client_resources[slot].as_mut(), owner)
-                {
-                    resources.state.rejected += u64::from(resources.state.models.bind_all(
-                        &resources.state.configs,
-                        owner.catalog(),
-                        profile,
-                        Some((world.render, presentation.id)),
-                    ));
-                    resources.state.models.take_world_attempt();
-                }
-                self.local_worlds[seat.index()] = Some((world.render, presentation.id));
-                self.local_presentations[seat.index()] = presentation.defaults;
-                if let Some(collision) = self.runtime.client_collision[slot].as_mut() {
-                    collision.invalidate();
-                }
+                self.activate_received_world(
+                    client,
+                    seat,
+                    profile,
+                    world,
+                    presentation,
+                    (config_row, revision),
+                );
                 true
             }
             Err(error) => {
-                self.reject_nq_signon(client, format_args!("{error}"));
+                if protocol == qa_network::commands::packet::Protocol::NetQuake15 {
+                    self.reject_nq_signon(client, format_args!("{error}"));
+                } else {
+                    if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                        resources.state.rejected += 1;
+                    }
+                    let _ = self
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("CLIENT world admission: {error}\n"));
+                }
                 false
             }
+        }
+    }
+    fn activate_received_world(
+        &mut self,
+        client: ClientId,
+        seat: qa_core::sys_events::SeatId,
+        profile: crate::model_assets::ModelProfile,
+        world: qa_compat::services::LoadedWorldBinding,
+        presentation: qa_render::material::world_load::LoadedWorldPresentation,
+        request: (usize, u64),
+    ) {
+        let slot = client.0 as usize;
+        let owner = self.runtime.model_assets.as_ref();
+        if let (Some(resources), Some(owner)) =
+            (self.runtime.client_resources[slot].as_mut(), owner)
+        {
+            resources.state.rejected += u64::from(resources.state.models.bind_all(
+                &resources.state.configs,
+                owner.catalog(),
+                profile,
+                Some((world.render, presentation.id)),
+            ));
+            resources.state.world_admitted(request.0, request.1);
+        }
+        self.local_worlds[seat.index()] = Some((world.render, presentation.id));
+        self.local_presentations[seat.index()] = presentation.defaults;
+        if let Some(collision) = self.runtime.client_collision[slot].as_mut() {
+            collision.invalidate();
         }
     }
     /// Module renderer provenance is independent of the SERVER publisher's

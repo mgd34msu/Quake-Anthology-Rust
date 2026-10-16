@@ -2856,10 +2856,7 @@ fn queued_netquake_required_model_waits_without_backend_then_closes_on_real_cold
     bind_nq_preloaded_world(&mut host, &clients);
     let first = clients[0];
     let peer = clients[1];
-    let mut backend =
-        asset_frames::Source::load(host.runtime.model_assets.as_ref().unwrap().assets());
-    host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
-        .unwrap();
+    let mut backend = install_received_world_owner(&mut host, &clients);
     let mut bytes = nq_server_info(
         b"missing model",
         &[b"maps/ready.bsp", b"progs/not-installed.mdl"],
@@ -3129,9 +3126,464 @@ fn install_received_world_owner(
     backend
 }
 
+fn queue_received_world_rows(
+    host: &mut FrameHost,
+    protocol: Protocol,
+    client: ClientId,
+    rows: &[(usize, &[u8])],
+) {
+    if protocol == Protocol::Quake3_68 {
+        let connection = host
+            .runtime
+            .network
+            .get_mut(client, Endpoint::Server)
+            .unwrap();
+        let sequence = connection.channel.command_state().unwrap().queued;
+        let mut bytes = [0; 32768];
+        let length = connection
+            .channel
+            .encode_server_output(&mut bytes, |writer, _| {
+                qa_network::channel::commands::write_gamestate(
+                    writer,
+                    sequence,
+                    0,
+                    0,
+                    rows.iter().copied(),
+                    std::iter::empty(),
+                )
+            })
+            .unwrap();
+        let time = EventTime::from_milliseconds(100);
+        connection
+            .channel
+            .prepare_server_message(&bytes[..length], time)
+            .unwrap()
+            .unwrap();
+        loop {
+            host.runtime
+                .loopback
+                .send(
+                    Endpoint::Server,
+                    client,
+                    connection.channel.pending_packet().unwrap().bytes,
+                )
+                .unwrap();
+            connection.channel.submitted(time).unwrap();
+            if !connection.channel.pending_fragments() {
+                break;
+            }
+            connection.channel.prepare_output(time).unwrap().unwrap();
+        }
+    } else {
+        asset_frames::queue(
+            host,
+            rows.iter()
+                .map(|&(row, text)| asset_frames::config(protocol, row, text)),
+        );
+    }
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(host);
+}
+
+#[test]
+fn queued_native_world_metadata_uses_one_cold_owner_for_qw_q2_rr_and_q3() {
+    use qa_compat::services::ModelLookup;
+    for protocol in [
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let fixture = assets_support::Fixture::new(&[
+            ("maps/subdir/unseen.bsp", assets_support::world_map(8.0)),
+            ("progs/ordinary.mdl", assets_support::mdl()),
+        ]);
+        let (mut host, client, peer, _) = host(protocol);
+        bind_nq_preloaded_world(&mut host, &[client]);
+        let mut backend = install_received_world_owner(&mut host, &[client]);
+        for mount in fixture.vfs.mounts() {
+            host.runtime
+                .vfs
+                .mount_directory(&mount.path, mount.priority)
+                .unwrap();
+        }
+        host.local_presentation_rules[0] = Some(RuleSetId::Quake3);
+        let old_world = host.runtime.collision.as_ref().unwrap().geometry;
+        let peer_entity = host.runtime.server.clients[peer.0 as usize].entity;
+        let roles = (
+            host.runtime.prediction[0].player.movement_rules,
+            host.runtime.prediction[0].player.trace_rules,
+        );
+        let counts = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts();
+        // QW's service reply follows a real native CLIENT request.
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(host.runtime.send_client_command(
+                client,
+                &UserCmd {
+                    duration_ms: 16,
+                    server_time_ms: 100,
+                    ..Default::default()
+                },
+                EventTime::from_milliseconds(100),
+                &mut Source::default()
+            ));
+            host.drain(&mut Default::default());
+        }
+        let body = host.runtime.server.clients[client.0 as usize].player.body;
+        let layout = protocol.resource_layout();
+        let info = b"\\mapname\\subdir/unseen".as_slice();
+        let rows = if protocol == Protocol::Quake3_68 {
+            vec![
+                (qa_core::configstrings::ConfigLayout::Q3_SERVER_INFO, info),
+                (
+                    layout.resources[0].get(1).unwrap(),
+                    b"progs/ordinary.mdl".as_slice(),
+                ),
+                (layout.resources[0].get(2).unwrap(), b"*1".as_slice()),
+            ]
+        } else {
+            vec![
+                (
+                    layout.resources[0].get(1).unwrap(),
+                    b"maps/subdir/unseen.bsp".as_slice(),
+                ),
+                (layout.resources[0].get(2).unwrap(), b"*1".as_slice()),
+            ]
+        };
+        queue_received_world_rows(&mut host, protocol, client, &rows);
+        host.runtime.vfs.take_lookup_count();
+        host.register_client_model_assets(None);
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0, "{protocol:?}");
+        assert_eq!(backend.attempts, 0, "{protocol:?}");
+        assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+        host.register_client_model_assets(Some(&mut backend));
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0, "{protocol:?}");
+        assert_eq!(backend.attempts, 0, "{protocol:?}");
+        host.runtime.scene.as_mut().unwrap().discard_frame();
+        host.register_client_model_assets(Some(&mut backend));
+        assert!(host.runtime.vfs.take_lookup_count() > 0, "{protocol:?}");
+        assert!(backend.attempts > 0, "{protocol:?}");
+        let owner = host.runtime.model_assets.as_ref().unwrap();
+        let loaded = owner
+            .catalog()
+            .loaded_world(b"maps/subdir/unseen.bsp")
+            .unwrap();
+        assert_eq!(
+            host.local_worlds[0].unwrap().0,
+            loaded.render,
+            "{protocol:?}"
+        );
+        assert_eq!(
+            owner.assets().counts().worlds,
+            counts.worlds + 1,
+            "{protocol:?}"
+        );
+        assert_eq!(backend.cpu.admitted_assets(), Some(owner.assets().counts()));
+        if protocol == Protocol::Quake3_68 {
+            // CS_MODELS+1 is an independent ordinary model, not the map request.
+            assert!(
+                host.runtime.client_resources[client.0 as usize]
+                    .as_ref()
+                    .unwrap()
+                    .state
+                    .models
+                    .resolve(
+                        ModelRef::native(ResourceNamespace::Client(client), 1).unwrap(),
+                        0,
+                        owner.catalog(),
+                        Default::default(),
+                    )
+                    .is_some()
+            );
+        }
+        let (rules, entities) = qa_world::collision::trace_policy(RuleSetId::Quake3);
+        let query = qa_world::collision::TraceQuery::point(
+            Vec3([-2., 0.5, 0.5]),
+            Vec3([2., 0.5, 0.5]),
+            rules,
+            entities,
+        );
+        assert!(
+            host.runtime
+                .geometry
+                .trace_model(
+                    loaded.collision.unwrap(),
+                    0,
+                    query,
+                    &mut host.runtime.collision.as_mut().unwrap().scratch,
+                )
+                .unwrap()
+                .fraction
+                < 1.0,
+            "{protocol:?}"
+        );
+        assert_eq!(host.runtime.collision.as_ref().unwrap().geometry, old_world);
+        assert_eq!(
+            host.runtime.server.clients[peer.0 as usize].entity,
+            peer_entity
+        );
+        assert_eq!(
+            host.runtime.server.clients[client.0 as usize]
+                .player
+                .body
+                .position,
+            body.position
+        );
+        assert_eq!(
+            (
+                host.runtime.prediction[0].player.movement_rules,
+                host.runtime.prediction[0].player.trace_rules
+            ),
+            roles
+        );
+        assert!(host.runtime.network.get(peer, Endpoint::Server).is_some());
+        let attempts = backend.attempts;
+        host.register_client_model_assets(Some(&mut backend));
+        assert_eq!(backend.attempts, attempts, "{protocol:?}");
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0, "{protocol:?}");
+    }
+}
+
 struct HudPreparer {
     backend: asset_frames::Source,
     reject: bool,
+}
+
+#[test]
+fn queued_qw_inline_statics_wait_for_their_exact_received_world_revision() {
+    use qa_compat::services::ModelLookup;
+    let protocol = Protocol::QuakeWorld28;
+    for superseded in [false, true] {
+        let fixture = assets_support::Fixture::new(&[
+            ("maps/a.bsp", assets_support::world_map(8.0)),
+            ("maps/b.bsp", assets_support::world_map(16.0)),
+        ]);
+        let (mut host, client, peer, _) = host(protocol);
+        bind_nq_preloaded_world(&mut host, &[client]);
+        let mut backend = install_received_world_owner(&mut host, &[client]);
+        for mount in fixture.vfs.mounts() {
+            host.runtime
+                .vfs
+                .mount_directory(&mount.path, mount.priority)
+                .unwrap();
+        }
+        let old_world = host.local_worlds[0].unwrap();
+        let old_peer = host.runtime.server.clients[peer.0 as usize].entity;
+        let layout = protocol.resource_layout();
+        let inline_row = layout.resources[0].get(2).unwrap();
+        // This row already resolves against the old world. Receipt of a new
+        // world must prevent a static from capturing that stale numeric row.
+        let owner = host.runtime.model_assets.as_ref().unwrap();
+        assert!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_mut()
+                .unwrap()
+                .apply(inline_row, b"*1", Some(owner.catalog()), None,)
+        );
+        assert!(host.runtime.send_client_command(
+            client,
+            &UserCmd {
+                duration_ms: 16,
+                server_time_ms: 100,
+                ..Default::default()
+            },
+            EventTime::from_milliseconds(100),
+            &mut Source::default()
+        ));
+        host.drain(&mut Default::default());
+        let record = EntityRecord {
+            appearance: EntityAppearance {
+                source: RuleSetId::QuakeWorld,
+                models: [
+                    ModelRef::native(ResourceNamespace::Client(client), 2),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut static_bytes = vec![0; 128];
+        let length = qa_network::outputs::static_entity(
+            protocol,
+            &record,
+            |model| Some(model.ordinal),
+            &mut static_bytes,
+        )
+        .unwrap();
+        static_bytes.truncate(length);
+        let mut packets = vec![
+            asset_frames::config(protocol, layout.resources[0].get(1).unwrap(), b"maps/a.bsp"),
+            static_bytes,
+        ];
+        if superseded {
+            packets.push(asset_frames::config(
+                protocol,
+                layout.resources[0].get(1).unwrap(),
+                b"maps/b.bsp",
+            ));
+        }
+        asset_frames::queue(&mut host, packets);
+        host.drain(&mut Default::default());
+        assert_eq!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .static_entities()
+                .len(),
+            1
+        );
+        let (pending, entities) = asset_frames::static_scene(&host, client, protocol);
+        assert_eq!((pending.models, pending.missing_models), (0, 1));
+        assert!(entities.is_empty());
+        // An unrelated publication must not bind the capture to the old world
+        // or pin its pending profile before the requested presentation exists.
+        host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
+            .unwrap();
+        host.local_presentation_rules[0] = Some(RuleSetId::Quake3);
+        host.register_client_model_assets(Some(&mut backend));
+        let expected_path = if superseded {
+            b"maps/b.bsp".as_slice()
+        } else {
+            b"maps/a.bsp".as_slice()
+        };
+        let loaded = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .loaded_world(expected_path)
+            .unwrap();
+        assert_ne!(loaded.render, old_world.0);
+        let (counts, entities) = asset_frames::static_scene(&host, client, protocol);
+        if superseded {
+            assert_eq!((counts.models, counts.missing_models), (0, 1));
+            assert!(entities.is_empty());
+            assert!(
+                host.runtime
+                    .model_assets
+                    .as_ref()
+                    .unwrap()
+                    .catalog()
+                    .loaded_world(b"maps/a.bsp")
+                    .is_none()
+            );
+        } else {
+            assert_eq!((counts.models, counts.missing_models), (1, 0));
+            assert!(
+                matches!(entities[0].model, qa_render::SceneModel::World { world, .. } if world == loaded.render)
+            );
+        }
+        assert_eq!(
+            host.runtime.server.clients[peer.0 as usize].entity,
+            old_peer
+        );
+        host.runtime.vfs.take_lookup_count();
+        let attempts = backend.attempts;
+        host.register_client_model_assets(Some(&mut backend));
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+        assert_eq!(backend.attempts, attempts);
+    }
+}
+
+#[test]
+fn queued_q2_and_q3_world_backend_failure_waits_for_new_accepted_metadata() {
+    use qa_compat::services::ModelLookup;
+    for protocol in [Protocol::Quake2_34, Protocol::Quake3_68] {
+        let fixture = assets_support::Fixture::new(&[
+            ("maps/large.bsp", assets_support::world_map(256.0)),
+            ("maps/retry.bsp", assets_support::world_map(8.0)),
+        ]);
+        let (mut host, client, peer, _) = host(protocol);
+        bind_nq_preloaded_world(&mut host, &[client]);
+        let mut backend = install_received_world_owner(&mut host, &[client]);
+        for mount in fixture.vfs.mounts() {
+            host.runtime
+                .vfs
+                .mount_directory(&mount.path, mount.priority)
+                .unwrap();
+        }
+        let old_world = host.local_worlds[0];
+        let old_geometry = host.runtime.collision.as_ref().unwrap().geometry;
+        let old_peer = host.runtime.server.clients[peer.0 as usize].entity;
+        let layout = protocol.resource_layout();
+        let row = if protocol == Protocol::Quake3_68 {
+            qa_core::configstrings::ConfigLayout::Q3_SERVER_INFO
+        } else {
+            layout.resources[0].get(1).unwrap()
+        };
+        let value = if protocol == Protocol::Quake3_68 {
+            b"\\mapname\\large".as_slice()
+        } else {
+            b"maps/large.bsp".as_slice()
+        };
+        queue_received_world_rows(&mut host, protocol, client, &[(row, value)]);
+        host.register_client_model_assets(Some(&mut backend));
+        assert!(backend.attempts > 0);
+        assert_eq!(host.local_worlds[0], old_world);
+        assert!(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .catalog()
+                .loaded_world(b"maps/large.bsp")
+                .is_none()
+        );
+        assert!(host.runtime.network.get(client, Endpoint::Client).is_some());
+        host.runtime.vfs.take_lookup_count();
+        let attempts = backend.attempts;
+        for _ in 0..3 {
+            host.register_client_model_assets(Some(&mut backend));
+        }
+        assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+        assert_eq!(backend.attempts, attempts);
+        assert!(host.runtime.send_client_command(
+            client,
+            &UserCmd {
+                duration_ms: 16,
+                server_time_ms: 200,
+                ..Default::default()
+            },
+            EventTime::from_milliseconds(200),
+            &mut Source::default()
+        ));
+        host.drain(&mut Default::default());
+        let value = if protocol == Protocol::Quake3_68 {
+            b"\\mapname\\retry".as_slice()
+        } else {
+            b"maps/retry.bsp".as_slice()
+        };
+        queue_received_world_rows(&mut host, protocol, client, &[(row, value)]);
+        host.register_client_model_assets(Some(&mut backend));
+        let loaded = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .loaded_world(b"maps/retry.bsp")
+            .unwrap();
+        assert_eq!(host.local_worlds[0].unwrap().0, loaded.render);
+        assert_eq!(
+            host.runtime.collision.as_ref().unwrap().geometry,
+            old_geometry
+        );
+        assert_eq!(
+            host.runtime.server.clients[peer.0 as usize].entity,
+            old_peer
+        );
+        assert!(host.runtime.network.get(peer, Endpoint::Server).is_some());
+    }
 }
 impl qa_app::renderer::AssetPreparer for HudPreparer {
     fn target_size(&self) -> Option<[u32; 2]> {

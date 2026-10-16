@@ -154,7 +154,12 @@ fn native_linked_model_cells_keep_their_own_skin_alpha_and_draw_properties() {
             })
         };
         let player = PlayerState::default();
-        let retained = [bindings.capture_static(accepted, &configs, Some(catalog), None)];
+        let retained = [bindings.capture_static(
+            accepted,
+            &configs,
+            Some(catalog),
+            qa_app::client_scene::StaticWorld::Selected(None),
+        )];
         let registration = catalog
             .registration("models/test/tris.md2", profile)
             .unwrap();

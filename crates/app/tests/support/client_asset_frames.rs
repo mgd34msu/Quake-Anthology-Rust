@@ -111,3 +111,53 @@ pub fn queue(host: &mut FrameHost, payloads: impl IntoIterator<Item = Vec<u8>>) 
         "native reliable payload must actually enter the loopback"
     );
 }
+
+pub fn static_scene(
+    host: &FrameHost,
+    client: ClientId,
+    protocol: Protocol,
+) -> (
+    qa_app::client_scene::SceneCounts,
+    Vec<qa_render::SceneEntity>,
+) {
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let resources = &host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state;
+    let player = qa_core::primitives::PlayerState::default();
+    let projection = qa_network::projection::EntityProjection::load(protocol);
+    let player_projection = qa_network::projection::PlayerProjection::load(protocol, &[]);
+    let input = qa_app::client_scene::ClientSceneInput {
+        client,
+        current: None,
+        previous: None,
+        projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
+        player_projection: &player_projection,
+        bindings: &resources.models,
+        models: owner.catalog(),
+        static_entities: resources.static_entities(),
+        player: &player,
+        weapon_view_angles: Default::default(),
+        alias_roll: Default::default(),
+        interpolation: Default::default(),
+        gun_animation: None,
+        gun_previous: None,
+        view_entity: None,
+    };
+    let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    let counts = input.append(
+        &mut frame,
+        owner.assets(),
+        &qa_render::Refdef::default(),
+        true,
+        None,
+    );
+    let packet = frame.finish();
+    let entities = (0..counts.models)
+        .map(|index| *packet.entity(index))
+        .collect();
+    (counts, entities)
+}

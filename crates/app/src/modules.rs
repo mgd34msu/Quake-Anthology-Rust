@@ -1191,6 +1191,9 @@ impl FrameHost {
                 .as_ref()
                 .is_some_and(|binding| binding.presentation_closed())
             || self.runtime.server.entities.resolve(lifetime).is_none()
+            || self.runtime.client_resources[id.0 as usize]
+                .as_ref()
+                .is_some_and(|resources| !resources.state.world_ready())
         {
             return None;
         }
