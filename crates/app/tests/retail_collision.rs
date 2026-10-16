@@ -17,7 +17,7 @@ fn load_input(
     geometry: &mut CollisionStore,
     rules: RuleSetId,
 ) -> qa_app::map::LoadedMap {
-    let mut palettes = [None; 5];
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     let source = qa_app::render_settings::palette(vfs, assets, input.native_source, &mut palettes)
         .expect("source palette");
     let target = qa_app::render_settings::palette(vfs, assets, rules, &mut palettes)

@@ -1,3 +1,5 @@
+#[path = "model_assets/profiles.rs"]
+mod profiles;
 #[path = "model_assets/support.rs"]
 mod support;
 
@@ -41,7 +43,7 @@ fn renderer_request(
     }
 }
 
-fn world_registration(profile: ModelProfile, palette: PaletteId) -> WorldRegistration {
+fn world_registration(profile: ModelProfile) -> WorldRegistration {
     let mut presentation = qa_render::material::world_load::WorldPresentationProfile::native(
         profile.rules,
         profile.palette,
@@ -49,7 +51,6 @@ fn world_registration(profile: ModelProfile, palette: PaletteId) -> WorldRegistr
     presentation.image_settings = profile.image_settings;
     WorldRegistration {
         profile,
-        source_palette: Some(palette),
         presentation,
         options: Default::default(),
         trace_rules: qa_world::collision::TraceRules::ARENA,
@@ -77,7 +78,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile, palette).presentation],
+            &[world_registration(profile).presentation],
             Default::default(),
         )
         .unwrap();
@@ -87,6 +88,17 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![first.render])
             .unwrap();
     let mut owner = ModelAssets::new(assets, [profile], [first_world], Default::default()).unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
     owner
         .bind_loaded_world(
             &first.virtual_path,
@@ -136,7 +148,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                     &fixture.vfs,
                     &mut geometry,
                     map::read(&fixture.vfs, "second").unwrap(),
-                    world_registration(unconfigured, palette),
+                    world_registration(unconfigured),
                     |_, _, _| -> Result<(), String> {
                         panic!("unconfigured profile must fail before staging")
                     },
@@ -153,7 +165,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             &fixture.vfs,
             &mut geometry,
             map::read(&fixture.vfs, "second").unwrap(),
-            world_registration(profile, palette),
+            world_registration(profile),
             |view, store, loaded| {
                 assert!(loaded.spawns.is_empty());
                 assert_eq!(loaded.native_source, RuleSetId::Quake);
@@ -243,7 +255,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                 &fixture.vfs,
                 &mut geometry,
                 map::read(&fixture.vfs, "staged").unwrap(),
-                world_registration(profile, palette),
+                world_registration(profile),
                 |view, _, loaded| -> Result<(), String> {
                     let _append = scene.stage_world(view.assets, &loaded.render)?;
                     staged_geometry.set(Some(loaded.collision));
@@ -263,7 +275,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             &fixture.vfs,
             &mut geometry,
             map::read(&fixture.vfs, "first").unwrap(),
-            world_registration(profile, palette),
+            world_registration(profile),
             |_, _, _| -> Result<(), String> { panic!("filename conflict must precede staging") },
             |_, _| panic!("filename conflict must precede backend"),
         )
@@ -302,6 +314,17 @@ fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
         },
     )
     .unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
     let mut cpu = CpuBackend::load_with_limits(
         64,
         48,
@@ -322,7 +345,7 @@ fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
             &fixture.vfs,
             &mut geometry,
             map::read(&fixture.vfs, "two").unwrap(),
-            world_registration(profile, palette),
+            world_registration(profile),
             |_, _, _| -> Result<(), String> { panic!("inline capacity must precede staging") },
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
@@ -376,7 +399,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile, palette).presentation],
+            &[world_registration(profile).presentation],
             Default::default(),
         )
         .unwrap();
@@ -396,6 +419,17 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         Default::default(),
     )
     .unwrap();
+    owner
+        .adopt_palettes(
+            qa_app::render_settings::PaletteRegistrations::from_registered([
+                Some(palette),
+                Some(palette),
+                None,
+                None,
+                None,
+            ]),
+        )
+        .unwrap();
     owner
         .bind_loaded_world(
             &old.virtual_path,
@@ -446,7 +480,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         &fixture.vfs,
         &mut geometry,
         map::read(&fixture.vfs, "large").unwrap(),
-        world_registration(profile, palette),
+        world_registration(profile),
         |view, store, loaded| {
             created.set(Some(loaded.collision));
             let append = scene.stage_world(view.assets, &loaded.render)?;
@@ -503,7 +537,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             &fixture.vfs,
             &mut geometry,
             map::read(&fixture.vfs, "small").unwrap(),
-            world_registration(profile, palette),
+            world_registration(profile),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
             |assets, append| {
                 cpu.prepare_assets(assets, Some(append.limits()))
@@ -537,7 +571,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             &fixture.vfs,
             &mut geometry,
             map::read(&fixture.vfs, "large").unwrap(),
-            world_registration(profile, palette),
+            world_registration(profile),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
             |assets, append| {
                 cpu.prepare_assets(assets, Some(append.limits()))

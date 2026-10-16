@@ -28,6 +28,11 @@ pub struct PaletteLighting {
     first_fullbright: u16,
 }
 
+pub struct PreparedTranslucency {
+    palette: u64,
+    map: Box<[u8]>,
+}
+
 impl PaletteLighting {
     pub fn load(
         rgb: &[u8],
@@ -74,8 +79,14 @@ impl PaletteLighting {
     /// Cold fallback for cross-game translucency when the presentation has no
     /// authored blend table. Preserve an existing native table byte for byte.
     pub fn ensure_translucency(&mut self) {
+        if let Some(prepared) = self.prepare_translucency() {
+            self.install_translucency(prepared);
+        }
+    }
+    /// Prepare the cold fallback without changing a published palette.
+    pub fn prepare_translucency(&self) -> Option<PreparedTranslucency> {
         if self.translucency.is_some() {
-            return;
+            return None;
         }
         let mut map = vec![0; ALPHAMAP_BYTES];
         for major in 0..256 {
@@ -88,7 +99,18 @@ impl PaletteLighting {
                 map[major * 256 + minor] = self.nearest_index(rgb, None);
             }
         }
-        self.translucency = Some(map.into_boxed_slice());
+        Some(PreparedTranslucency {
+            palette: self.id,
+            map: map.into_boxed_slice(),
+        })
+    }
+    /// The candidate belongs to this retained palette and commits after cold
+    /// backend admission. An authored table always keeps precedence.
+    pub fn install_translucency(&mut self, prepared: PreparedTranslucency) {
+        assert_eq!(self.id, prepared.palette, "translucency palette changed");
+        if self.translucency.is_none() {
+            self.translucency = Some(prepared.map);
+        }
     }
 
     /// Cold conversion for truecolor assets with no native indexed resource.

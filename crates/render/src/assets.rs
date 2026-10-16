@@ -23,6 +23,11 @@ pub struct ImageId(pub u32);
 pub struct MaterialId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaletteId(pub u32);
+
+pub struct PreparedPaletteTranslucency {
+    id: PaletteId,
+    table: crate::surface_cache::PreparedTranslucency,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct Vertex {
@@ -595,11 +600,25 @@ impl Assets {
         self.palettes.get(id.0 as usize)
     }
     pub fn ensure_palette_translucency(&mut self, id: PaletteId) -> Result<(), &'static str> {
-        self.palettes
-            .get_mut(id.0 as usize)
-            .ok_or("unknown translucency palette")?
-            .ensure_translucency();
+        if let Some(prepared) = self.prepare_palette_translucency(id)? {
+            self.install_palette_translucency(prepared);
+        }
         Ok(())
+    }
+    pub fn prepare_palette_translucency(
+        &self,
+        id: PaletteId,
+    ) -> Result<Option<PreparedPaletteTranslucency>, &'static str> {
+        Ok(self
+            .palettes
+            .get(id.0 as usize)
+            .ok_or("unknown translucency palette")?
+            .prepare_translucency()
+            .map(|table| PreparedPaletteTranslucency { id, table }))
+    }
+    /// No palette may be removed/replaced between preparation and commit.
+    pub fn install_palette_translucency(&mut self, prepared: PreparedPaletteTranslucency) {
+        self.palettes[prepared.id.0 as usize].install_translucency(prepared.table);
     }
     pub fn register_indexed_image(
         &mut self,

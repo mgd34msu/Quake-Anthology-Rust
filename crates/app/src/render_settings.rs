@@ -10,24 +10,53 @@ use qa_render::{
     },
 };
 
+#[derive(Default)]
+pub struct PaletteRegistrations {
+    ids: [Option<PaletteId>; 5],
+}
+impl PaletteRegistrations {
+    /// Adopt already registered resources at the startup owner boundary.
+    pub fn from_registered(ids: [Option<PaletteId>; 5]) -> Self {
+        Self { ids }
+    }
+    pub fn get(&self, rules: RuleSetId) -> Option<PaletteId> {
+        self.ids[rules as usize]
+    }
+    pub(crate) fn checkpoint(&self) -> [Option<PaletteId>; 5] {
+        self.ids
+    }
+    pub(crate) fn restore(&mut self, ids: [Option<PaletteId>; 5]) {
+        self.ids = ids;
+    }
+    pub(crate) fn validate(&self, assets: &Assets) -> bool {
+        self.ids
+            .iter()
+            .flatten()
+            .all(|&id| assets.palette(id).is_some())
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.iter().all(Option::is_none)
+    }
+}
+
 /// Palette resources are registered once for their exact native source, even
 /// when multiple source/presentation roles request the same resource.
 pub fn palette(
     vfs: &Vfs,
     assets: &mut Assets,
     rules: RuleSetId,
-    registered: &mut [Option<PaletteId>; 5],
+    registered: &mut PaletteRegistrations,
 ) -> Result<Option<PaletteId>, String> {
     let Some(source) = PaletteSource::native(rules) else {
         return Ok(None);
     };
-    if let Some(id) = registered[rules as usize] {
+    if let Some(id) = registered.get(rules) {
         return Ok(Some(id));
     }
     let id = load_palette(vfs, assets, source).map_err(|error| format!("palette: {error:?}"))?;
     for rule in RuleSetId::ALL {
         if PaletteSource::native(rule) == Some(source) {
-            registered[rule as usize] = Some(id);
+            registered.ids[rule as usize] = Some(id);
         }
     }
     Ok(Some(id))
@@ -38,7 +67,7 @@ pub fn world_profile(
     assets: &mut Assets,
     vars: &Cvars,
     rules: RuleSetId,
-    registered: &mut [Option<PaletteId>; 5],
+    registered: &mut PaletteRegistrations,
 ) -> Result<WorldPresentationProfile, String> {
     let mut profile =
         WorldPresentationProfile::native(rules, palette(vfs, assets, rules, registered)?);

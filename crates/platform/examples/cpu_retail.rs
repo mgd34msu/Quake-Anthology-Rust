@@ -499,7 +499,7 @@ fn run() -> Result<(), String> {
         return Err("copied saved profile contained no applicable settings".into());
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
-    let mut palettes = [None; 5];
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     let source_palette = render_settings::palette(
         &runtime.vfs,
         &mut assets,

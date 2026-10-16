@@ -24,7 +24,7 @@ fn run() -> Result<(), String> {
     let start = Stopwatch::start();
     let input = map::read(&vfs, &name)?;
     let presentation = input.native_source;
-    let mut palettes = [None; 5];
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     let source_palette =
         qa_app::render_settings::palette(&vfs, &mut assets, input.native_source, &mut palettes)?;
     let target_palette =

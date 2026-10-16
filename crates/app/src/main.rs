@@ -468,7 +468,7 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
-    let mut palettes = [None; 5];
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     if let Some((input, policy)) = staged_map {
         let virtual_name = input
             .virtual_path
@@ -719,6 +719,11 @@ fn run() -> Result<(), String> {
         render_world,
         Default::default(),
     )?);
+    host.runtime
+        .model_assets
+        .as_mut()
+        .ok_or("missing model assets")?
+        .adopt_palettes(palettes)?;
     if let Some(path) = map_path.as_deref() {
         let world = render_world.ok_or("loaded map needs a render world")?;
         let collision = host
@@ -918,17 +923,17 @@ fn run() -> Result<(), String> {
         )
     };
     let console_rules = host.console.cvars.context().source;
-    let assets = host
+    let (assets, palettes) = host
         .runtime
         .model_assets
         .as_mut()
         .ok_or("missing model assets")?
-        .assets_mut();
+        .unpublished_assets()?;
     let console_assets = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
         assets,
         console_rules,
-        palettes[console_rules as usize],
+        palettes.get(console_rules),
         qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
         width as u32,
         height as u32,
@@ -951,7 +956,7 @@ fn run() -> Result<(), String> {
                 &host.runtime.vfs,
                 assets,
                 rules,
-                palettes[rules as usize],
+                palettes.get(rules),
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             )?
         };
@@ -970,7 +975,7 @@ fn run() -> Result<(), String> {
         &host.runtime.vfs,
         assets,
         qa_core::primitives::RuleSetId::Quake,
-        &mut palettes,
+        palettes,
     ) {
         let material =
             qa_render::particles::register_point_material(assets, "engine/particles/point")?;

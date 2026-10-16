@@ -75,7 +75,6 @@ pub struct ModelProfile {
 /// Cold world policies are explicit and independent of BSP decoding.
 pub struct WorldRegistration {
     pub profile: ModelProfile,
-    pub source_palette: Option<PaletteId>,
     pub presentation: qa_render::material::world_load::WorldPresentationProfile,
     pub options: qa_render::material::world_load::WorldLoadOptions,
     pub trace_rules: qa_world::collision::TraceRules,
@@ -252,7 +251,13 @@ struct RegisteredProfile {
 }
 struct RegisteredShader {
     name: NameId,
-    profiles: IndexSpan,
+    profiles: Vec<usize>,
+    requests: [Option<ShaderRequest>; 5],
+}
+#[derive(Clone)]
+struct ShaderRequest {
+    name: qa_core::text::FixedText<64>,
+    mipmaps: bool,
 }
 struct ShaderProfileBinding {
     profile: ModelProfile,
@@ -444,6 +449,42 @@ impl ModelProfile {
     }
 }
 impl ProfileImages {
+    fn new(
+        profile: ModelProfile,
+        assets: &Assets,
+    ) -> Result<(Self, Option<qa_render::assets::PreparedPaletteTranslucency>), String> {
+        let blend = if let Some((source, target)) = profile
+            .source_palette
+            .zip(profile.palette)
+            .filter(|(source, target)| source != target)
+            && matches!(
+                profile.source_rules,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+            )
+            && assets.palette(source).is_some()
+            && assets.palette(target).is_some()
+        {
+            assets.prepare_palette_translucency(target)?
+        } else {
+            None
+        };
+        let state = ImagesState::new(
+            profile.source_rules,
+            profile.rules,
+            profile.image_settings,
+            profile.source_palette.zip(profile.palette),
+        )
+        .map_err(|error| format!("model images: {error:?}"));
+        Ok((
+            Self {
+                profile,
+                model_policy: profile.model_policy(),
+                state: Some(state),
+                colors: PaletteColors::load(profile, assets),
+            },
+            blend,
+        ))
+    }
     fn with_images<T>(
         &mut self,
         vfs: &Vfs,
@@ -483,7 +524,7 @@ pub struct ModelCatalog {
     reader: ArchiveReader,
     names: NameTable,
     files: Vec<ModelFile>,
-    models: Vec<IndexSpan>,
+    models: Vec<Vec<usize>>,
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
     shader_bindings: Vec<ShaderProfileBinding>,
@@ -508,6 +549,7 @@ pub struct ModelCatalog {
 pub struct ModelAssets {
     assets: Assets,
     catalog: ModelCatalog,
+    palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
 }
 
@@ -519,6 +561,7 @@ pub struct ModelView<'a> {
 
 struct RegistrationCheckpoint {
     assets: AssetCounts,
+    palettes: [Option<PaletteId>; 5],
     names: usize,
     capacity: ModelCapacity,
     registrations: usize,
@@ -540,19 +583,98 @@ struct RegistrationCheckpoint {
     images: Vec<Option<ImageRegistrationMark>>,
 }
 struct ShaderCheckpoint {
+    index: usize,
+    requests: [Option<ShaderRequest>; 5],
     bindings: Vec<usize>,
 }
 struct ModelCheckpoint {
     name: NameId,
     file: ModelFile,
-    profiles: IndexSpan,
+    profiles: Vec<usize>,
     unattempted: Vec<usize>,
 }
 struct SkinCheckpoint {
     index: usize,
     unattempted: Vec<usize>,
 }
+struct ProfileCheckpoint {
+    registration: RegistrationCheckpoint,
+    profiles: usize,
+    models: Vec<usize>,
+    shaders: Vec<usize>,
+    skins: Vec<usize>,
+}
+impl ProfileCheckpoint {
+    fn capture(owner: &ModelAssets) -> Result<Self, String> {
+        Ok(Self {
+            registration: RegistrationCheckpoint::base(owner)?,
+            profiles: owner.catalog.profiles.len(),
+            models: owner.catalog.models.iter().map(Vec::len).collect(),
+            shaders: owner
+                .catalog
+                .shaders
+                .iter()
+                .map(|shader| shader.profiles.len())
+                .collect(),
+            skins: owner
+                .catalog
+                .skins
+                .iter()
+                .map(|skin| skin.profiles.len())
+                .collect(),
+        })
+    }
+    fn rollback(self, owner: &mut ModelAssets) -> Result<(), String> {
+        owner.catalog.profiles.truncate(self.profiles);
+        for (rows, length) in owner.catalog.models.iter_mut().zip(self.models) {
+            rows.truncate(length);
+        }
+        for (shader, length) in owner.catalog.shaders.iter_mut().zip(self.shaders) {
+            shader.profiles.truncate(length);
+        }
+        for (skin, length) in owner.catalog.skins.iter_mut().zip(self.skins) {
+            skin.profiles.truncate(length);
+        }
+        self.registration
+            .rollback(owner, RegistrationRollback::Retry)
+    }
+}
 impl RegistrationCheckpoint {
+    fn base(owner: &ModelAssets) -> Result<Self, String> {
+        let catalog = &owner.catalog;
+        let images = catalog
+            .profiles
+            .iter()
+            .map(|profile| match &profile.state {
+                Some(Ok(state)) => Ok(Some(state.registration_mark())),
+                Some(Err(_)) => Ok(None),
+                None => Err("model image state already borrowed".to_owned()),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            assets: owner.assets.counts(),
+            palettes: owner.palettes.checkpoint(),
+            names: catalog.names.len(),
+            capacity: catalog.capacity,
+            registrations: catalog.registrations.len(),
+            bindings: catalog.bindings.len(),
+            surfaces: catalog.surfaces.len(),
+            tags: catalog.tags.len(),
+            shaders: catalog.shaders.len(),
+            shader_bindings: catalog.shader_bindings.len(),
+            skins: catalog.skins.len(),
+            diagnostics: catalog.diagnostics.len(),
+            worlds: catalog.worlds.len(),
+            inline_count: catalog.inline.len(),
+            file: None,
+            shader_index: None,
+            shader: None,
+            skin: None,
+            skin_index: None,
+            inline: None,
+            images,
+        })
+    }
     fn capture(
         owner: &ModelAssets,
         request: &RendererRequest<impl AsRef<[u8]>>,
@@ -596,9 +718,12 @@ impl RegistrationCheckpoint {
             let index = index? as usize;
             let shader = &catalog.shaders[index];
             Some(ShaderCheckpoint {
+                index,
+                requests: shader.requests.clone(),
                 bindings: shader
                     .profiles
-                    .range()
+                    .iter()
+                    .copied()
                     .filter(|&index| {
                         let binding = &catalog.shader_bindings[index];
                         binding.profile.source_rules == request.source
@@ -621,57 +746,36 @@ impl RegistrationCheckpoint {
                     .collect(),
             })
         });
-        let images = catalog
-            .profiles
-            .iter()
-            .map(|profile| match &profile.state {
-                Some(Ok(state)) => Ok(Some(state.registration_mark())),
-                Some(Err(_)) => Ok(None),
-                None => Err("model image state already borrowed".to_owned()),
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            assets: owner.assets.counts(),
-            names: catalog.names.len(),
-            capacity: catalog.capacity,
-            registrations: catalog.registrations.len(),
-            bindings: catalog.bindings.len(),
-            surfaces: catalog.surfaces.len(),
-            tags: catalog.tags.len(),
-            shaders: catalog.shaders.len(),
-            shader_bindings: catalog.shader_bindings.len(),
-            skins: catalog.skins.len(),
-            diagnostics: catalog.diagnostics.len(),
-            worlds: catalog.worlds.len(),
-            inline_count: catalog.inline.len(),
-            file: file_name.map(|name| {
-                let profiles = catalog.models[name.0 as usize];
-                ModelCheckpoint {
-                    name,
-                    file: catalog.files[name.0 as usize].clone(),
-                    profiles,
-                    unattempted: profiles
-                        .range()
-                        .filter(|&index| {
-                            matches!(
-                                catalog.registrations[index].state,
-                                RegistrationState::Unattempted
-                            )
-                        })
-                        .collect(),
-                }
-            }),
-            shader_index,
-            shader,
-            skin,
-            skin_index,
-            inline,
-            images,
-        })
+        let mut checkpoint = Self::base(owner)?;
+        checkpoint.file = file_name.map(|name| {
+            let profiles = catalog.models[name.0 as usize].clone();
+            ModelCheckpoint {
+                name,
+                file: catalog.files[name.0 as usize].clone(),
+                unattempted: profiles
+                    .iter()
+                    .copied()
+                    .filter(|&index| {
+                        matches!(
+                            catalog.registrations[index].state,
+                            RegistrationState::Unattempted
+                        )
+                    })
+                    .collect(),
+                profiles,
+            }
+        });
+        checkpoint.shader_index = shader_index;
+        checkpoint.shader = shader;
+        checkpoint.skin = skin;
+        checkpoint.skin_index = skin_index;
+        checkpoint.inline = inline;
+        Ok(checkpoint)
     }
 
     fn rollback(self, owner: &mut ModelAssets, mode: RegistrationRollback) -> Result<(), String> {
         owner.assets.discard_registration_suffix(self.assets)?;
+        owner.palettes.restore(self.palettes);
         let catalog = &mut owner.catalog;
         for (profile, mark) in catalog.profiles.iter_mut().zip(self.images) {
             if let (Some(Ok(state)), Some(mark)) = (&mut profile.state, mark) {
@@ -692,7 +796,7 @@ impl RegistrationCheckpoint {
             // Interned names retain their identities without rejected bindings.
             for index in self.names..catalog.names.len() {
                 catalog.files[index] = ModelFile::Empty;
-                catalog.models[index] = IndexSpan::default();
+                catalog.models[index].clear();
                 catalog.shader_indices[index] = None;
                 catalog.skin_indices[index] = None;
             }
@@ -710,6 +814,9 @@ impl RegistrationCheckpoint {
             for entry in &mut catalog.shader_bindings[self.shader_bindings..] {
                 entry.state.rollback(mode);
             }
+            for shader in &mut catalog.shaders[self.shaders..] {
+                shader.requests = std::array::from_fn(|_| None);
+            }
             for skin in &mut catalog.skins[self.skins..] {
                 for profile in &mut skin.profiles {
                     profile.state.rollback(mode);
@@ -722,6 +829,7 @@ impl RegistrationCheckpoint {
             }
         }
         if let Some(shader) = self.shader {
+            catalog.shaders[shader.index].requests = shader.requests;
             for index in shader.bindings {
                 catalog.shader_bindings[index].state.rollback(mode);
             }
@@ -747,15 +855,18 @@ impl RegistrationCheckpoint {
                 .into_iter()
                 .chain(self.names..catalog.names.len())
             {
-                let sources = catalog.models[index].range().fold(0, |sources, entry| {
-                    let profile = &catalog.registrations[entry];
-                    sources
-                        | if profile.state.ready().is_some() {
-                            1 << profile.profile.source_rules as u8
-                        } else {
-                            0
-                        }
-                });
+                let sources = catalog.models[index]
+                    .iter()
+                    .copied()
+                    .fold(0, |sources, entry| {
+                        let profile = &catalog.registrations[entry];
+                        sources
+                            | if profile.state.ready().is_some() {
+                                1 << profile.profile.source_rules as u8
+                            } else {
+                                0
+                            }
+                    });
                 if let ModelFile::Ready {
                     renderer_sources,
                     tags,
@@ -786,6 +897,176 @@ impl RegistrationCheckpoint {
 }
 
 impl ModelAssets {
+    /// The startup cache moves into the same owner as its palette resources.
+    pub fn adopt_palettes(
+        &mut self,
+        palettes: crate::render_settings::PaletteRegistrations,
+    ) -> Result<(), String> {
+        if !self.initial_registration
+            || self.catalog.admitted_assets.is_some()
+            || !self.palettes.is_empty()
+            || !palettes.validate(&self.assets)
+        {
+            return Err(
+                "palette owner adoption requires unpublished registered palettes".to_owned(),
+            );
+        }
+        self.palettes = palettes;
+        Ok(())
+    }
+    /// Startup code can split the unpublished asset and palette owners. Once
+    /// published, new palettes require prepare_profile or prepare_world.
+    pub fn unpublished_assets(
+        &mut self,
+    ) -> Result<
+        (
+            &mut Assets,
+            &mut crate::render_settings::PaletteRegistrations,
+        ),
+        String,
+    > {
+        if self.catalog.admitted_assets.is_some() {
+            return Err("assets already published".to_owned());
+        }
+        Ok((&mut self.assets, &mut self.palettes))
+    }
+    pub fn palettes(&self) -> &crate::render_settings::PaletteRegistrations {
+        &self.palettes
+    }
+
+    fn append_profile(
+        &mut self,
+        profile: ModelProfile,
+    ) -> Result<Option<qa_render::assets::PreparedPaletteTranslucency>, String> {
+        let count = self
+            .catalog
+            .profiles
+            .len()
+            .checked_add(1)
+            .filter(|&count| count <= self.catalog.limits.models)
+            .ok_or("model profile capacity")?;
+        let maximum = self
+            .catalog
+            .limits
+            .models
+            .checked_mul(count)
+            .filter(|&count| count <= u32::MAX as usize)
+            .ok_or("model profile row capacity")?;
+        let models = self
+            .catalog
+            .models
+            .iter()
+            .zip(&self.catalog.files)
+            .filter(|(rows, file)| !rows.is_empty() || matches!(file, ModelFile::Ready { .. }))
+            .count();
+        self.catalog
+            .registrations
+            .len()
+            .checked_add(models)
+            .filter(|&count| count <= maximum)
+            .ok_or("model registration capacity")?;
+        self.catalog
+            .shader_bindings
+            .len()
+            .checked_add(self.catalog.shaders.len())
+            .filter(|&count| count <= maximum)
+            .ok_or("shader registration capacity")?;
+        let (images, blend) = ProfileImages::new(profile, &self.assets)?;
+        if let Some(Err(error)) = &images.state {
+            return Err(error.clone());
+        }
+        for (rows, file) in self.catalog.models.iter_mut().zip(&self.catalog.files) {
+            if rows.is_empty() && !matches!(file, ModelFile::Ready { .. }) {
+                continue;
+            }
+            rows.push(self.catalog.registrations.len());
+            self.catalog.registrations.push(RegisteredProfile {
+                profile,
+                state: RegistrationState::Unattempted,
+            });
+        }
+        for shader in &mut self.catalog.shaders {
+            shader.profiles.push(self.catalog.shader_bindings.len());
+            self.catalog.shader_bindings.push(ShaderProfileBinding {
+                profile,
+                state: RegistrationState::Unattempted,
+            });
+        }
+        for skin in &mut self.catalog.skins {
+            skin.profiles.push(SkinProfile {
+                profile,
+                state: RegistrationState::Unattempted,
+            });
+        }
+        self.catalog.profiles.push(images);
+        self.catalog.capacity.registrations = self.catalog.registrations.len();
+        Ok(blend)
+    }
+
+    /// Admit one exact source/presentation policy and its native palettes as a
+    /// complete cold transaction, independently of any later world load.
+    pub fn prepare_profile(
+        &mut self,
+        vfs: &Vfs,
+        source_rules: RuleSetId,
+        presentation_rules: RuleSetId,
+        image_settings: ImageSettings,
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<(ModelProfile, AssetCounts), String> {
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("profile registration requires a published resource prefix".to_owned());
+        }
+        let checkpoint = ProfileCheckpoint::capture(self)?;
+        let result = (|| {
+            let source_palette = crate::render_settings::palette(
+                vfs,
+                &mut self.assets,
+                source_rules,
+                &mut self.palettes,
+            )?;
+            let palette = crate::render_settings::palette(
+                vfs,
+                &mut self.assets,
+                presentation_rules,
+                &mut self.palettes,
+            )?;
+            let profile = ModelProfile {
+                source_rules,
+                rules: presentation_rules,
+                source_palette,
+                palette,
+                image_settings,
+            };
+            if self
+                .catalog
+                .profiles
+                .iter()
+                .any(|entry| entry.profile == profile)
+            {
+                return Ok((profile, self.assets.counts()));
+            }
+            let blend = self.append_profile(profile)?;
+            let counts = self.assets.counts();
+            self.validate_admission(counts)
+                .map_err(|error| format!("profile publication: {error:?}"))?;
+            prepare(&self.assets)?;
+            if let Some(blend) = blend {
+                self.assets.install_palette_translucency(blend);
+            }
+            self.apply_admission(counts);
+            Ok((profile, counts))
+        })();
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                checkpoint
+                    .rollback(self)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
     pub fn new(
         mut assets: Assets,
         profiles: impl IntoIterator<Item = ModelProfile>,
@@ -802,32 +1083,11 @@ impl ModelAssets {
             if unique.len() == limits.models {
                 return Err("model registration capacity".to_owned());
             }
-            if let Some((source, target)) = profile
-                .source_palette
-                .zip(profile.palette)
-                .filter(|(source, target)| source != target)
-                && matches!(
-                    profile.source_rules,
-                    RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-                )
-                && assets.palette(source).is_some()
-                && assets.palette(target).is_some()
-            {
-                assets.ensure_palette_translucency(target)?;
+            let (entry, blend) = ProfileImages::new(profile, &assets)?;
+            if let Some(blend) = blend {
+                assets.install_palette_translucency(blend);
             }
-            let state = ImagesState::new(
-                profile.source_rules,
-                profile.rules,
-                profile.image_settings,
-                profile.source_palette.zip(profile.palette),
-            )
-            .map_err(|error| format!("model images: {error:?}"));
-            unique.push(ProfileImages {
-                profile,
-                model_policy: profile.model_policy(),
-                state: Some(state),
-                colors: PaletteColors::load(profile, &assets),
-            });
+            unique.push(entry);
         }
         let (worlds, inline) = inline_bindings(&assets, worlds, limits)?;
         let capacity = ModelCapacity {
@@ -837,12 +1097,13 @@ impl ModelAssets {
         };
         Ok(Self {
             assets,
+            palettes: Default::default(),
             initial_registration: true,
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
                 files: vec![ModelFile::Empty],
-                models: vec![IndexSpan::default()],
+                models: vec![Vec::new()],
                 shader_indices: vec![None],
                 shaders: Vec::new(),
                 shader_bindings: Vec::new(),
@@ -1031,7 +1292,6 @@ impl ModelAssets {
         }
         let WorldRegistration {
             profile,
-            source_palette,
             presentation,
             options,
             trace_rules,
@@ -1059,6 +1319,12 @@ impl ModelAssets {
         let hulls = input.native_source.lineage() == qa_formats::entities::EntitySyntax::Quake;
         let mut created = None;
         let result = (|| {
+            let source_palette = crate::render_settings::palette(
+                vfs,
+                &mut self.assets,
+                input.native_source,
+                &mut self.palettes,
+            )?;
             let loaded = input.load(
                 vfs,
                 &mut self.assets,
@@ -1166,7 +1432,7 @@ impl ModelAssets {
             .map_err(|_| CallError::Capacity)?;
         if self.catalog.names.len() != previous {
             self.catalog.files.push(ModelFile::Empty);
-            self.catalog.models.push(IndexSpan::default());
+            self.catalog.models.push(Vec::new());
             self.catalog.shader_indices.push(None);
             self.catalog.skin_indices.push(None);
             self.catalog.capacity.names = self.catalog.names.len();
@@ -1247,12 +1513,15 @@ impl ModelAssets {
             return Ok(());
         }
         if let Err(error) = admission
-            && !self.catalog.models[name.0 as usize].range().any(|index| {
-                !matches!(
-                    self.catalog.registrations[index].state,
-                    RegistrationState::Unattempted
-                )
-            })
+            && !self.catalog.models[name.0 as usize]
+                .iter()
+                .copied()
+                .any(|index| {
+                    !matches!(
+                        self.catalog.registrations[index].state,
+                        RegistrationState::Unattempted
+                    )
+                })
         {
             if !request.required && matches!(error.kind, CallError::File) {
                 return Ok(());
@@ -1261,7 +1530,8 @@ impl ModelAssets {
         }
         let profile = request.profile();
         let registration = self.catalog.models[name.0 as usize]
-            .range()
+            .iter()
+            .copied()
             .map(|index| &self.catalog.registrations[index])
             .find(|entry| entry.profile == profile)
             .ok_or("unconfigured model profile")?;
@@ -1276,12 +1546,15 @@ impl ModelAssets {
     fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
         let name = if let Some(name) = self.catalog.names.find(path.as_bytes()) {
             let file = &self.catalog.files[name.0 as usize];
-            let unattempted = self.catalog.models[name.0 as usize].range().any(|index| {
-                matches!(
-                    self.catalog.registrations[index].state,
-                    RegistrationState::Unattempted
-                )
-            });
+            let unattempted = self.catalog.models[name.0 as usize]
+                .iter()
+                .copied()
+                .any(|index| {
+                    matches!(
+                        self.catalog.registrations[index].state,
+                        RegistrationState::Unattempted
+                    )
+                });
             if !matches!(file, ModelFile::Empty)
                 && !(matches!(file, ModelFile::Ready { .. }) && unattempted)
             {
@@ -1298,9 +1571,9 @@ impl ModelAssets {
             self.admit_name(path.as_bytes())
                 .map_err(|_| FileError::capacity("model name capacity"))?
         };
-        let mut span = self.catalog.models[name.0 as usize];
-        let fresh_profiles = span.count == 0;
-        if span.count == 0 {
+        let mut rows = self.catalog.models[name.0 as usize].clone();
+        let fresh_profiles = rows.is_empty();
+        if fresh_profiles {
             let maximum = self
                 .catalog
                 .limits
@@ -1315,10 +1588,7 @@ impl ModelAssets {
                 .checked_add(self.catalog.profiles.len())
                 .filter(|&count| count <= maximum)
                 .ok_or_else(|| FileError::capacity("model registration capacity"))?;
-            span = IndexSpan {
-                first: self.catalog.registrations.len() as u32,
-                count: (next - self.catalog.registrations.len()) as u32,
-            };
+            rows.extend(self.catalog.registrations.len()..next);
             self.catalog
                 .registrations
                 .extend(
@@ -1330,7 +1600,7 @@ impl ModelAssets {
                             state: RegistrationState::Unattempted,
                         }),
                 );
-            self.catalog.models[name.0 as usize] = span;
+            self.catalog.models[name.0 as usize] = rows.clone();
             self.catalog.capacity.registrations = next;
         }
         let bytes = vfs
@@ -1403,7 +1673,44 @@ impl ModelAssets {
                 return Err(self.fail_file(name, fresh_profiles, error));
             }
         };
-        let mut meshes = vec![None; parsed.as_ref().map_or(0, |model| model.meshes.len())];
+        let mut meshes = vec![
+            None;
+            parsed.as_ref().map_or(0, |model| {
+                if model.format == ModelFormat::Sp2 {
+                    model.sprites.len()
+                } else {
+                    model.meshes.len()
+                }
+            })
+        ];
+        // Existing surface bindings own the file's decoded mesh identities.
+        // New presentation rows reuse that geometry rather than uploading it again.
+        if let Some((surfaces, _)) = rows
+            .iter()
+            .find_map(|&index| self.catalog.registrations[index].state.ready())
+        {
+            if parsed
+                .as_ref()
+                .is_ok_and(|model| model.format == ModelFormat::Sp2)
+            {
+                if let Some(surface) = self.catalog.surfaces.get(surfaces.first as usize) {
+                    for (mesh, binding) in meshes
+                        .iter_mut()
+                        .zip(&self.catalog.bindings[surface.skins.range()])
+                    {
+                        *mesh = Some(binding.variants[0].model);
+                    }
+                }
+            } else {
+                for (mesh, surface) in meshes
+                    .iter_mut()
+                    .zip(&self.catalog.surfaces[surfaces.range()])
+                {
+                    *mesh =
+                        Some(self.catalog.bindings[surface.skins.first as usize].variants[0].model);
+                }
+            }
+        }
         if parsed
             .as_ref()
             .is_ok_and(|model| model.format == ModelFormat::Md3)
@@ -1416,13 +1723,11 @@ impl ModelAssets {
             } => *renderer_sources,
             _ => 0,
         };
-        for (images, entry) in self
-            .catalog
-            .profiles
-            .iter_mut()
-            .zip(&mut self.catalog.registrations[span.range()])
-            .filter(|(_, entry)| matches!(entry.state, RegistrationState::Unattempted))
-        {
+        for (profile_index, images) in self.catalog.profiles.iter_mut().enumerate() {
+            let entry = &mut self.catalog.registrations[rows[profile_index]];
+            if !matches!(entry.state, RegistrationState::Unattempted) {
+                continue;
+            }
             let registration = Registration {
                 path: path.to_owned(),
                 profile: images.profile,
@@ -1500,7 +1805,7 @@ impl ModelAssets {
                 }
             };
         }
-        self.catalog.models[name.0 as usize] = span;
+        self.catalog.models[name.0 as usize] = rows;
         self.catalog.files[name.0 as usize] = match &metadata {
             Ok(metadata) => ModelFile::Ready {
                 metadata: *metadata,
@@ -1516,16 +1821,24 @@ impl ModelAssets {
     }
 
     fn fail_file(&mut self, name: NameId, fresh_profiles: bool, error: FileError) -> FileError {
-        let span = self.catalog.models[name.0 as usize];
+        let rows = &self.catalog.models[name.0 as usize];
         let unused_suffix = fresh_profiles
-            && span.range().end == self.catalog.registrations.len()
-            && span.range().all(|index| {
+            && rows.first().is_some_and(|&first| {
+                first + rows.len() == self.catalog.registrations.len()
+                    && rows
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .all(|(offset, index)| first + offset == index)
+            })
+            && rows.iter().copied().all(|index| {
                 matches!(
                     self.catalog.registrations[index].state,
                     RegistrationState::Unattempted
                 )
             });
-        for entry in &mut self.catalog.registrations[span.range()] {
+        for &index in rows {
+            let entry = &mut self.catalog.registrations[index];
             if matches!(entry.state, RegistrationState::Unattempted) {
                 self.catalog.diagnostics.push(ModelDiagnostic {
                     name,
@@ -1536,8 +1849,8 @@ impl ModelAssets {
             }
         }
         if unused_suffix {
-            self.catalog.registrations.truncate(span.first as usize);
-            self.catalog.models[name.0 as usize] = IndexSpan::default();
+            self.catalog.registrations.truncate(rows[0]);
+            self.catalog.models[name.0 as usize].clear();
             self.catalog.capacity.registrations = self.catalog.registrations.len();
         }
         self.catalog.files[name.0 as usize] = ModelFile::Failed(error.clone());
@@ -1650,9 +1963,10 @@ impl ModelAssets {
         let cached = find_shader_index(&self.catalog.names, &self.catalog.shader_indices, raw)
             .and_then(|(_, index)| index);
         if let Some(index) = cached {
-            let span = self.catalog.shaders[index as usize].profiles;
+            let rows = &self.catalog.shaders[index as usize].profiles;
             if let Some(handle) = source_handle(
-                span.range()
+                rows.iter()
+                    .copied()
                     .map(|index| &self.catalog.shader_bindings[index])
                     .filter(|binding| binding.profile.source_rules == source)
                     .map(|binding| &binding.state),
@@ -1688,13 +2002,11 @@ impl ModelAssets {
                 let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
                 let index = self.catalog.shaders.len();
                 self.catalog.shader_indices[group.0 as usize] = Some(index as u32);
-                let span = IndexSpan {
-                    first: self.catalog.shader_bindings.len() as u32,
-                    count: (next - self.catalog.shader_bindings.len()) as u32,
-                };
+                let rows = (self.catalog.shader_bindings.len()..next).collect();
                 self.catalog.shaders.push(RegisteredShader {
                     name,
-                    profiles: span,
+                    profiles: rows,
+                    requests: std::array::from_fn(|_| None),
                 });
                 self.catalog
                     .shader_bindings
@@ -1710,21 +2022,35 @@ impl ModelAssets {
                 index
             }
         };
-        let shader = &self.catalog.shaders[index];
-        let name = shader.name;
-        let span = shader.profiles;
-        let definition = shader_definition(self.shader_catalog(vfs), raw, mipmaps, false);
+        let name = self.catalog.shaders[index].name;
+        let first_request = self.catalog.shaders[index].requests[source as usize].is_none();
+        let request = match self.catalog.shaders[index].requests[source as usize].as_ref() {
+            Some(request) => request.clone(),
+            None => {
+                let mut name = qa_core::text::FixedText::default();
+                name.set_bytes(raw).map_err(|_| CallError::Text)?;
+                let request = ShaderRequest { name, mipmaps };
+                self.catalog.shaders[index].requests[source as usize] = Some(request.clone());
+                request
+            }
+        };
+        // Registration metadata replays the first successful source request for
+        // profiles added later without consuming another name/handle slot.
+        let definition = shader_definition(
+            self.shader_catalog(vfs),
+            request.name.as_bytes(),
+            request.mipmaps,
+            false,
+        );
+        let rows = &self.catalog.shaders[index].profiles;
         let mut ready = false;
-        for (images, binding) in self
-            .catalog
-            .profiles
-            .iter_mut()
-            .zip(&mut self.catalog.shader_bindings[span.range()])
-            .filter(|(images, binding)| {
-                images.profile.source_rules == source
-                    && matches!(binding.state, RegistrationState::Unattempted)
-            })
-        {
+        for (profile_index, images) in self.catalog.profiles.iter_mut().enumerate() {
+            let binding = &mut self.catalog.shader_bindings[rows[profile_index]];
+            if images.profile.source_rules != source
+                || !matches!(binding.state, RegistrationState::Unattempted)
+            {
+                continue;
+            }
             binding.state = match images.compile(
                 vfs,
                 &mut self.assets,
@@ -1750,6 +2076,9 @@ impl ModelAssets {
         if ready {
             Ok(index as i32 + 1)
         } else {
+            if first_request {
+                self.catalog.shaders[index].requests[source as usize] = None;
+            }
             Err(CallError::File)
         }
     }
@@ -1997,8 +2326,8 @@ fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Optio
     source_handle(
         entry
             .profiles
-            .range()
-            .map(|index| &catalog.shader_bindings[index])
+            .iter()
+            .map(|&index| &catalog.shader_bindings[index])
             .filter(|entry| entry.profile.source_rules == source)
             .map(|entry| &entry.state),
         index as i32 + 1,
@@ -2349,7 +2678,8 @@ impl ModelCatalog {
                     ModelFile::Failed(_) => Some(0),
                     ModelFile::LoadedWorld { .. } => Some(handle),
                     ModelFile::Empty | ModelFile::Ready { .. } => self.models[name.0 as usize]
-                        .range()
+                        .iter()
+                        .copied()
                         .map(|index| &self.registrations[index])
                         .find(|entry| entry.profile == profile)?
                         .state
@@ -2384,7 +2714,8 @@ impl ModelCatalog {
         }
         source_handle(
             self.models[name.0 as usize]
-                .range()
+                .iter()
+                .copied()
                 .map(|index| &self.registrations[index])
                 .filter(|entry| entry.profile.source_rules == source)
                 .map(|entry| &entry.state),
@@ -2437,7 +2768,8 @@ impl ModelCatalog {
         self.shaders
             .get(index)?
             .profiles
-            .range()
+            .iter()
+            .copied()
             .map(|i| &self.shader_bindings[i])
             .find(|entry| entry.profile == profile)
     }
@@ -2505,8 +2837,9 @@ impl ModelCatalog {
         name: NameId,
         profile: ModelProfile,
     ) -> Option<ModelRegistrationId> {
-        let span = *self.models.get(name.0 as usize)?;
-        span.range()
+        let rows = self.models.get(name.0 as usize)?;
+        rows.iter()
+            .copied()
             .find(|&index| {
                 let entry = &self.registrations[index];
                 entry.profile == profile && entry.state.ready().is_some()
@@ -2716,7 +3049,15 @@ fn register(
     limits: ModelLimits,
 ) -> Result<Vec<Vec<ModelMaterials>>, String> {
     if model.format == ModelFormat::Sp2 {
-        return register_sprites(model, images, registration, model_policy, capacity, limits);
+        return register_sprites(
+            model,
+            images,
+            registration,
+            model_policy,
+            shared_meshes,
+            capacity,
+            limits,
+        );
     }
     let next_surfaces = capacity
         .surfaces
@@ -2809,6 +3150,7 @@ fn register_sprites(
     images: &mut Images<'_>,
     registration: &Registration,
     policy: ModelPolicy,
+    shared_meshes: &mut [Option<ModelId>],
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
 ) -> Result<Vec<Vec<ModelMaterials>>, String> {
@@ -2823,7 +3165,7 @@ fn register_sprites(
         .filter(|&n| n <= limits.skins && n <= u32::MAX as usize)
         .ok_or("model skin capacity")?;
     let mut frames = Vec::with_capacity(model.sprites.len());
-    for (index, sprite) in model.sprites.iter().enumerate() {
+    for (index, (sprite, shared_mesh)) in model.sprites.iter().zip(shared_meshes).enumerate() {
         if !matches!(sprite.image, Image::External(_)) {
             return Err("SP2 frame requires an external image".to_owned());
         }
@@ -2869,7 +3211,14 @@ fn register_sprites(
                 -(sprite.origin[1] as f32),
             ],
         };
-        let model = images.assets.register_sprite(geometry, variants[0])?;
+        let model = match *shared_mesh {
+            Some(model) => model,
+            None => {
+                let model = images.assets.register_sprite(geometry, variants[0])?;
+                *shared_mesh = Some(model);
+                model
+            }
+        };
         frames.push(ModelMaterials {
             variants: variants.map(|material| ModelBinding {
                 model,
