@@ -103,7 +103,7 @@ pub trait FrameSource {
         _entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
     ) {
     }
-    fn effect(&mut self, _event: EffectEvent) -> bool {
+    fn effect(&mut self, _palette: Option<qa_render::PaletteId>, _event: EffectEvent) -> bool {
         false
     }
     fn effect_clients(
@@ -143,10 +143,10 @@ impl FrameSource for LiveFrame<'_> {
     fn set_socket_submission_enabled(&mut self, enabled: bool) {
         self.pump.set_socket_submission_enabled(enabled);
     }
-    fn effect(&mut self, event: EffectEvent) -> bool {
+    fn effect(&mut self, palette: Option<qa_render::PaletteId>, event: EffectEvent) -> bool {
         self.renderer
             .as_deref_mut()
-            .is_some_and(|renderer| renderer.effect(event))
+            .is_some_and(|renderer| renderer.effect(palette, event))
     }
     fn effect_clients(
         &mut self,

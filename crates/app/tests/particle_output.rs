@@ -23,6 +23,13 @@ use std::{sync::Arc, time::Duration};
 const MODULE: ModuleId = ModuleId(7);
 const REMOTE_PORT: u16 = 23999;
 
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod asset_support;
+
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
+
 struct Source {
     time: EventTime,
     effects: Effects,
@@ -107,13 +114,17 @@ impl FrameSource for Source {
             );
         }
     }
-    fn effect(&mut self, event: EffectEvent) -> bool {
+    fn effect(&mut self, _palette: Option<qa_render::PaletteId>, event: EffectEvent) -> bool {
         // Acceptance is the production particle arena, not this observation.
         let accepted = self.effects.accept(event);
         if accepted {
             self.last_effect = Some(event);
         }
         accepted
+    }
+    fn reset_presentation(&mut self, client: ClientId, lifetime: EntityId) -> bool {
+        self.effects.reset_client(client, lifetime);
+        true
     }
     fn render(
         &mut self,
@@ -387,6 +398,7 @@ fn reconnect_drops_queued_old_packet_and_retires_old_particle_lifetime() {
     host.frame(&mut source, true);
     assert_eq!(source.effects.stats.accepted_events, 1);
     let old_lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    let old_event = source.last_effect.unwrap();
     publish(&mut host, NativeTarget::Client(client));
     host.frame(&mut source, true);
     assert!(host.runtime.disconnect_client(client));
@@ -407,6 +419,21 @@ fn reconnect_drops_queued_old_packet_and_retires_old_particle_lifetime() {
     assert_eq!(source.effects.stats.accepted_events, 1);
     assert_eq!(source.effects.stats.retired, 1);
     assert!(source.effects.is_empty());
+    host.runtime
+        .server
+        .events
+        .push_to(
+            qa_core::events::OutputTarget::Presentation,
+            FrameEvent::Effect(old_event),
+        )
+        .unwrap();
+    let stale = host.frame(&mut source, true);
+    assert_eq!(
+        (stale.output.effects, stale.output.unhandled_effects),
+        (1, 1)
+    );
+    assert_eq!(source.effects.stats.accepted_events, 1);
+    assert!(source.effects.is_empty());
     publish(&mut host, NativeTarget::Client(rebound));
     host.frame(&mut source, true);
     host.frame(&mut source, true);
@@ -416,4 +443,306 @@ fn reconnect_drops_queued_old_packet_and_retires_old_particle_lifetime() {
         Some(new_lifetime)
     );
     assert_eq!(host.runtime.network.command_errors, 0);
+}
+
+struct EffectReceipt {
+    palette: Option<qa_render::PaletteId>,
+    accepted: bool,
+    client: Option<ClientId>,
+    lifetime: Option<EntityId>,
+}
+
+struct RendererSource {
+    time: EventTime,
+    renderer: qa_app::renderer::Renderer,
+    clients: [Option<EffectClient>; SeatId::COUNT],
+    delivered: Vec<EffectReceipt>,
+}
+impl RendererSource {
+    fn load(host: &mut FrameHost) -> Self {
+        use qa_app::{
+            model_assets::ModelAssets,
+            renderer::{Context, Renderer, console::ConsoleAssets},
+        };
+        let mut owner =
+            ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+        let console = {
+            let (assets, palettes) = owner.unpublished_assets().unwrap();
+            ConsoleAssets::load(
+                &host.runtime.vfs,
+                assets,
+                RuleSetId::Quake3,
+                palettes,
+                qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+                160,
+                120,
+            )
+            .unwrap()
+        };
+        let catalog = Arc::clone(&host.runtime.catalog.registry.effects);
+        let bindings = vec![None; catalog.len() + 1];
+        let effects =
+            Effects::load(catalog, 64, host.runtime.server.clients.len(), &bindings).unwrap();
+        let configuration = Arc::new(qa_core::presentation::RendererConfiguration {
+            display: qa_core::presentation::DisplayConfiguration {
+                width: 160,
+                height: 120,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let (renderer, scene) = Renderer::load(
+            Context::Cpu(configuration),
+            160,
+            120,
+            owner.assets_mut(),
+            vec![],
+            Some(qa_render::cpu::RasterBands::One),
+            console,
+            std::array::from_fn(|_| None),
+            effects,
+        )
+        .unwrap();
+        owner
+            .publish_admission(renderer.admitted_assets().unwrap())
+            .unwrap();
+        owner.end_initial_registration();
+        host.runtime.model_assets = Some(owner);
+        host.runtime.scene = Some(scene);
+        Self {
+            time: EventTime::from_milliseconds(1000),
+            renderer,
+            clients: [None; SeatId::COUNT],
+            delivered: Vec::new(),
+        }
+    }
+}
+impl FrameSource for RendererSource {
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.time.0)
+    }
+    fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        queue
+            .push(SysEvent {
+                time: self.time,
+                kind: EventKind::Time,
+            })
+            .unwrap();
+    }
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        panic!("uncapped fixture")
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn present(&mut self) {}
+    fn effect_clients(
+        &mut self,
+        clients: &[Option<EffectClient>; SeatId::COUNT],
+        time: EventTime,
+        gravity: f32,
+    ) {
+        self.clients = *clients;
+        self.renderer.set_effect_clients(*clients, time, gravity);
+    }
+    fn effect(&mut self, palette: Option<qa_render::PaletteId>, event: EffectEvent) -> bool {
+        let accepted = self.renderer.effect(palette, event);
+        self.delivered.push(EffectReceipt {
+            palette,
+            accepted,
+            client: event.client,
+            lifetime: event.client_lifetime,
+        });
+        accepted
+    }
+    fn reset_presentation(&mut self, client: ClientId, lifetime: EntityId) -> bool {
+        self.renderer.reset_client_effects(client, lifetime);
+        true
+    }
+    fn render(
+        &mut self,
+        scene: Option<&mut qa_app::renderer::SceneComposer>,
+        resources: Option<qa_app::model_assets::ModelView<'_>>,
+        views: &[Option<qa_app::host::ClientView>; SeatId::COUNT],
+        scenes: &[Option<qa_app::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+        hud: &[Option<qa_app::renderer::hud::HudView<'_>>; SeatId::COUNT],
+        console: qa_console::presentation::ConsoleView<'_>,
+    ) {
+        let scene = scene.unwrap();
+        let resources = resources.unwrap();
+        // Exercise the production native-scene particle annotation and the
+        // real CPU Renderer. No map or second particle simulation is needed.
+        assert!(
+            scene
+                .frame_mut()
+                .unwrap()
+                .for_client(self.clients[0], |frame| frame.render_scene(
+                    Refdef {
+                        viewport: qa_render::Viewport {
+                            width: 160,
+                            height: 120,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    &[],
+                    resources.assets,
+                ))
+        );
+        self.renderer
+            .frame(scene, resources, views, scenes, hud, console);
+    }
+}
+
+#[test]
+fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_renderer() {
+    use qa_app::renderer::AssetPreparer;
+    let (mut host, client, _) = host(1);
+    let mut source = RendererSource::load(&mut host);
+    let retained = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .published_palette(RuleSetId::Quake),
+        None
+    );
+    publish(&mut host, NativeTarget::Client(client));
+    host.frame(&mut source, true);
+    let missing = host.frame(&mut source, true);
+    assert_eq!(
+        (missing.output.effects, missing.output.unhandled_effects),
+        (1, 1)
+    );
+    assert_eq!(source.delivered.len(), 1);
+    assert_eq!(
+        (source.delivered[0].palette, source.delivered[0].accepted),
+        (None, false)
+    );
+
+    let rgb: Vec<_> = (0..=255u8).flat_map(|value| [value; 3]).collect();
+    let mut shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+    shades.push(32);
+    let fixture =
+        asset_support::Fixture::new(&[("gfx/palette.lmp", rgb), ("gfx/colormap.lmp", shades)]);
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    let owner = host.runtime.model_assets.as_mut().unwrap();
+    let rejected = owner.prepare_profile(
+        &host.runtime.vfs,
+        RuleSetId::Quake,
+        RuleSetId::Quake3,
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+        |assets| {
+            assert!(assets.counts().palettes > retained.palettes);
+            source.renderer.prepare_assets(
+                assets,
+                Some(Limits {
+                    surfaces: 0,
+                    ..Default::default()
+                }),
+            )
+        },
+    );
+    assert!(rejected.is_err());
+    assert_eq!(owner.assets().counts(), retained);
+    assert_eq!(owner.published_palette(RuleSetId::Quake), None);
+    assert_eq!(source.renderer.admitted_assets(), Some(retained));
+    publish(&mut host, NativeTarget::Client(client));
+    host.frame(&mut source, true);
+    let rejected = host.frame(&mut source, true);
+    assert_eq!(
+        (rejected.output.effects, rejected.output.unhandled_effects),
+        (1, 1)
+    );
+    assert_eq!(
+        (source.delivered[1].palette, source.delivered[1].accepted),
+        (None, false)
+    );
+
+    let owner = host.runtime.model_assets.as_mut().unwrap();
+    owner
+        .prepare_profile(
+            &host.runtime.vfs,
+            RuleSetId::Quake,
+            RuleSetId::Quake3,
+            qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
+            |assets| source.renderer.prepare_assets(assets, None),
+        )
+        .unwrap();
+    let palette = owner.published_palette(RuleSetId::Quake).unwrap();
+    assert_eq!(
+        source.renderer.admitted_assets(),
+        Some(owner.assets().counts())
+    );
+    host.runtime.vfs.take_lookup_count();
+    publish(&mut host, NativeTarget::Client(client));
+    host.frame(&mut source, true);
+    let admitted = host.frame(&mut source, true);
+    assert_eq!(
+        (admitted.output.effects, admitted.output.unhandled_effects),
+        (1, 0)
+    );
+    assert_eq!(
+        (source.delivered[2].palette, source.delivered[2].accepted),
+        (Some(palette), true)
+    );
+    assert_eq!(source.delivered[2].client, Some(client));
+    assert_eq!(
+        source.delivered[2].lifetime,
+        Some(host.runtime.server.clients[client.0 as usize].entity)
+    );
+    assert_eq!(source.renderer.sample.stats.rejected, 0);
+    assert!(source.renderer.sample.stats.views > 0);
+    let again = host.frame(&mut source, true);
+    assert_eq!(again.output.effects, 0);
+    assert_eq!(source.delivered.len(), 3);
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+}
+
+#[test]
+fn queued_serverinfo_resets_existing_particles_before_new_level_delivery() {
+    let (mut host, client, mut source) = host(1);
+    publish(&mut host, NativeTarget::Client(client));
+    host.frame(&mut source, true);
+    host.frame(&mut source, true);
+    assert_eq!(source.effects.stats.accepted_events, 1);
+    assert_eq!(source.effects.len(), 1);
+    let lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    // Native svc_serverinfo: protocol15, one client, game type0, one map,
+    // then the empty model and sound list terminators.
+    let mut header = vec![11];
+    header.extend_from_slice(&15i32.to_le_bytes());
+    header.extend_from_slice(&[1, 0]);
+    header.extend_from_slice(b"new level\0maps/next.bsp\0\0\0");
+    asset_frames::queue(&mut host, [header]);
+    let reset = host.frame(&mut source, true);
+    assert_eq!(reset.output.presentation_resets, 1);
+    assert_eq!(source.effects.stats.retired, 1);
+    assert!(source.effects.is_empty());
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        lifetime
+    );
+    publish(&mut host, NativeTarget::Client(client));
+    host.frame(&mut source, true);
+    let fresh = host.frame(&mut source, true);
+    assert_eq!(
+        (fresh.output.effects, fresh.output.unhandled_effects),
+        (1, 0)
+    );
+    assert_eq!(source.effects.stats.accepted_events, 2);
+    assert_eq!(source.effects.len(), 1);
+    assert_eq!(source.last_effect.unwrap().client_lifetime, Some(lifetime));
 }

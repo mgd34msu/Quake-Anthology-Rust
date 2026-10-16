@@ -647,6 +647,8 @@ impl SceneComposer {
 
 pub struct Renderer {
     effects: qa_render::effects::Effects,
+    particle_material: qa_render::MaterialId,
+    particle_presentation: qa_render::scene::ParticlePresentation,
     effect_clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
     effect_time: qa_core::sys_events::EventTime,
     effect_gravity: f32,
@@ -708,6 +710,8 @@ impl Renderer {
         if display.width != width || display.height != height {
             return Err("renderer target changed during registration".into());
         }
+        let particle_material =
+            qa_render::particles::register_point_material(assets, "engine/particles/point")?;
         let mut limits = Limits::default();
         limits.particles = effects
             .capacity()
@@ -762,6 +766,10 @@ impl Renderer {
         Ok((
             Self {
                 effects,
+                particle_material,
+                particle_presentation: qa_render::scene::ParticlePresentation::Square {
+                    pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
+                },
                 effect_clients: [None; SeatId::COUNT],
                 effect_time: qa_core::sys_events::EventTime::default(),
                 effect_gravity: 800.0,
@@ -777,7 +785,21 @@ impl Renderer {
             scene,
         ))
     }
-    pub fn effect(&mut self, event: qa_core::primitives::EffectEvent) -> bool {
+    pub fn effect(
+        &mut self,
+        palette: Option<qa_render::PaletteId>,
+        event: qa_core::primitives::EffectEvent,
+    ) -> bool {
+        if let Some(palette) = palette {
+            self.effects.bind_missing(
+                event.effect,
+                qa_render::effects::ParticleBinding {
+                    palette,
+                    material: self.particle_material,
+                    presentation: self.particle_presentation,
+                },
+            );
+        }
         self.effects.accept(event)
     }
     pub fn set_effect_clients(

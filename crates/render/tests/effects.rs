@@ -357,6 +357,96 @@ fn repeated_views_copy_source_palette_and_do_not_advance_particle_state() {
 }
 
 #[test]
+fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
+    let mut assets = Assets::load().unwrap();
+    let shades = vec![0; 64 * 256];
+    let old_palette = assets
+        .register_palette(PaletteLighting::load(&vec![17; 768], &shades, None, 256).unwrap())
+        .unwrap();
+    let new_palette = assets
+        .register_palette(PaletteLighting::load(&vec![31; 768], &shades, None, 256).unwrap())
+        .unwrap();
+    let old_material = register_point_material(&mut assets, "particles/retained").unwrap();
+    let new_material = register_point_material(&mut assets, "particles/late").unwrap();
+    let old = binding(old_palette, old_material);
+    let new = binding(new_palette, new_material);
+    let make = || {
+        let mut owner = Effects::load(catalog(), 2, 3, &[None, None, Some(old)]).unwrap();
+        owner.synchronize(&[Some(EffectClient {
+            client: CLIENT,
+            lifetime: LIFE,
+        })]);
+        owner
+    };
+    let mut effects = make();
+    let mut control = make();
+    for owner in [&mut effects, &mut control] {
+        assert!(owner.begin_frame(CLIENT, LIFE, EventTime(0), 800.0));
+        assert!(owner.finish_frame(CLIENT, LIFE, EventTime(0), 800.0));
+        assert!(owner.accept(event(2, 1)));
+        assert!(owner.begin_frame(CLIENT, LIFE, EventTime(100_000_000), 800.0));
+    }
+    let snapshot = |owner: &Effects| {
+        state(owner)
+            .into_iter()
+            .map(|particle| {
+                (
+                    particle.effect,
+                    bits(particle.position),
+                    bits(particle.velocity),
+                    particle.color,
+                    particle.alpha.to_bits(),
+                    particle.ramp.to_bits(),
+                    particle.death.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&effects);
+    let stats = effects.stats;
+    assert!(effects.bind_missing(EffectId(1), new));
+    // A caller's fallback must not overwrite a deliberate initial binding.
+    assert!(effects.bind_missing(EffectId(2), new));
+    for invalid in [EffectId(0), EffectId(3), EffectId(u32::MAX)] {
+        assert!(!effects.bind_missing(invalid, new));
+    }
+    assert_eq!(snapshot(&effects), before);
+    assert_eq!(effects.stats, stats);
+    assert_eq!(effects.random_word(), control.random_word());
+    for owner in [&mut effects, &mut control] {
+        // The prepared/completed timestamps survive binding publication.
+        assert!(owner.finish_frame(CLIENT, LIFE, EventTime(100_000_000), 800.0));
+        assert!(!owner.finish_frame(CLIENT, LIFE, EventTime(100_000_000), 800.0));
+    }
+    assert_eq!(snapshot(&effects), snapshot(&control));
+    assert!(effects.accept(event(1, 1)));
+    assert_eq!(effects.len(), 2);
+    assert_eq!(effects.stats.accepted_events, 2);
+
+    let mut front = FrontEnd::load(Limits {
+        particles: 2,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    assert_eq!(effects.append(&mut frame, CLIENT, LIFE), 2);
+    assert!(frame.render_scene(Refdef::default(), &[], &assets));
+    let packet = frame.finish();
+    let Command::View(view) = packet.commands()[1] else {
+        panic!()
+    };
+    let particles = packet.particles(view.scene.particles);
+    assert_eq!(
+        (particles[0].palette, particles[0].material),
+        (new_palette, new_material)
+    );
+    assert_eq!(
+        (particles[1].palette, particles[1].material),
+        (old_palette, old_material)
+    );
+}
+
+#[test]
 fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() {
     let mut assets = Assets::load().unwrap();
     let palette = assets

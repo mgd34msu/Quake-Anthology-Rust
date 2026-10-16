@@ -977,28 +977,13 @@ fn run() -> Result<(), String> {
         )?);
     }
     let effect_catalog = std::sync::Arc::clone(&host.runtime.catalog.registry.effects);
-    let mut effect_bindings = vec![None; effect_catalog.len() + 1];
-    if let Ok(Some(palette)) = qa_app::render_settings::palette(
+    let effect_bindings = vec![None; effect_catalog.len() + 1];
+    let _ = qa_app::render_settings::palette(
         &host.runtime.vfs,
         assets,
         qa_core::primitives::RuleSetId::Quake,
         palettes,
-    ) {
-        let material =
-            qa_render::particles::register_point_material(assets, "engine/particles/point")?;
-        let presentation = qa_render::scene::ParticlePresentation::Square {
-            pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
-        };
-        for (index, definition) in effect_catalog.definitions().iter().enumerate() {
-            if definition.source == qa_core::primitives::RuleSetId::Quake {
-                effect_bindings[index + 1] = Some(qa_render::effects::ParticleBinding {
-                    palette,
-                    material,
-                    presentation,
-                });
-            }
-        }
-    }
+    );
     let effects = qa_render::effects::Effects::load(
         effect_catalog,
         2048,

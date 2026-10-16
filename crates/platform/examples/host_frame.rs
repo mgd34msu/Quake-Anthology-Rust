@@ -77,7 +77,7 @@ impl FrameSource for Source {
         self.sounds += 1;
         (1..=3).contains(&event.sound.0) && event.channel == 1 && event.volume == 1.0
     }
-    fn effect(&mut self, event: EffectEvent) -> bool {
+    fn effect(&mut self, _palette: Option<qa_render::PaletteId>, event: EffectEvent) -> bool {
         self.effects += 1;
         (1..=3).contains(&event.effect.0) && event.count == 20
     }

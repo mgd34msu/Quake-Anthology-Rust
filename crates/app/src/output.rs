@@ -336,7 +336,21 @@ pub(crate) fn dispatch_frame(
                                         resources.state.presentation_after_reset(record.sequence)
                                     })
                             });
-                            let sent = ready && source.effect(event);
+                            let palette = runtime
+                                .catalog
+                                .registry
+                                .effects
+                                .definition(event.effect)
+                                .filter(|definition| {
+                                    definition.source == qa_core::primitives::RuleSetId::Quake
+                                })
+                                .and_then(|definition| {
+                                    runtime
+                                        .model_assets
+                                        .as_ref()?
+                                        .published_palette(definition.source)
+                                });
+                            let sent = ready && source.effect(palette, event);
                             counts.unhandled_effects += u64::from(!sent);
                             true
                         }

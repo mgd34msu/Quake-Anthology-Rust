@@ -316,6 +316,18 @@ impl Effects {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Fill an existing recipe slot without replacing explicit bindings or
+    /// changing the active particles, client clocks, or random stream.
+    pub fn bind_missing(&mut self, effect: EffectId, binding: ParticleBinding) -> bool {
+        if self.catalog.definition(effect).is_none() {
+            return false;
+        }
+        let Some(slot) = self.bindings.get_mut(effect.0 as usize) else {
+            return false;
+        };
+        slot.get_or_insert(binding);
+        true
+    }
     /// Caller supplies actual connected canonical lifetimes, not seat ordinals.
     pub fn synchronize(&mut self, connected: &[Option<EffectClient>]) {
         self.seen.begin();

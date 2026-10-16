@@ -42,7 +42,7 @@ impl FrameSource for Source {
         self.sounds += 1;
         true
     }
-    fn effect(&mut self, event: EffectEvent) -> bool {
+    fn effect(&mut self, _palette: Option<qa_render::PaletteId>, event: EffectEvent) -> bool {
         self.effect_ids[self.effects] = event.effect.0;
         self.effects += 1;
         true

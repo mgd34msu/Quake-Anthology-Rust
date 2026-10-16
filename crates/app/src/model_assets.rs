@@ -933,6 +933,13 @@ impl ModelAssets {
     pub fn palettes(&self) -> &crate::render_settings::PaletteRegistrations {
         &self.palettes
     }
+    /// Pending palette suffixes cannot become presentation bindings before
+    /// the backend has admitted their resource prefix.
+    pub fn published_palette(&self, source: RuleSetId) -> Option<PaletteId> {
+        let id = self.palettes.get(source)?;
+        let admitted = self.catalog.admitted_assets?;
+        ((id.0 as usize) < admitted.palettes && self.assets.palette(id).is_some()).then_some(id)
+    }
 
     fn append_profile(
         &mut self,
