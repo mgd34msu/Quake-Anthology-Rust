@@ -607,7 +607,7 @@ impl GlBackend {
             _context_thread: PhantomData,
         };
         unsafe {
-            backend.prepare_assets(assets)?;
+            backend.prepare_assets(assets, None)?;
             backend.load_device_assets();
             backend.material_targets.load(
                 &backend.gl,
@@ -672,7 +672,18 @@ impl GlBackend {
     }
 
     /// Cold append admission. Rejected uploads retain the complete old prefix.
-    pub fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
+    pub fn prepare_assets(
+        &mut self,
+        assets: &Assets,
+        scene: Option<crate::scene::Limits>,
+    ) -> Result<(), String> {
+        if let Some(scene) = scene {
+            if scene.resolved()?.vertices > self.dynamic.capacity {
+                return Err(
+                    "GL dynamic vertex capacity cannot grow during asset preparation".to_owned(),
+                );
+            }
+        }
         let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
             return Ok(());
         };

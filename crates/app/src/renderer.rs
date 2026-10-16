@@ -324,6 +324,10 @@ pub struct SceneWorldAppend<'a> {
     scene: WorldScene,
 }
 impl SceneWorldAppend<'_> {
+    pub fn limits(&self) -> Limits {
+        self.frontend.limits()
+    }
+
     pub fn commit(self) {
         self.frontend.commit();
         self.scenes.push(Some(self.scene));
@@ -497,13 +501,15 @@ pub struct Renderer {
 /// A short cold borrow; implementations prepare the complete resource prefix.
 /// Success retains every existing resource and admits all supplied additions.
 pub trait AssetPreparer {
-    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String>;
+    fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String>;
 }
 impl AssetPreparer for Renderer {
-    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
+    fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String> {
         match &mut self.backend {
-            Backend::Cpu { backend, .. } => backend.prepare_assets(assets).map_err(str::to_owned),
-            Backend::Gl(backend) => backend.prepare_assets(assets),
+            Backend::Cpu { backend, .. } => {
+                backend.prepare_assets(assets, scene).map_err(str::to_owned)
+            }
+            Backend::Gl(backend) => backend.prepare_assets(assets, scene),
         }
     }
 }

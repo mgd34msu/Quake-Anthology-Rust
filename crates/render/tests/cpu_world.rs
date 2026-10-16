@@ -2620,6 +2620,94 @@ fn indexed_cached_world_water_warp_uses_scoped_stride_in_each_raster_band() {
 }
 
 #[test]
+fn cold_scene_capacity_growth_rebuilds_an_unchanged_prefix_and_survives_later_assets() {
+    use qa_render::cpu::RasterBands;
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets, false);
+    let image = texture(&mut assets, palette, 7, false);
+    let material = material(&mut assets, image, false);
+    let worlds: Vec<_> = (0..4)
+        .map(|index| {
+            (
+                world(
+                    &mut assets,
+                    2.0 + index as f32,
+                    material,
+                    None,
+                    GeometryPartition::Unpartitioned,
+                ),
+                index,
+            )
+        })
+        .collect();
+    let initial = Limits {
+        commands: 4,
+        entities: 1,
+        polys: 1,
+        vertices: 3,
+        lights: 1,
+        particles: 1,
+        area_bytes: 1,
+        surfaces: 1,
+        draws: 8,
+    };
+    let required = Limits {
+        surfaces: 4,
+        ..initial
+    };
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        &assets,
+        CpuLimits {
+            cache_bytes: 8192,
+            max_spans: 17,
+            scene: initial,
+            bands: RasterBands::Two,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let counts = cpu.admitted_assets();
+    let config = cpu.raster_config();
+    let mut oversized = FrontEnd::load(required).unwrap();
+    let too_many = packet(&mut oversized, &worlds, view(palette), &assets);
+    assert!(cpu.render(&too_many, &assets).rejected > 0);
+
+    let mut frontend = FrontEnd::load(initial).unwrap();
+    let staged = frontend.stage_capacity(required).unwrap();
+    assert_eq!(staged.limits().draws, 8, "explicit draw budget is retained");
+    cpu.prepare_assets(&assets, Some(staged.limits())).unwrap();
+    staged.commit();
+    let grown = cpu.raster_config();
+    assert_eq!(cpu.admitted_assets(), counts);
+    assert_eq!(grown.bands, config.bands);
+    assert_eq!(grown.total_cache_budget_bytes, 8192);
+    assert_eq!(grown.per_band_cache_bytes, config.per_band_cache_bytes);
+    assert!(grown.preparation_capacity_bytes > config.preparation_capacity_bytes);
+    let output = packet(&mut frontend, &worlds, view(palette), &assets);
+    assert_eq!(cpu.render(&output, &assets).rejected, 0);
+    assert!(cpu.world_stats().spans > 0);
+    let pixels = cpu.pixels().to_vec();
+    let stats = cpu.world_stats();
+    cpu.prepare_assets(&assets, None).unwrap();
+    assert_eq!(cpu.world_stats(), stats);
+    assert_eq!(cpu.raster_config(), grown);
+    assert!(cpu.prepare_assets(&assets, Some(initial)).is_err());
+    assert_eq!(cpu.world_stats(), stats);
+    assert_eq!(cpu.raster_config(), grown);
+
+    // Ordinary later registration must retain the successful scene bound.
+    assets.register_image(1, 1, &[31, 47, 63, 255]).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
+    assert_eq!(cpu.render(&output, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), pixels);
+    assert_eq!(cpu.raster_config().bands, RasterBands::Two);
+    assert_eq!(cpu.raster_config().total_cache_budget_bytes, 8192);
+}
+
+#[test]
 fn cold_asset_preparation_preserves_old_ids_limits_and_unchanged_residency() {
     use qa_render::cpu::RasterBands;
     let mut assets = Assets::load().unwrap();
@@ -2661,7 +2749,7 @@ fn cold_asset_preparation_preserves_old_ids_limits_and_unchanged_residency() {
     assert_eq!(config.bands, RasterBands::Two);
     assert_eq!(config.total_cache_budget_bytes, 4096);
     assert_eq!(config.per_band_cache_bytes, 2048);
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.world_stats(), old_stats);
     assert_eq!(cpu.raster_config(), config);
     assert_eq!(cpu.pixels(), old_pixels);
@@ -2677,7 +2765,7 @@ fn cold_asset_preparation_preserves_old_ids_limits_and_unchanged_residency() {
     let new_model = assets
         .register_model(&vertices, &[0, 1, 2, 0, 2, 3], new_material)
         .unwrap();
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
     assert_eq!(cpu.dimensions(), [8, 8]);
     assert_eq!(cpu.pixels(), old_pixels);
@@ -2746,7 +2834,7 @@ fn cold_asset_preparation_adds_cloud_scratch_without_reselecting_automatic_bands
     assert_eq!(original.bands, RasterBands::Two);
     let image = assets.register_image(1, 1, &[25, 36, 47, 255]).unwrap();
     let sky = cloud_material(&mut assets, &[cloud_stage(image)]);
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
     let prepared = cpu.raster_config();
     assert_eq!(prepared.bands, original.bands);
@@ -2787,7 +2875,7 @@ fn cold_asset_preparation_adds_cloud_scratch_without_reselecting_automatic_bands
             .all(|&pixel| pixel == u32::from_le_bytes([25, 36, 47, 255]))
     );
     let stats = cpu.world_stats();
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.world_stats(), stats);
     assert_eq!(cpu.raster_config(), prepared);
 }
@@ -2846,7 +2934,7 @@ fn rejected_cold_cloud_candidate_preserves_admission_pixels_cache_and_settings()
         .unwrap();
     assert_ne!(admitted, Some(assets.counts()));
     for _ in 0..2 {
-        assert!(cpu.prepare_assets(&assets).is_err());
+        assert!(cpu.prepare_assets(&assets, None).is_err());
         assert_eq!(cpu.admitted_assets(), admitted);
         assert_eq!(cpu.pixels(), pixels);
         assert_eq!(cpu.inverse_depth(), depth);
@@ -2879,11 +2967,11 @@ fn changed_image_admission_rejects_without_poisoning_the_prior_cpu_prefix() {
             },
         )
         .unwrap();
-    assert!(cpu.prepare_assets(&assets).is_err());
+    assert!(cpu.prepare_assets(&assets, None).is_err());
     assert_eq!(cpu.admitted_assets(), admission);
     assert_eq!(cpu.raster_config(), config);
     assets.set_image_native_sampler(image, sampler).unwrap();
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.admitted_assets(), admission);
     assert_eq!(cpu.raster_config(), config);
 }
@@ -2933,7 +3021,7 @@ fn cold_world_append_preserves_old_ids_and_renders_the_new_palette() {
     assert_eq!(counts.palettes, retained.palettes + 1);
     assert_eq!(counts.models, retained.models + 1);
     assert!(counts.contains(retained));
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.admitted_assets(), Some(counts));
     assert_eq!(cpu.pixels(), original_pixels);
     assert_eq!(cpu.inverse_depth(), original_depth);
@@ -3040,8 +3128,15 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
     let rejected_mesh = assets.world(rejected_world).unwrap().mesh();
     let rejected_presentation = only_presentation(&assets, rejected_world);
     assert!(assets.counts().contains(retained));
+    let mut growth = FrontEnd::load(Limits::default()).unwrap();
+    let staged = growth
+        .stage_capacity(Limits {
+            surfaces: Limits::default().surfaces * 2,
+            ..Limits::default()
+        })
+        .unwrap();
     for _ in 0..2 {
-        assert!(cpu.prepare_assets(&assets).is_err());
+        assert!(cpu.prepare_assets(&assets, Some(staged.limits())).is_err());
         assert_eq!(cpu.admitted_assets(), Some(retained));
         assert_eq!(cpu.pixels(), original_pixels);
         assert_eq!(cpu.inverse_depth(), original_depth);
@@ -3061,7 +3156,8 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
     assert!(assets.image(rejected_image).is_none());
     assert!(assets.palette(rejected_palette).is_none());
     let stats = cpu.world_stats();
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, Some(Limits::default()))
+        .unwrap();
     assert_eq!(cpu.world_stats(), stats);
     assert_eq!(cpu.admitted_assets(), Some(retained));
     assert_eq!(cpu.render(&original_packet, &assets).rejected, 0);
@@ -3079,7 +3175,7 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
     );
     assert_eq!(retry_world, rejected_world);
     assert_eq!(retry_palette, rejected_palette);
-    cpu.prepare_assets(&assets).unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
     assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
     assert!(frontend.recycle(original_packet).is_ok());
     let retry_packet = packet(

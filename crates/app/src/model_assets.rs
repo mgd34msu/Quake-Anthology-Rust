@@ -1024,7 +1024,7 @@ impl ModelAssets {
             &qa_world::collision::CollisionStore,
             &crate::map::LoadedMap,
         ) -> Result<T, String>,
-        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(crate::map::LoadedMap, T, AssetCounts), String> {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world registration requires a published resource prefix".to_owned());
@@ -1091,7 +1091,7 @@ impl ModelAssets {
             let counts = self.assets.counts();
             self.validate_admission(counts)
                 .map_err(|error| format!("world publication: {error:?}"))?;
-            prepare(&self.assets)?;
+            prepare(&self.assets, &staged)?;
             // Backend success is irreversible. Every fallible owner and caller
             // check has completed before this infallible publication.
             self.apply_admission(counts);

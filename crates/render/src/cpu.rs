@@ -476,17 +476,25 @@ impl CpuBackend {
     ) -> Result<Self, &'static str> {
         let mut backend = Self::load(width, height)?;
         backend.limits = limits;
-        backend.prepare_assets(assets)?;
+        backend.prepare_assets(assets, None)?;
         Ok(backend)
     }
 
     /// Cold preparation requires all prior scoped jobs to have completed.
     /// Failed candidates leave the admitted raster and framebuffer untouched.
-    pub fn prepare_assets(&mut self, assets: &Assets) -> Result<(), &'static str> {
-        let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
+    pub fn prepare_assets(
+        &mut self,
+        assets: &Assets,
+        scene: Option<crate::scene::Limits>,
+    ) -> Result<(), &'static str> {
+        let previous = self.limits.scene.resolved()?;
+        let scene = scene.unwrap_or(previous).validate_growth(previous)?;
+        let admission = AssetAdmission::prepare(self.admission.as_ref(), assets)?;
+        if admission.is_none() && scene == previous {
             return Ok(());
-        };
+        }
         let mut limits = self.limits;
+        limits.scene = scene;
         if let Some(world) = &self.world {
             limits.bands = world.config().bands;
             limits.auto_bands = false;
@@ -499,7 +507,10 @@ impl CpuBackend {
             &self.evaluator,
         )?;
         self.world = Some(world);
-        self.admission = Some(admission);
+        self.limits.scene = scene;
+        if let Some(admission) = admission {
+            self.admission = Some(admission);
+        }
         Ok(())
     }
     pub fn admitted_assets(&self) -> Option<AssetCounts> {

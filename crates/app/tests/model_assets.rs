@@ -140,7 +140,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                     |_, _, _| -> Result<(), String> {
                         panic!("unconfigured profile must fail before staging")
                     },
-                    |_| panic!("unconfigured profile must fail before preparation")
+                    |_, _| panic!("unconfigured profile must fail before preparation")
                 )
                 .is_err()
         );
@@ -179,10 +179,11 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                 staged_called.set(true);
                 Ok((append, store.scratch()))
             },
-            |assets| {
+            |assets, (append, _)| {
                 assert!(staged_called.get());
                 assert_eq!(cpu.admitted_assets(), Some(initial));
-                cpu.prepare_assets(assets).map_err(str::to_owned)
+                cpu.prepare_assets(assets, Some(append.limits()))
+                    .map_err(str::to_owned)
             },
         )
         .unwrap();
@@ -248,7 +249,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                     staged_geometry.set(Some(loaded.collision));
                     Err("caller capacity rejected".to_owned())
                 },
-                |_| panic!("caller staging failure must not reach backend")
+                |_, _| panic!("caller staging failure must not reach backend")
             )
             .is_err()
     );
@@ -264,7 +265,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             map::read(&fixture.vfs, "first").unwrap(),
             world_registration(profile, palette),
             |_, _, _| -> Result<(), String> { panic!("filename conflict must precede staging") },
-            |_| panic!("filename conflict must precede backend"),
+            |_, _| panic!("filename conflict must precede backend"),
         )
         .err()
         .unwrap();
@@ -323,7 +324,7 @@ fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
             map::read(&fixture.vfs, "two").unwrap(),
             world_registration(profile, palette),
             |_, _, _| -> Result<(), String> { panic!("inline capacity must precede staging") },
-            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+            |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .err()
         .unwrap();
@@ -452,10 +453,11 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             staged_called.set(true);
             Ok((append, store.scratch()))
         },
-        |assets| {
+        |assets, (append, _)| {
             attempts += 1;
             assert!(staged_called.get());
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, Some(append.limits()))
+                .map_err(str::to_owned)
         },
     );
     let error = rejected.err().expect("real fixed-budget CPU rejection");
@@ -503,7 +505,10 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             map::read(&fixture.vfs, "small").unwrap(),
             world_registration(profile, palette),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
-            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+            |assets, append| {
+                cpu.prepare_assets(assets, Some(append.limits()))
+                    .map_err(str::to_owned)
+            },
         )
         .unwrap();
     append.commit();
@@ -534,7 +539,10 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             map::read(&fixture.vfs, "large").unwrap(),
             world_registration(profile, palette),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
-            |assets| cpu.prepare_assets(assets).map_err(str::to_owned),
+            |assets, append| {
+                cpu.prepare_assets(assets, Some(append.limits()))
+                    .map_err(str::to_owned)
+            },
         )
         .unwrap();
     append.commit();
@@ -629,7 +637,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
                 [211, 13, 17, 255]
             );
             assert!(assets.materials().last().unwrap().settings.sky.is_some());
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap_err();
     assert!(error.contains("sky cloud projection"), "{error}");
@@ -659,7 +667,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     let good = renderer_request("ui/good", bad.kind, profile.source_rules, None);
     let (good_handle, good_counts) = owner
         .prepare_registration(&fixture.vfs, &good, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(cpu.admitted_assets(), Some(good_counts));
@@ -689,7 +697,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
                     assets.images().last().unwrap().rgba.as_ref(),
                     [211, 13, 17, 255]
                 );
-                cpu.prepare_assets(assets).map_err(str::to_owned)
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
             })
             .unwrap_err();
         assert!(error.contains("sky cloud projection"), "{error}");
@@ -700,7 +708,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     let alias = renderer_request("ui/good_alias", bad.kind, profile.source_rules, None);
     let (alias_handle, alias_counts) = owner
         .prepare_registration(&fixture.vfs, &alias, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(alias_counts.images, good_counts.images);
@@ -729,7 +737,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     );
     let (cached, counts) = owner
         .prepare_registration(&fixture.vfs, &good, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(cached, good_handle);
@@ -869,7 +877,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
     assert_eq!(owner.assets().counts(), initial);
     let (handle, counts) = owner
         .prepare_registration(&fixture.vfs, &request, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(handle, old_name);
@@ -990,7 +998,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 );
                 let (handle, counts) = owner
                     .prepare_registration(&fixture.vfs, &different, profile, |assets| {
-                        cpu.prepare_assets(assets).map_err(str::to_owned)
+                        cpu.prepare_assets(assets, None).map_err(str::to_owned)
                     })
                     .unwrap();
                 assert_eq!(cpu.admitted_assets(), Some(counts));
@@ -1009,7 +1017,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
         }
         let (handle, counts) = owner
             .prepare_registration(&fixture.vfs, &request, profile, |assets| {
-                cpu.prepare_assets(assets).map_err(str::to_owned)
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
             })
             .unwrap();
         assert!(owner.catalog().renderer_candidate(kind, handle, profile));
@@ -1041,7 +1049,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
     let retained_names = owner.catalog().capacity().names;
     let (handle, counts) = owner
         .prepare_registration(&fixture.vfs, &inline, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(counts, before);
@@ -1236,7 +1244,7 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
             },
         )
         .unwrap();
-    assert!(backend.prepare_assets(owner.assets()).is_err());
+    assert!(backend.prepare_assets(owner.assets(), None).is_err());
     assert_eq!(backend.admitted_assets(), Some(initial));
     owner
         .publish_admission(backend.admitted_assets().unwrap())
@@ -1246,7 +1254,7 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
         .assets_mut()
         .set_image_native_sampler(old_image, sampler)
         .unwrap();
-    backend.prepare_assets(owner.assets()).unwrap();
+    backend.prepare_assets(owner.assets(), None).unwrap();
     let admitted = backend.admitted_assets().unwrap();
     assert_ne!(admitted, initial);
     pending(&owner);
@@ -2770,7 +2778,7 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
     };
     let (handle, counts) = owner
         .prepare_registration(&fixture.vfs, &request, profile, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(cpu.admitted_assets(), Some(counts));
@@ -2945,7 +2953,7 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     let (retried, counts) = owner
         .prepare_registration(&fixture.vfs, &retry, second, |assets| {
             prepares.set(prepares.get() + 1);
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(retried, handle);
@@ -3074,7 +3082,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     );
     let (retried, counts) = owner
         .prepare_registration(&fixture.vfs, &retry, second, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(retried, handle);
@@ -3278,7 +3286,7 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
     }
     let (handle, counts) = owner
         .prepare_registration(&fixture.vfs, &request, healthy, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert!(handle > 0);
@@ -3415,7 +3423,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     );
     let (same, counts) = owner
         .prepare_registration(&fixture.vfs, &request, third, |assets| {
-            cpu.prepare_assets(assets).map_err(str::to_owned)
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
         })
         .unwrap();
     assert_eq!(same, handle);

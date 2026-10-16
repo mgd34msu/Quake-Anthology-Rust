@@ -2312,7 +2312,7 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
                 (1, 0, 1)
             );
             assert!(submitted.is_none());
-            backend.prepare_assets(owner.assets()).unwrap();
+            backend.prepare_assets(owner.assets(), None).unwrap();
             // Backend preparation alone does not publish CLIENT readiness.
             assert_eq!(presented(&host).0.models, 0);
             host.publish_model_admission(backend.admitted_assets().unwrap())

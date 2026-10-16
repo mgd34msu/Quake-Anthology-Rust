@@ -38,9 +38,15 @@ impl Source {
     }
 }
 impl qa_app::renderer::AssetPreparer for Source {
-    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
+    fn prepare_assets(
+        &mut self,
+        assets: &Assets,
+        scene: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
         self.attempts += 1;
-        self.cpu.prepare_assets(assets).map_err(str::to_owned)
+        self.cpu
+            .prepare_assets(assets, scene)
+            .map_err(str::to_owned)
     }
 }
 impl FrameSource for Source {

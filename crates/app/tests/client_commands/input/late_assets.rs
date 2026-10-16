@@ -80,13 +80,19 @@ struct Source {
     rejected: u32,
 }
 impl AssetPreparer for Source {
-    fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
+    fn prepare_assets(
+        &mut self,
+        assets: &Assets,
+        scene: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
         self.attempts += 1;
         if self.reject_next {
             self.reject_next = false;
             return Err("fixture rejects the first native registration".to_owned());
         }
-        self.backend.prepare_assets(assets).map_err(str::to_owned)
+        self.backend
+            .prepare_assets(assets, scene)
+            .map_err(str::to_owned)
     }
 }
 impl FrameSource for Source {

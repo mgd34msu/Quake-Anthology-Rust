@@ -718,7 +718,7 @@ pub enum Command {
     View(View),
     Draw2d(Draw2d),
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub commands: usize,
     pub entities: usize,
@@ -757,7 +757,7 @@ impl Limits {
         ]
     }
 
-    fn resolved(mut self) -> Result<Self, &'static str> {
+    pub(crate) fn resolved(mut self) -> Result<Self, &'static str> {
         self.draws = self.draw_capacity().ok_or("scene draw capacity overflow")?;
         if self
             .capacities()
@@ -767,6 +767,20 @@ impl Limits {
             return Err("invalid scene capacity");
         }
         Ok(self)
+    }
+
+    pub(crate) fn validate_growth(self, current: Self) -> Result<Self, &'static str> {
+        let next = self.resolved()?;
+        let current = current.resolved()?;
+        if next
+            .capacities()
+            .into_iter()
+            .zip(current.capacities())
+            .any(|(next, current)| next < current)
+        {
+            return Err("scene capacity cannot shrink");
+        }
+        Ok(next)
     }
 }
 impl Default for Limits {
@@ -903,6 +917,10 @@ pub struct FrontEndCapacity<'a> {
     limits: Limits,
 }
 impl FrontEndCapacity<'_> {
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
     pub fn commit(self) {
         if let Some(lists) = self.lists {
             self.frontend.lists = lists;
@@ -973,7 +991,7 @@ impl FrontEnd {
                     .ok_or("scene draw capacity overflow")?,
             );
         }
-        let limits = limits.resolved()?;
+        let limits = limits.validate_growth(current)?;
         let lists = (limits.capacities() != current.capacities()).then(|| {
             [
                 Some(CommandList::load(limits, self.owner, 0)),

@@ -264,7 +264,7 @@ impl ClientAssets<'_> {
         };
         let (handle, _) = owner
             .prepare_registration(vfs, &request, *profile, |assets| {
-                preparer.prepare_assets(assets)
+                preparer.prepare_assets(assets, None)
             })
             .ok()?;
         if handle <= 0 {

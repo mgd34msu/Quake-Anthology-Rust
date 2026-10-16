@@ -272,9 +272,25 @@ fn appended_gl_assets_commit_once_and_failed_upload_releases_only_candidate_obje
         pixel(0x0cf5, 8);
     }
     let before_bindings = bindings(&window);
+    let before_objects = *OBJECTS.lock().unwrap();
+    TRACK.store(true, Ordering::Relaxed);
+    assert!(
+        gl.prepare_assets(
+            &assets,
+            Some(Limits {
+                vertices: 16_385,
+                ..Limits::default()
+            })
+        )
+        .is_err()
+    );
+    TRACK.store(false, Ordering::Relaxed);
+    assert_eq!(*OBJECTS.lock().unwrap(), before_objects);
+    assert_eq!(bindings(&window), before_bindings);
+    assert_eq!(gl.admitted_assets(), Some(before));
     FAIL_IMAGE.store(true, Ordering::Relaxed);
     TRACK.store(true, Ordering::Relaxed);
-    assert!(gl.prepare_assets(&assets).is_err());
+    assert!(gl.prepare_assets(&assets, None).is_err());
     TRACK.store(false, Ordering::Relaxed);
     assert_eq!(bindings(&window), before_bindings);
     unsafe {
@@ -283,17 +299,17 @@ fn appended_gl_assets_commit_once_and_failed_upload_releases_only_candidate_obje
     assert_eq!(*OBJECTS.lock().unwrap(), [[2, 2], [2, 2], [1, 1]]);
     assert_eq!(gl.admitted_assets(), Some(before));
     assert_eq!(draw(&mut gl, &assets, old_model), [220, 0, 0]);
-    gl.prepare_assets(&assets).unwrap();
+    gl.prepare_assets(&assets, None).unwrap();
     assert_eq!(gl.admitted_assets(), Some(assets.counts()));
     assert_eq!(draw(&mut gl, &assets, old_model), [220, 0, 0]);
     assert_eq!(draw(&mut gl, &assets, appended), [0, 0, 240]);
     TRACK.store(true, Ordering::Relaxed);
     let unchanged = *OBJECTS.lock().unwrap();
-    gl.prepare_assets(&assets).unwrap();
+    gl.prepare_assets(&assets, None).unwrap();
     assert_eq!(*OBJECTS.lock().unwrap(), unchanged);
     TRACK.store(false, Ordering::Relaxed);
     let sky = quad(&mut assets, blue, "append/clouds", true);
-    gl.prepare_assets(&assets).unwrap();
+    gl.prepare_assets(&assets, None).unwrap();
     assert_eq!(draw(&mut gl, &assets, sky), [0, 0, 240]);
     assert_eq!(gl.admitted_assets(), Some(assets.counts()));
     assets
@@ -306,7 +322,7 @@ fn appended_gl_assets_commit_once_and_failed_upload_releases_only_candidate_obje
         )
         .unwrap();
     let admitted = gl.admitted_assets();
-    assert!(gl.prepare_assets(&assets).is_err());
+    assert!(gl.prepare_assets(&assets, None).is_err());
     assert_eq!(gl.admitted_assets(), admitted);
     assert_eq!(draw(&mut gl, &assets, old_model), [220, 0, 0]);
 }

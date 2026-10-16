@@ -751,7 +751,10 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
             .as_mut()
             .unwrap()
             .prepare_registration(&runtime.vfs, &request, profile, |assets| {
-                source.cpu.prepare_assets(assets).map_err(str::to_owned)
+                source
+                    .cpu
+                    .prepare_assets(assets, None)
+                    .map_err(str::to_owned)
             })
             .unwrap();
         counts

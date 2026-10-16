@@ -1281,7 +1281,7 @@ fn operation(
                     .as_mut()
                     .ok_or_else(|| "missing model assets".to_owned())?;
                 owner.prepare_registration(&host.runtime.vfs, &request, profile, |assets| {
-                    (**preparer).prepare_assets(assets)
+                    (**preparer).prepare_assets(assets, None)
                 })
             })();
             let value = match result {
