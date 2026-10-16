@@ -783,22 +783,25 @@ impl Source {
     }
 }
 impl FrameSource for Source {
+    fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
+        Some(qa_app::renderer::Kind::Cpu)
+    }
     fn prepare_video(
         &mut self,
-        kind: Option<qa_app::renderer::Kind>,
+        policy: qa_app::renderer::VideoPolicy,
         assets: &Assets,
         limits: Limits,
     ) -> Result<qa_app::renderer::PreparedVideo, String> {
         self.video_prepares += 1;
-        self.video_kinds.push(kind);
-        if self.video_reject || matches!(kind, Some(qa_app::renderer::Kind::Gl)) {
+        self.video_kinds.push(policy.kind);
+        if self.video_reject || matches!(policy.kind, Some(qa_app::renderer::Kind::Gl)) {
             return Err("headless candidate preparation rejected".into());
         }
         qa_app::renderer::PreparedVideo::cpu(
             Arc::clone(&self.video_configuration),
             assets,
             limits,
-            Some(qa_render::cpu::RasterBands::One),
+            policy.cpu_bands,
         )
     }
     fn publish_video(
@@ -1053,6 +1056,9 @@ fn setup_renderers_with_graphics(
         requests,
     )
     .unwrap();
+    let bands = host.console.cvars.find("r_cpuBands").unwrap();
+    host.console.cvars.set_text(bands, "1").unwrap();
+    host.console.cvars.set_latch_active(bands, true);
     host.local_clients[0] = Some(ids[0]);
     host.local_clients[1] = Some(ids[1]);
     if let Some(console) = console {
@@ -2041,6 +2047,46 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
         seat: SeatId::FIRST,
         ..Context::default()
     };
+    let bands = host
+        .console
+        .cvars
+        .bind("r_cpuBands", Context::default())
+        .unwrap();
+    let game_type = host.console.cvars.bind("g_gametype", context).unwrap();
+    let old_game_type = host
+        .console
+        .cvars
+        .read(game_type)
+        .unwrap()
+        .as_str()
+        .to_owned();
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "1");
+    assert_eq!(
+        source.backend.cpu.raster_config().bands,
+        qa_render::cpu::RasterBands::One
+    );
+    host.console
+        .append("r_cpuBands 2\ng_gametype 1\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "1");
+    assert_eq!(
+        host.console.cvars.latched(bands).unwrap().unwrap().as_str(),
+        "2"
+    );
+    assert_eq!(
+        host.console.cvars.read(game_type).unwrap().as_str(),
+        old_game_type
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(game_type)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "1"
+    );
     let old_markers = renderer_markers(&host);
     let before = old_markers.len();
     let resets = source.reset_receipts;
@@ -2058,6 +2104,15 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     host.runtime.vfs.take_lookup_count();
     source.step(&mut host);
     assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "1");
+    assert_eq!(
+        host.console.cvars.latched(bands).unwrap().unwrap().as_str(),
+        "2"
+    );
+    assert_eq!(
+        source.backend.cpu.raster_config().bands,
+        qa_render::cpu::RasterBands::One
+    );
     assert_eq!(renderer_markers(&host), old_markers);
     assert_eq!(source.reset_receipts, resets);
     assert_eq!(
@@ -2139,6 +2194,25 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     until_running(&mut host, &mut source);
     assert_eq!(source.video_prepares, prepares + 1);
     assert_eq!(source.video_publishes, 1);
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "2");
+    assert!(host.console.cvars.latched(bands).unwrap().is_none());
+    assert_eq!(
+        source.backend.cpu.raster_config().bands,
+        qa_render::cpu::RasterBands::Two
+    );
+    assert_eq!(
+        host.console.cvars.read(game_type).unwrap().as_str(),
+        old_game_type
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(game_type)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "1"
+    );
     assert!(matches!(
         source.video_kinds.last(),
         Some(Some(qa_app::renderer::Kind::Cpu))
@@ -2279,6 +2353,77 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
         assert!(source.play_receipts[seat] > 0);
     }
     paint(&host, &mut source);
+
+    let before_invalid = renderer_markers(&host);
+    let prepares = source.video_prepares;
+    let publishes = source.video_publishes;
+    let old_configuration = Arc::clone(host.runtime.renderer_configuration.as_ref().unwrap());
+    host.console
+        .append("r_cpuBands 3\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    source.step(&mut host);
+    assert_eq!(source.video_prepares, prepares);
+    assert_eq!(source.video_publishes, publishes);
+    assert_eq!(renderer_markers(&host), before_invalid);
+    assert!(Arc::ptr_eq(
+        host.runtime.renderer_configuration.as_ref().unwrap(),
+        &old_configuration
+    ));
+    assert_eq!(
+        source.backend.cpu.raster_config().bands,
+        qa_render::cpu::RasterBands::Two
+    );
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "2");
+    assert_eq!(
+        host.console.cvars.latched(bands).unwrap().unwrap().as_str(),
+        "3"
+    );
+
+    // The benchmark override selects the real replacement's band partition,
+    // while the ordinary successful CPU load still activates its shared cvar.
+    host.set_cpu_band_override(Some(qa_render::cpu::RasterBands::One));
+    host.console
+        .append("r_cpuBands 4\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "2");
+    assert_eq!(
+        host.console.cvars.latched(bands).unwrap().unwrap().as_str(),
+        "4"
+    );
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!(source.video_prepares, prepares + 1);
+    assert_eq!(source.video_publishes, publishes + 1);
+    assert_eq!(
+        &renderer_markers(&host)[before_invalid.len()..],
+        b"uuccUUCC"
+    );
+    assert_eq!(
+        source.backend.cpu.raster_config().bands,
+        qa_render::cpu::RasterBands::One
+    );
+    assert_eq!(host.console.cvars.read(bands).unwrap().as_str(), "4");
+    assert!(host.console.cvars.latched(bands).unwrap().is_none());
+    assert_eq!(
+        host.console.cvars.read(game_type).unwrap().as_str(),
+        old_game_type
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(game_type)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "1"
+    );
+    queue_snapshot(&mut host, ids[0], 11, 2500);
+    queue_snapshot(&mut host, ids[1], 22, 2500);
+    source.step(&mut host);
+    assert!(source.backend.cpu.world_stats().spans > 0);
+    assert_eq!(source.backend.cpu.pixels()[0], u32::from_le_bytes([255; 4]));
 
     // EXEC_NOW records the request while this UI invocation is still active.
     // Its continuation must finish; only later ordinary entries are fenced.

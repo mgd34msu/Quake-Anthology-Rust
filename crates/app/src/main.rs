@@ -906,6 +906,7 @@ fn run() -> Result<(), String> {
         .ok_or("sound assets unavailable")?
         .rate;
     let mut audio = qa_app::audio::Output::open(rate, &host.runtime.vfs)?;
+    host.set_cpu_band_override(cpu_bands);
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?
     } else {

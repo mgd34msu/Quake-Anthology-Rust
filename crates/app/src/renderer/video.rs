@@ -1,4 +1,4 @@
-use super::{Backend, Context, Kind, SceneComposer};
+use super::{Backend, Context, Kind, SceneComposer, VideoPolicy};
 use crate::host::LiveFrame;
 use qa_core::presentation::RendererConfiguration;
 use qa_platform::Window;
@@ -111,7 +111,7 @@ impl Drop for PreparedVideo {
 
 pub(crate) fn prepare_live_video(
     source: &mut LiveFrame<'_>,
-    kind: Option<Kind>,
+    policy: VideoPolicy,
     assets: &Assets,
     limits: Limits,
 ) -> Result<PreparedVideo, String> {
@@ -120,10 +120,10 @@ pub(crate) fn prepare_live_video(
             .renderer
             .as_deref()
             .ok_or("missing active renderer")?;
-        let kind = kind.unwrap_or(renderer.kind);
+        let kind = policy.kind.unwrap_or(renderer.kind);
         let window = kind.open(renderer.width as i32, renderer.height as i32)?;
         let context = Context::load(kind, &window)?;
-        PreparedVideo::load(Some(window), context, assets, limits, renderer.bands)
+        PreparedVideo::load(Some(window), context, assets, limits, policy.cpu_bands)
     })();
     if !source.window.ensure_gl_current() {
         drop(result);

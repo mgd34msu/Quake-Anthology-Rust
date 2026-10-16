@@ -30,9 +30,12 @@ pub struct ClientView {
 /// The live adapter delegates every OS operation to platform. The same host
 /// function can be checked headlessly with supplied event times.
 pub trait FrameSource {
+    fn video_kind(&self) -> Option<crate::renderer::Kind> {
+        None
+    }
     fn prepare_video(
         &mut self,
-        _kind: Option<crate::renderer::Kind>,
+        _policy: crate::renderer::VideoPolicy,
         _assets: &qa_render::Assets,
         _limits: qa_render::Limits,
     ) -> Result<crate::renderer::PreparedVideo, String> {
@@ -146,13 +149,18 @@ pub struct LiveFrame<'a> {
     pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn video_kind(&self) -> Option<crate::renderer::Kind> {
+        self.renderer
+            .as_deref()
+            .map(crate::renderer::Renderer::kind)
+    }
     fn prepare_video(
         &mut self,
-        kind: Option<crate::renderer::Kind>,
+        policy: crate::renderer::VideoPolicy,
         assets: &qa_render::Assets,
         limits: qa_render::Limits,
     ) -> Result<crate::renderer::PreparedVideo, String> {
-        crate::renderer::prepare_live_video(self, kind, assets, limits)
+        crate::renderer::prepare_live_video(self, policy, assets, limits)
     }
     fn publish_video(
         &mut self,
@@ -350,6 +358,8 @@ pub struct FrameHost {
     pub close_without_transport: u64,
     pub developer: CvarHandle,
     pub(crate) renderer_smp: Option<CvarHandle>,
+    cpu_band_view: qa_console::cvars::View,
+    cpu_band_override: Option<qa_render::cpu::RasterBands>,
     pub(crate) video_command: qa_core::primitives::NameId,
     pub(crate) video_serial: u64,
     video_request: Option<VideoRequest>,
@@ -561,6 +571,9 @@ impl FrameHost {
         Ok(())
     }
 
+    pub fn set_cpu_band_override(&mut self, bands: Option<qa_render::cpu::RasterBands>) {
+        self.cpu_band_override = bands;
+    }
     pub(crate) fn request_video_restart(&mut self, kind: Option<crate::renderer::Kind>) {
         self.video_request = Some(VideoRequest { kind });
     }
@@ -594,11 +607,32 @@ impl FrameHost {
                 .model_assets
                 .as_ref()
                 .ok_or("missing model assets")?;
+            let kind = request.kind.or_else(|| source.video_kind());
+            let (cpu_bands, band_generation) = if matches!(kind, Some(crate::renderer::Kind::Cpu)) {
+                (
+                    crate::renderer::pending_cpu_band_setting(
+                        &self.console.cvars,
+                        self.cpu_band_view,
+                        self.cpu_band_override,
+                    )?,
+                    Some(
+                        self.console
+                            .cvars
+                            .view_update_generation(self.cpu_band_view),
+                    ),
+                )
+            } else {
+                (None, None)
+            };
             source
-                .prepare_video(request.kind, owner.assets(), limits)
-                .map(|candidate| (candidate, serial))
+                .prepare_video(
+                    crate::renderer::VideoPolicy { kind, cpu_bands },
+                    owner.assets(),
+                    limits,
+                )
+                .map(|candidate| (candidate, serial, kind, band_generation))
         })();
-        let (mut candidate, serial) = match candidate {
+        let (mut candidate, serial, kind, band_generation) = match candidate {
             Ok(candidate) => candidate,
             Err(error) => {
                 let _ = self
@@ -613,6 +647,14 @@ impl FrameHost {
         let prepared = self
             .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver())
             .and_then(|()| {
+                if band_generation.is_some_and(|generation| {
+                    self.console
+                        .cvars
+                        .view_update_generation(self.cpu_band_view)
+                        != generation
+                }) {
+                    return Err("CPU band setting changed during restart".into());
+                }
                 let owner = self
                     .runtime
                     .model_assets
@@ -647,6 +689,24 @@ impl FrameHost {
             Ok(configuration) => {
                 self.runtime.renderer_configuration = Some(configuration);
                 self.video_serial = serial;
+                match kind {
+                    Some(crate::renderer::Kind::Cpu) => {
+                        if let Err(error) = self.console.cvars.apply_latch(self.cpu_band_view) {
+                            let _ = self.runtime.server.events.console_formatted(format_args!(
+                                "CPU band latch publication: {error:?}\n"
+                            ));
+                        }
+                        self.console
+                            .cvars
+                            .set_latch_active(self.cpu_band_view.canonical(), true);
+                    }
+                    Some(crate::renderer::Kind::Gl) => {
+                        self.console
+                            .cvars
+                            .set_latch_active(self.cpu_band_view.canonical(), false);
+                    }
+                    None => {}
+                }
                 let _ = self
                     .runtime
                     .server
@@ -833,6 +893,10 @@ impl FrameHost {
         let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
         let renderer_smp = console.cvars.find("r_smp");
+        let cpu_band_view = console
+            .cvars
+            .bind("r_cpuBands", qa_console::views::Context::default())
+            .ok_or("missing CPU band setting")?;
         let maxfps = console
             .cvars
             .find("com_maxfps")
@@ -976,6 +1040,8 @@ impl FrameHost {
             close_without_transport: 0,
             developer,
             renderer_smp,
+            cpu_band_view,
+            cpu_band_override: None,
             video_command,
             video_serial: 0,
             video_request: None,

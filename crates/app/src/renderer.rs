@@ -48,17 +48,42 @@ pub fn cpu_band_setting(
     let selected = if benchmark.is_some() {
         benchmark
     } else {
-        match cvars.integer(handle) {
-            0 => None,
-            value => Some(
-                usize::try_from(value)
-                    .ok()
-                    .and_then(RasterBands::from_count)
-                    .ok_or("r_cpuBands must be 0, 1, 2, 4 or 8")?,
-            ),
-        }
+        configured_cpu_bands(cvars.integer(handle))?
     };
     Ok((handle, selected))
+}
+
+fn configured_cpu_bands(value: i32) -> Result<Option<RasterBands>, &'static str> {
+    if value == 0 {
+        Ok(None)
+    } else {
+        usize::try_from(value)
+            .ok()
+            .and_then(RasterBands::from_count)
+            .map(Some)
+            .ok_or("r_cpuBands must be 0, 1, 2, 4 or 8")
+    }
+}
+
+/// Preview the one capability latch without changing current values or revisions.
+pub fn pending_cpu_band_setting(
+    cvars: &qa_console::cvars::Cvars,
+    view: qa_console::cvars::View,
+    benchmark: Option<RasterBands>,
+) -> Result<Option<RasterBands>, &'static str> {
+    if benchmark.is_some() {
+        return Ok(benchmark);
+    }
+    let value = match cvars
+        .latched(view)
+        .map_err(|_| "CPU band setting conversion")?
+    {
+        Some(text) => qa_core::text::atoi_prefix(text.as_str().as_bytes()),
+        None => cvars
+            .integer_view(view)
+            .map_err(|_| "CPU band setting conversion")?,
+    };
+    configured_cpu_bands(value)
 }
 
 /// The app owns worker scheduling; render lends scoped preparation or raster jobs.
@@ -173,6 +198,12 @@ impl Kind {
             Self::Gl => Window::open_gl(width, height),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VideoPolicy {
+    pub kind: Option<Kind>,
+    pub cpu_bands: Option<RasterBands>,
 }
 
 /// Cold context and capability owner; it becomes the only live backend after
@@ -758,7 +789,6 @@ pub struct Renderer {
     effect_time: qa_core::sys_events::EventTime,
     effect_gravity: f32,
     backend: Backend,
-    bands: Option<RasterBands>,
     kind: Kind,
     pub sample: Sample,
     width: u32,
@@ -784,6 +814,9 @@ impl AssetPreparer for Renderer {
     }
 }
 impl Renderer {
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
     pub fn admitted_assets(&self) -> Option<qa_render::assets::AssetCounts> {
         self.backend.admitted_assets()
     }
@@ -836,7 +869,6 @@ impl Renderer {
                 effect_time: qa_core::sys_events::EventTime::default(),
                 effect_gravity: 800.0,
                 backend,
-                bands,
                 kind,
                 sample: Sample::default(),
                 width,
