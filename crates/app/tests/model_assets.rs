@@ -725,7 +725,18 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
         .catalog()
         .shader_binding(good_handle, profile)
         .unwrap();
-    let good_texture = owner.assets().material(good_material).unwrap().stages[0].texture;
+    let good_texture = owner
+        .assets()
+        .material(
+            owner
+                .assets()
+                .shader_binding(good_material)
+                .unwrap()
+                .material,
+        )
+        .unwrap()
+        .stages[0]
+        .texture;
     let StageTexture::Image(good_image) = good_texture else {
         panic!("good image")
     };
@@ -767,9 +778,15 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
             .assets()
             .material(
                 owner
-                    .catalog()
-                    .shader_binding(alias_handle, profile)
+                    .assets()
+                    .shader_binding(
+                        owner
+                            .catalog()
+                            .shader_binding(alias_handle, profile)
+                            .unwrap()
+                    )
                     .unwrap()
+                    .material
             )
             .unwrap()
             .stages[0]
@@ -1448,7 +1465,7 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
         let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.add_entity(SceneEntity {
             model: binding.model.into(),
-            material: Some(binding.material),
+            shader: Some(binding.shader),
             origin: Vec3([16., 0., 0.]),
             ..Default::default()
         }));
@@ -1535,7 +1552,9 @@ fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
                 .unwrap();
             let model = assets.model(binding.model).unwrap();
             assert!(model.sprite.is_some());
-            let material = assets.material(binding.material).unwrap();
+            let material = assets
+                .material(assets.shader_binding(binding.shader).unwrap().material)
+                .unwrap();
             assert_eq!(
                 material.stages[0].alpha_test,
                 qa_render::shader::AlphaFunc::AtLeastHalf
@@ -1544,7 +1563,7 @@ fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
                 panic!("sprite image")
             };
             assert!(assets.image(image).unwrap().width > 0);
-            frame_materials.push(binding.material);
+            frame_materials.push(binding.shader);
         }
         assert_ne!(frame_materials[0], frame_materials[1]);
         assert_eq!(frame_materials[0], frame_materials[2]);
@@ -1623,19 +1642,22 @@ fn native_skins_resolve_once_for_each_profile_and_preserve_first_mapping() {
             );
             // BODY_1 resolves to the first body mapping, not the later duplicate.
             let sample = |material| {
-                let StageTexture::Image(image) =
-                    assets.material(material).unwrap().stages[0].texture
+                let StageTexture::Image(image) = assets
+                    .material(assets.shader_binding(material).unwrap().material)
+                    .unwrap()
+                    .stages[0]
+                    .texture
                 else {
                     panic!("skin image")
                 };
                 let pixels = &assets.image(image).unwrap().rgba;
                 [pixels[0], pixels[1], pixels[2]]
             };
-            let first = sample(skinned[0].material);
+            let first = sample(skinned[0].shader);
             assert!(first[1] > first[0] && first[1] > first[2]);
-            let second = sample(skinned[1].material);
+            let second = sample(skinned[1].shader);
             assert!(second[0] > second[1] && second[0] > second[2]);
-            profile_materials.push(skinned[0].material);
+            profile_materials.push(skinned[0].shader);
             for invalid in [i32::MIN, -1, 0, i32::MAX] {
                 assert_eq!(
                     catalog
@@ -1710,7 +1732,7 @@ fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader()
                     }
                 )
                 .unwrap()
-                .all(|binding| binding.material == qa_render::MaterialId(0))
+                .all(|binding| binding.shader == qa_render::ShaderBindingId(0))
         );
     }
 }
@@ -1827,8 +1849,10 @@ fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
                         .next()
                         .unwrap();
                     assert_eq!(binding.model, base.model);
-                    assert_ne!(binding.material, base.material);
-                    let material = assets.material(binding.material).unwrap();
+                    assert_ne!(binding.shader, base.shader);
+                    let material = assets
+                        .material(assets.shader_binding(binding.shader).unwrap().material)
+                        .unwrap();
                     assert_eq!(
                         material.settings.software_alias.is_some(),
                         profile.rules == RuleSetId::Quake2
@@ -1862,8 +1886,8 @@ fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
                             22
                         );
                     }
-                    assert!(!variants.contains(&binding.material));
-                    variants.push(binding.material);
+                    assert!(!variants.contains(&binding.shader));
+                    variants.push(binding.shader);
                 }
             }
         }
@@ -1914,8 +1938,11 @@ fn missing_authored_md2_skins_keep_the_mesh_and_allow_custom_skin_override() {
                 .next()
                 .unwrap();
             assert_eq!(assets.model(binding.model).unwrap().frame_count(), 2);
-            let StageTexture::Image(image) =
-                assets.material(binding.material).unwrap().stages[0].texture
+            let StageTexture::Image(image) = assets
+                .material(assets.shader_binding(binding.shader).unwrap().material)
+                .unwrap()
+                .stages[0]
+                .texture
             else {
                 panic!("MD2 skin image")
             };
@@ -2121,7 +2148,7 @@ fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
         assert_eq!(wrapped.len(), 2);
         assert_ne!(first[0].model, first[1].model);
         assert_eq!(first[0].model, wrapped[0].model);
-        assert_ne!(first[0].material, wrapped[0].material);
+        assert_ne!(first[0].shader, wrapped[0].shader);
         assert_eq!(first[1], wrapped[1]);
         assert_eq!(selected(u32::MAX), wrapped);
         for (binding, decoded) in first.iter().zip(&parsed.meshes) {
@@ -2133,7 +2160,9 @@ fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
                 assert_eq!(vertex.normal, original.normal);
             }
         }
-        let opaque = assets.material(first[0].material).unwrap();
+        let opaque = assets
+            .material(assets.shader_binding(first[0].shader).unwrap().material)
+            .unwrap();
         assert_eq!(opaque.stages.len(), 1);
         assert_eq!(opaque.stages[0].rgb_gen, RgbGen::LightingDiffuse);
         assert_eq!(opaque.stages[0].blend, None);
@@ -2142,7 +2171,9 @@ fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
             opaque.stages[0].depth_func,
             qa_render::assets::DepthFunc::Lequal
         );
-        let scripted = assets.material(first[1].material).unwrap();
+        let scripted = assets
+            .material(assets.shader_binding(first[1].shader).unwrap().material)
+            .unwrap();
         assert_eq!(scripted.stages.len(), 2);
         assert!(matches!(scripted.stages[0].rgb_gen, RgbGen::Wave(_)));
         assert!(scripted.stages[1].blend.is_some());
@@ -2467,7 +2498,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
             for index in 0..limit {
                 let entity = packet.entity(index as u32);
                 assert_eq!(entity.model, expected[index % 2].model.into());
-                assert_eq!(entity.material, Some(expected[index % 2].material));
+                assert_eq!(entity.shader, Some(expected[index % 2].shader));
                 assert_eq!(entity.frame, 1);
                 assert_eq!(entity.old_frame, 1);
                 assert_eq!(entity.depth_hack, index >= 2);
@@ -2614,7 +2645,9 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
         let q3_material = catalog.shader_binding(handle, q3).unwrap();
         let q2_material = catalog.shader_binding(handle, q2).unwrap();
         for material in [q3_material, q2_material] {
-            let material = assets.material(material).unwrap();
+            let material = assets
+                .material(assets.shader_binding(material).unwrap().material)
+                .unwrap();
             let stage = material.stages[0];
             assert_eq!(stage.sampler.mipmaps, mipmaps);
             assert_eq!(
@@ -2631,11 +2664,19 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
             assert_eq!(stage.depth_func, qa_render::assets::DepthFunc::Always);
             assert!(!stage.depth_write);
         }
-        let StageTexture::Image(q3_image) = assets.material(q3_material).unwrap().stages[0].texture
+        let StageTexture::Image(q3_image) = assets
+            .material(assets.shader_binding(q3_material).unwrap().material)
+            .unwrap()
+            .stages[0]
+            .texture
         else {
             panic!("shader image");
         };
-        let StageTexture::Image(q2_image) = assets.material(q2_material).unwrap().stages[0].texture
+        let StageTexture::Image(q2_image) = assets
+            .material(assets.shader_binding(q2_material).unwrap().material)
+            .unwrap()
+            .stages[0]
+            .texture
         else {
             panic!("shader image");
         };
@@ -2704,7 +2745,11 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
             handle = Some(admitted);
             let material = owner.catalog().shader_binding(admitted, profile).unwrap();
             materials[index] = Some(material);
-            let stage = owner.assets().material(material).unwrap().stages[0];
+            let stage = owner
+                .assets()
+                .material(owner.assets().shader_binding(material).unwrap().material)
+                .unwrap()
+                .stages[0];
             assert_eq!(stage.sampler.mipmaps, first_mips[index]);
             let StageTexture::Image(image) = stage.texture else {
                 panic!("shader image");
@@ -3021,12 +3066,20 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     );
     let material = owner.catalog().shader_binding(handle, second).unwrap();
     assert!(
-        owner.assets().material(material).unwrap().stages[0]
+        owner
+            .assets()
+            .material(owner.assets().shader_binding(material).unwrap().material)
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );
     assert!(
-        !owner.assets().material(retained).unwrap().stages[0]
+        !owner
+            .assets()
+            .material(owner.assets().shader_binding(retained).unwrap().material)
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );
@@ -3149,7 +3202,11 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     for profile in [second, foreign] {
         let material = owner.catalog().shader_binding(handle, profile).unwrap();
         assert!(
-            !owner.assets().material(material).unwrap().stages[0]
+            !owner
+                .assets()
+                .material(owner.assets().shader_binding(material).unwrap().material)
+                .unwrap()
+                .stages[0]
                 .sampler
                 .mipmaps
         );
@@ -3528,7 +3585,12 @@ fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
         .unwrap();
     let ModelView { assets, catalog } = owner.view();
     let material = assets
-        .material(catalog.shader_binding(first, profile).unwrap())
+        .material(
+            assets
+                .shader_binding(catalog.shader_binding(first, profile).unwrap())
+                .unwrap()
+                .material,
+        )
         .unwrap();
     assert_eq!(material.settings.cull, qa_render::shader::Cull::None);
     assert_eq!(material.stages.len(), 2);
@@ -3543,7 +3605,12 @@ fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
     );
     assert!(
         !assets
-            .material(catalog.shader_binding(second, profile).unwrap())
+            .material(
+                assets
+                    .shader_binding(catalog.shader_binding(second, profile).unwrap())
+                    .unwrap()
+                    .material
+            )
             .unwrap()
             .stages[0]
             .sampler
@@ -3658,7 +3725,11 @@ fn image(
     skin: u32,
 ) -> qa_render::ImageId {
     let binding = binding(catalog, path, profile, skin).unwrap();
-    let StageTexture::Image(image) = assets.material(binding.material).unwrap().stages[0].texture
+    let StageTexture::Image(image) = assets
+        .material(assets.shader_binding(binding.shader).unwrap().material)
+        .unwrap()
+        .stages[0]
+        .texture
     else {
         panic!("skin material")
     };
@@ -3684,7 +3755,7 @@ fn render_indexed_on(
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_entity(qa_render::SceneEntity {
         model: binding.model.into(),
-        material: Some(binding.material),
+        shader: Some(binding.shader),
         origin: Vec3([0.0, -24.0, -36.0]),
         lighting: Some(qa_render::stage::EntityLighting {
             ambient: [255.0; 3],
@@ -3738,7 +3809,7 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let first = binding(&catalog, "models/test/tris.md2", profile, 0).unwrap();
     let second = binding(&catalog, "models/test/tris.md2", profile, 1).unwrap();
     assert_eq!(first.model, second.model);
-    assert_ne!(first.material, second.material);
+    assert_ne!(first.shader, second.shader);
     assert_eq!(
         first.pose,
         qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake2).pose
@@ -3779,7 +3850,12 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
         assert_eq!(
             assets
                 .material(
-                    binding(&catalog, "models/test/tris.md2", profile, skin)
+                    assets
+                        .shader_binding(
+                            binding(&catalog, "models/test/tris.md2", profile, skin)
+                                .unwrap()
+                                .shader
+                        )
                         .unwrap()
                         .material
                 )
@@ -4185,7 +4261,9 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                     .and_then(|mut surfaces| surfaces.next())
                     .unwrap();
                 assert_eq!(binding.model, opaque.model);
-                let material = assets.material(binding.material).unwrap();
+                let material = assets
+                    .material(assets.shader_binding(binding.shader).unwrap().material)
+                    .unwrap();
                 assert_eq!(material.stages.len(), 1);
                 let stage = material.stages[0];
                 assert_eq!(stage.texture, StageTexture::Image(base_image));
@@ -4609,8 +4687,8 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
         selected[1].pose,
         qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake).pose
     );
-    assert_ne!(selected[0].material, selected[1].material);
-    assert_ne!(selected[0].material, selected[2].material);
+    assert_ne!(selected[0].shader, selected[1].shader);
+    assert_ne!(selected[0].shader, selected[2].shader);
     assert_eq!(catalog.capacity().registrations, 4);
     assert_eq!(catalog.capacity().frame_vertices, 10);
     assert_eq!(catalog.capacity().indices, 6);
@@ -5380,7 +5458,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             catalog.resolve_inline(selected, 1).unwrap().surfaces
         );
         assert_eq!(entity.origin, record.position);
-        assert_eq!(entity.material, None);
+        assert_eq!(entity.shader, None);
     }
     record.appearance.models[0] = ModelRef::native(ResourceNamespace::Client(ClientId(8)), 50);
     let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();

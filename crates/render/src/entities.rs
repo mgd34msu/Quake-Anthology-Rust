@@ -5,15 +5,15 @@ use crate::{
 };
 use qa_core::{math, primitives::Vec3};
 
-pub fn register_beam_material(
+pub fn register_beam_shader(
     assets: &mut crate::Assets,
     blend: crate::shader::StageBlend,
-) -> Result<crate::MaterialId, &'static str> {
+) -> Result<crate::ShaderBindingId, &'static str> {
     use crate::{
         assets::{ImageId, MaterialSettings, Stage, StageTexture},
         shader::{AlphaGen, Cull, RgbGen},
     };
-    assets.register_material(
+    let material = assets.register_material(
         "engine/beam",
         &[Stage {
             texture: StageTexture::Image(ImageId(0)),
@@ -32,7 +32,11 @@ pub fn register_beam_material(
             },
             ..Default::default()
         },
-    )
+    )?;
+    assets.register_shader_binding(crate::ShaderBinding::material(
+        material,
+        crate::world::geometry::LightSource::None,
+    ))
 }
 
 pub enum Prepared {

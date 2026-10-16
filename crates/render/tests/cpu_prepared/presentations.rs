@@ -39,7 +39,7 @@ fn variants() -> (Assets, WorldId, [WorldPresentationId; 2], [PaletteId; 2]) {
             },
         );
         SurfaceMaterial {
-            material,
+            shader: *assets.shader_binding(material).unwrap(),
             ..SurfaceMaterial::default()
         }
     });
@@ -243,16 +243,14 @@ fn two_views_of_one_world_and_inline_entities_select_independent_presentations()
 #[test]
 fn mismatched_world_presentation_is_rejected_without_affecting_a_healthy_surface() {
     let (mut assets, world, presentations, palettes) = variants();
-    let material = assets
-        .surface_binding(presentations[1], 0)
-        .unwrap()
-        .material;
+    let material = assets.surface_binding(presentations[1], 0).unwrap().shader;
+    let shader = *assets.shader_binding(material).unwrap();
     let other = fixture_world(
         &mut assets,
         2.0,
         1.0,
         SurfaceMaterial {
-            material,
+            shader,
             ..SurfaceMaterial::default()
         },
         Some(137),

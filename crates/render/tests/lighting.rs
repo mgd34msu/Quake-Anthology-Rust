@@ -292,10 +292,10 @@ fn dynamic_light_uses_lighting_origin_and_minimum_radius_without_double_normaliz
 
 #[test]
 fn shared_view_lighting_keeps_explicit_values_and_does_not_light_generated_geometry() {
-    use qa_render::{Assets, FrontEnd, Limits, MaterialId, Refdef, SceneModel, Vertex};
+    use qa_render::{Assets, FrontEnd, Limits, Refdef, SceneModel, ShaderBindingId, Vertex};
     let mut assets = Assets::load().unwrap();
     let model = assets
-        .register_model(&[Vertex::default(); 3], &[0, 1, 2], MaterialId(0))
+        .register_model(&[Vertex::default(); 3], &[0, 1, 2], ShaderBindingId(0))
         .unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
@@ -314,7 +314,7 @@ fn shared_view_lighting_keeps_explicit_values_and_does_not_light_generated_geome
             radius: 1.,
             rotation: 0.
         },
-        material: Some(MaterialId(0)),
+        shader: Some(ShaderBindingId(0)),
         ..Default::default()
     }));
     let mut samples = 0;
@@ -343,19 +343,27 @@ fn no_world_diffuse_models_reach_cpu_pixels_through_shared_lighting() {
         shader::{Cull, RgbGen},
     };
     let mut assets = Assets::load().unwrap();
-    let material = assets
-        .register_material(
-            "preview diffuse",
-            &[Stage {
-                rgb_gen: RgbGen::LightingDiffuse,
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "preview diffuse",
+                &[Stage {
+                    rgb_gen: RgbGen::LightingDiffuse,
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices =
         [[8., -2., -2.], [8., 2., -2.], [8., 2., 2.], [8., -2., 2.]].map(|position| Vertex {
             position: Vec3(position),

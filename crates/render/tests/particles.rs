@@ -1,14 +1,14 @@
 use qa_core::primitives::Vec3;
 use qa_render::{
-    Assets, Command, FrontEnd, Limits, MaterialId, PaletteId, ParticlePresentation, Refdef,
-    SceneParticle,
+    Assets, Command, FrontEnd, Limits, PaletteId, ParticlePresentation, Refdef, SceneParticle,
+    ShaderBindingId,
     assets::{Cull, Filter, StageTexture, Wrap},
-    particles::{gl_vertices, register_point_material},
+    particles::{gl_vertices, register_point_shader},
     shader::{AlphaGen, RgbGen, StageBlend},
     surface_cache::PaletteLighting,
 };
 
-fn resources() -> (Assets, PaletteId, MaterialId) {
+fn resources() -> (Assets, PaletteId, ShaderBindingId) {
     let mut assets = Assets::load().unwrap();
     let rgb: Vec<u8> = (0..256)
         .flat_map(|index| [index as u8, (index / 2) as u8, (255 - index) as u8])
@@ -16,14 +16,16 @@ fn resources() -> (Assets, PaletteId, MaterialId) {
     let palette = assets
         .register_palette(PaletteLighting::load(&rgb, &vec![0; 64 * 256], None, 256).unwrap())
         .unwrap();
-    let material = register_point_material(&mut assets, "particles/native-point").unwrap();
+    let material = register_point_shader(&mut assets, "particles/native-point").unwrap();
     (assets, palette, material)
 }
 
 #[test]
 fn point_material_uses_the_original_mask_and_the_shared_stage_table() {
     let (assets, _, material) = resources();
-    let material = assets.material(material).unwrap();
+    let material = assets
+        .material(assets.shader_binding(material).unwrap().material)
+        .unwrap();
     assert_eq!(material.settings.cull, Cull::None);
     assert_eq!(material.stages.len(), 1);
     let stage = material.stages[0];
@@ -93,7 +95,7 @@ fn gl_point_vertices_match_native_scale_order_axes_uvs_and_palette_color() {
             color: 73,
             alpha: 123,
             palette,
-            material,
+            shader: material,
             ..SceneParticle::default()
         };
         let output = gl_vertices(particle, &view, assets.palette(palette).unwrap()).unwrap();
@@ -150,7 +152,7 @@ fn card_uses_the_same_palette_and_fixed_vertex_output() {
         alpha: 64,
         size: 4.0,
         palette,
-        material,
+        shader: material,
         presentation: ParticlePresentation::Card,
     };
     let output = gl_vertices(
@@ -192,7 +194,7 @@ fn particles_are_copied_bounded_and_kept_in_separate_view_ranges() {
     let mut particle = SceneParticle {
         position: Vec3([17.0, 2.0, 3.0]),
         palette,
-        material,
+        shader: material,
         ..SceneParticle::default()
     };
     assert!(frame.add_particle(particle));
@@ -252,7 +254,7 @@ fn failed_view_and_invalid_particle_do_not_damage_valid_peers_or_prior_views() {
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let particle = SceneParticle {
         palette,
-        material,
+        shader: material,
         ..SceneParticle::default()
     };
     assert!(frame.add_particle(particle));
@@ -268,7 +270,7 @@ fn failed_view_and_invalid_particle_do_not_damage_valid_peers_or_prior_views() {
     }));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     assert!(frame.add_particle(SceneParticle {
-        material: MaterialId(u32::MAX),
+        shader: qa_render::ShaderBindingId(u32::MAX),
         ..particle
     }));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
@@ -299,7 +301,7 @@ fn nonfinite_or_nonpositive_particle_admission_leaves_capacity_for_valid_data() 
     let (assets, palette, material) = resources();
     let particle = SceneParticle {
         palette,
-        material,
+        shader: material,
         ..SceneParticle::default()
     };
     let mut front = FrontEnd::load(Limits {

@@ -244,6 +244,9 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
         let binding = *assets
             .surface_binding(loaded.presentations[0].id, 0)
             .unwrap();
+        let binding = assets
+            .shader_binding(binding.shader)
+            .ok_or("shader binding")?;
         let region = binding.lightmap_region.ok_or("lit region")?;
         assert_eq!(region.page_size, expected_page_size);
         assert_eq!((region.width, region.height), (width, 2));
@@ -268,14 +271,24 @@ fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> R
         }
         assert!(
             assets
-                .surface_binding(loaded.presentations[0].id, 1)
+                .shader_binding(
+                    assets
+                        .surface_binding(loaded.presentations[0].id, 1)
+                        .unwrap()
+                        .shader
+                )
                 .unwrap()
                 .lightmap_region
                 .is_none()
         );
         assert_eq!(
             assets
-                .surface_binding(loaded.presentations[0].id, 1)
+                .shader_binding(
+                    assets
+                        .surface_binding(loaded.presentations[0].id, 1)
+                        .unwrap()
+                        .shader
+                )
                 .unwrap()
                 .lightmap,
             qa_render::assets::ImageId(0)
@@ -433,13 +446,18 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
                 WorldLoadOptions::default(),
             )
             .map_err(|e| format!("material: {e:?}"))?;
-            let world = assets.world(loaded.world).ok_or("world")?;
+            assets.world(loaded.world).ok_or("world")?;
             let first = *assets
                 .surface_binding(loaded.presentations[0].id, 0)
                 .unwrap();
             let second = *assets
                 .surface_binding(loaded.presentations[0].id, 1)
                 .unwrap();
+            assert_eq!(first.texture_scale, [1.0 / 16.0; 2]);
+            let first = assets.shader_binding(first.shader).ok_or("first shader")?;
+            let second = assets
+                .shader_binding(second.shader)
+                .ok_or("second shader")?;
             let changed = assets.material(first.material).ok_or("first material")?;
             let stock = assets.material(second.material).ok_or("second material")?;
             assert_eq!(assets.name(stock.name), Some("other"));
@@ -448,7 +466,6 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
             assert_ne!(first.lightmap, qa_render::assets::ImageId(0));
             assert_eq!(first.lightmap, second.lightmap);
             assert!(first.lightmap_region.is_some());
-            assert_eq!(first.texture_scale, [1.0 / 16.0; 2]);
             if authored {
                 assert_eq!(assets.name(changed.name), Some("textures/wall"));
                 assert!(matches!(changed.stages[0].rgb_gen, RgbGen::Wave(_)));
@@ -503,6 +520,9 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
         let binding = *assets
             .surface_binding(loaded.presentations[0].id, 0)
             .ok_or("binding")?;
+        let binding = assets
+            .shader_binding(binding.shader)
+            .ok_or("shader binding")?;
         let material = assets.material(binding.material).ok_or("material")?;
         let base = &material.stages[0];
         if opaque {
@@ -541,7 +561,12 @@ fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_s
 
 fn surface_image(assets: &Assets, presentation: WorldPresentationId) -> ImageId {
     let material = assets
-        .material(assets.surface_binding(presentation, 0).unwrap().material)
+        .material(
+            assets
+                .shader_binding(assets.surface_binding(presentation, 0).unwrap().shader)
+                .unwrap()
+                .material,
+        )
         .unwrap();
     material
         .stages

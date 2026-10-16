@@ -6,7 +6,7 @@ use qa_core::{
 use qa_platform::{EventPump, Stopwatch, Window, pause};
 use qa_render::{
     Assets, BackendStats, BlendPhase, Command, CommandList, Draw2d, FrontEnd, Light, Limits,
-    MaterialId, ModelId, Refdef, SceneEntity, Vertex, Viewport,
+    ModelId, Refdef, SceneEntity, ShaderBindingId, Vertex, Viewport,
     assets::{
         Cull, DepthFunc, MaterialSettings, Stage, StageTexture, TcGen,
         upload::{MipmapBuild, UploadParams},
@@ -30,7 +30,7 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 
 struct Fixture {
     model: ModelId,
-    poly_material: MaterialId,
+    poly_material: ShaderBindingId,
     poly: [Vertex; 3],
 }
 impl Fixture {
@@ -70,6 +70,10 @@ impl Fixture {
                 ..MaterialSettings::default()
             },
         )?;
+        let material = assets.register_shader_binding(qa_render::ShaderBinding::material(
+            material,
+            qa_render::world::geometry::LightSource::None,
+        ))?;
         let positions = [
             [16.0, 12.0, 12.0],
             [16.0, -12.0, 12.0],
@@ -104,6 +108,10 @@ impl Fixture {
                 ..MaterialSettings::default()
             },
         )?;
+        let poly_material = assets.register_shader_binding(qa_render::ShaderBinding::material(
+            poly_material,
+            qa_render::world::geometry::LightSource::None,
+        ))?;
         let positions = [[2.0, -0.5, 1.0], [8.0, -5.0, 5.0], [8.0, -5.0, 1.0]];
         let coords = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
         let poly = std::array::from_fn(|i| Vertex {
@@ -167,7 +175,7 @@ impl Fixture {
                     rect: [x + seat as f32 * 320.0, 360.0, width, 20.0],
                     texcoords: [0.0, 0.0, 1.0, 1.0],
                     color,
-                    material: MaterialId(0),
+                    shader: ShaderBindingId(0),
                 }) {
                     return Err("fixture 2D capacity");
                 }

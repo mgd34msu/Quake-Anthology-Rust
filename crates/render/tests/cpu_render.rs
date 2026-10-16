@@ -11,19 +11,27 @@ fn portal_plane_clips_polygons_and_rotated_models_to_the_same_half_screen() {
     use qa_core::primitives::Plane;
     let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[240, 120, 60, 255]).unwrap();
-    let material = assets
-        .register_material(
-            "clip plane",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "clip plane",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices = [
         Vec3([8., 8., 8.]),
         Vec3([8., -8., 8.]),
@@ -87,38 +95,46 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
         .register_image(2, 1, &[255, 255, 255, 0, 255, 255, 255, 255])
         .unwrap();
     let lightmap = assets.register_image(1, 1, &[128, 128, 128, 255]).unwrap();
-    let material = assets
-        .register_material(
-            "fence",
-            &[
-                Stage {
-                    texture: StageTexture::Image(fence),
-                    sampler: Sampler {
-                        filter: Filter::Nearest,
-                        ..Sampler::default()
+    let material = {
+        let material = assets
+            .register_material(
+                "fence",
+                &[
+                    Stage {
+                        texture: StageTexture::Image(fence),
+                        sampler: Sampler {
+                            filter: Filter::Nearest,
+                            ..Sampler::default()
+                        },
+                        alpha_test: AlphaTest::AtLeastHalf,
+                        ..Stage::default()
                     },
-                    alpha_test: AlphaTest::AtLeastHalf,
-                    ..Stage::default()
+                    Stage {
+                        texture: StageTexture::Image(lightmap),
+                        blend: Some(StageBlend {
+                            source: BlendFactor::DestinationColor,
+                            destination: BlendFactor::Zero,
+                        }),
+                        texgen: TcGen::Lightmap,
+                        depth_func: DepthFunc::Equal,
+                        depth_write: false,
+                        ..Stage::default()
+                    },
+                ],
+                MaterialSettings {
+                    cull: Cull::None,
+                    sort: 0.0,
+                    ..MaterialSettings::default()
                 },
-                Stage {
-                    texture: StageTexture::Image(lightmap),
-                    blend: Some(StageBlend {
-                        source: BlendFactor::DestinationColor,
-                        destination: BlendFactor::Zero,
-                    }),
-                    texgen: TcGen::Lightmap,
-                    depth_func: DepthFunc::Equal,
-                    depth_write: false,
-                    ..Stage::default()
-                },
-            ],
-            MaterialSettings {
-                cull: Cull::None,
-                sort: 0.0,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices = [
         (Vec3([8.0, 8.0, 8.0]), [0.0, 0.0]),
         (Vec3([8.0, -8.0, 8.0]), [1.0, 0.0]),
@@ -214,7 +230,7 @@ fn two_dimensional_color_alpha_blends_and_submission_failures_are_reported() {
     let assets = Assets::load().unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0, 0, 255, 255]).unwrap();
-    assert!(!frame.add_poly(MaterialId(0), &[]));
+    assert!(!frame.add_poly(ShaderBindingId(0), &[]));
     assert!(frame.draw_2d(Draw2d {
         rect: [0.0, 0.0, 2.0, 2.0],
         color: [255, 0, 0, 128],
@@ -249,24 +265,32 @@ fn native_first_image_sampler_overrides_later_material_requests() {
                 },
             )
             .unwrap();
-        let material = assets
-            .register_material(
-                "reused",
-                &[Stage {
-                    texture: StageTexture::Image(image),
-                    sampler: Sampler {
-                        wrap: requested,
-                        ..Sampler::default()
-                    },
-                    ..Stage::default()
-                }],
-                MaterialSettings::default(),
-            )
-            .unwrap();
+        let material = {
+            let material = assets
+                .register_material(
+                    "reused",
+                    &[Stage {
+                        texture: StageTexture::Image(image),
+                        sampler: Sampler {
+                            wrap: requested,
+                            ..Sampler::default()
+                        },
+                        ..Stage::default()
+                    }],
+                    MaterialSettings::default(),
+                )
+                .unwrap();
+            assets
+                .register_shader_binding(qa_render::ShaderBinding::material(
+                    material,
+                    qa_render::world::geometry::LightSource::TwoDimensional,
+                ))
+                .unwrap()
+        };
         let mut frontend = FrontEnd::load(Limits::default()).unwrap();
         let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
         assert!(frame.draw_2d(Draw2d {
-            material,
+            shader: material,
             rect: [0.0, 0.0, 2.0, 2.0],
             texcoords: [1.25, 0.0, 1.25, 0.0],
             ..Draw2d::default()

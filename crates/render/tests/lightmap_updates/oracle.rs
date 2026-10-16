@@ -116,9 +116,13 @@ fn fixture_variants(
         .iter()
         .map(|&(image, region, conversion)| {
             [SurfaceMaterial {
-                lightmap: image,
-                lightmap_region: Some(region),
-                lightmap_conversion: conversion,
+                shader: qa_render::ShaderBinding {
+                    lightmap: image,
+                    lightmap_region: Some(region),
+                    lightmap_conversion: conversion,
+                    light_source: qa_render::world::geometry::LightSource::Samples,
+                    ..(SurfaceMaterial::default()).shader
+                },
                 ..SurfaceMaterial::default()
             }]
         })

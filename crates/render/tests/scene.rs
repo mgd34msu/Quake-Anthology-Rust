@@ -6,7 +6,7 @@ use qa_render::scene::Span;
 use qa_render::shader::{AlphaGen, BlendFactor, RgbGen, StageBlend};
 use qa_render::world::geometry::*;
 use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
-use qa_render::{Assets, Command, FrontEnd, Limits, MaterialId, Refdef, SceneEntity, Vertex};
+use qa_render::{Assets, Command, FrontEnd, Limits, Refdef, SceneEntity, ShaderBindingId, Vertex};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 #[test]
@@ -15,7 +15,7 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_poly(
-        MaterialId(0),
+        ShaderBindingId(0),
         &[Vertex {
             color: [11; 4],
             ..Default::default()
@@ -36,7 +36,7 @@ fn background_commands_precede_native_views_and_ui_with_owned_ranges() {
     frame.background(|frame| {
         frame.clear_scene();
         assert!(frame.add_poly(
-            MaterialId(0),
+            ShaderBindingId(0),
             &[Vertex {
                 color: [22; 4],
                 ..Default::default()
@@ -140,42 +140,58 @@ fn hyperspace_clears_only_the_native_viewport_on_cpu() {
     }
 }
 
-fn material(assets: &mut Assets, name: &str, sort: f32) -> MaterialId {
-    assets
-        .register_material(
-            name,
-            &[Stage::default()],
-            MaterialSettings {
-                sort,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+fn material(assets: &mut Assets, name: &str, sort: f32) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material(
+                name,
+                &[Stage::default()],
+                MaterialSettings {
+                    sort,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
-fn alpha_material(assets: &mut Assets, name: &str, sort: f32) -> MaterialId {
-    assets
-        .register_material(
-            name,
-            &[Stage {
-                blend: Some(StageBlend {
-                    source: BlendFactor::SourceAlpha,
-                    destination: BlendFactor::OneMinusSourceAlpha,
-                }),
-                rgb_gen: RgbGen::ExactVertex,
-                alpha_gen: AlphaGen::Vertex,
-                depth_write: false,
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                sort,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+fn alpha_material(assets: &mut Assets, name: &str, sort: f32) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material(
+                name,
+                &[Stage {
+                    blend: Some(StageBlend {
+                        source: BlendFactor::SourceAlpha,
+                        destination: BlendFactor::OneMinusSourceAlpha,
+                    }),
+                    rgb_gen: RgbGen::ExactVertex,
+                    alpha_gen: AlphaGen::Vertex,
+                    depth_write: false,
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    sort,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
-fn poly_order(assets: &Assets, materials: &[MaterialId]) -> Vec<u32> {
+fn poly_order(assets: &Assets, materials: &[ShaderBindingId]) -> Vec<u32> {
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     for (index, &material) in materials.iter().enumerate() {
@@ -295,44 +311,63 @@ fn presentation(assets: &Assets, world: WorldId) -> qa_render::WorldPresentation
 fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_view() {
     use qa_render::scene::{Light, SceneModel, Viewport};
     let mut assets = Assets::load().unwrap();
-    let portal_material = assets
-        .register_material(
-            "portal",
-            &[Stage {
-                alpha_gen: AlphaGen::Const(0.),
-                blend: Some(StageBlend::ALPHA),
-                depth_write: false,
-                ..Default::default()
-            }],
-            MaterialSettings {
-                sort: 1.,
-                portal: true,
-                cull: qa_render::shader::Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let portal_material = {
+        let material = assets
+            .register_material(
+                "portal",
+                &[Stage {
+                    alpha_gen: AlphaGen::Const(0.),
+                    blend: Some(StageBlend::ALPHA),
+                    depth_write: false,
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    sort: 1.,
+                    portal: true,
+                    cull: qa_render::shader::Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let red = assets.register_image(1, 1, &[200, 40, 20, 255]).unwrap();
-    let red = assets
-        .register_material(
-            "portal target",
-            &[Stage {
-                texture: qa_render::assets::StageTexture::Image(red),
+    let red = {
+        let material = assets
+            .register_material(
+                "portal target",
+                &[Stage {
+                    texture: qa_render::assets::StageTexture::Image(red),
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: qa_render::shader::Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
+    let world = {
+        let shader_input_0 = *assets.shader_binding(portal_material).unwrap();
+        world(
+            &mut assets,
+            &[SurfaceMaterial {
+                shader: shader_input_0,
                 ..Default::default()
             }],
-            MaterialSettings {
-                cull: qa_render::shader::Cull::None,
-                ..Default::default()
-            },
         )
-        .unwrap();
-    let world = world(
-        &mut assets,
-        &[SurfaceMaterial {
-            material: portal_material,
-            ..Default::default()
-        }],
-    );
+    };
     let presentation = presentation(&assets, world);
     let view = Refdef {
         viewport: Viewport {
@@ -387,7 +422,7 @@ fn portal_views_share_packet_storage_and_capacity_failures_preserve_the_main_vie
                 radius: 0.1,
                 rotation: 0.
             },
-            material: Some(red),
+            shader: Some(red),
             ..Default::default()
         }));
         assert!(frame.add_light(Light {
@@ -468,11 +503,11 @@ fn presentation_variants_select_sort_materials_for_world_and_inline_and_reject_w
     let middle = material(&mut assets, "variant-middle", 5.0);
     let high = material(&mut assets, "variant-high", 9.0);
     let low_bindings = [SurfaceMaterial {
-        material: low,
+        shader: *assets.shader_binding(low).unwrap(),
         ..Default::default()
     }];
     let high_bindings = [SurfaceMaterial {
-        material: high,
+        shader: *assets.shader_binding(high).unwrap(),
         ..Default::default()
     }];
     let world = world_variants(&mut assets, &[&low_bindings, &high_bindings]);
@@ -594,7 +629,7 @@ fn scenes_copy_payloads_and_advance_ranges() {
     };
     assert!(frame.add_entity(first));
     let mut vertices = [Vertex::default(); 3];
-    assert!(frame.add_poly(MaterialId(0), &vertices));
+    assert!(frame.add_poly(ShaderBindingId(0), &vertices));
     let mut areas = [0x55u8, 0xaa];
     assert!(frame.render_scene(Refdef::default(), &areas, &assets));
     vertices[0].color = [0; 4];
@@ -704,7 +739,7 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
     }
     assert!(!grown.add_entity(SceneEntity::default()));
     for _ in 0..2 {
-        assert!(grown.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+        assert!(grown.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     }
     assert!(
         grown.add_world(
@@ -785,8 +820,8 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
     };
     let mut front = FrontEnd::load(limits).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(!frame.add_poly(MaterialId(0), &[Vertex::default(); 4]));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(!frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 4]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(!frame.render_scene(Refdef::default(), &[0; 3], &assets));
     assert!(frame.render_scene(Refdef::default(), &[0; 2], &assets));
     let packet = frame.finish();
@@ -806,13 +841,16 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
     let translucent = alpha_material(&mut assets, "translucent", 8.25);
     let opaque = material(&mut assets, "opaque", 3.0);
     let middle = material(&mut assets, "middle", 5.0);
-    let world = world(
-        &mut assets,
-        &[SurfaceMaterial {
-            material: translucent,
-            ..SurfaceMaterial::default()
-        }],
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(translucent).unwrap();
+        world(
+            &mut assets,
+            &[SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            }],
+        )
+    };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(
@@ -824,7 +862,7 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
         }]
     ));
     assert!(frame.add_entity(SceneEntity {
-        material: Some(opaque),
+        shader: Some(opaque),
         ..SceneEntity::default()
     }));
     assert!(frame.add_poly(middle, &[Vertex::default(); 3]));
@@ -846,8 +884,8 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
         ]
     );
     assert_eq!(packet.surface(draws[2].index).depth_key, 7);
-    assert_eq!(packet.entity(draws[0].index).material, Some(opaque));
-    assert_eq!(packet.poly(draws[1].index).material, middle);
+    assert_eq!(packet.entity(draws[0].index).shader, Some(opaque));
+    assert_eq!(packet.poly(draws[1].index).shader, middle);
 }
 
 #[test]
@@ -871,7 +909,7 @@ fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
         packet
             .draws(view.scene.draws)
             .iter()
-            .map(|draw| packet.poly(draw.index).material)
+            .map(|draw| packet.poly(draw.index).shader)
             .collect::<Vec<_>>(),
         [earlier, tied_first, tied_second, later]
     );
@@ -881,13 +919,16 @@ fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
 fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
     let mut assets = Assets::load().unwrap();
     let material = alpha_material(&mut assets, "same-alpha", 8.0);
-    let world = world(
-        &mut assets,
-        &[SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        }],
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        world(
+            &mut assets,
+            &[SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            }],
+        )
+    };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_poly(material, &[Vertex::default(); 3]));
@@ -959,20 +1000,26 @@ fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
     let mut assets = Assets::load().unwrap();
     let material = material(&mut assets, "lightmapped", 3.0);
     let image = assets.register_image(1, 1, &[128; 4]).unwrap();
-    let world = world(
-        &mut assets,
-        &[
-            SurfaceMaterial {
-                material,
-                lightmap: image,
-                ..SurfaceMaterial::default()
-            },
-            SurfaceMaterial {
-                material,
-                ..SurfaceMaterial::default()
-            },
-        ],
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        let shader_input_1 = *assets.shader_binding(material).unwrap();
+        world(
+            &mut assets,
+            &[
+                SurfaceMaterial {
+                    shader: qa_render::ShaderBinding {
+                        lightmap: image,
+                        ..shader_input_0
+                    },
+                    ..SurfaceMaterial::default()
+                },
+                SurfaceMaterial {
+                    shader: shader_input_1,
+                    ..SurfaceMaterial::default()
+                },
+            ],
+        )
+    };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_world(
@@ -1018,13 +1065,16 @@ fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
 fn surface_draw_ranks_are_native_view_local_and_preserve_bsp_depth_keys() {
     let mut assets = Assets::load().unwrap();
     let material = material(&mut assets, "coincident", 3.0);
-    let world = world(
-        &mut assets,
-        &[SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        }; 3],
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        world(
+            &mut assets,
+            &[SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            }; 3],
+        )
+    };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let surfaces = [
@@ -1147,7 +1197,7 @@ fn draw_capacity_drops_whole_payload_submissions_atomically() {
         qa_render::WorldPresentationId(u32::MAX),
         &[VisibleSurface::default(); 2]
     ));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(!frame.add_entity(SceneEntity::default()));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     let packet = frame.finish();
@@ -1171,11 +1221,11 @@ fn failed_view_preserves_previous_draws_and_native_pending_order() {
     })
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(!frame.render_scene(Refdef::default(), &[0; 2], &assets));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(frame.render_scene(Refdef::default(), &[7], &assets));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(!frame.render_scene(Refdef::default(), &[8], &assets));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     assert!(!frame.render_scene(Refdef::default(), &[], &assets));
@@ -1211,7 +1261,7 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
     let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(MaterialId(999), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(999), &[Vertex::default(); 3]));
     assert!(frame.add_entity(SceneEntity {
         model: qa_render::ModelId(999).into(),
         ..SceneEntity::default()
@@ -1221,9 +1271,9 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
         qa_render::WorldPresentationId(u32::MAX),
         &[VisibleSurface::default()]
     ));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     let packet = frame.finish();
     let Command::View(first) = packet.commands()[1] else {
@@ -1270,7 +1320,7 @@ fn native_signed_zero_sort_keeps_numeric_material_registration_order() {
         packet
             .draws(view.scene.draws)
             .iter()
-            .map(|draw| packet.poly(draw.index).material)
+            .map(|draw| packet.poly(draw.index).shader)
             .collect::<Vec<_>>(),
         [positive, negative]
     );
@@ -1299,19 +1349,23 @@ fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
     let mut assets = Assets::load().unwrap();
     let low = material(&mut assets, "inline/low", 2.0);
     let high = material(&mut assets, "inline/high", 7.0);
-    let id = world(
-        &mut assets,
-        &[
-            SurfaceMaterial {
-                material: high,
-                ..Default::default()
-            },
-            SurfaceMaterial {
-                material: low,
-                ..Default::default()
-            },
-        ],
-    );
+    let id = {
+        let shader_input_0 = *assets.shader_binding(high).unwrap();
+        let shader_input_1 = *assets.shader_binding(low).unwrap();
+        world(
+            &mut assets,
+            &[
+                SurfaceMaterial {
+                    shader: shader_input_0,
+                    ..Default::default()
+                },
+                SurfaceMaterial {
+                    shader: shader_input_1,
+                    ..Default::default()
+                },
+            ],
+        )
+    };
     let mut front = FrontEnd::load(Limits {
         entities: 2,
         surfaces: 5,
@@ -1342,7 +1396,7 @@ fn inline_surface_submission_owns_one_pose_and_keeps_per_face_bindings() {
     ));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     frame.clear_scene();
-    entity.material = Some(high);
+    entity.shader = Some(high);
     assert!(frame.add_entity(entity));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));
     let packet = frame.finish();

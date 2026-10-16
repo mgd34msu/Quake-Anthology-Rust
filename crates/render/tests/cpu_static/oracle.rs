@@ -10,13 +10,13 @@ use crate::scene::Span as RangeSpan;
 use crate::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
 use crate::stage::StageEvaluator;
 use crate::surface_cache::{CacheSpan, SurfaceCache};
-use crate::world::{SurfaceBinding, geometry::*};
+use crate::world::{SurfaceMaterial, geometry::*};
 use qa_core::primitives::{Bounds, Vec3};
 
 struct Fixture {
     assets: Assets,
     geometry: WorldGeometry,
-    binding: SurfaceBinding,
+    binding: SurfaceMaterial,
     evaluator: StageEvaluator,
     vertex_color: bool,
 }
@@ -199,20 +199,23 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
         geometry,
         evaluator: StageEvaluator::load(),
         vertex_color,
-        binding: SurfaceBinding {
-            material,
-            lightmap_conversion: None,
-            lightmap,
-            lightmap_region: Some(AtlasRegion {
-                page: 7,
-                page_size: 128,
-                x: 1,
-                y: 1,
-                width: 2,
-                height: 2,
-            }),
+        binding: SurfaceMaterial {
+            shader: crate::ShaderBinding {
+                material,
+                light_source: LightSource::Page(0),
+                lightmap_conversion: None,
+                lightmap,
+                styled_surface: None,
+                lightmap_region: Some(AtlasRegion {
+                    page: 7,
+                    page_size: 128,
+                    x: 1,
+                    y: 1,
+                    width: 2,
+                    height: 2,
+                }),
+            },
             texture_scale: [1.0; 2],
-            mesh_indices: crate::scene::Span { first: 0, count: 4 },
         },
     }
 }
@@ -222,7 +225,10 @@ fn product(fixture: &Fixture, cache_bytes: usize) -> Option<Product> {
         &fixture.geometry,
         0,
         fixture.binding,
-        fixture.assets.material(fixture.binding.material).unwrap(),
+        fixture
+            .assets
+            .material(fixture.binding.shader.material)
+            .unwrap(),
         &fixture.assets,
         &fixture.evaluator,
         0,
@@ -260,7 +266,7 @@ fn expected(
     let base_pixel = &level.rgba[(y * level.width as usize + x) * 4..][..4];
     let light = &fixture
         .assets
-        .image(fixture.binding.lightmap)
+        .image(fixture.binding.shader.lightmap)
         .unwrap()
         .prepared
         .as_ref()
@@ -412,11 +418,14 @@ fn static_lattice_matches_native_mip_and_variable_bilinear_lightmap_oracle() {
 #[test]
 fn collapse_applies_shared_constant_color_once_and_rounds_only_final_product() {
     let mut fixture = fixture(false, false, false);
-    let material = fixture.assets.material(fixture.binding.material).unwrap();
+    let material = fixture
+        .assets
+        .material(fixture.binding.shader.material)
+        .unwrap();
     let mut stages = [material.stages[0], material.stages[1]];
     stages[0].rgb_gen = RgbGen::Const([0.5; 3]);
     stages[1].rgb_gen = RgbGen::Const([0.25; 3]);
-    fixture.binding.material = fixture
+    fixture.binding.shader.material = fixture
         .assets
         .register_material(
             "native collapse color",
@@ -657,13 +666,16 @@ fn product_color_cache_retains_rounding_failures_and_recovers_on_input_change() 
 fn identity_lighting_and_inverse_vertex_refresh_their_native_byte_fields() {
     for rgb_gen in [RgbGen::IdentityLighting, RgbGen::OneMinusVertex] {
         let mut fixture = fixture(false, true, false);
-        let material = fixture.assets.material(fixture.binding.material).unwrap();
+        let material = fixture
+            .assets
+            .material(fixture.binding.shader.material)
+            .unwrap();
         let settings = material.settings;
         let mut stages = material.stages.to_vec();
         for stage in &mut stages {
             stage.rgb_gen = rgb_gen;
         }
-        fixture.binding.material = fixture
+        fixture.binding.shader.material = fixture
             .assets
             .register_material("scaled native colors", &stages, settings)
             .unwrap();
@@ -698,13 +710,16 @@ fn fixed_native_colors_ignore_identity_changes_and_reuse_rover_pixels() {
         RgbGen::ExactVertex,
     ] {
         let mut fixture = fixture(false, true, false);
-        let material = fixture.assets.material(fixture.binding.material).unwrap();
+        let material = fixture
+            .assets
+            .material(fixture.binding.shader.material)
+            .unwrap();
         let settings = material.settings;
         let mut stages = material.stages.to_vec();
         for stage in &mut stages {
             stage.rgb_gen = rgb_gen;
         }
-        fixture.binding.material = fixture
+        fixture.binding.shader.material = fixture
             .assets
             .register_material("fixed source colors", &stages, settings)
             .unwrap();
@@ -836,7 +851,7 @@ fn invalid_roi_nonaffine_color_and_budget_have_scoped_fallbacks() {
     assert!(product(&fixture, 65536).is_none());
     fixture.geometry.vertices[3].vertex.color[0] = 96;
     assert!(product(&fixture, 36).is_none());
-    fixture.binding.lightmap_region = Some(AtlasRegion {
+    fixture.binding.shader.lightmap_region = Some(AtlasRegion {
         page: 0,
         page_size: 128,
         x: 3,
@@ -852,7 +867,10 @@ fn invalid_roi_nonaffine_color_and_budget_have_scoped_fallbacks() {
             &fixture.geometry,
             0,
             fixture.binding,
-            fixture.assets.material(fixture.binding.material).unwrap(),
+            fixture
+                .assets
+                .material(fixture.binding.shader.material)
+                .unwrap(),
             &fixture.assets,
             &fixture.evaluator,
             &mut sources,

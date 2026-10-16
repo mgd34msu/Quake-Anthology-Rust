@@ -319,10 +319,10 @@ impl SceneService for SceneBorrow<'_> {
         if !pose.origin.is_finite() {
             return frame.reject_submission();
         }
-        let material = (submitted.custom_shader != 0).then(|| {
+        let shader = (submitted.custom_shader != 0).then(|| {
             models
                 .shader_binding(submitted.custom_shader, target.profile)
-                .unwrap_or(qa_render::MaterialId(0))
+                .unwrap_or(qa_render::ShaderBindingId(0))
         });
         if submitted.kind == EntityKind::Model {
             if let Some((binding, world_present)) = inline {
@@ -343,7 +343,7 @@ impl SceneService for SceneBorrow<'_> {
                     presentation: presentation.id,
                     surfaces: binding.surfaces,
                 };
-                pose.material = material;
+                pose.shader = shader;
                 return frame.add_entity(pose);
             }
             let Some(registration) = models.renderer_registration(submitted.model, target.profile)
@@ -392,14 +392,14 @@ impl SceneService for SceneBorrow<'_> {
             return frame.add_entities(bindings.map(|binding| {
                 let mut entity = pose;
                 entity.model = SceneModel::Mesh(binding.model);
-                entity.material = material.or(Some(binding.material));
+                entity.shader = shader.or(Some(binding.shader));
                 entity
             }));
         }
-        pose.material = Some(if submitted.kind == EntityKind::Beam {
+        pose.shader = Some(if submitted.kind == EntityKind::Beam {
             composer.beam
         } else {
-            material.unwrap_or(qa_render::MaterialId(0))
+            shader.unwrap_or(qa_render::ShaderBindingId(0))
         });
         pose.model = match submitted.kind {
             EntityKind::Model => return false,
@@ -444,7 +444,7 @@ impl SceneService for SceneBorrow<'_> {
         let Some(target) = self.role.target.as_ref() else {
             return false;
         };
-        let Some(material) = self
+        let Some(shader) = self
             .models
             .and_then(|models| models.shader_binding(shader, target.profile))
         else {
@@ -453,7 +453,7 @@ impl SceneService for SceneBorrow<'_> {
         self.composer
             .as_deref_mut()
             .and_then(|composer| composer.frame.as_mut())
-            .is_some_and(|frame| frame.add_poly_from(material, count, vertex))
+            .is_some_and(|frame| frame.add_poly_from(shader, count, vertex))
     }
     fn color(&mut self, color: Option<[f32; 4]>) {
         self.role.color = color
@@ -464,7 +464,7 @@ impl SceneService for SceneBorrow<'_> {
         let Some(target) = self.role.target.as_ref() else {
             return false;
         };
-        let Some(material) = self
+        let Some(shader) = self
             .models
             .and_then(|models| models.shader_binding(shader, target.profile))
         else {
@@ -475,7 +475,7 @@ impl SceneService for SceneBorrow<'_> {
         let Some(draw) = (Draw2d {
             rect,
             texcoords,
-            material,
+            shader,
             color: self.role.color,
         })
         .clipped(target.viewport) else {

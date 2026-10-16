@@ -9,7 +9,7 @@ use qa_core::{
     primitives::{HudLine, HudState, RuleSetId, ThinkTime},
     sys_events::EventTime,
 };
-use qa_render::{Assets, Command, FrontEnd, Limits, MaterialId, Refdef, Viewport};
+use qa_render::{Assets, Command, FrontEnd, Limits, Refdef, ShaderBindingId, Viewport};
 use qa_ui::values::ValueLayout;
 static LOCALIZATION: std::sync::LazyLock<qa_content::localization::Catalog> =
     std::sync::LazyLock::new(Default::default);
@@ -22,7 +22,7 @@ fn assets(rules: RuleSetId, width: u32) -> HudAssets {
         rules,
         FontAssets {
             font: Some(BitmapFont {
-                material: MaterialId(0),
+                shader: ShaderBindingId(0),
                 height: 8,
             }),
             palette: None,
@@ -240,7 +240,14 @@ fn style_histories_are_client_owned_and_reset_on_lifetime_reuse() {
     assert_eq!(refdef.lightstyles[0].rgb, [1.; 3]);
 }
 
-fn picture_assets(rules: RuleSetId) -> (Assets, HudAssets, [[MaterialId; 11]; 2], MaterialId) {
+fn picture_assets(
+    rules: RuleSetId,
+) -> (
+    Assets,
+    HudAssets,
+    [[ShaderBindingId; 11]; 2],
+    ShaderBindingId,
+) {
     use qa_render::assets::{MaterialSettings, Stage, StageTexture};
     let mut render = Assets::load().unwrap();
     let mut hud = assets(rules, 320);
@@ -265,6 +272,12 @@ fn picture_assets(rules: RuleSetId) -> (Assets, HudAssets, [[MaterialId; 11]; 2]
                     MaterialSettings::default(),
                 )
                 .unwrap();
+            let material = render
+                .register_shader_binding(qa_render::ShaderBinding::material(
+                    material,
+                    qa_render::world::geometry::LightSource::TwoDimensional,
+                ))
+                .unwrap();
             hud.register_picture(&mut render, &name, material).unwrap();
             material
         })
@@ -278,6 +291,12 @@ fn picture_assets(rules: RuleSetId) -> (Assets, HudAssets, [[MaterialId; 11]; 2]
             }],
             MaterialSettings::default(),
         )
+        .unwrap();
+    let icon = render
+        .register_shader_binding(qa_render::ShaderBinding::material(
+            icon,
+            qa_render::world::geometry::LightSource::TwoDimensional,
+        ))
         .unwrap();
     hud.register_picture(&mut render, "pics/i_health.pcx", icon)
         .unwrap();
@@ -341,17 +360,17 @@ fn native_icons_and_numeric_fields_keep_decimal_truncation_and_seat_clipping() {
             }
         })
         .collect();
-    assert_eq!(draws[0].material, icon);
+    assert_eq!(draws[0].shader, icon);
     assert_eq!(draws[0].rect, [40., 20., 8., 24.]);
     assert_eq!(draws[0].texcoords, [0.5, 0., 1., 1.]);
     assert_eq!(draws[1].rect, [58., 44., 16., 24.]);
     assert_eq!(
-        draws[1..4].iter().map(|d| d.material).collect::<Vec<_>>(),
+        draws[1..4].iter().map(|d| d.shader).collect::<Vec<_>>(),
         vec![numbers[0][10], numbers[0][1], numbers[0][2]]
     );
     assert_eq!(draws[4].rect, [58., 70., 16., 24.]);
     assert_eq!(
-        draws[4..].iter().map(|d| d.material).collect::<Vec<_>>(),
+        draws[4..].iter().map(|d| d.shader).collect::<Vec<_>>(),
         vec![numbers[1][2], numbers[1][4]]
     );
 }
@@ -396,7 +415,7 @@ fn hud_flash_clock_armor_zero_and_negative_ammo_keep_each_native_rule() {
             .iter()
             .filter_map(|c| {
                 if let Command::Draw2d(d) = c {
-                    Some(d.material)
+                    Some(d.shader)
                 } else {
                     None
                 }
@@ -479,7 +498,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
                 .iter()
                 .find_map(|c| {
                     if let Command::Draw2d(d) = c {
-                        Some(d.material)
+                        Some(d.shader)
                     } else {
                         None
                     }

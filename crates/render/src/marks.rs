@@ -213,7 +213,9 @@ impl WorldView {
                     return true;
                 }
                 let surface = &geometry.surfaces[id as usize];
-                let Some(material) = assets.material(presentation.bindings()[id as usize].material)
+                let Some(material) = assets
+                    .shader_binding(presentation.bindings()[id as usize].shader)
+                    .and_then(|shader| assets.material(shader.material))
                 else {
                     invalid = true;
                     return false;

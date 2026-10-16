@@ -6,28 +6,36 @@ use qa_render::{
     shader::{AlphaGen, RgbGen},
 };
 
-fn image_material(assets: &mut Assets, name: &str, image: ImageId) -> MaterialId {
-    assets
-        .register_material(
-            name,
-            &[Stage {
-                texture: StageTexture::Image(image),
-                sampler: Sampler {
-                    filter: Filter::Nearest,
-                    wrap: Wrap::Clamp,
+fn image_material(assets: &mut Assets, name: &str, image: ImageId) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material(
+                name,
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    sampler: Sampler {
+                        filter: Filter::Nearest,
+                        wrap: Wrap::Clamp,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
                     ..Default::default()
                 },
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap()
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
-fn pattern(assets: &mut Assets) -> MaterialId {
+fn pattern(assets: &mut Assets) -> ShaderBindingId {
     let pixels: Vec<_> = (0..256)
         .flat_map(|y| (0..256).flat_map(move |x| [x as u8, y as u8, (x ^ y) as u8, 255]))
         .collect();
@@ -163,18 +171,26 @@ fn underwater_flag_requires_explicit_software_policy_and_uv_has_no_invented_effe
 fn damage_vignette_uses_native_byte_truncation_border_and_before_hud_phase() {
     let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[255; 4]).unwrap();
-    let hud = assets
-        .register_material(
-            "hud",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                rgb_gen: RgbGen::Vertex,
-                alpha_gen: AlphaGen::Vertex,
-                ..Default::default()
-            }],
-            Default::default(),
-        )
-        .unwrap();
+    let hud = {
+        let material = assets
+            .register_material(
+                "hud",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    rgb_gen: RgbGen::Vertex,
+                    alpha_gen: AlphaGen::Vertex,
+                    ..Default::default()
+                }],
+                Default::default(),
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut output = CpuBackend::load(24, 24).unwrap();
     let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
@@ -195,7 +211,7 @@ fn damage_vignette_uses_native_byte_truncation_border_and_before_hud_phase() {
     ));
     assert!(frame.draw_2d(Draw2d {
         rect: [2., 2., 1., 1.],
-        material: hud,
+        shader: hud,
         color: [0, 255, 0, 255],
         ..Default::default()
     }));
@@ -253,25 +269,33 @@ fn infrared_changes_only_eligible_models_with_native_indexed_and_rgb_paths() {
                 [255, 0, 0, 255],
             )
         };
-        let material = assets
-            .register_material(
-                "infrared alias",
-                &[Stage {
-                    texture: StageTexture::Image(image),
-                    ..Default::default()
-                }],
-                MaterialSettings {
-                    cull: Cull::None,
-                    software_alias: Some(SoftwareAlias {
-                        missing_skin: false,
-                        infrared_map: Some(&TEST_MAP),
-                        fullbright_light: None,
-                        alpha_cutoffs: None,
-                    }),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        let material = {
+            let material = assets
+                .register_material(
+                    "infrared alias",
+                    &[Stage {
+                        texture: StageTexture::Image(image),
+                        ..Default::default()
+                    }],
+                    MaterialSettings {
+                        cull: Cull::None,
+                        software_alias: Some(SoftwareAlias {
+                            missing_skin: false,
+                            infrared_map: Some(&TEST_MAP),
+                            fullbright_light: None,
+                            alpha_cutoffs: None,
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assets
+                .register_shader_binding(qa_render::ShaderBinding::material(
+                    material,
+                    qa_render::world::geometry::LightSource::TwoDimensional,
+                ))
+                .unwrap()
+        };
         let model = assets
             .register_model(&quad(), &[0, 1, 2, 0, 2, 3], material)
             .unwrap();

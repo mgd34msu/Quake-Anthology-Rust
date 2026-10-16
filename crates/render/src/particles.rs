@@ -1,8 +1,8 @@
 //! Particle presentation through the ordinary image, material and vertex paths.
 use crate::{
     assets::{
-        Assets, Cull, Filter, MaterialId, MaterialSettings, Sampler, Stage, StageTexture, Vertex,
-        Wrap,
+        Assets, Cull, Filter, MaterialSettings, Sampler, ShaderBindingId, Stage, StageTexture,
+        Vertex, Wrap,
     },
     scene::{ParticlePresentation, Refdef, SceneParticle},
     shader::{AlphaGen, RgbGen, StageBlend},
@@ -16,16 +16,16 @@ const POINT_MASK: [u8; 64] = [
 ];
 
 /// Register once at load, before either backend freezes the shared Assets.
-pub fn register_point_material(
+pub fn register_point_shader(
     assets: &mut Assets,
     name: &str,
-) -> Result<MaterialId, &'static str> {
+) -> Result<ShaderBindingId, &'static str> {
     let mut rgba = [255; 8 * 8 * 4];
     for (pixel, mask) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(POINT_MASK) {
         pixel[3] = mask * 255;
     }
     let image = assets.register_image(8, 8, &rgba)?;
-    assets.register_material(
+    let material = assets.register_material(
         name,
         &[Stage {
             texture: StageTexture::Image(image),
@@ -43,7 +43,11 @@ pub fn register_point_material(
             cull: Cull::None,
             ..MaterialSettings::default()
         },
-    )
+    )?;
+    assets.register_shader_binding(crate::ShaderBinding::material(
+        material,
+        crate::world::geometry::LightSource::None,
+    ))
 }
 
 /// Fixed-capacity vertices borrowed by the existing GL dynamic upload path.

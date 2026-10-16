@@ -148,35 +148,46 @@ fn opaque_tiled_world_draws_raw_native_indices_with_depth_and_no_cache_fill() {
                 cycle_start: [-64.0, 0.0],
             }));
         }
-        let material = assets
-            .register_material(
-                "opaque tiled",
-                &[base],
-                MaterialSettings {
-                    cull: Cull::None,
-                    software_tiled: Some(tile),
-                    ..MaterialSettings::default()
+        let material = {
+            let material = assets
+                .register_material(
+                    "opaque tiled",
+                    &[base],
+                    MaterialSettings {
+                        cull: Cull::None,
+                        software_tiled: Some(tile),
+                        ..MaterialSettings::default()
+                    },
+                )
+                .unwrap();
+            assets
+                .register_shader_binding(crate::ShaderBinding::material(
+                    material,
+                    crate::world::geometry::LightSource::TwoDimensional,
+                ))
+                .unwrap()
+        };
+        let world = {
+            let shader_input_0 = *assets.shader_binding(material).unwrap();
+            fixture_world(
+                &mut assets,
+                4.0,
+                1.0,
+                SurfaceMaterial {
+                    shader: shader_input_0,
+                    ..SurfaceMaterial::default()
+                },
+                Some(0),
+                GeometryPartition::SplitBsp,
+                |geometry| {
+                    // Native tiled bounds are independent of retained geometric/cache extents.
+                    geometry.surfaces[0].texture_minima = [96, -112];
+                    geometry.surfaces[0].texture_extents = [16384; 2];
+                    geometry.surfaces[0].texture_projection[0][3] = 113.375;
+                    geometry.surfaces[0].texture_projection[1][3] = -57.875;
                 },
             )
-            .unwrap();
-        let world = fixture_world(
-            &mut assets,
-            4.0,
-            1.0,
-            SurfaceMaterial {
-                material,
-                ..SurfaceMaterial::default()
-            },
-            Some(0),
-            GeometryPartition::SplitBsp,
-            |geometry| {
-                // Native tiled bounds are independent of retained geometric/cache extents.
-                geometry.surfaces[0].texture_minima = [96, -112];
-                geometry.surfaces[0].texture_extents = [16384; 2];
-                geometry.surfaces[0].texture_projection[0][3] = 113.375;
-                geometry.surfaces[0].texture_projection[1][3] = -57.875;
-            },
-        );
+        };
         let mut cpu = CpuBackend::load_with_limits(
             29,
             19,
@@ -279,61 +290,83 @@ fn malformed_tiled_image_rejects_only_its_surface() {
             palette,
         )
         .unwrap();
-    let good = assets
-        .register_material(
-            "good",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
+    let good = {
+        let material = assets
+            .register_material(
+                "good",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
+    let bad = {
+        let material = assets
+            .register_material(
+                "bad",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    software_tiled: Some(SoftwareTiled {
+                        turbulent: true,
+                        flow_speed: None,
+                        time_f32: false,
+                    }),
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
+    let bad = {
+        let shader_input_0 = *assets.shader_binding(bad).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
             },
+            None,
+            GeometryPartition::SplitBsp,
+            |_| {},
         )
-        .unwrap();
-    let bad = assets
-        .register_material(
-            "bad",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                software_tiled: Some(SoftwareTiled {
-                    turbulent: true,
-                    flow_speed: None,
-                    time_f32: false,
-                }),
-                ..MaterialSettings::default()
+    };
+    let good = {
+        let shader_input_0 = *assets.shader_binding(good).unwrap();
+        fixture_world(
+            &mut assets,
+            8.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
             },
+            None,
+            GeometryPartition::SplitBsp,
+            |_| {},
         )
-        .unwrap();
-    let bad = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material: bad,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::SplitBsp,
-        |_| {},
-    );
-    let good = fixture_world(
-        &mut assets,
-        8.0,
-        1.0,
-        SurfaceMaterial {
-            material: good,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::SplitBsp,
-        |_| {},
-    );
+    };
     let view = Refdef {
         cpu_presentation: CpuPresentation::Indexed {
             palette,

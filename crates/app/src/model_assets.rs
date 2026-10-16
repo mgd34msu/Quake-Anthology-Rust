@@ -22,7 +22,8 @@ use qa_render::shader::{
 };
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::WorldId;
-use qa_render::{Assets, MaterialId, ModelId, PaletteId, Vertex};
+use qa_render::world::geometry::LightSource;
+use qa_render::{Assets, ModelId, PaletteId, ShaderBinding, ShaderBindingId, Vertex};
 
 #[cfg(test)]
 #[path = "../tests/unit/renderer_registrations.rs"]
@@ -117,7 +118,7 @@ impl Default for ModelLimits {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelBinding {
     pub model: ModelId,
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
     /// Native model presentation chosen at registration, independent of wire.
     pub pose: AliasPose,
 }
@@ -200,11 +201,11 @@ impl Iterator for ModelBindings<'_> {
         let mut binding =
             self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()];
         if let Some(custom) = self.custom.filter(|_| !surface.frame_skins) {
-            binding.material = custom
+            binding.shader = custom
                 .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
                 .ok()
-                .map_or(MaterialId(0), |index| {
-                    custom[index].materials[self.policy.index()]
+                .map_or(ShaderBindingId(0), |index| {
+                    custom[index].shaders[self.policy.index()]
                 });
         }
         Some(binding)
@@ -265,7 +266,7 @@ struct ShaderRequest {
 }
 struct ShaderProfileBinding {
     profile: ModelProfile,
-    state: RegistrationState<MaterialId>,
+    state: RegistrationState<ShaderBindingId>,
 }
 enum RegistrationState<T> {
     Unattempted,
@@ -353,7 +354,7 @@ struct SkinProfile {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SkinMapping {
     surface: NameId,
-    materials: [MaterialId; 4],
+    shaders: [ShaderBindingId; 4],
 }
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
@@ -516,9 +517,10 @@ impl ProfileImages {
         vfs: &Vfs,
         assets: &mut Assets,
         definition: Result<&ShaderDef, String>,
-    ) -> Result<MaterialId, String> {
+        light_source: LightSource,
+    ) -> Result<ShaderBindingId, String> {
         self.with_images(vfs, assets, |images| {
-            definition.and_then(|definition| compile_shader(definition, images))
+            definition.and_then(|definition| compile_shader(definition, images, light_source))
         })
     }
 }
@@ -2281,6 +2283,7 @@ impl ModelAssets {
                 vfs,
                 &mut self.assets,
                 definition.as_ref().map_err(Clone::clone),
+                LightSource::TwoDimensional,
             ) {
                 Ok(material) => {
                     ready = true;
@@ -2494,6 +2497,7 @@ impl ModelAssets {
                             vfs,
                             &mut self.assets,
                             definition.as_ref().map_err(Clone::clone),
+                            LightSource::None,
                         )
                         .map(|material| [material; 4])
                 };
@@ -2509,12 +2513,12 @@ impl ModelAssets {
                         if alias {
                             continue;
                         }
-                        [MaterialId(0); 4]
+                        [ShaderBindingId(0); 4]
                     }
                 };
                 compiled.push(SkinMapping {
                     surface: *surface,
-                    materials,
+                    shaders: materials,
                 });
             }
             compiled.sort_by_key(|entry| entry.surface.0);
@@ -2618,12 +2622,20 @@ fn shader_definition(
     }
     Ok(definition)
 }
-fn compile_shader(definition: &ShaderDef, images: &mut Images<'_>) -> Result<MaterialId, String> {
+fn compile_shader(
+    definition: &ShaderDef,
+    images: &mut Images<'_>,
+    light_source: LightSource,
+) -> Result<ShaderBindingId, String> {
     if !definition.valid {
         return Err("invalid shader definition".to_owned());
     }
-    qa_render::material::world_load::compile_definition(definition, images)
-        .map_err(|error| format!("shader material: {error:?}"))
+    let material = qa_render::material::world_load::compile_definition(definition, images)
+        .map_err(|error| format!("shader material: {error:?}"))?;
+    images
+        .assets
+        .register_shader_binding(ShaderBinding::material(material, light_source))
+        .map_err(str::to_owned)
 }
 fn implicit_shader(display: &str, image: &str, mipmaps: bool, model: bool) -> ShaderDef {
     ShaderDef {
@@ -2983,7 +2995,7 @@ impl ModelCatalog {
     pub fn colors(&self, binding: ModelColorId) -> Option<&PaletteColors> {
         self.profiles.get(binding.0 as usize)?.colors.as_ref()
     }
-    pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
+    pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
         let entry = self.shader_profile(handle, profile)?;
         let (material, required_assets) = entry.state.ready()?;
         self.admitted(required_assets).then_some(*material)
@@ -3325,7 +3337,7 @@ fn register(
                         true,
                         true,
                     )?;
-                    let material = compile_shader(&definition, images)?;
+                    let material = compile_shader(&definition, images, LightSource::None)?;
                     Ok([material; 4])
                 })
                 .collect::<Result<Vec<_>, String>>()?
@@ -3359,7 +3371,7 @@ fn register(
                 .map(|materials| ModelMaterials {
                     variants: materials.map(|material| ModelBinding {
                         model: id,
-                        material,
+                        shader: material,
                         pose: model_policy.presentation.pose,
                     }),
                 })
@@ -3397,9 +3409,9 @@ fn register_sprites(
         }
         let image = model_image(sprite.image, images, registration.profile, true, Some(255))
             .map_err(|error| format!("sprite image: {error:?}"))?;
-        let mut variants = [MaterialId(0); 4];
+        let mut variants = [ShaderBindingId(0); 4];
         for material_policy in ModelMaterialPolicy::ALL {
-            variants[material_policy.index()] = images.assets.register_material(
+            let material = images.assets.register_material(
                 &format!(
                     "{}#sprite{index}:{}",
                     registration.path,
@@ -3428,6 +3440,9 @@ fn register_sprites(
                     ..MaterialSettings::default()
                 },
             )?;
+            variants[material_policy.index()] = images
+                .assets
+                .register_shader_binding(ShaderBinding::material(material, LightSource::None))?;
         }
         let geometry = qa_render::assets::SpriteGeometry {
             extents: [
@@ -3448,7 +3463,7 @@ fn register_sprites(
         frames.push(ModelMaterials {
             variants: variants.map(|material| ModelBinding {
                 model,
-                material,
+                shader: material,
                 pose: policy.presentation.pose,
             }),
         });
@@ -3527,7 +3542,7 @@ fn alias_materials(
     registration: &Registration,
     model_policy: ModelPolicy,
     allow_missing: bool,
-) -> Result<Vec<[MaterialId; 4]>, String> {
+) -> Result<Vec<[ShaderBindingId; 4]>, String> {
     let options = registration.profile;
     let mut materials = Vec::with_capacity(skins.len());
     let mut default_image = None;
@@ -3553,9 +3568,9 @@ fn alias_materials(
         if index == 0 {
             default_image = Some(image);
         }
-        let mut variants = [MaterialId(0); 4];
+        let mut variants = [ShaderBindingId(0); 4];
         for policy in ModelMaterialPolicy::ALL {
-            variants[policy.index()] = images.assets.register_material(
+            let material = images.assets.register_material(
                 &format!("{}#skin{index}:{}", registration.path, policy.index()),
                 &[Stage {
                     texture: StageTexture::Image(image),
@@ -3586,6 +3601,9 @@ fn alias_materials(
                     ..MaterialSettings::default()
                 },
             )?;
+            variants[policy.index()] = images
+                .assets
+                .register_shader_binding(ShaderBinding::material(material, LightSource::None))?;
         }
         materials.push(variants);
     }

@@ -10,7 +10,7 @@ use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use crate::world::{
     SurfaceBinding, SurfaceMaterial, World, WorldId, WorldPresentation, WorldPresentationId,
-    geometry::WorldGeometry,
+    geometry::{LightSource, WorldGeometry},
 };
 use qa_core::names::{NameTable, NamesError};
 pub use qa_core::primitives::ModelId;
@@ -21,6 +21,31 @@ use qa_world::visibility::VisibilityWorld;
 pub struct ImageId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaterialId(pub u32);
+/// A shader variant binds compiled stages to its selected lighting resource.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShaderBindingId(pub u32);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShaderBinding {
+    pub material: MaterialId,
+    pub light_source: LightSource,
+    pub lightmap: ImageId,
+    pub lightmap_region: Option<crate::lightmap::AtlasRegion>,
+    pub lightmap_conversion: Option<crate::lightmap::LightmapConversion>,
+    /// Styled samples remain in the referenced world's existing geometry.
+    pub styled_surface: Option<(WorldPresentationId, u32)>,
+}
+impl ShaderBinding {
+    pub fn material(material: MaterialId, light_source: LightSource) -> Self {
+        Self {
+            material,
+            light_source,
+            lightmap: ImageId(0),
+            lightmap_region: None,
+            lightmap_conversion: None,
+            styled_surface: None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaletteId(pub u32);
 
@@ -318,7 +343,7 @@ pub struct Material {
 pub struct Model {
     pub vertices: Box<[Vertex]>,
     pub indices: Box<[u32]>,
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
     pub vertices_per_frame: usize,
     frame_count: u32,
     pub sprite: Option<SpriteGeometry>,
@@ -485,6 +510,10 @@ pub struct Assets {
     names: NameTable,
     images: Vec<Image>,
     materials: Vec<Material>,
+    shader_bindings: Vec<ShaderBinding>,
+    shader_next: Vec<Option<u32>>,
+    material_shader_heads: Vec<Option<u32>>,
+    shader_capacity: usize,
     models: Vec<Model>,
     worlds: Vec<World>,
     presentations: Vec<WorldPresentation>,
@@ -492,6 +521,25 @@ pub struct Assets {
 }
 impl Assets {
     pub fn load() -> Result<Self, NamesError> {
+        Self::load_with_shader_capacity(65_536)
+    }
+    pub fn load_with_shader_capacity(shader_capacity: usize) -> Result<Self, NamesError> {
+        if shader_capacity == 0 || shader_capacity > u32::MAX as usize {
+            return Err(NamesError::Capacity);
+        }
+        let mut shader_bindings = Vec::new();
+        shader_bindings
+            .try_reserve_exact(shader_capacity)
+            .map_err(|_| NamesError::Capacity)?;
+        shader_bindings.push(ShaderBinding::material(
+            MaterialId(0),
+            LightSource::TwoDimensional,
+        ));
+        let mut shader_next = Vec::new();
+        shader_next
+            .try_reserve_exact(shader_capacity)
+            .map_err(|_| NamesError::Capacity)?;
+        shader_next.push(None);
         let names = NameTable::load_reserved([b"*white".as_slice()], 65536, 4 * 1024 * 1024)?;
         let white = names.find_path("*white").ok_or(NamesError::Capacity)?;
         Ok(Self {
@@ -519,10 +567,14 @@ impl Assets {
                     ..MaterialSettings::default()
                 },
             }],
+            shader_bindings,
+            shader_next,
+            material_shader_heads: vec![Some(0)],
+            shader_capacity,
             models: vec![Model {
                 vertices: Box::new([]),
                 indices: Box::new([]),
-                material: MaterialId(0),
+                shader: ShaderBindingId(0),
                 vertices_per_frame: 0,
                 frame_count: 1,
                 sprite: None,
@@ -739,6 +791,7 @@ impl Assets {
         }
         let id =
             MaterialId(u32::try_from(self.materials.len()).map_err(|_| "material table full")?);
+        self.material_shader_heads.push(None);
         self.materials.push(Material {
             name,
             stages: stages.into(),
@@ -746,13 +799,87 @@ impl Assets {
         });
         Ok(id)
     }
+    pub fn shader_binding_capacity(&self) -> usize {
+        self.shader_capacity
+    }
+    pub fn shader_bindings(&self) -> &[ShaderBinding] {
+        &self.shader_bindings
+    }
+    pub fn shader_binding(&self, id: ShaderBindingId) -> Option<&ShaderBinding> {
+        self.shader_bindings.get(id.0 as usize)
+    }
+    pub fn register_shader_binding(
+        &mut self,
+        binding: ShaderBinding,
+    ) -> Result<ShaderBindingId, &'static str> {
+        if !self.styled_shader_valid(binding) {
+            return Err("invalid styled shader binding");
+        }
+        self.intern_shader_binding(binding)
+    }
+    pub(crate) fn styled_shader_valid(&self, binding: ShaderBinding) -> bool {
+        binding
+            .styled_surface
+            .is_none_or(|(presentation, surface)| {
+                self.surface_binding(presentation, surface)
+                    .and_then(|surface| self.shader_binding(surface.shader))
+                    .is_some_and(|source| {
+                        source.light_source == LightSource::Samples
+                            && binding.light_source == source.light_source
+                            && binding.lightmap == source.lightmap
+                            && binding.lightmap_region == source.lightmap_region
+                            && binding.lightmap_conversion == source.lightmap_conversion
+                    })
+            })
+    }
+    fn intern_shader_binding(
+        &mut self,
+        binding: ShaderBinding,
+    ) -> Result<ShaderBindingId, &'static str> {
+        if !self.shader_binding_valid(binding) {
+            return Err("invalid shader binding");
+        }
+        let head = self.material_shader_heads[binding.material.0 as usize];
+        let mut current = head;
+        while let Some(index) = current {
+            if self.shader_bindings[index as usize] == binding {
+                return Ok(ShaderBindingId(index));
+            }
+            current = self.shader_next[index as usize];
+        }
+        if self.shader_bindings.len() == self.shader_capacity {
+            return Err("shader binding table full");
+        }
+        let id = ShaderBindingId(self.shader_bindings.len() as u32);
+        self.shader_bindings.push(binding);
+        self.shader_next.push(head);
+        self.material_shader_heads[binding.material.0 as usize] = Some(id.0);
+        Ok(id)
+    }
+    fn shader_binding_valid(&self, binding: ShaderBinding) -> bool {
+        self.material(binding.material).is_some()
+            && self.image(binding.lightmap).is_some_and(|image| {
+                binding.lightmap_region.is_none_or(|region| {
+                    region.width != 0
+                        && region.height != 0
+                        && region
+                            .x
+                            .checked_add(region.width)
+                            .is_some_and(|end| end <= image.width)
+                        && region
+                            .y
+                            .checked_add(region.height)
+                            .is_some_and(|end| end <= image.height)
+                })
+            })
+    }
     pub fn register_model(
         &mut self,
         vertices: &[Vertex],
         indices: &[u32],
-        material: MaterialId,
+        shader: ShaderBindingId,
     ) -> Result<ModelId, &'static str> {
-        self.register_animated_model(vertices, vertices.len(), indices, material)
+        self.register_animated_model(vertices, vertices.len(), indices, shader)
     }
 
     /// Load all frame-major vertices once. Indices address a single frame.
@@ -761,7 +888,7 @@ impl Assets {
         vertices: &[Vertex],
         vertices_per_frame: usize,
         indices: &[u32],
-        material: MaterialId,
+        shader: ShaderBindingId,
     ) -> Result<ModelId, &'static str> {
         let frame_count = if vertices_per_frame == 0 {
             if !vertices.is_empty() || !indices.is_empty() {
@@ -778,7 +905,7 @@ impl Assets {
             u32::try_from(vertices.len() / vertices_per_frame)
                 .map_err(|_| "mesh frame table full")?
         };
-        if self.material(material).is_none()
+        if self.shader_binding(shader).is_none()
             || !indices.len().is_multiple_of(3)
             || indices.iter().any(|&i| i as usize >= vertices_per_frame)
             || vertices.iter().any(|v| !v.is_finite())
@@ -789,7 +916,7 @@ impl Assets {
         self.models.push(Model {
             vertices: vertices.into(),
             indices: indices.into(),
-            material,
+            shader,
             vertices_per_frame,
             frame_count,
             sprite: None,
@@ -800,12 +927,12 @@ impl Assets {
     pub fn register_sprite(
         &mut self,
         geometry: SpriteGeometry,
-        material: MaterialId,
+        shader: ShaderBindingId,
     ) -> Result<ModelId, &'static str> {
         if !geometry.extents.iter().all(|x| x.is_finite())
             || geometry.extents[0] >= geometry.extents[1]
             || geometry.extents[3] >= geometry.extents[2]
-            || self.material(material).is_none()
+            || self.shader_binding(shader).is_none()
         {
             return Err("invalid sprite geometry");
         }
@@ -813,7 +940,7 @@ impl Assets {
         self.models.push(Model {
             vertices: Box::new([]),
             indices: Box::new([]),
-            material,
+            shader,
             vertices_per_frame: 0,
             frame_count: 1,
             sprite: Some(geometry),
@@ -866,58 +993,76 @@ impl Assets {
         &self.materials
     }
     fn world_materials_valid(&self, materials: &[SurfaceMaterial], surfaces: usize) -> bool {
-        !(materials.len() != surfaces
-            || materials.iter().any(|binding| {
-                self.material(binding.material).is_none()
-                    || !self.image(binding.lightmap).is_some_and(|image| {
-                        binding.lightmap_region.is_none_or(|region| {
-                            region.width != 0
-                                && region.height != 0
-                                && region
-                                    .x
-                                    .checked_add(region.width)
-                                    .is_some_and(|end| end <= image.width)
-                                && region
-                                    .y
-                                    .checked_add(region.height)
-                                    .is_some_and(|end| end <= image.height)
-                        })
-                    })
-                    || binding
+        materials.len() == surfaces
+            && materials.iter().all(|binding| {
+                self.shader_binding_valid(binding.shader)
+                    && binding
                         .texture_scale
                         .iter()
-                        .any(|value| !value.is_finite() || *value <= 0.0)
-            }))
+                        .all(|value| value.is_finite() && *value > 0.0)
+            })
     }
 
+    fn register_world_shaders(
+        &mut self,
+        presentation: WorldPresentationId,
+        materials: &[SurfaceMaterial],
+    ) -> Result<Vec<ShaderBindingId>, &'static str> {
+        materials
+            .iter()
+            .enumerate()
+            .map(|(surface, material)| {
+                let mut binding = material.shader;
+                if binding.lightmap_conversion.is_some() {
+                    binding.styled_surface = Some((presentation, surface as u32));
+                }
+                self.intern_shader_binding(binding)
+            })
+            .collect()
+    }
     pub(crate) fn append_world_presentation(
         &mut self,
         world: WorldId,
         materials: &[SurfaceMaterial],
     ) -> Result<WorldPresentationId, &'static str> {
-        let existing = self.world(world).ok_or("missing presentation world")?;
-        if !self.world_materials_valid(materials, existing.geometry.surfaces.len()) {
-            return Err("invalid world surface bindings");
+        let retained = self.counts();
+        let result = (|| {
+            let existing = self.world(world).ok_or("missing presentation world")?;
+            if !self.world_materials_valid(materials, existing.geometry.surfaces.len()) {
+                return Err("invalid world surface bindings");
+            }
+            let id = WorldPresentationId(
+                u32::try_from(self.presentations.len())
+                    .map_err(|_| "world presentation table full")?,
+            );
+            let original = self
+                .world_presentation(
+                    *existing
+                        .presentations()
+                        .first()
+                        .ok_or("world has no presentation")?,
+                )
+                .ok_or("missing original presentation")?;
+            let mesh_ranges: Vec<_> = original
+                .bindings
+                .iter()
+                .map(|binding| binding.mesh_indices)
+                .collect();
+            let shaders = self.register_world_shaders(id, materials)?;
+            let presentation = WorldPresentation::bind(
+                world,
+                materials,
+                mesh_ranges.into_iter(),
+                shaders.into_iter(),
+            );
+            self.presentations.push(presentation);
+            self.worlds[world.0 as usize].presentations.push(id);
+            Ok(id)
+        })();
+        if result.is_err() {
+            self.discard_registration_suffix(retained)?;
         }
-        let id = WorldPresentationId(
-            u32::try_from(self.presentations.len()).map_err(|_| "world presentation table full")?,
-        );
-        let original = self
-            .world_presentation(
-                *existing
-                    .presentations()
-                    .first()
-                    .ok_or("world has no presentation")?,
-            )
-            .ok_or("missing original presentation")?;
-        let presentation = WorldPresentation::bind(
-            world,
-            materials,
-            original.bindings.iter().map(|binding| binding.mesh_indices),
-        );
-        self.presentations.push(presentation);
-        self.worlds[world.0 as usize].presentations.push(id);
-        Ok(id)
+        result
     }
 
     pub fn register_world(
@@ -926,57 +1071,73 @@ impl Assets {
         visibility: VisibilityWorld,
         variants: &[&[SurfaceMaterial]],
     ) -> Result<WorldId, &'static str> {
-        if geometry.surfaces.len() != visibility.surface_count()
-            || variants.is_empty()
-            || variants
-                .iter()
-                .any(|materials| !self.world_materials_valid(materials, geometry.surfaces.len()))
-        {
-            return Err("invalid world surface bindings");
-        }
-        let id = WorldId(u32::try_from(self.worlds.len()).map_err(|_| "world table full")?);
-        let first =
-            u32::try_from(self.presentations.len()).map_err(|_| "world presentation table full")?;
-        let count = u32::try_from(variants.len()).map_err(|_| "world presentation table full")?;
-        first
-            .checked_add(count)
-            .ok_or("world presentation table full")?;
-        let mut indices = Vec::new();
-        let mut mesh_ranges = Vec::with_capacity(geometry.surfaces.len());
-        for (source, surface) in geometry.surfaces.iter().enumerate() {
-            let range = surface.indices.range();
-            if source != surface.source_id as usize
-                || range.end > geometry.indices.len()
-                || !range.len().is_multiple_of(3)
+        let retained = self.counts();
+        let result = (|| {
+            if geometry.surfaces.len() != visibility.surface_count()
+                || variants.is_empty()
+                || variants.iter().any(|materials| {
+                    !self.world_materials_valid(materials, geometry.surfaces.len())
+                })
             {
-                return Err("invalid world triangle range");
+                return Err("invalid world surface bindings");
             }
-            let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
-            indices.extend_from_slice(&geometry.indices[range]);
-            mesh_ranges.push(Span {
-                first,
-                count: surface.indices.count,
+            let id = WorldId(u32::try_from(self.worlds.len()).map_err(|_| "world table full")?);
+            let first = u32::try_from(self.presentations.len())
+                .map_err(|_| "world presentation table full")?;
+            let count =
+                u32::try_from(variants.len()).map_err(|_| "world presentation table full")?;
+            first
+                .checked_add(count)
+                .ok_or("world presentation table full")?;
+            let mut indices = Vec::new();
+            let mut mesh_ranges = Vec::with_capacity(geometry.surfaces.len());
+            for (source, surface) in geometry.surfaces.iter().enumerate() {
+                let range = surface.indices.range();
+                if source != surface.source_id as usize
+                    || range.end > geometry.indices.len()
+                    || !range.len().is_multiple_of(3)
+                {
+                    return Err("invalid world triangle range");
+                }
+                let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
+                indices.extend_from_slice(&geometry.indices[range]);
+                mesh_ranges.push(Span {
+                    first,
+                    count: surface.indices.count,
+                });
+            }
+            let mut registrations = Vec::with_capacity(variants.len());
+            for (index, materials) in variants.iter().enumerate() {
+                let shaders = self
+                    .register_world_shaders(WorldPresentationId(first + index as u32), materials)?;
+                registrations.push(WorldPresentation::bind(
+                    id,
+                    materials,
+                    mesh_ranges.iter().copied(),
+                    shaders.into_iter(),
+                ));
+            }
+            let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
+            let mesh = self.register_model(&vertices, &indices, ShaderBindingId(0))?;
+            self.worlds.push(World {
+                geometry,
+                visibility: visibility.into(),
+                mesh,
+                presentations: (first..first + count).map(WorldPresentationId).collect(),
+                material_source: None,
+                light_grid: None,
+                point_lighting: None,
+                sun_direction: crate::lighting::default_sun_direction(),
             });
+            self.presentations.extend(registrations);
+            Ok(id)
+        })();
+        if result.is_err() {
+            self.discard_registration_suffix(retained)?;
         }
-        let registrations: Vec<_> = variants
-            .iter()
-            .map(|materials| WorldPresentation::bind(id, materials, mesh_ranges.iter().copied()))
-            .collect();
-        let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
-        let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
-        self.worlds.push(World {
-            geometry,
-            visibility: visibility.into(),
-            mesh,
-            presentations: (first..first + count).map(WorldPresentationId).collect(),
-            material_source: None,
-            light_grid: None,
-            point_lighting: None,
-            sun_direction: crate::lighting::default_sun_direction(),
-        });
-        self.presentations.extend(registrations);
-        Ok(id)
+        result
     }
+
     pub(crate) fn retain_world_material_source(
         &mut self,
         id: WorldId,

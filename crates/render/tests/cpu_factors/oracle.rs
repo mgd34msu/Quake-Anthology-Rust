@@ -1,6 +1,6 @@
 use crate::assets::{
-    Assets, DepthFunc, Filter, ImageId, MaterialId, MaterialSettings, Sampler, Stage, StageTexture,
-    TextureIntensity, Vertex, Wrap,
+    Assets, DepthFunc, Filter, ImageId, MaterialSettings, Sampler, ShaderBindingId, Stage,
+    StageTexture, TextureIntensity, Vertex, Wrap,
     upload::{MipmapBuild, UploadParams},
 };
 use crate::cpu::{CpuBackend, CpuLimits};
@@ -127,7 +127,7 @@ fn material(
     linear: bool,
     depth: DepthFunc,
     alternate_multiply: bool,
-) -> MaterialId {
+) -> ShaderBindingId {
     let base_stage = Stage {
         texture: StageTexture::Image(base),
         rgb_gen: RgbGen::Vertex,
@@ -172,16 +172,24 @@ fn material(
     });
     stages[1].depth_write = false;
     stages[1].depth_func = depth;
-    assets
-        .register_material(
-            "fixed factor oracle",
-            &stages,
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+    {
+        let material = assets
+            .register_material(
+                "fixed factor oracle",
+                &stages,
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 fn packet(assets: &Assets, worlds: &[WorldId]) -> CommandList {
@@ -274,17 +282,19 @@ fn compare(
         alternate_multiply,
     );
     let binding = SurfaceMaterial {
-        material,
-        lightmap_conversion: None,
-        lightmap: light,
-        lightmap_region: region.then_some(AtlasRegion {
-            page: 0,
-            page_size: 128,
-            x: 2,
-            y: 2,
-            width: 4,
-            height: 4,
-        }),
+        shader: crate::ShaderBinding {
+            lightmap_conversion: None,
+            lightmap: light,
+            lightmap_region: region.then_some(AtlasRegion {
+                page: 0,
+                page_size: 128,
+                x: 2,
+                y: 2,
+                width: 4,
+                height: 4,
+            }),
+            ..*assets.shader_binding(material).unwrap()
+        },
         texture_scale: [1.0; 2],
     };
     let world = fixture_world(&mut assets, binding, near_clip, constant_uv);
@@ -403,25 +413,30 @@ fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
         let base = assets.register_image(1, 1, &[255; 4]).unwrap();
         let light = assets.register_image(8, 8, &[255; 8 * 8 * 4]).unwrap();
         let material = material(&mut assets, base, reverse, true, DepthFunc::Equal, false);
-        let world = fixture_world(
-            &mut assets,
-            SurfaceMaterial {
-                material,
-                lightmap: light,
-                lightmap_conversion: None,
-                texture_scale: [1.0; 2],
-                lightmap_region: Some(AtlasRegion {
-                    page: 0,
-                    page_size: 128,
-                    x: 4,
-                    y: 0,
-                    width: 4,
-                    height: 4,
-                }),
-            },
-            false,
-            false,
-        );
+        let world = {
+            let shader_input_0 = *assets.shader_binding(material).unwrap();
+            fixture_world(
+                &mut assets,
+                SurfaceMaterial {
+                    shader: crate::ShaderBinding {
+                        lightmap: light,
+                        lightmap_conversion: None,
+                        lightmap_region: Some(AtlasRegion {
+                            page: 0,
+                            page_size: 128,
+                            x: 4,
+                            y: 0,
+                            width: 4,
+                            height: 4,
+                        }),
+                        ..shader_input_0
+                    },
+                    texture_scale: [1.0; 2],
+                },
+                false,
+                false,
+            )
+        };
         let mut generic = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
         assets
             .prepare_image(

@@ -1,6 +1,6 @@
 use qa_core::primitives::Vec3;
 use qa_render::{
-    Assets, FrontEnd, Limits, MaterialId, ModelId, Refdef, SceneEntity, Vertex, Viewport,
+    Assets, FrontEnd, Limits, ModelId, Refdef, SceneEntity, ShaderBindingId, Vertex, Viewport,
     assets::{Cull, MaterialSettings, Stage},
     cpu::CpuBackend,
     shader::RgbGen,
@@ -90,7 +90,7 @@ fn packed_alias_pose_preserves_native_scale_translate_motion_and_current_normal(
     });
     let mut assets = Assets::load().unwrap();
     let id = assets
-        .register_animated_model(&vertices, 1, &[], MaterialId(0))
+        .register_animated_model(&vertices, 1, &[], ShaderBindingId(0))
         .unwrap();
     assert!(assets.set_alias_frames(id, &frames[..1], &packed).is_err());
     assert!(assets.set_alias_frames(id, &frames, &packed[..1]).is_err());
@@ -131,19 +131,27 @@ fn packed_alias_pose_preserves_native_scale_translate_motion_and_current_normal(
 fn cpu_packed_alias_origin_motion_matches_the_resolved_static_geometry() {
     use qa_render::assets::AliasFrame;
     let mut assets = Assets::load().unwrap();
-    let material = assets
-        .register_material(
-            "alias/motion",
-            &[Stage {
-                rgb_gen: RgbGen::ExactVertex,
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "alias/motion",
+                &[Stage {
+                    rgb_gen: RgbGen::ExactVertex,
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let positions = [[16, 12, 12], [16, 20, 12], [16, 12, 20]];
     let vertices = positions.map(|point| {
         vertex(
@@ -203,13 +211,13 @@ fn registration_rejects_malformed_frame_tables_without_consuming_handles() {
     let vertices = [vertex([8.0, 1.0, 2.0], [0.0, 0.0, 1.0]); 6];
     let count = assets.models().len();
     for (data, frame_size, indices, material) in [
-        (&vertices[..], 0, &[0, 1, 2][..], MaterialId(0)),
-        (&vertices[..5], 3, &[0, 1, 2][..], MaterialId(0)),
-        (&vertices[..], 7, &[0, 1, 2][..], MaterialId(0)),
-        (&vertices[..0], 3, &[][..], MaterialId(0)),
-        (&vertices[..], 3, &[0, 1, 3][..], MaterialId(0)),
-        (&vertices[..], 3, &[0, 1][..], MaterialId(0)),
-        (&vertices[..], 3, &[0, 1, 2][..], MaterialId(u32::MAX)),
+        (&vertices[..], 0, &[0, 1, 2][..], ShaderBindingId(0)),
+        (&vertices[..5], 3, &[0, 1, 2][..], ShaderBindingId(0)),
+        (&vertices[..], 7, &[0, 1, 2][..], ShaderBindingId(0)),
+        (&vertices[..0], 3, &[][..], ShaderBindingId(0)),
+        (&vertices[..], 3, &[0, 1, 3][..], ShaderBindingId(0)),
+        (&vertices[..], 3, &[0, 1][..], ShaderBindingId(0)),
+        (&vertices[..], 3, &[0, 1, 2][..], ShaderBindingId(u32::MAX)),
     ] {
         assert!(
             assets
@@ -222,16 +230,16 @@ fn registration_rejects_malformed_frame_tables_without_consuming_handles() {
     nonfinite[5].normal.0[2] = f32::NAN;
     assert!(
         assets
-            .register_animated_model(&nonfinite, 3, &[0, 1, 2], MaterialId(0))
+            .register_animated_model(&nonfinite, 3, &[0, 1, 2], ShaderBindingId(0))
             .is_err()
     );
     let id = assets
-        .register_animated_model(&vertices, 3, &[0, 1, 2], MaterialId(0))
+        .register_animated_model(&vertices, 3, &[0, 1, 2], ShaderBindingId(0))
         .unwrap();
     assert_eq!(id.0 as usize, count);
     assert_eq!(assets.model(id).unwrap().frame_count(), 2);
     assert_eq!(assets.model(id).unwrap().vertices_per_frame, 3);
-    let empty = assets.register_model(&[], &[], MaterialId(0)).unwrap();
+    let empty = assets.register_model(&[], &[], ShaderBindingId(0)).unwrap();
     assert_eq!(assets.model(empty).unwrap().frame_count(), 1);
     assert!(
         assets
@@ -253,7 +261,7 @@ fn frame_sampling_matches_native_weighted_order_and_retains_current_attributes()
     };
     let mut assets = Assets::load().unwrap();
     let id = assets
-        .register_animated_model(&[previous, current], 1, &[], MaterialId(0))
+        .register_animated_model(&[previous, current], 1, &[], ShaderBindingId(0))
         .unwrap();
     let model = assets.model(id).unwrap();
     for back in [0.0, 0.125, 0.3, 0.5, 0.875, 1.0] {
@@ -280,7 +288,7 @@ fn frame_sampling_matches_native_weighted_order_and_retains_current_attributes()
     }
     let signed_zero = vertex([-0.0, 0.0, -0.0], [-0.0, 0.0, 1.0]);
     let static_id = assets
-        .register_model(&[signed_zero], &[], MaterialId(0))
+        .register_model(&[signed_zero], &[], ShaderBindingId(0))
         .unwrap();
     assert_vertex_bits(
         assets
@@ -348,20 +356,28 @@ fn indexed_animated_models_use_selected_positions_current_normals_and_native_col
             palette,
         )
         .unwrap();
-    let material = assets
-        .register_material(
-            "indexed alias",
-            &[Stage {
-                texture: qa_render::assets::StageTexture::Image(image),
-                rgb_gen: RgbGen::LightingDiffuse,
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "indexed alias",
+                &[Stage {
+                    texture: qa_render::assets::StageTexture::Image(image),
+                    rgb_gen: RgbGen::LightingDiffuse,
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let previous = [
         [8.0, 4.0, -3.0],
         [8.0, -4.0, -3.0],
@@ -446,19 +462,27 @@ fn indexed_polygons_keep_native_indices_cutouts_and_final_palette_phase() {
             palette,
         )
         .unwrap();
-    let material = assets
-        .register_material(
-            "indexed fence",
-            &[Stage {
-                texture: qa_render::assets::StageTexture::Image(image),
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "indexed fence",
+                &[Stage {
+                    texture: qa_render::assets::StageTexture::Image(image),
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices = [
         (Vec3([8.0, 8.0, 8.0]), [0.0, 0.0]),
         (Vec3([8.0, -8.0, 8.0]), [1.0, 0.0]),
@@ -522,19 +546,27 @@ fn indexed_polygons_keep_native_indices_cutouts_and_final_palette_phase() {
 #[test]
 fn cpu_animated_images_and_depth_match_explicit_interpolated_meshes() {
     let mut assets = Assets::load().unwrap();
-    let material = assets
-        .register_material(
-            "animated diffuse",
-            &[Stage {
-                rgb_gen: RgbGen::LightingDiffuse,
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "animated diffuse",
+                &[Stage {
+                    rgb_gen: RgbGen::LightingDiffuse,
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let previous = [
         [8.0, 4.0, -3.0],
         [8.0, -4.0, -3.0],

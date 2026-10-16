@@ -160,9 +160,9 @@ impl HudAssets {
         &mut self,
         assets: &mut Assets,
         path: &str,
-        material: qa_render::MaterialId,
+        shader: qa_render::ShaderBindingId,
     ) -> Result<(), String> {
-        self.pictures.register(assets, path, material)
+        self.pictures.register(assets, path, shader)
     }
     pub const fn command_capacity() -> usize {
         MAX_GLYPHS + 1

@@ -1,5 +1,6 @@
 use super::super::CpuBackend;
 use super::*;
+use crate::ShaderBindingId;
 use crate::assets::{CubeSkyParams, Filter, Sampler, Stage};
 use crate::scene::Span as RangeSpan;
 use crate::scene::{Command, FrontEnd, Limits, Refdef, Viewport};
@@ -537,10 +538,18 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
     reference
 }
 
-fn stages(assets: &mut Assets, stages: &[Stage], settings: MaterialSettings) -> MaterialId {
-    assets
-        .register_material("prepared fixture", stages, settings)
-        .unwrap()
+fn stages(assets: &mut Assets, stages: &[Stage], settings: MaterialSettings) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material("prepared fixture", stages, settings)
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 #[test]
@@ -607,23 +616,26 @@ fn offset_row_windows_keep_three_stage_depth_blend_and_rank_bits() {
         ..MaterialSettings::default()
     };
     let material = stages(&mut assets, &stages_, settings);
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |g| {
-            for (i, v) in g.vertices.iter_mut().enumerate() {
-                v.vertex.texcoord = [i as f32 * 0.375 - 0.25, i as f32 * 0.125];
-                v.vertex.color = [37 + i as u8 * 41, 219 - i as u8 * 29, 181, 255];
-            }
-        },
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                for (i, v) in g.vertices.iter_mut().enumerate() {
+                    v.vertex.texcoord = [i as f32 * 0.375 - 0.25, i as f32 * 0.125];
+                    v.vertex.color = [37 + i as u8 * 41, 219 - i as u8 * 29, 181, 255];
+                }
+            },
+        )
+    };
     let view = Refdef {
         time_ms: 731,
         ..test_view()
@@ -678,88 +690,91 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |g| {
-            // A quadratic 3x3 control patch with the center 0.5 units deeper.
-            // Native PutPointsOnCurve at this no-subdivision tolerance leaves
-            // a 3x3 grid, whose center is 0.125 units deeper (tr_curve.c).
-            g.vertices.clear();
-            for row in 0..3 {
-                for column in 0..3 {
-                    let u = column as f32 * 0.5;
-                    let v = row as f32 * 0.5;
-                    g.vertices.push(WorldVertex {
-                        vertex: Vertex {
-                            normal: Vec3([-1.0, 0.0, 0.0]),
-                            position: Vec3([
-                                2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
-                                3.0 - 6.0 * u,
-                                3.0 - 6.0 * v,
-                            ]),
-                            texcoord: [u, v],
-                            lightmap_coord: [u, v],
-                            ..Vertex::default()
-                        },
-                    });
-                }
-            }
-            for row in 0..3 {
-                for column in 0..3 {
-                    let u = column as f32 * 0.5;
-                    let v = row as f32 * 0.5;
-                    let bu = 2.0 * u * (1.0 - u);
-                    let bv = 2.0 * v * (1.0 - v);
-                    let mut vertex = g.vertices[row * 3 + column];
-                    vertex.vertex.position.0[0] = 2.0 + 0.5 * bu * bv;
-                    g.vertices.push(vertex);
-                }
-            }
-            g.indices.clear();
-            g.boundaries.clear();
-            for row in 0..2u32 {
-                for column in 0..2u32 {
-                    let a = 9 + row * 3 + column;
-                    let b = a + 3;
-                    for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
-                        g.boundaries.push(RangeSpan {
-                            first: g.indices.len() as u32,
-                            count: 3,
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                // A quadratic 3x3 control patch with the center 0.5 units deeper.
+                // Native PutPointsOnCurve at this no-subdivision tolerance leaves
+                // a 3x3 grid, whose center is 0.125 units deeper (tr_curve.c).
+                g.vertices.clear();
+                for row in 0..3 {
+                    for column in 0..3 {
+                        let u = column as f32 * 0.5;
+                        let v = row as f32 * 0.5;
+                        g.vertices.push(WorldVertex {
+                            vertex: Vertex {
+                                normal: Vec3([-1.0, 0.0, 0.0]),
+                                position: Vec3([
+                                    2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
+                                    3.0 - 6.0 * u,
+                                    3.0 - 6.0 * v,
+                                ]),
+                                texcoord: [u, v],
+                                lightmap_coord: [u, v],
+                                ..Vertex::default()
+                            },
                         });
-                        g.indices.extend_from_slice(&triangle);
                     }
                 }
-            }
-            let surface = &mut g.surfaces[0];
-            surface.kind = GeometryKind::Patch;
-            surface.vertices = RangeSpan { first: 9, count: 9 };
-            surface.indices = RangeSpan {
-                first: 0,
-                count: 24,
-            };
-            surface.boundaries = RangeSpan { first: 0, count: 8 };
-            surface.plane = None;
-            surface.bounds.maxs.0[0] = 2.125;
-            surface.texture_coordinates = TextureCoordinates::Normalized;
-            surface.patch = Some(PatchGrid {
-                control_vertices: RangeSpan { first: 0, count: 9 },
-                control_dimensions: [3, 3],
-                dimensions: [3, 3],
-                width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
-                height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
-                lod_origin: Vec3([2.0, 0.0, 0.0]),
-                lod_radius: 18.0f32.sqrt(),
-            });
-        },
-    );
+                for row in 0..3 {
+                    for column in 0..3 {
+                        let u = column as f32 * 0.5;
+                        let v = row as f32 * 0.5;
+                        let bu = 2.0 * u * (1.0 - u);
+                        let bv = 2.0 * v * (1.0 - v);
+                        let mut vertex = g.vertices[row * 3 + column];
+                        vertex.vertex.position.0[0] = 2.0 + 0.5 * bu * bv;
+                        g.vertices.push(vertex);
+                    }
+                }
+                g.indices.clear();
+                g.boundaries.clear();
+                for row in 0..2u32 {
+                    for column in 0..2u32 {
+                        let a = 9 + row * 3 + column;
+                        let b = a + 3;
+                        for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
+                            g.boundaries.push(RangeSpan {
+                                first: g.indices.len() as u32,
+                                count: 3,
+                            });
+                            g.indices.extend_from_slice(&triangle);
+                        }
+                    }
+                }
+                let surface = &mut g.surfaces[0];
+                surface.kind = GeometryKind::Patch;
+                surface.vertices = RangeSpan { first: 9, count: 9 };
+                surface.indices = RangeSpan {
+                    first: 0,
+                    count: 24,
+                };
+                surface.boundaries = RangeSpan { first: 0, count: 8 };
+                surface.plane = None;
+                surface.bounds.maxs.0[0] = 2.125;
+                surface.texture_coordinates = TextureCoordinates::Normalized;
+                surface.patch = Some(PatchGrid {
+                    control_vertices: RangeSpan { first: 0, count: 9 },
+                    control_dimensions: [3, 3],
+                    dimensions: [3, 3],
+                    width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                    height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                    lod_origin: Vec3([2.0, 0.0, 0.0]),
+                    lod_radius: 18.0f32.sqrt(),
+                });
+            },
+        )
+    };
     let geometry = assets.world(world).unwrap().geometry();
     let surface = &geometry.surfaces[0];
     let grid = surface.patch.as_ref().unwrap();
@@ -838,8 +853,10 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
             2.0,
             1.0,
             SurfaceMaterial {
-                material,
-                lightmap: light,
+                shader: crate::ShaderBinding {
+                    lightmap: light,
+                    ..*assets.shader_binding(material).unwrap()
+                },
                 ..SurfaceMaterial::default()
             },
             None,
@@ -996,55 +1013,65 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
                 ..MaterialSettings::default()
             },
         );
-        let world = fixture_world(
-            &mut assets,
-            2.0,
-            1.0,
-            SurfaceMaterial {
-                material,
-                lightmap: light,
-                ..SurfaceMaterial::default()
-            },
-            None,
-            GeometryPartition::Unpartitioned,
-            |g| {
-                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
-                let boundary = g.boundaries[0];
-                g.indices[boundary.range()].rotate_left(2);
-                for (index, vertex) in g.vertices.iter_mut().enumerate() {
-                    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
-                    vertex.vertex.texcoord = [uv[0] - 0.375, uv[1] + 0.25];
-                    vertex.vertex.lightmap_coord = [0.5; 2];
-                    vertex.vertex.color = [red[index], 255, 255, 255];
-                }
-            },
-        );
-        let other = fixture_world(
-            &mut assets,
-            3.0,
-            1.0,
-            SurfaceMaterial {
-                material,
-                lightmap: light,
-                ..SurfaceMaterial::default()
-            },
-            None,
-            GeometryPartition::Unpartitioned,
-            |g| {
-                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
-                for (index, vertex) in g.vertices.iter_mut().enumerate() {
-                    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
-                    vertex.vertex.texcoord = [uv[0] + 0.625, uv[1] - 0.375];
-                    vertex.vertex.lightmap_coord = [0.5; 2];
-                    vertex.vertex.color = [
-                        [40, 80, 120, 255],
-                        [80, 120, 160, 255],
-                        [120, 160, 200, 255],
-                        [80, 120, 160, 255],
-                    ][index];
-                }
-            },
-        );
+        let world = {
+            let shader_input_0 = *assets.shader_binding(material).unwrap();
+            fixture_world(
+                &mut assets,
+                2.0,
+                1.0,
+                SurfaceMaterial {
+                    shader: crate::ShaderBinding {
+                        lightmap: light,
+                        ..shader_input_0
+                    },
+                    ..SurfaceMaterial::default()
+                },
+                None,
+                GeometryPartition::Unpartitioned,
+                |g| {
+                    g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                    let boundary = g.boundaries[0];
+                    g.indices[boundary.range()].rotate_left(2);
+                    for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                        vertex.vertex.texcoord = [uv[0] - 0.375, uv[1] + 0.25];
+                        vertex.vertex.lightmap_coord = [0.5; 2];
+                        vertex.vertex.color = [red[index], 255, 255, 255];
+                    }
+                },
+            )
+        };
+        let other = {
+            let shader_input_0 = *assets.shader_binding(material).unwrap();
+            fixture_world(
+                &mut assets,
+                3.0,
+                1.0,
+                SurfaceMaterial {
+                    shader: crate::ShaderBinding {
+                        lightmap: light,
+                        ..shader_input_0
+                    },
+                    ..SurfaceMaterial::default()
+                },
+                None,
+                GeometryPartition::Unpartitioned,
+                |g| {
+                    g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                    for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                        vertex.vertex.texcoord = [uv[0] + 0.625, uv[1] - 0.375];
+                        vertex.vertex.lightmap_coord = [0.5; 2];
+                        vertex.vertex.color = [
+                            [40, 80, 120, 255],
+                            [80, 120, 160, 255],
+                            [120, 160, 200, 255],
+                            [80, 120, 160, 255],
+                        ][index];
+                    }
+                },
+            )
+        };
         let mut cpu = CpuBackend::load_with_limits(
             29,
             19,
@@ -1242,31 +1269,37 @@ fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            lightmap: light,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |g| {
-            g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
-            for (index, vertex) in g.vertices.iter_mut().enumerate() {
-                vertex.vertex.texcoord = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
-                vertex.vertex.lightmap_coord = [0.5; 2];
-                vertex.vertex.color = [
-                    [32, 64, 96, 255],
-                    [192, 160, 128, 255],
-                    [64, 96, 128, 255],
-                    [160, 128, 96, 255],
-                ][index];
-            }
-        },
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.0,
+            SurfaceMaterial {
+                shader: crate::ShaderBinding {
+                    lightmap: light,
+                    ..shader_input_0
+                },
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                    vertex.vertex.texcoord =
+                        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                    vertex.vertex.lightmap_coord = [0.5; 2];
+                    vertex.vertex.color = [
+                        [32, 64, 96, 255],
+                        [192, 160, 128, 255],
+                        [64, 96, 128, 255],
+                        [160, 128, 96, 255],
+                    ][index];
+                }
+            },
+        )
+    };
     let list = packet(&assets, &[world], test_view());
     let counters = exact_rows(&assets, &list);
     assert!(counters.factor_spans > 0);
@@ -1337,26 +1370,29 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
             },
         );
         materials.push(material);
-        worlds.push(fixture_world(
-            &mut assets,
-            2.0,
-            if index == 0 { 0.3 } else { 1.5 },
-            SurfaceMaterial {
-                material,
-                ..SurfaceMaterial::default()
-            },
-            None,
-            GeometryPartition::Unpartitioned,
-            |g| {
-                if index == 0 {
-                    for vertex in &mut g.vertices {
-                        vertex.vertex.position.0[1] += 1.25;
+        worlds.push({
+            let shader_input_0 = *assets.shader_binding(material).unwrap();
+            fixture_world(
+                &mut assets,
+                2.0,
+                if index == 0 { 0.3 } else { 1.5 },
+                SurfaceMaterial {
+                    shader: shader_input_0,
+                    ..SurfaceMaterial::default()
+                },
+                None,
+                GeometryPartition::Unpartitioned,
+                |g| {
+                    if index == 0 {
+                        for vertex in &mut g.vertices {
+                            vertex.vertex.position.0[1] += 1.25;
+                        }
+                        g.surfaces[0].bounds.mins.0[1] += 1.25;
+                        g.surfaces[0].bounds.maxs.0[1] += 1.25;
                     }
-                    g.surfaces[0].bounds.mins.0[1] += 1.25;
-                    g.surfaces[0].bounds.maxs.0[1] += 1.25;
-                }
-            },
-        ));
+                },
+            )
+        });
     }
     let overlay = stages(
         &mut assets,
@@ -1376,39 +1412,45 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
             ..MaterialSettings::default()
         },
     );
-    worlds.push(fixture_world(
-        &mut assets,
-        1.0,
-        0.3,
-        SurfaceMaterial {
-            material: overlay,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    ));
+    worlds.push({
+        let shader_input_0 = *assets.shader_binding(overlay).unwrap();
+        fixture_world(
+            &mut assets,
+            1.0,
+            0.3,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    });
     // Another world contributes a disjoint region to the first sky material.
     // The shared material sort must union both sources, draw sky A once, then
     // the regular deferred surface, and finally sky B.
-    worlds.push(fixture_world(
-        &mut assets,
-        2.0,
-        0.3,
-        SurfaceMaterial {
-            material: materials[0],
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |g| {
-            for vertex in &mut g.vertices {
-                vertex.vertex.position.0[1] -= 1.25;
-            }
-            g.surfaces[0].bounds.mins.0[1] -= 1.25;
-            g.surfaces[0].bounds.maxs.0[1] -= 1.25;
-        },
-    ));
+    worlds.push({
+        let shader_input_0 = *assets.shader_binding(materials[0]).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            0.3,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                for vertex in &mut g.vertices {
+                    vertex.vertex.position.0[1] -= 1.25;
+                }
+                g.surfaces[0].bounds.mins.0[1] -= 1.25;
+                g.surfaces[0].bounds.maxs.0[1] -= 1.25;
+            },
+        )
+    });
     let frame = packet(&assets, &worlds, test_view());
     let counters = exact_rows(&assets, &frame);
     assert!(counters.sky_pixels > 0);
@@ -1513,27 +1555,30 @@ fn projected_fixture(
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        Some(0),
-        GeometryPartition::SplitBsp,
-        |geometry| {
-            let surface = &mut geometry.surfaces[0];
-            surface.lightmap_projection = Some([[0.0, -0.5, 0.0, 2.0], [0.0, 0.0, -0.25, 1.0]]);
-            surface.lightmap_grid = [5, 3];
-            surface.light_samples.count = 15;
-            geometry.light_samples = (0..15)
-                .map(|i| [(i % 5 * 40 + i / 5 * 20) as u8; 3])
-                .collect();
-            mutate(geometry);
-        },
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            Some(0),
+            GeometryPartition::SplitBsp,
+            |geometry| {
+                let surface = &mut geometry.surfaces[0];
+                surface.lightmap_projection = Some([[0.0, -0.5, 0.0, 2.0], [0.0, 0.0, -0.25, 1.0]]);
+                surface.lightmap_grid = [5, 3];
+                surface.light_samples.count = 15;
+                geometry.light_samples = (0..15)
+                    .map(|i| [(i % 5 * 40 + i / 5 * 20) as u8; 3])
+                    .collect();
+                mutate(geometry);
+            },
+        )
+    };
     (assets, world, palette)
 }
 
@@ -1796,57 +1841,60 @@ fn indexed_wall_on_eye_plane_skips_without_rejecting_nearby_drawable_wall() {
     );
     // Retail base1 face 2154 is a drawable wall; its eye-plane projection
     // acquires a tiny signed area from the 135-degree camera's f32 rounding.
-    let wall = fixture_world(
-        &mut assets,
-        2.0,
-        0.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        Some(137),
-        GeometryPartition::SplitBsp,
-        |geometry| {
-            let points = [
-                [128.0, 128.0, 16.0],
-                [128.0, 152.0, 16.0],
-                [128.0, 152.0, 64.0],
-                [128.0, 152.0, 112.0],
-                [128.0, 128.0, 112.0],
-            ];
-            let normal = Vec3([-1.0, 0.0, 0.0]);
-            geometry.vertices = points
-                .into_iter()
-                .map(|position| WorldVertex {
-                    vertex: Vertex {
-                        normal: normal,
-                        position: Vec3(position),
-                        ..Vertex::default()
-                    },
-                })
-                .collect();
-            geometry.indices = vec![0, 1, 2, 0, 2, 4, 0, 1, 2, 3, 4];
-            geometry.boundaries[0].count = 5;
-            let surface = &mut geometry.surfaces[0];
-            surface.vertices.count = 5;
-            surface.plane = Some(Plane {
-                encoding: None,
-                normal,
-                distance: -128.0,
-                axis: None,
-            });
-            surface.bounds = Bounds {
-                mins: Vec3([128.0, 128.0, 16.0]),
-                maxs: Vec3([128.0, 152.0, 112.0]),
-            };
-            surface.texture_projection = [[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0]];
-            surface.texture_minima = [128, -112];
-            surface.texture_extents = [32, 96];
-            surface.lightmap_grid = [3, 7];
-            surface.light_samples.count = 21;
-            geometry.light_samples = vec![[137; 3]; 21];
-        },
-    );
+    let wall = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            0.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            Some(137),
+            GeometryPartition::SplitBsp,
+            |geometry| {
+                let points = [
+                    [128.0, 128.0, 16.0],
+                    [128.0, 152.0, 16.0],
+                    [128.0, 152.0, 64.0],
+                    [128.0, 152.0, 112.0],
+                    [128.0, 128.0, 112.0],
+                ];
+                let normal = Vec3([-1.0, 0.0, 0.0]);
+                geometry.vertices = points
+                    .into_iter()
+                    .map(|position| WorldVertex {
+                        vertex: Vertex {
+                            normal: normal,
+                            position: Vec3(position),
+                            ..Vertex::default()
+                        },
+                    })
+                    .collect();
+                geometry.indices = vec![0, 1, 2, 0, 2, 4, 0, 1, 2, 3, 4];
+                geometry.boundaries[0].count = 5;
+                let surface = &mut geometry.surfaces[0];
+                surface.vertices.count = 5;
+                surface.plane = Some(Plane {
+                    encoding: None,
+                    normal,
+                    distance: -128.0,
+                    axis: None,
+                });
+                surface.bounds = Bounds {
+                    mins: Vec3([128.0, 128.0, 16.0]),
+                    maxs: Vec3([128.0, 152.0, 112.0]),
+                };
+                surface.texture_projection = [[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0]];
+                surface.texture_minima = [128, -112];
+                surface.texture_extents = [32, 96];
+                surface.lightmap_grid = [3, 7];
+                surface.light_samples.count = 21;
+                geometry.light_samples = vec![[137; 3]; 21];
+            },
+        )
+    };
     let basis = qa_core::math::angle_vectors(Vec3([0.0, 135.0, 0.0]));
     let view = Refdef {
         viewport: Viewport {
@@ -1913,18 +1961,21 @@ fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
             ..MaterialSettings::default()
         },
     );
-    let wall = fixture_world(
-        &mut assets,
-        2.0,
-        0.5,
-        SurfaceMaterial {
-            material: solid,
-            ..SurfaceMaterial::default()
-        },
-        Some(137),
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let wall = {
+        let shader_input_0 = *assets.shader_binding(solid).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            0.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            Some(137),
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let layers = [
         (0..128 * 128)
             .map(|i| (32 + i % 191) as u8)
@@ -1972,18 +2023,21 @@ fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
             ..MaterialSettings::default()
         },
     );
-    let sky = fixture_world(
-        &mut assets,
-        8.0,
-        1.5,
-        SurfaceMaterial {
-            material: sky_material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let sky = {
+        let shader_input_0 = *assets.shader_binding(sky_material).unwrap();
+        fixture_world(
+            &mut assets,
+            8.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let view = Refdef {
         time_ms: 7123,
         blend_viewport: Some(Viewport {
@@ -2077,18 +2131,21 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let view = Refdef {
         time_ms: 9017,
         cpu_presentation: CpuPresentation::Indexed {
@@ -2159,18 +2216,21 @@ fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let frame = packet(&assets, &[world], test_view());
     let mut cpu = CpuBackend::load_with_limits(
         29,
@@ -2255,18 +2315,21 @@ fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share()
             ..MaterialSettings::default()
         },
     );
-    fixture_world(
-        &mut assets,
-        2.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        Some(137),
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            Some(137),
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let base = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let required = base.raster_config().mandatory_cache_bytes;
     assert!(required > 0);
@@ -2351,18 +2414,21 @@ fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share()
     }
     // A map chart larger than the old 4 MiB band share must keep all requested
     // automatic lanes, while an explicit fixed budget still reduces them.
-    fixture_world(
-        &mut assets,
-        3.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |geometry| geometry.surfaces[0].texture_extents = [4096, 2048],
-    );
+    {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            3.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |geometry| geometry.surfaces[0].texture_extents = [4096, 2048],
+        )
+    };
     let automatic = CpuBackend::load_with_limits(
         29,
         19,
@@ -2504,18 +2570,21 @@ fn single_offset_camera_row_uses_one_bin_with_exact_unbinned_output() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let view = Refdef {
         viewport: Viewport {
             y: 8,
@@ -2586,30 +2655,36 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
             ..MaterialSettings::default()
         },
     );
-    let back = fixture_world(
-        &mut assets,
-        2.0,
-        1.5,
-        SurfaceMaterial {
-            material: opaque,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
-    let front = fixture_world(
-        &mut assets,
-        2.0,
-        0.75,
-        SurfaceMaterial {
-            material: translucent,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |_| {},
-    );
+    let back = {
+        let shader_input_0 = *assets.shader_binding(opaque).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            1.5,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
+    let front = {
+        let shader_input_0 = *assets.shader_binding(translucent).unwrap();
+        fixture_world(
+            &mut assets,
+            2.0,
+            0.75,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    };
     let vertices = [
         [2.0, 1.0, 1.0],
         [2.0, -1.0, 1.0],
@@ -2659,7 +2734,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         rect: [4.0, 4.0, 13.0, 3.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        material: opaque
+        shader: opaque
     }));
     frame.clear_scene();
     assert!(frame.add_world(
@@ -2701,7 +2776,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         rect: [3.0, 9.0, 7.0, 2.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        material: translucent
+        shader: translucent
     }));
     exact_rows(&assets, &frame.finish());
 }
@@ -2710,7 +2785,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
 fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[71, 89, 103, 255]).unwrap();
-    let materials: [MaterialId; 8] = std::array::from_fn(|index| {
+    let materials: [ShaderBindingId; 8] = std::array::from_fn(|index| {
         let sky = matches!(index, 2 | 3);
         let overlay = matches!(index, 1 | 5 | 6 | 7);
         stages(
@@ -2754,12 +2829,13 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     let worlds: Vec<_> = [0, 1, 5, 7]
         .into_iter()
         .map(|index| {
+            let shader_input_0 = *assets.shader_binding(materials[index]).unwrap();
             fixture_world(
                 &mut assets,
                 2.0,
                 if index == 0 { 0.35 } else { 1.5 },
                 SurfaceMaterial {
-                    material: materials[index],
+                    shader: shader_input_0,
                     ..SurfaceMaterial::default()
                 },
                 None,
@@ -2994,7 +3070,10 @@ fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
         17.0,
         0.8,
         SurfaceMaterial {
-            material: MaterialId(0),
+            shader: crate::ShaderBinding::material(
+                crate::MaterialId(0),
+                crate::world::geometry::LightSource::None,
+            ),
             ..SurfaceMaterial::default()
         },
         None,
@@ -3108,12 +3187,13 @@ fn band_counts_one_scanner_rejection_and_keeps_healthy_surface() {
         },
     );
     let worlds = [4.0, 8.0].map(|depth| {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
         fixture_world(
             &mut assets,
             depth,
             1.0,
             SurfaceMaterial {
-                material,
+                shader: shader_input_0,
                 ..SurfaceMaterial::default()
             },
             None,

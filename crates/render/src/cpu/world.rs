@@ -735,7 +735,8 @@ impl WorldRaster {
                 for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
                     let binding = &presentation.bindings()[surface_index];
                     let material = assets
-                        .material(binding.material)
+                        .shader_binding(binding.shader)
+                        .and_then(|shader| assets.material(shader.material))
                         .ok_or("invalid world material")?;
                     let loops = &geometry.boundaries[surface.boundaries.range()];
                     let (projected, candidate, empty, lightmap) = &layouts[surface_index];
@@ -781,7 +782,12 @@ impl WorldRaster {
                         if let Some(recipe) = super::rgba::Recipe::load(
                             geometry,
                             boundary_index,
-                            *binding,
+                            crate::world::SurfaceMaterial {
+                                shader: *assets
+                                    .shader_binding(binding.shader)
+                                    .ok_or("invalid world shader")?,
+                                texture_scale: binding.texture_scale,
+                            },
                             material,
                             assets,
                             evaluator,
@@ -1487,7 +1493,19 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            let material_id = entity.and_then(|e| e.material).unwrap_or(binding.material);
+            let source_binding = binding;
+            let Some(source_shader) = assets.shader_binding(source_binding.shader) else {
+                self.reject(stats);
+                continue;
+            };
+            let shader_id = entity
+                .and_then(|e| e.shader)
+                .unwrap_or(source_binding.shader);
+            let Some(binding) = assets.shader_binding(shader_id) else {
+                self.reject(stats);
+                continue;
+            };
+            let material_id = binding.material;
             let Some(material) = assets.material(material_id) else {
                 self.reject(stats);
                 continue;
@@ -1508,7 +1526,8 @@ impl SurfacePrepare {
                     stats.surfaces = stats.surfaces.saturating_add(1);
                     continue;
                 }
-                let Some(source) = info.sky.filter(|_| material_id == binding.material) else {
+                let Some(source) = info.sky.filter(|_| material_id == source_shader.material)
+                else {
                     self.reject(stats);
                     continue;
                 };
@@ -1536,8 +1555,8 @@ impl SurfacePrepare {
             }
             certified &= material.settings.deforms.iter().all(Option::is_none);
             let inputs = DrawInputs {
-                lightmap: binding.lightmap,
-                texture_scale: binding.texture_scale,
+                lightmap: source_shader.lightmap,
+                texture_scale: source_binding.texture_scale,
                 ..DrawInputs::for_view(&view_camera.refdef)
             };
             let inputs = entity.map_or(inputs, |entity| inputs.for_entity(entity));
@@ -1616,7 +1635,7 @@ impl SurfacePrepare {
                     self.reject(stats);
                     break;
                 }
-                let current = if native.is_none() && material_id == binding.material {
+                let current = if native.is_none() && material_id == source_shader.material {
                     self.catalog
                         .current_rgba(reference.presentation, boundary, assets)
                 } else {
@@ -2625,6 +2644,7 @@ fn stage_span(
             let Some(bounded) = texels.region(
                 assets
                     .surface_binding(primitive.presentation, primitive.surface)
+                    .and_then(|surface| assets.shader_binding(surface.shader))
                     .and_then(|binding| binding.lightmap_region),
             ) else {
                 stats.rejected += 1;
@@ -2731,6 +2751,7 @@ fn factor_spans(
     }
     let region = assets
         .surface_binding(primitive.presentation, primitive.surface)
+        .and_then(|surface| assets.shader_binding(surface.shader))
         .and_then(|binding| binding.lightmap_region);
     while first_levels != 0 {
         let first_mip = first_levels.trailing_zeros() as u8;

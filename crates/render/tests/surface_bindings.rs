@@ -29,8 +29,11 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     let image = assets.register_image(PAGE_SIZE, PAGE_SIZE, &rgba).unwrap();
     assert_ne!(image.0, red.page);
     let materials = [red, blue].map(|region| SurfaceMaterial {
-        lightmap: image,
-        lightmap_region: Some(region),
+        shader: qa_render::ShaderBinding {
+            lightmap: image,
+            lightmap_region: Some(region),
+            ..(SurfaceMaterial::default()).shader
+        },
         ..SurfaceMaterial::default()
     });
     let (geometry, visibility) = inputs(2);
@@ -56,9 +59,10 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
             [0, 0, 231, 255],
         ),
     ] {
+        let binding = assets.shader_binding(binding.shader).unwrap();
         assert_eq!(binding.lightmap, image);
         assert_eq!(binding.lightmap_region, Some(region));
-        assert_eq!(binding.material, materials[0].material);
+        assert_eq!(binding.material, materials[0].shader.material);
         let pixels = &assets.image(binding.lightmap).unwrap().rgba;
         for sample in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
             let uv = binding.lightmap_region.unwrap().uv_at_sample(sample);
@@ -108,8 +112,11 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
                     geometry,
                     visibility,
                     &[&[SurfaceMaterial {
-                        lightmap: image,
-                        lightmap_region: Some(region),
+                        shader: qa_render::ShaderBinding {
+                            lightmap: image,
+                            lightmap_region: Some(region),
+                            ..(SurfaceMaterial::default()).shader
+                        },
                         ..SurfaceMaterial::default()
                     }]]
                 )
@@ -124,17 +131,25 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
             geometry,
             visibility,
             &[&[SurfaceMaterial {
-                lightmap: image,
-                lightmap_region: Some(valid),
+                shader: qa_render::ShaderBinding {
+                    lightmap: image,
+                    lightmap_region: Some(valid),
+                    ..(SurfaceMaterial::default()).shader
+                },
                 ..SurfaceMaterial::default()
             }]],
         )
         .unwrap();
     assert_eq!(
         assets
-            .world_presentation(assets.world(id).unwrap().presentations()[0])
+            .shader_binding(
+                assets
+                    .world_presentation(assets.world(id).unwrap().presentations()[0])
+                    .unwrap()
+                    .bindings()[0]
+                    .shader
+            )
             .unwrap()
-            .bindings()[0]
             .lightmap_region,
         Some(valid)
     );
@@ -156,7 +171,10 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
             geometry,
             visibility,
             &[&[SurfaceMaterial {
-                lightmap: image,
+                shader: qa_render::ShaderBinding {
+                    lightmap: image,
+                    ..(SurfaceMaterial::default()).shader
+                },
                 ..SurfaceMaterial::default()
             }]],
         )
@@ -164,9 +182,14 @@ fn authored_full_page_keeps_uvs_and_default_region_none() {
     let world = assets.world(id).unwrap();
     assert_eq!(
         assets
-            .world_presentation(world.presentations()[0])
+            .shader_binding(
+                assets
+                    .world_presentation(world.presentations()[0])
+                    .unwrap()
+                    .bindings()[0]
+                    .shader
+            )
             .unwrap()
-            .bindings()[0]
             .lightmap_region,
         None
     );
@@ -190,7 +213,10 @@ fn invalid_later_presentation_does_not_publish_a_world_mesh_or_partial_variant()
     );
     let valid = [SurfaceMaterial::default()];
     let invalid = [SurfaceMaterial {
-        material: qa_render::MaterialId(u32::MAX),
+        shader: qa_render::ShaderBinding::material(
+            qa_render::MaterialId(u32::MAX),
+            qa_render::world::geometry::LightSource::None,
+        ),
         ..Default::default()
     }];
     let (geometry, visibility) = inputs(1);

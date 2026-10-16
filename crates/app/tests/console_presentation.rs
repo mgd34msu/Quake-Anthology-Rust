@@ -43,7 +43,14 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     )
     .unwrap();
     assert!(font.native);
-    let material = assets.material(font.font.unwrap().material).unwrap();
+    let material = assets
+        .material(
+            assets
+                .shader_binding(font.font.unwrap().shader)
+                .unwrap()
+                .material,
+        )
+        .unwrap();
     assert_eq!(material.stages[0].blend, Some(StageBlend::ALPHA));
     let qa_render::assets::StageTexture::Image(id) = material.stages[0].texture else {
         panic!()
@@ -288,7 +295,9 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
         let console_font = console.font_assets().font.unwrap();
         let hud_font = hud.font.unwrap();
         let image = |font: qa_app::renderer::text::BitmapFont| {
-            let material = assets.material(font.material).unwrap();
+            let material = assets
+                .material(assets.shader_binding(font.shader).unwrap().material)
+                .unwrap();
             assert_eq!(
                 material.stages[0].sampler.wrap,
                 qa_render::assets::Wrap::Clamp
@@ -463,15 +472,24 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
                 [255, 255, 255, if software { 255 } else { 204 }]
             );
             assert_eq!(background.texcoords, [0.0, 0.5, 1.0, 1.0]);
-            let material = assets.material(background.material).unwrap();
+            let material = assets
+                .material(assets.shader_binding(background.shader).unwrap().material)
+                .unwrap();
             assert_eq!(material.stages[0].blend, Some(StageBlend::ALPHA));
             assert_eq!(
-                *background_material.get_or_insert(background.material),
-                background.material
+                *background_material.get_or_insert(background.shader),
+                background.shader
             );
             assert!(front.recycle(packet).is_ok());
         }
-        let source = assets.material(background_material.unwrap()).unwrap();
+        let source = assets
+            .material(
+                assets
+                    .shader_binding(background_material.unwrap())
+                    .unwrap()
+                    .material,
+            )
+            .unwrap();
         let settings = source.settings;
         let mut stage = source.stages[0];
         stage.blend = Some(StageBlend {
@@ -480,6 +498,12 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
         });
         let unsupported = assets
             .register_material("console/unsupported-add", &[stage], settings)
+            .unwrap();
+        let unsupported = assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                unsupported,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
             .unwrap();
         let mut cpu = CpuBackend::load_with_assets(160, 120, &assets).unwrap();
         for (material, color) in [
@@ -509,7 +533,7 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             assert!(frame.draw_2d(qa_render::Draw2d {
                 rect: [0.0, 0.0, 160.0, 60.0],
                 color,
-                material,
+                shader: material,
                 ..qa_render::Draw2d::default()
             }));
             let packet = frame.finish();

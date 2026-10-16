@@ -21,31 +21,39 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
     let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[200, 200, 200, 255]).unwrap();
     let light = assets.register_image(1, 1, &[128, 128, 128, 255]).unwrap();
-    let material = assets
-        .register_material(
-            "opacity/complete",
-            &[
-                Stage {
-                    texture: StageTexture::Image(base),
+    let material = {
+        let material = assets
+            .register_material(
+                "opacity/complete",
+                &[
+                    Stage {
+                        texture: StageTexture::Image(base),
+                        ..Default::default()
+                    },
+                    Stage {
+                        texture: StageTexture::Image(light),
+                        blend: Some(StageBlend {
+                            source: BlendFactor::DestinationColor,
+                            destination: BlendFactor::Zero,
+                        }),
+                        depth_func: DepthFunc::Equal,
+                        depth_write: false,
+                        ..Default::default()
+                    },
+                ],
+                MaterialSettings {
+                    cull: Cull::None,
                     ..Default::default()
                 },
-                Stage {
-                    texture: StageTexture::Image(light),
-                    blend: Some(StageBlend {
-                        source: BlendFactor::DestinationColor,
-                        destination: BlendFactor::Zero,
-                    }),
-                    depth_func: DepthFunc::Equal,
-                    depth_write: false,
-                    ..Default::default()
-                },
-            ],
-            MaterialSettings {
-                cull: Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices = [
         Vec3([4., 4., 4.]),
         Vec3([4., -4., 4.]),
@@ -60,20 +68,28 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
         .register_model(&vertices, &[0, 1, 2, 0, 2, 3], material)
         .unwrap();
     let blue = assets.register_image(1, 1, &[0, 0, 240, 255]).unwrap();
-    let back_material = assets
-        .register_material(
-            "opacity/back-after",
-            &[Stage {
-                texture: StageTexture::Image(blue),
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                sort: 7.,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let back_material = {
+        let material = assets
+            .register_material(
+                "opacity/back-after",
+                &[Stage {
+                    texture: StageTexture::Image(blue),
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    sort: 7.,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let mut cpu = CpuBackend::load(WIDTH, HEIGHT).unwrap();
     // SAFETY: The owned window's context stays current on this thread and
     // outlives all GPU objects. No driver calls enter a foreign context.
@@ -141,7 +157,7 @@ fn gl_material_transactions_keep_complete_stage_results_depth_and_context_state(
     }));
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::Mesh(model),
-        material: Some(back_material),
+        shader: Some(back_material),
         origin: Vec3([4., 0., 0.]),
         ..Default::default()
     }));

@@ -5,6 +5,7 @@ use super::{Assets, Sampler};
 pub struct AssetCounts {
     pub images: usize,
     pub materials: usize,
+    pub shader_bindings: usize,
     pub models: usize,
     pub worlds: usize,
     pub presentations: usize,
@@ -14,6 +15,7 @@ impl AssetCounts {
     pub fn contains(self, required: Self) -> bool {
         self.images >= required.images
             && self.materials >= required.materials
+            && self.shader_bindings >= required.shader_bindings
             && self.models >= required.models
             && self.worlds >= required.worlds
             && self.presentations >= required.presentations
@@ -26,6 +28,7 @@ impl Assets {
         AssetCounts {
             images: self.images.len(),
             materials: self.materials.len(),
+            shader_bindings: self.shader_bindings.len(),
             models: self.models.len(),
             worlds: self.worlds.len(),
             presentations: self.presentations.len(),
@@ -50,6 +53,13 @@ impl Assets {
                 .retain(|id| (id.0 as usize) < retained.presentations);
         }
         self.models.truncate(retained.models);
+        for index in (retained.shader_bindings..self.shader_bindings.len()).rev() {
+            let binding = self.shader_bindings[index];
+            self.material_shader_heads[binding.material.0 as usize] = self.shader_next[index];
+        }
+        self.shader_bindings.truncate(retained.shader_bindings);
+        self.shader_next.truncate(retained.shader_bindings);
+        self.material_shader_heads.truncate(retained.materials);
         self.materials.truncate(retained.materials);
         self.images.truncate(retained.images);
         self.palettes.truncate(retained.palettes);
@@ -83,6 +93,13 @@ impl AssetAdmission {
         assets: &Assets,
     ) -> Result<Option<Self>, &'static str> {
         let counts = assets.counts();
+        if assets
+            .shader_bindings()
+            .iter()
+            .any(|&binding| !assets.styled_shader_valid(binding))
+        {
+            return Err("invalid styled shader binding");
+        }
         if let Some(previous) = previous {
             let old = previous.counts;
             if !counts.contains(old) {

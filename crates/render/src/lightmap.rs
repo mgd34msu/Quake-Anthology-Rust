@@ -332,6 +332,9 @@ impl AtlasUpdates {
                 .iter()
                 .zip(presentation.bindings())
             {
+                let binding = assets
+                    .shader_binding(binding.shader)
+                    .ok_or("invalid GL styled binding")?;
                 if binding.lightmap_conversion.is_none() {
                     continue;
                 }
@@ -446,6 +449,9 @@ impl AtlasUpdates {
             .ok_or("invalid GL styled surface")?;
         let binding = assets
             .surface_binding(presentation_id, surface_id)
+            .ok_or("invalid GL styled binding")?;
+        let binding = assets
+            .shader_binding(binding.shader)
             .ok_or("invalid GL styled binding")?;
         let Some(conversion) = binding.lightmap_conversion else {
             return Ok(false);

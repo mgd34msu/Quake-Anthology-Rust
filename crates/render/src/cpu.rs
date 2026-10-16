@@ -839,7 +839,11 @@ impl CpuBackend {
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
-        let Some(material) = assets.material(poly.material) else {
+        let Some(binding) = assets.shader_binding(poly.shader) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(material) = assets.material(binding.material) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -848,7 +852,10 @@ impl CpuBackend {
             return;
         }
         let vertices = list.vertices(poly.vertices);
-        let inputs = DrawInputs::for_view(&camera.refdef).for_poly(poly, list);
+        let inputs = DrawInputs {
+            lightmap: binding.lightmap,
+            ..DrawInputs::for_view(&camera.refdef).for_poly(poly, list)
+        };
         self.mesh_stages(
             camera,
             material,
@@ -925,7 +932,14 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(material) = entity.material(assets).and_then(|id| assets.material(id)) else {
+        let Some(binding) = entity
+            .shader(assets)
+            .and_then(|id| assets.shader_binding(id))
+        else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(material) = assets.material(binding.material) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -937,7 +951,10 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let inputs = DrawInputs::for_view(&camera.refdef).for_entity(entity);
+        let inputs = DrawInputs {
+            lightmap: binding.lightmap,
+            ..DrawInputs::for_view(&camera.refdef).for_entity(entity)
+        };
         self.mesh_stages(
             camera,
             material,
@@ -1238,7 +1255,11 @@ impl CpuBackend {
     }
 
     fn draw_2d(&mut self, draw: Draw2d, assets: &Assets, stats: &mut BackendStats) {
-        let Some(material) = assets.material(draw.material) else {
+        let Some(binding) = assets.shader_binding(draw.shader) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(material) = assets.material(binding.material) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1277,6 +1298,7 @@ impl CpuBackend {
         let inputs = DrawInputs {
             time_ms: self.time_ms,
             entity_color: draw.color,
+            lightmap: binding.lightmap,
             ..DrawInputs::default()
         };
         for stage in material.stages.iter() {

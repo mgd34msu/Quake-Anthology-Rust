@@ -88,12 +88,13 @@ fn indexed_world_instances_retain_native_coordinates_and_share_cached_texels() {
         },
     );
     let worlds = [(4.0, 1.0), (8.0, 0.5)].map(|(depth, extent)| {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
         fixture_world(
             &mut assets,
             depth,
             extent,
             SurfaceMaterial {
-                material,
+                shader: shader_input_0,
                 ..SurfaceMaterial::default()
             },
             Some(137),
@@ -189,18 +190,21 @@ fn mixed_static_and_instanced_bsp_surfaces_use_plane_depth_order() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::SplitBsp,
-        inline_models,
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::SplitBsp,
+            inline_models,
+        )
+    };
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.add_world(
@@ -237,18 +241,21 @@ fn parallel_instance_chunks_share_packet_poses_and_disable_bsp_certification() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::SplitBsp,
-        inline_models,
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::SplitBsp,
+            inline_models,
+        )
+    };
     let mut entities = vec![instance(&assets, world); 128];
     entities[64].origin = Vec3([-2.0, 0.0, 0.0]);
     let list = instance_packet(&assets, &entities, test_view());
@@ -318,50 +325,61 @@ fn world_instances_use_copied_entity_shader_inputs_and_material_override() {
     let image = assets
         .register_image(2, 1, &[255, 0, 0, 255, 0, 0, 255, 255])
         .unwrap();
-    let replacement = assets
-        .register_material(
-            "inline entity stage",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                rgb_gen: RgbGen::Entity,
-                alpha_gen: AlphaGen::Entity,
-                sampler: Sampler {
-                    filter: Filter::Nearest,
-                    mipmaps: false,
-                    ..Sampler::default()
+    let replacement = {
+        let material = assets
+            .register_material(
+                "inline entity stage",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    rgb_gen: RgbGen::Entity,
+                    alpha_gen: AlphaGen::Entity,
+                    sampler: Sampler {
+                        filter: Filter::Nearest,
+                        mipmaps: false,
+                        ..Sampler::default()
+                    },
+                    tcmods: [
+                        Some(crate::assets::TcMod::Script(TexMod::EntityTranslate)),
+                        Some(crate::assets::TcMod::Script(TexMod::Scroll([0.5, 0.0]))),
+                        None,
+                        None,
+                    ],
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
                 },
-                tcmods: [
-                    Some(crate::assets::TcMod::Script(TexMod::EntityTranslate)),
-                    Some(crate::assets::TcMod::Script(TexMod::Scroll([0.5, 0.0]))),
-                    None,
-                    None,
-                ],
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
+    let world = {
+        let shader_input_0 = *assets.shader_binding(base).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
             },
+            None,
+            GeometryPartition::Unpartitioned,
+            inline_models,
         )
-        .unwrap();
-    let world = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material: base,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        inline_models,
-    );
+    };
     let view = Refdef {
         time_ms: 2000,
         ..test_view()
     };
     let entity = SceneEntity {
-        material: Some(replacement),
+        shader: Some(replacement),
         color: [101, 203, 47, 255],
         ..instance(&assets, world)
     };
@@ -413,18 +431,21 @@ fn unsupported_world_instance_transform_drops_only_affected_submission() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        inline_models,
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.0,
+            1.0,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            inline_models,
+        )
+    };
     let good = instance(&assets, world);
     for bad in [
         SceneEntity {
@@ -488,19 +509,24 @@ fn opacity_fixture(extra: &[Stage]) -> (Assets, WorldId) {
             ..Default::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.,
-        1.,
-        SurfaceMaterial {
-            material,
-            lightmap: light,
-            ..Default::default()
-        },
-        None,
-        GeometryPartition::SplitBsp,
-        inline_models,
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.,
+            1.,
+            SurfaceMaterial {
+                shader: crate::ShaderBinding {
+                    lightmap: light,
+                    ..shader_input_0
+                },
+                ..Default::default()
+            },
+            None,
+            GeometryPartition::SplitBsp,
+            inline_models,
+        )
+    };
     (assets, world)
 }
 
@@ -683,7 +709,7 @@ fn animated_opacity_is_outside_material_time_and_keeps_alpha_test_holes() {
     let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let center = 29 * 9 + 13;
     let entity = SceneEntity {
-        material: Some(material),
+        shader: Some(material),
         material_opacity: MaterialOpacity::new(0.25),
         ..instance(&assets, world)
     };
@@ -706,7 +732,7 @@ fn animated_opacity_is_outside_material_time_and_keeps_alpha_test_holes() {
         assert_eq!(&cpu.frame.pixels[center].to_le_bytes()[..3], &color);
     }
     let entity = SceneEntity {
-        material: Some(hole_material),
+        shader: Some(hole_material),
         ..entity
     };
     assert_eq!(
@@ -790,18 +816,21 @@ fn indexed_completed_material_uses_the_authored_blend_table_without_depth_writes
             ..Default::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        4.,
-        1.,
-        SurfaceMaterial {
-            material,
-            ..Default::default()
-        },
-        Some(137),
-        GeometryPartition::SplitBsp,
-        inline_models,
-    );
+    let world = {
+        let shader_input_0 = *assets.shader_binding(material).unwrap();
+        fixture_world(
+            &mut assets,
+            4.,
+            1.,
+            SurfaceMaterial {
+                shader: shader_input_0,
+                ..Default::default()
+            },
+            Some(137),
+            GeometryPartition::SplitBsp,
+            inline_models,
+        )
+    };
     let view = Refdef {
         cpu_presentation: CpuPresentation::Indexed {
             palette,

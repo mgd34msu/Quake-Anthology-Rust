@@ -205,19 +205,27 @@ fn native_equal_integer_depth_bucket_overwrites_float_wall_but_nearer_bucket_occ
     let (mut assets, palette) = resources();
     let wall_color = [9, 17, 29, 255];
     let image = assets.register_image(1, 1, &wall_color).unwrap();
-    let material = assets
-        .register_material(
-            "particle wall",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "particle wall",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     for (wall_depth, visible) in [(7.99, false), (7.999, true), (8.0, true), (8.01, true)] {
         let vertices = [
             [wall_depth, -wall_depth, wall_depth],

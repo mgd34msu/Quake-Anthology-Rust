@@ -223,7 +223,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
         )
         .unwrap()
     };
-    let font_material = console.font_assets().font.unwrap().material;
+    let font_material = console.font_assets().font.unwrap().shader;
     let effects = qa_render::effects::Effects::load(
         Arc::new(qa_core::effects::EffectCatalog::new(
             Box::default(),
@@ -260,7 +260,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
     owner.end_initial_registration();
     let before = owner.assets().counts();
     let reuse = scene.hud_font(RuleSetId::Quake).unwrap();
-    assert_eq!(reuse.font.unwrap().material, font_material);
+    assert_eq!(reuse.font.unwrap().shader, font_material);
     assert!(scene.hud_font(RuleSetId::Quake3).is_none());
     vfs.take_lookup_count();
     let (staged, _) = owner

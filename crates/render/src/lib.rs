@@ -18,7 +18,9 @@ pub mod sky;
 pub mod stage;
 pub mod surface_cache;
 pub mod world;
-pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
+pub use assets::{
+    Assets, ImageId, MaterialId, ModelId, PaletteId, ShaderBinding, ShaderBindingId, Vertex,
+};
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd,
     Light, LightStyle, Limits, PaletteOperation, PaletteShift, PaletteTransform,

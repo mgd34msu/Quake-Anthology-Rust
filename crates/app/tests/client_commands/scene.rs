@@ -504,7 +504,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
     let Command::Draw2d(picture) = packet.commands()[2] else {
         panic!("native picture")
     };
-    assert_eq!(picture.material, material);
+    assert_eq!(picture.shader, material);
     assert_eq!(picture.rect, [0., 0., 90., 30.]);
     assert_eq!(picture.color, [127, 63, 255, 191]);
     let Command::View(second) = packet.commands()[3] else {
@@ -518,7 +518,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
     };
     assert_eq!(peer.rect, [if ui { 0. } else { 160. }, 0., 90., 30.]);
     assert_eq!(peer.color, [255; 4]);
-    assert_eq!(peer.material, if ui { material } else { peer_material });
+    assert_eq!(peer.shader, if ui { material } else { peer_material });
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
 }
@@ -804,14 +804,14 @@ pub(super) fn entities(native: bool, ui: bool) {
         panic!("skin view")
     };
     for (entity, binding) in packet.entities(view.scene.entities).iter().zip(&skinned) {
-        assert_eq!(entity.material, Some(binding.material));
+        assert_eq!(entity.shader, Some(binding.shader));
     }
     assert_eq!(packet.rejected, 0);
     assert!(owner.recycle(packet).is_ok());
     // A custom shader takes priority; an invalid positive handle uses the default.
     for (handle, expected) in [
         (shader as u64, override_material),
-        (i32::MAX as u64, qa_render::MaterialId(0)),
+        (i32::MAX as u64, qa_render::ShaderBindingId(0)),
     ] {
         assert_eq!(probe(&mut host, 0, 18, handle), 0);
         assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
@@ -826,7 +826,7 @@ pub(super) fn entities(native: bool, ui: bool) {
             packet
                 .entities(view.scene.entities)
                 .iter()
-                .all(|entity| entity.material == Some(expected))
+                .all(|entity| entity.shader == Some(expected))
         );
         assert_eq!(packet.rejected, 0);
         assert!(owner.recycle(packet).is_ok());
@@ -908,7 +908,10 @@ pub(super) fn inline_entities(native: bool) {
         &mut assets,
         10.,
         &[&[qa_render::world::SurfaceMaterial {
-            material: portal_material,
+            shader: qa_render::ShaderBinding::material(
+                portal_material,
+                qa_render::world::geometry::LightSource::None,
+            ),
             ..Default::default()
         }]],
         |geometry| {

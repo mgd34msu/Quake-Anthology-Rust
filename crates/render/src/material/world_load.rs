@@ -947,8 +947,9 @@ fn compile_presentation(
                 )?
             }
         };
-        bindings.push(SurfaceMaterial {
+        let binding = crate::ShaderBinding {
             material,
+            light_source: surface.light_source,
             lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
             // Legacy grids retain face bounds after their UVs were rewritten
             // into the atlas. Authored Page UVs sample the full original page.
@@ -960,6 +961,10 @@ fn compile_presentation(
             lightmap_conversion: (surface.light_source == LightSource::Samples
                 && regions[surface.source_id as usize].is_some())
             .then_some(lightmap_conversion),
+            styled_surface: None,
+        };
+        bindings.push(SurfaceMaterial {
+            shader: binding,
             texture_scale: scale,
         });
     }

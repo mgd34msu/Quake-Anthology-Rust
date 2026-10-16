@@ -1,7 +1,7 @@
 use qa_core::primitives::Vec3;
 use qa_render::scene::EntityVisibility;
 use qa_render::{
-    Assets, Command, FrontEnd, Limits, MaterialId, Refdef, SceneEntity, SceneModel, Vertex,
+    Assets, Command, FrontEnd, Limits, Refdef, SceneEntity, SceneModel, ShaderBindingId, Vertex,
 };
 
 #[test]
@@ -22,7 +22,7 @@ fn shared_beams_apply_world_or_entity_pose_and_keep_supplied_color() {
             origin,
             axes,
             color,
-            material: Some(MaterialId(0)),
+            shader: Some(ShaderBindingId(0)),
             ..Default::default()
         }));
         assert!(frame.render_scene(Refdef::default(), &[], &assets));
@@ -51,7 +51,7 @@ fn shared_beams_apply_world_or_entity_pose_and_keep_supplied_color() {
 #[test]
 fn native_float_entity_alpha_reaches_cpu_pixels_without_byte_narrowing() {
     let mut assets = Assets::load().unwrap();
-    let material = qa_render::entities::register_beam_material(
+    let material = qa_render::entities::register_beam_shader(
         &mut assets,
         qa_render::shader::StageBlend::ALPHA,
     )
@@ -66,7 +66,7 @@ fn native_float_entity_alpha_reaches_cpu_pixels_without_byte_narrowing() {
         origin: Vec3([16., 0., 0.]),
         color: [255, 0, 0, 76],
         alpha: Some(0.3),
-        material: Some(material),
+        shader: Some(material),
         ..Default::default()
     }));
     assert!(frame.render_scene(
@@ -112,25 +112,33 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
             .iter()
             .all(|&index| index == 77)
     );
-    let material = qa_render::entities::register_beam_material(
+    let material = qa_render::entities::register_beam_shader(
         &mut assets,
         qa_render::shader::StageBlend::ALPHA,
     )
     .unwrap();
-    let backdrop = assets
-        .register_material(
-            "beam/background",
-            &[Stage {
-                rgb_gen: RgbGen::ExactVertex,
-                alpha_gen: AlphaGen::Entity,
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: qa_render::assets::Cull::None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let backdrop = {
+        let material = assets
+            .register_material(
+                "beam/background",
+                &[Stage {
+                    rgb_gen: RgbGen::ExactVertex,
+                    alpha_gen: AlphaGen::Entity,
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: qa_render::assets::Cull::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
     assert!(frame.add_entity(SceneEntity {
@@ -140,7 +148,7 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
         },
         origin: Vec3([40., 0., 0.]),
         palette_color: Some((palette, 0)),
-        material: Some(backdrop),
+        shader: Some(backdrop),
         ..Default::default()
     }));
     assert!(frame.add_entity(SceneEntity {
@@ -153,7 +161,7 @@ fn indexed_beams_use_flat_palette_indices_and_the_native_translucency_table() {
         color: [33, 33, 33, 76],
         alpha: Some(0.3),
         palette_color: Some((palette, 33)),
-        material: Some(material),
+        shader: Some(material),
         ..Default::default()
     }));
     assert!(frame.render_scene(
@@ -231,7 +239,7 @@ fn generated_geometry_uses_one_packet_and_keeps_entity_inputs() {
             model,
             origin: Vec3([8., 0., 0.]),
             color: [200, 100, 50, 255],
-            material: Some(MaterialId(0)),
+            shader: Some(ShaderBindingId(0)),
             shader_time: 1.25,
             shader_texcoord: [0.125, 0.5],
             ..Default::default()
@@ -265,13 +273,13 @@ fn generated_capacity_failure_drops_a_whole_entity_and_keeps_a_peer_polygon() {
     })
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(frame.add_poly(MaterialId(0), &[Vertex::default(); 3]));
+    assert!(frame.add_poly(ShaderBindingId(0), &[Vertex::default(); 3]));
     assert!(frame.add_entity(SceneEntity {
         model: SceneModel::Sprite {
             radius: 2.,
             rotation: 0.
         },
-        material: Some(MaterialId(0)),
+        shader: Some(ShaderBindingId(0)),
         ..Default::default()
     }));
     assert!(frame.render_scene(Refdef::default(), &[], &assets));

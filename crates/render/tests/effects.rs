@@ -8,9 +8,9 @@ use qa_core::{
     sys_events::EventTime,
 };
 use qa_render::{
-    Assets, Command, FrontEnd, Limits, MaterialId, PaletteId, ParticlePresentation, Refdef,
+    Assets, Command, FrontEnd, Limits, PaletteId, ParticlePresentation, Refdef, ShaderBindingId,
     effects::{EffectClient, Effects, ParticleBinding, ParticleView},
-    particles::register_point_material,
+    particles::register_point_shader,
     surface_cache::PaletteLighting,
 };
 use std::{num::NonZeroU32, sync::Arc};
@@ -118,10 +118,10 @@ fn catalog() -> Arc<EffectCatalog> {
         ],
     ))
 }
-fn binding(palette: PaletteId, material: MaterialId) -> ParticleBinding {
+fn binding(palette: PaletteId, material: ShaderBindingId) -> ParticleBinding {
     ParticleBinding {
         palette,
-        material,
+        shader: material,
         presentation: ParticlePresentation::Square { pixel_aspect: 1.5 },
     }
 }
@@ -132,8 +132,8 @@ fn effects(capacity: usize) -> Effects {
         3,
         &[
             None,
-            Some(binding(PaletteId(0), MaterialId(0))),
-            Some(binding(PaletteId(0), MaterialId(0))),
+            Some(binding(PaletteId(0), qa_render::ShaderBindingId(0))),
+            Some(binding(PaletteId(0), qa_render::ShaderBindingId(0))),
         ],
     )
     .unwrap();
@@ -305,7 +305,7 @@ fn repeated_views_copy_source_palette_and_do_not_advance_particle_state() {
     let source = assets
         .register_palette(PaletteLighting::load(&vec![17; 256 * 3], &colormap, None, 256).unwrap())
         .unwrap();
-    let material = register_point_material(&mut assets, "particles/effect-fixture").unwrap();
+    let material = register_point_shader(&mut assets, "particles/effect-fixture").unwrap();
     let mut effects = Effects::load(
         catalog(),
         1,
@@ -366,8 +366,8 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     let new_palette = assets
         .register_palette(PaletteLighting::load(&vec![31; 768], &shades, None, 256).unwrap())
         .unwrap();
-    let old_material = register_point_material(&mut assets, "particles/retained").unwrap();
-    let new_material = register_point_material(&mut assets, "particles/late").unwrap();
+    let old_material = register_point_shader(&mut assets, "particles/retained").unwrap();
+    let new_material = register_point_shader(&mut assets, "particles/late").unwrap();
     let old = binding(old_palette, old_material);
     let new = binding(new_palette, new_material);
     let make = || {
@@ -437,11 +437,11 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     };
     let particles = packet.particles(view.scene.particles);
     assert_eq!(
-        (particles[0].palette, particles[0].material),
+        (particles[0].palette, particles[0].shader),
         (new_palette, new_material)
     );
     assert_eq!(
-        (particles[1].palette, particles[1].material),
+        (particles[1].palette, particles[1].shader),
         (old_palette, old_material)
     );
 }
@@ -454,7 +454,7 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
             PaletteLighting::load(&vec![17; 256 * 3], &vec![0; 64 * 256], None, 256).unwrap(),
         )
         .unwrap();
-    let material = register_point_material(&mut assets, "particles/native-late").unwrap();
+    let material = register_point_shader(&mut assets, "particles/native-late").unwrap();
     let mut effects = Effects::load(
         catalog(),
         1,
@@ -484,7 +484,7 @@ fn recorded_native_views_receive_late_particles_once_with_recipient_isolation() 
     };
     let original = qa_render::scene::SceneParticle {
         palette,
-        material,
+        shader: material,
         color: 99,
         ..Default::default()
     };
@@ -570,7 +570,7 @@ fn late_particle_capacity_failure_keeps_native_payload_and_healthy_view() {
             PaletteLighting::load(&vec![17; 256 * 3], &vec![0; 64 * 256], None, 256).unwrap(),
         )
         .unwrap();
-    let material = register_point_material(&mut assets, "particles/native-bounded").unwrap();
+    let material = register_point_shader(&mut assets, "particles/native-bounded").unwrap();
     let mut effects = Effects::load(
         catalog(),
         1,
@@ -589,7 +589,7 @@ fn late_particle_capacity_failure_keeps_native_payload_and_healthy_view() {
     effects.synchronize(&[Some(owner)]);
     let original = qa_render::scene::SceneParticle {
         palette,
-        material,
+        shader: material,
         color: 99,
         ..Default::default()
     };

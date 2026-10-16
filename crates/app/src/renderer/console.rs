@@ -4,7 +4,8 @@ use qa_console::presentation::{ConsoleView, Layout, Style};
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
 use qa_render::{
-    Assets, CpuPresentation, Draw2d, Frame, MaterialId, PaletteId, Refdef, Viewport,
+    Assets, CpuPresentation, Draw2d, Frame, PaletteId, Refdef, ShaderBinding, ShaderBindingId,
+    Viewport,
     assets::{AlphaTest, DepthFunc, Filter, MaterialSettings, Sampler, Stage, StageTexture, Wrap},
     material::{
         self,
@@ -13,6 +14,7 @@ use qa_render::{
     },
     shader::{AlphaGen, Cull, RgbGen, StageBlend},
     surface_cache::IndexedLighting,
+    world::geometry::LightSource,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -27,8 +29,8 @@ pub struct ConsoleStats {
 
 pub struct ConsoleAssets {
     rules: RuleSetId,
-    font: Option<MaterialId>,
-    background: Option<MaterialId>,
+    font: Option<ShaderBindingId>,
+    background: Option<ShaderBindingId>,
     palette: Option<PaletteId>,
     layout: Layout,
     height: u32,
@@ -107,12 +109,21 @@ impl ConsoleAssets {
                 let result = if let Some(definition) = catalog.find_canonical(name) {
                     compile_definition(definition, &mut images)
                         .map_err(|error| format!("{error:?}"))
+                        .and_then(|material| {
+                            images
+                                .assets
+                                .register_shader_binding(ShaderBinding::material(
+                                    material,
+                                    LightSource::TwoDimensional,
+                                ))
+                                .map_err(str::to_owned)
+                        })
                 } else {
                     images
                         .raster(name, ImageUse::pic(), None)
                         .map_err(|error| format!("{error:?}"))
                         .and_then(|image| {
-                            bitmap_material(&mut images, name, image.id, image.sampler, None)
+                            bitmap_shader(&mut images, name, image.id, image.sampler, None)
                                 .map_err(str::to_owned)
                         })
                 };
@@ -132,7 +143,7 @@ impl ConsoleAssets {
                     )
                     .map_err(|error| format!("{error:?}"))
                     .and_then(|image| {
-                        bitmap_material(
+                        bitmap_shader(
                             &mut images,
                             "gfx/conback.lmp",
                             image.id,
@@ -158,7 +169,7 @@ impl ConsoleAssets {
                         )
                         .map_err(|error| format!("{error:?}"))
                         .and_then(|image| {
-                            bitmap_material(&mut images, path, image, sampler, None)
+                            bitmap_shader(&mut images, path, image, sampler, None)
                                 .map_err(str::to_owned)
                         });
                     install(slot, path, result);
@@ -186,8 +197,8 @@ impl ConsoleAssets {
     }
     pub fn font_assets(&self) -> FontAssets {
         FontAssets {
-            font: self.font.map(|material| BitmapFont {
-                material,
+            font: self.font.map(|shader| BitmapFont {
+                shader,
                 height: self.glyph_height,
             }),
             palette: self.palette,
@@ -232,7 +243,7 @@ impl ConsoleAssets {
             ..Refdef::default()
         };
         counts.rejected += u32::from(!frame.render_scene(refdef, &[], assets));
-        if let Some(material) = self.background {
+        if let Some(shader) = self.background {
             let draw = Draw2d {
                 rect: [
                     0.0,
@@ -250,7 +261,7 @@ impl ConsoleAssets {
                     [0.0, 1.0 - self.height as f32 / height as f32, 1.0, 1.0]
                 },
                 color: self.background_color(height, software),
-                material,
+                shader,
             };
             let accepted = frame.draw_2d(draw);
             counts.backgrounds += u32::from(accepted);
@@ -264,7 +275,7 @@ impl ConsoleAssets {
                 rect: [0.0, self.height.saturating_sub(2) as f32, width as f32, 2.0],
                 texcoords: [0.0, 0.0, 1.0, 1.0],
                 color: [255, 0, 0, 255],
-                material: MaterialId(0),
+                shader: ShaderBindingId(0),
             }));
         }
         let Some(font) = self.font else {
@@ -274,7 +285,7 @@ impl ConsoleAssets {
         };
         counts.non_native_font += u32::from(self.rules == RuleSetId::Quake2Rerelease);
         let font = BitmapFont {
-            material: font,
+            shader: font,
             height: self.glyph_height,
         };
         for (row, cells) in self.layout.lines() {
@@ -313,9 +324,13 @@ impl ConsoleAssets {
     }
 }
 
-fn install(slot: &mut Option<MaterialId>, name: &str, result: Result<MaterialId, String>) {
+fn install(
+    slot: &mut Option<ShaderBindingId>,
+    name: &str,
+    result: Result<ShaderBindingId, String>,
+) {
     match result {
-        Ok(material) => *slot = Some(material),
+        Ok(shader) => *slot = Some(shader),
         Err(error) => {
             qa_console::logger::console(format_args!("console {name} unavailable: {error}\n"))
         }
@@ -348,8 +363,8 @@ impl FontAssets {
             register_font(&mut images, vfs, rules, palette),
         );
         Ok(Self {
-            font: font.map(|material| BitmapFont {
-                material,
+            font: font.map(|shader| BitmapFont {
+                shader,
                 height: qa_gameplay::rules::presentation::text_rules(rules).glyph_height,
             }),
             palette,
@@ -362,18 +377,26 @@ fn register_font(
     vfs: &Vfs,
     rules: RuleSetId,
     palette: Option<PaletteId>,
-) -> Result<MaterialId, String> {
+) -> Result<ShaderBindingId, String> {
     if rules == RuleSetId::Quake3 {
         let catalog =
             material::load_catalog(vfs).map_err(|error| format!("console shaders: {error:?}"))?;
         let name = "gfx/2d/bigchars";
         if let Some(definition) = catalog.find_canonical(name) {
-            return compile_definition(definition, images).map_err(|error| format!("{error:?}"));
+            let material =
+                compile_definition(definition, images).map_err(|error| format!("{error:?}"))?;
+            return images
+                .assets
+                .register_shader_binding(ShaderBinding::material(
+                    material,
+                    LightSource::TwoDimensional,
+                ))
+                .map_err(str::to_owned);
         }
         let image = images
             .raster(name, ImageUse::pic(), None)
             .map_err(|error| format!("{error:?}"))?;
-        return bitmap_material(images, name, image.id, image.sampler, None).map_err(str::to_owned);
+        return bitmap_shader(images, name, image.id, image.sampler, None).map_err(str::to_owned);
     }
     let palette = palette.ok_or("native font palette unavailable")?;
     if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
@@ -389,7 +412,7 @@ fn register_font(
                 },
             )
             .map_err(|error| format!("{error:?}"))?;
-        return bitmap_material(images, "console/conchars", image.id, image.sampler, None)
+        return bitmap_shader(images, "console/conchars", image.id, image.sampler, None)
             .map_err(str::to_owned);
     }
     if rules == RuleSetId::Quake2Rerelease && vfs.open(b"pics/conchars.png").is_some() {
@@ -406,7 +429,7 @@ fn register_font(
                 }),
             )
             .map_err(|error| format!("{error:?}"))?;
-        return bitmap_material(
+        return bitmap_shader(
             images,
             "pics/conchars.png",
             image.id,
@@ -428,7 +451,7 @@ fn register_font(
             },
         )
         .map_err(|error| format!("{error:?}"))?;
-    bitmap_material(images, "pics/conchars.pcx", image, sampler, None).map_err(str::to_owned)
+    bitmap_shader(images, "pics/conchars.pcx", image, sampler, None).map_err(str::to_owned)
 }
 pub(crate) fn bitmap_sampler() -> Sampler {
     Sampler {
@@ -437,14 +460,14 @@ pub(crate) fn bitmap_sampler() -> Sampler {
         mipmaps: false,
     }
 }
-pub(crate) fn bitmap_material(
+pub(crate) fn bitmap_shader(
     images: &mut Images<'_>,
     name: &str,
     image: qa_render::ImageId,
     sampler: Sampler,
     blend: Option<StageBlend>,
-) -> Result<MaterialId, &'static str> {
-    images.assets.register_material(
+) -> Result<ShaderBindingId, &'static str> {
+    let material = images.assets.register_material(
         name,
         &[Stage {
             texture: StageTexture::Image(image),
@@ -461,5 +484,11 @@ pub(crate) fn bitmap_material(
             cull: Cull::None,
             ..MaterialSettings::default()
         },
-    )
+    )?;
+    images
+        .assets
+        .register_shader_binding(ShaderBinding::material(
+            material,
+            LightSource::TwoDimensional,
+        ))
 }

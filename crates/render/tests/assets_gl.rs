@@ -129,26 +129,34 @@ fn quad(
     name: &str,
     sky: bool,
 ) -> qa_render::ModelId {
-    let material = assets
-        .register_material(
-            name,
-            &[Stage {
-                texture: StageTexture::Image(image),
-                ..Default::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                sky: sky.then_some(Sky::Cube {
-                    outer_box: Some([image; 6]),
-                    inner_box: None,
-                    clouds: CloudSphere::native(256.),
-                    rotation: None,
-                    params: Default::default(),
-                }),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                name,
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    ..Default::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    sky: sky.then_some(Sky::Cube {
+                        outer_box: Some([image; 6]),
+                        inner_box: None,
+                        clouds: CloudSphere::native(256.),
+                        rotation: None,
+                        params: Default::default(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let vertices = [
         Vec3([4., 4., 4.]),
         Vec3([4., -4., 4.]),

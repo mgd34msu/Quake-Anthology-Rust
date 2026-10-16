@@ -11,7 +11,7 @@ use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, RgbGen, TexCoordGen, TexMo
 use crate::stage::{DrawInputs, StageEvaluator};
 use crate::surface_cache::{RgbaBuildState, SurfaceSource};
 use crate::world::{
-    SurfaceBinding,
+    SurfaceMaterial,
     geometry::{LightSource, WorldGeometry},
 };
 
@@ -222,7 +222,7 @@ impl Recipe {
     pub(super) fn load(
         geometry: &WorldGeometry,
         boundary: usize,
-        binding: SurfaceBinding,
+        binding: SurfaceMaterial,
         material: &Material,
         assets: &Assets,
         evaluator: &StageEvaluator,
@@ -251,14 +251,14 @@ impl Recipe {
             return Ok(None);
         };
         let images = if base_stage == 0 {
-            [base, binding.lightmap]
+            [base, binding.shader.lightmap]
         } else {
-            [binding.lightmap, base]
+            [binding.shader.lightmap, base]
         };
         let regions = if base_stage == 0 {
-            [None, binding.lightmap_region]
+            [None, binding.shader.lightmap_region]
         } else {
-            [binding.lightmap_region, None]
+            [binding.shader.lightmap_region, None]
         };
         let (Some(a), Some(b)) = (assets.image(images[0]), assets.image(images[1])) else {
             return Ok(None);
@@ -417,7 +417,7 @@ impl Product {
     pub(super) fn load(
         geometry: &WorldGeometry,
         boundary: usize,
-        binding: SurfaceBinding,
+        binding: SurfaceMaterial,
         material: &Material,
         assets: &Assets,
         evaluator: &StageEvaluator,
@@ -429,14 +429,14 @@ impl Product {
             return None;
         };
         let image = assets.image(base)?;
-        let lightmap = assets.image(binding.lightmap)?;
+        let lightmap = assets.image(binding.shader.lightmap)?;
         let base_view = TexelView::image(image, 0, material.stages[base_stage].texture_intensity);
         let light_view = TexelView::image(
             lightmap,
             0,
             material.stages[1 - base_stage].texture_intensity,
         )
-        .region(binding.lightmap_region)?;
+        .region(binding.shader.lightmap_region)?;
         let indices = geometry
             .indices
             .get(geometry.boundaries.get(boundary)?.range())?;
@@ -452,7 +452,7 @@ impl Product {
             .collect();
         let (axes, basis) = geometric_basis(&vertices)?;
         let inputs = DrawInputs {
-            lightmap: binding.lightmap,
+            lightmap: binding.shader.lightmap,
             texture_scale: binding.texture_scale,
             ..DrawInputs::default()
         };
@@ -675,8 +675,8 @@ impl Product {
             layouts,
             chart,
             source_coordinates,
-            lightmap: binding.lightmap,
-            lightmap_region: binding.lightmap_region,
+            lightmap: binding.shader.lightmap,
+            lightmap_region: binding.shader.lightmap_region,
             color_basis: basis.map(|i| vertices[i]),
             color_checks: if vertex_colors {
                 vertices
@@ -694,7 +694,7 @@ impl Product {
             styles,
             stages: [material.stages[0], material.stages[1]],
             settings: material.settings,
-            material: binding.material,
+            material: binding.shader.material,
             scale: binding.texture_scale,
             revisions: [image.preparation_revision, lightmap.preparation_revision],
             samplers: [

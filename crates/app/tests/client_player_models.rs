@@ -366,8 +366,8 @@ fn configured_player_models_and_weapons_survive_initial_registration_and_static_
             .unwrap()
             .next()
             .unwrap()
-            .material;
-        assert_eq!(entities[0].material, Some(expected));
+            .shader;
+        assert_eq!(entities[0].shader, Some(expected));
         let row = ConfigLayout::for_rules(rules).players.get(0).unwrap();
         assert!(host.runtime.client_resources[0].as_mut().unwrap().apply(
             row,
@@ -388,7 +388,7 @@ fn configured_player_models_and_weapons_survive_initial_registration_and_static_
         let (counts, static_entities) = draw(&host, rules, record, Some(retained));
         assert_eq!((counts.models, counts.missing_models), (2, 0));
         assert_eq!(static_entities[0].model, entities[0].model);
-        assert_eq!(static_entities[0].material, entities[0].material);
+        assert_eq!(static_entities[0].shader, entities[0].shader);
         assert_eq!(static_entities[1].model, entities[1].model);
     }
 }
@@ -547,7 +547,7 @@ fn rerelease_named_shell_features_are_cached_per_cell_and_frozen_for_statics() {
     let (_, frozen) = draw(&host, rules, record, Some(&retained));
     assert_eq!(frozen[1].alpha, Some(alpha * 0.32));
     assert_eq!(frozen[1].model, before[1].model);
-    assert_eq!(frozen[1].material, before[1].material);
+    assert_eq!(frozen[1].shader, before[1].shader);
 }
 
 #[test]
@@ -693,7 +693,13 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
         assert_eq!(entities[1].model, weapon.into());
         let qa_render::assets::StageTexture::Image(image) = owner
             .assets()
-            .material(entities[0].material.unwrap())
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(entities[0].shader.unwrap())
+                    .unwrap()
+                    .material,
+            )
             .unwrap()
             .stages[0]
             .texture
@@ -755,7 +761,13 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
         let (_, entities) = draw(&host, rules, player_record(rules, 1 << 8), None);
         let qa_render::assets::StageTexture::Image(image) = owner
             .assets()
-            .material(entities[0].material.unwrap())
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(entities[0].shader.unwrap())
+                    .unwrap()
+                    .material,
+            )
             .unwrap()
             .stages[0]
             .texture

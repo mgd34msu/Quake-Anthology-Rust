@@ -14,7 +14,7 @@ use qa_network::{
 use qa_render::{
     Assets, Command, FrontEnd, Limits, ParticlePresentation, Refdef,
     effects::{EffectClient, Effects, ParticleBinding},
-    particles::register_point_material,
+    particles::register_point_shader,
     surface_cache::PaletteLighting,
 };
 use qa_session::{clients::Connection, timing::TickRate};
@@ -50,14 +50,14 @@ impl Source {
                 PaletteLighting::load(&colors, &vec![0; 64 * 256], None, 256).unwrap(),
             )
             .unwrap();
-        let material = register_point_material(&mut assets, "particles/queued-native").unwrap();
+        let material = register_point_shader(&mut assets, "particles/queued-native").unwrap();
         let catalog = Arc::clone(&runtime.catalog.registry.effects);
         let mut bindings = vec![None; catalog.len() + 1];
         for (index, definition) in catalog.definitions().iter().enumerate() {
             if definition.source == RuleSetId::Quake {
                 bindings[index + 1] = Some(ParticleBinding {
                     palette,
-                    material,
+                    shader: material,
                     presentation: ParticlePresentation::Square { pixel_aspect: 1.0 },
                 });
             }

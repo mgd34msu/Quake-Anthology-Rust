@@ -84,6 +84,11 @@ fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
                 .registration_cached(kind, request.name, profile, None),
             Some(handle)
         );
+        let shader = owner.catalog().shader_binding(handle, profile).unwrap();
+        assert_eq!(
+            owner.assets().shader_binding(shader).unwrap().light_source,
+            LightSource::TwoDimensional
+        );
     }
     let capacity = owner.catalog().capacity();
     fixture.vfs.take_lookup_count();
@@ -159,12 +164,26 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
         );
         let material = owner.catalog().shader_binding(handle, target).unwrap();
         assert!(
-            owner.assets().material(material).unwrap().stages[0]
+            owner
+                .assets()
+                .material(owner.assets().shader_binding(material).unwrap().material)
+                .unwrap()
+                .stages[0]
                 .sampler
                 .mipmaps
         );
         assert!(
-            !owner.assets().material(retained[index]).unwrap().stages[0]
+            !owner
+                .assets()
+                .material(
+                    owner
+                        .assets()
+                        .shader_binding(retained[index])
+                        .unwrap()
+                        .material
+                )
+                .unwrap()
+                .stages[0]
                 .sampler
                 .mipmaps
         );
@@ -263,7 +282,11 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
     );
     let material = owner.catalog().shader_binding(handle, profile).unwrap();
     assert!(
-        owner.assets().material(material).unwrap().stages[0]
+        owner
+            .assets()
+            .material(owner.assets().shader_binding(material).unwrap().material)
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );
@@ -331,7 +354,11 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
     assert_eq!(cpu.admitted_assets(), Some(counts));
     let material = owner.catalog().shader_binding(handle, target).unwrap();
     assert!(
-        !owner.assets().material(material).unwrap().stages[0]
+        !owner
+            .assets()
+            .material(owner.assets().shader_binding(material).unwrap().material)
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );
@@ -409,6 +436,31 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
             .is_some()
     );
     assert!(owner.catalog().renderer_skin(handles[1], profile));
+    let registration = owner
+        .catalog()
+        .renderer_registration(handles[0], profile)
+        .unwrap();
+    for binding in owner
+        .catalog()
+        .bindings(
+            registration,
+            0,
+            ModelMaterialPolicy {
+                custom_skin: handles[1],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    {
+        assert_eq!(
+            owner
+                .assets()
+                .shader_binding(binding.shader)
+                .unwrap()
+                .light_source,
+            LightSource::None
+        );
+    }
     assert_eq!(owner.catalog.names.find(skin.name), skin_name);
     assert_eq!(
         owner.catalog().shader_binding(retained, profile),

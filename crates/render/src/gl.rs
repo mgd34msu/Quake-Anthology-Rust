@@ -943,7 +943,11 @@ impl GlBackend {
             DrawKind::Poly => {
                 let poly = list.poly(item.index);
                 let inputs = inputs.for_poly(poly, list);
-                let Some(material) = assets.material(poly.material) else {
+                let Some(binding) = assets.shader_binding(poly.shader) else {
+                    stats.rejected = stats.rejected.saturating_add(1);
+                    return;
+                };
+                let Some(material) = assets.material(binding.material) else {
                     stats.rejected = stats.rejected.saturating_add(1);
                     return;
                 };
@@ -952,7 +956,14 @@ impl GlBackend {
                     return;
                 }
                 if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
-                    self.draw_sky(poly.material, assets, projection, inputs, view.far, stats);
+                    self.draw_sky(
+                        binding.material,
+                        assets,
+                        projection,
+                        inputs,
+                        view.far,
+                        stats,
+                    );
                     return;
                 }
                 let vertices = list.vertices(poly.vertices);
@@ -962,7 +973,7 @@ impl GlBackend {
                 };
                 if !self.draw_dynamic(
                     assets,
-                    poly.material,
+                    poly.shader,
                     first,
                     vertices.len(),
                     projection,
@@ -1340,14 +1351,20 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(material_id) = entity.material(assets) else {
+        let Some(shader) = entity.shader(assets) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let Some(binding) = assets.shader_binding(shader) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let material_id = binding.material;
         let Some(material) = assets.material(material_id) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        inputs.lightmap = binding.lightmap;
         if material.settings.fog.is_some() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -1430,7 +1447,7 @@ impl GlBackend {
         };
         if !self.draw_dynamic(
             assets,
-            particle.material,
+            particle.shader,
             first,
             vertices.len(),
             projection,
@@ -1442,7 +1459,10 @@ impl GlBackend {
             return;
         }
         stats.triangles = stats.triangles.saturating_add(vertices.len() as u32 - 2);
-        if let Some(material) = assets.material(particle.material) {
+        if let Some(material) = assets
+            .shader_binding(particle.shader)
+            .and_then(|shader| assets.material(shader.material))
+        {
             stats.stages = stats.stages.saturating_add(material.stages.len() as u32);
         }
     }
@@ -1471,11 +1491,17 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some((material_id, _)) = crate::scene::item_material_lightmap(list, assets, item)
+        let Some(source_shader) = assets.shader_binding(binding.shader) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(shader) =
+            crate::scene::item_shader(list, assets, item).and_then(|id| assets.shader_binding(id))
         else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let material_id = shader.material;
         let (Some(material), Some(&mesh)) = (
             assets.material(material_id),
             self.meshes.get(world.mesh.0 as usize),
@@ -1542,7 +1568,7 @@ impl GlBackend {
         if let Some(entity) = entity {
             inputs = inputs.for_entity(entity);
         }
-        inputs.lightmap = binding.lightmap;
+        inputs.lightmap = source_shader.lightmap;
         inputs.texture_scale = binding.texture_scale;
         self.bind_vao(self.static_vao);
         self.set_depth_hack(entity.is_some_and(|entity| entity.depth_hack));
@@ -1574,17 +1600,21 @@ impl GlBackend {
     fn draw_dynamic(
         &mut self,
         assets: &Assets,
-        material_id: MaterialId,
+        shader: crate::ShaderBindingId,
         first: usize,
         count: usize,
         matrix: &[f32; 16],
-        inputs: DrawInputs,
+        mut inputs: DrawInputs,
         depth: bool,
         force_alpha: bool,
     ) -> bool {
-        let Some(material) = assets.material(material_id) else {
+        let Some(binding) = assets.shader_binding(shader) else {
             return false;
         };
+        let Some(material) = assets.material(binding.material) else {
+            return false;
+        };
+        inputs.lightmap = binding.lightmap;
         if material.settings.fog.is_some() {
             return false;
         }
@@ -1617,7 +1647,7 @@ impl GlBackend {
         inputs.entity_color = draw.color;
         self.draw_dynamic(
             assets,
-            draw.material,
+            draw.shader,
             first,
             vertices.len(),
             &projection,

@@ -1,6 +1,6 @@
 //! Fixed particle state consumed from the shared CLIENT output ring.
 use crate::scene::{ParticlePresentation, SceneParticle};
-use crate::{Frame, MaterialId, PaletteId};
+use crate::{Frame, PaletteId, ShaderBindingId};
 use qa_core::{
     effects::{EffectCatalog, ParticleMotion, VelocityChange},
     primitives::{ClientId, EffectEvent, EffectId, EntityId, Vec3},
@@ -20,7 +20,7 @@ pub struct EffectClient {
 #[derive(Clone, Copy, Debug)]
 pub struct ParticleBinding {
     pub palette: PaletteId,
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
     pub presentation: ParticlePresentation,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -438,7 +438,7 @@ impl Effects {
                         color: self.particles.colors[slot],
                         alpha: (self.particles.alphas[slot].clamp(0.0, 1.0) * 255.0) as u8,
                         palette: binding.palette,
-                        material: binding.material,
+                        shader: binding.shader,
                         size: 1.0,
                         presentation: binding.presentation,
                     }) {

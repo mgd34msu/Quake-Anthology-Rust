@@ -1,5 +1,5 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
-use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
+use crate::assets::{Assets, MaterialId, ModelId, PaletteId, ShaderBindingId, Vertex};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
@@ -381,7 +381,7 @@ pub struct SceneEntity {
     /// depth even at opacity one. None keeps the ordinary opaque/shader path.
     pub material_opacity: Option<MaterialOpacity>,
     pub palette_color: Option<(PaletteId, u8)>,
-    pub material: Option<MaterialId>,
+    pub shader: Option<ShaderBindingId>,
     pub frame: u32,
     pub old_frame: u32,
     pub back_lerp: f32,
@@ -418,9 +418,9 @@ impl SceneEntity {
     pub fn light_origin(&self) -> Vec3 {
         self.lighting_origin.unwrap_or(self.origin)
     }
-    pub fn material(&self, assets: &Assets) -> Option<MaterialId> {
-        self.material
-            .or_else(|| Some(assets.model(self.model.mesh()?)?.material))
+    pub fn shader(&self, assets: &Assets) -> Option<ShaderBindingId> {
+        self.shader
+            .or_else(|| Some(assets.model(self.model.mesh()?)?.shader))
     }
 }
 impl Default for SceneEntity {
@@ -435,7 +435,7 @@ impl Default for SceneEntity {
             alpha: None,
             material_opacity: None,
             palette_color: None,
-            material: None,
+            shader: None,
             frame: 0,
             old_frame: 0,
             back_lerp: 0.0,
@@ -461,7 +461,7 @@ pub struct Light {
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Poly {
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
     pub vertices: Span,
     pub entity: Option<u32>,
 }
@@ -470,7 +470,7 @@ pub struct Draw2d {
     pub rect: [f32; 4],
     pub texcoords: [f32; 4],
     pub color: [u8; 4],
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
 }
 impl Draw2d {
     /// Preserve UV interpolation while confining a module picture to its seat.
@@ -528,7 +528,7 @@ pub struct SceneParticle {
     pub color: u8,
     pub alpha: u8,
     pub palette: PaletteId,
-    pub material: MaterialId,
+    pub shader: ShaderBindingId,
     pub size: f32,
     pub presentation: ParticlePresentation,
 }
@@ -539,7 +539,7 @@ impl Default for SceneParticle {
             color: 0,
             alpha: 255,
             palette: PaletteId(0),
-            material: MaterialId(0),
+            shader: ShaderBindingId(0),
             size: 1.0,
             presentation: ParticlePresentation::default(),
         }
@@ -1317,7 +1317,7 @@ impl Frame {
         for index in first..self.list.particle_count {
             let particle = self.list.particles[index];
             if assets.palette(particle.palette).is_some()
-                && assets.material(particle.material).is_some()
+                && assets.shader_binding(particle.shader).is_some()
             {
                 self.list.particles[valid] = particle;
                 valid += 1;
@@ -1417,14 +1417,14 @@ impl Frame {
         self.list.entity_count += 1;
         true
     }
-    pub fn add_poly(&mut self, material: MaterialId, vertices: &[Vertex]) -> bool {
-        self.add_poly_from(material, vertices.len(), &mut |index| vertices[index])
+    pub fn add_poly(&mut self, shader: ShaderBindingId, vertices: &[Vertex]) -> bool {
+        self.add_poly_from(shader, vertices.len(), &mut |index| vertices[index])
     }
     /// Copy directly into the packet after reserving all polygon storage. This
     /// admits checked module vertices without a temporary allocation.
     pub fn add_poly_from(
         &mut self,
-        material: MaterialId,
+        shader: ShaderBindingId,
         count: usize,
         vertex: &mut dyn FnMut(usize) -> Vertex,
     ) -> bool {
@@ -1445,7 +1445,7 @@ impl Frame {
         }
         self.list.vertex_count += count;
         self.list.polys[self.list.poly_count] = Poly {
-            material,
+            shader,
             vertices: Span {
                 first: first as u32,
                 count: count as u32,
@@ -1549,7 +1549,7 @@ impl Frame {
                     continue;
                 }
                 let entity = *self.list.entity(draw.index);
-                let Some(material) = entity.material(assets) else {
+                let Some(shader) = entity.shader(assets) else {
                     self.list.rejected += 1;
                     continue;
                 };
@@ -1559,7 +1559,7 @@ impl Frame {
                     self.list.vertices[first..first + 3].copy_from_slice(&vertices);
                     self.list.vertex_count += 3;
                     self.list.polys[poly] = Poly {
-                        material,
+                        shader,
                         vertices: Span {
                             first: first as u32,
                             count: 3,
@@ -1635,25 +1635,44 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<&SceneEn
         DrawKind::Poly => list.poly(draw.index).entity.map(|index| list.entity(index)),
     }
 }
+pub(crate) fn item_shader(
+    list: &CommandList,
+    assets: &Assets,
+    draw: DrawItem,
+) -> Option<ShaderBindingId> {
+    match draw.kind {
+        DrawKind::Surface => {
+            let surface = list.surface(draw.index);
+            let binding = assets.scene_binding(*surface)?;
+            Some(
+                surface
+                    .entity
+                    .and_then(|index| list.entity(index).shader)
+                    .unwrap_or(binding.shader),
+            )
+        }
+        DrawKind::Entity => list.entity(draw.index).shader(assets),
+        DrawKind::Poly => Some(list.poly(draw.index).shader),
+    }
+}
 pub(crate) fn item_material_lightmap(
     list: &CommandList,
     assets: &Assets,
     draw: DrawItem,
 ) -> Option<(MaterialId, u32)> {
-    match draw.kind {
+    let binding = assets.shader_binding(item_shader(list, assets, draw)?)?;
+    let lightmap = match draw.kind {
         DrawKind::Surface => {
-            let surface = list.surface(draw.index);
-            let binding = assets.scene_binding(*surface)?;
-            let material = surface
-                .entity
-                .and_then(|index| list.entity(index).material)
-                .unwrap_or(binding.material);
-            Some((material, binding.lightmap.0))
+            assets
+                .shader_binding(assets.scene_binding(*list.surface(draw.index))?.shader)?
+                .lightmap
+                .0
         }
-        DrawKind::Entity => Some((list.entity(draw.index).material(assets)?, 0)),
-        DrawKind::Poly => Some((list.poly(draw.index).material, 0)),
-    }
+        DrawKind::Entity | DrawKind::Poly => 0,
+    };
+    Some((binding.material, lightmap))
 }
+
 fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
     let (material, lightmap) = item_material_lightmap(list, assets, draw)?;
     let instance = match draw.kind {

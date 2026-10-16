@@ -4,7 +4,8 @@ use qa_render::{
     Assets, BlendPhase, CommandList, CpuPresentation, Draw2d, FrontEnd, ImageId, Limits, PaletteId,
     PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep, Refdef, Viewport,
     assets::{
-        AlphaTest, Cull, Filter, MaterialId, MaterialSettings, Sampler, Stage, StageTexture, Vertex,
+        AlphaTest, Cull, Filter, MaterialSettings, Sampler, ShaderBindingId, Stage, StageTexture,
+        Vertex,
     },
     cpu::{CpuBackend, CpuLimits},
     surface_cache::{IndexedLighting, IndexedTexture, PaletteLighting},
@@ -18,29 +19,37 @@ fn only_presentation(assets: &Assets, world: WorldId) -> qa_render::world::World
     span[0]
 }
 
-fn cloud_material(assets: &mut Assets, stages: &[Stage]) -> MaterialId {
+fn cloud_material(assets: &mut Assets, stages: &[Stage]) -> ShaderBindingId {
     cloud_material_with_cull(assets, stages, Cull::None)
 }
 
-fn cloud_material_with_cull(assets: &mut Assets, stages: &[Stage], cull: Cull) -> MaterialId {
-    assets
-        .register_material(
-            "cloud fixture",
-            stages,
-            MaterialSettings {
-                sort: 2.0,
-                cull,
-                sky: Some(qa_render::assets::Sky::Cube {
-                    outer_box: None,
-                    inner_box: None,
-                    clouds: qa_render::sky::CloudSphere::native(384.0),
-                    rotation: None,
-                    params: qa_render::assets::CubeSkyParams::default(),
-                }),
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+fn cloud_material_with_cull(assets: &mut Assets, stages: &[Stage], cull: Cull) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material(
+                "cloud fixture",
+                stages,
+                MaterialSettings {
+                    sort: 2.0,
+                    cull,
+                    sky: Some(qa_render::assets::Sky::Cube {
+                        outer_box: None,
+                        inner_box: None,
+                        clouds: qa_render::sky::CloudSphere::native(384.0),
+                        rotation: None,
+                        params: qa_render::assets::CubeSkyParams::default(),
+                    }),
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 fn cloud_stage(image: ImageId) -> Stage {
@@ -402,33 +411,41 @@ fn clipped_cube_uses_native_face_uv_and_typed_rotation() {
             .collect();
         assets.register_image(2, 2, &bytes).unwrap()
     });
-    let sky_material = assets
-        .register_material(
-            "rotating cube",
-            &[],
-            MaterialSettings {
-                sort: 2.0,
-                cull: Cull::None,
-                sky: Some(Sky::Cube {
-                    outer_box: Some(images),
-                    inner_box: None,
-                    clouds: CloudSphere::native(384.0),
-                    rotation: Some(Rotation {
-                        axis: Vec3([0.0, 0.0, 1.0]),
-                        degrees_per_second: 90.0,
-                    }),
-                    params: CubeSkyParams {
-                        sampler: Sampler {
-                            filter: Filter::Nearest,
-                            ..CubeSkyParams::default().sampler
+    let sky_material = {
+        let material = assets
+            .register_material(
+                "rotating cube",
+                &[],
+                MaterialSettings {
+                    sort: 2.0,
+                    cull: Cull::None,
+                    sky: Some(Sky::Cube {
+                        outer_box: Some(images),
+                        inner_box: None,
+                        clouds: CloudSphere::native(384.0),
+                        rotation: Some(Rotation {
+                            axis: Vec3([0.0, 0.0, 1.0]),
+                            degrees_per_second: 90.0,
+                        }),
+                        params: CubeSkyParams {
+                            sampler: Sampler {
+                                filter: Filter::Nearest,
+                                ..CubeSkyParams::default().sampler
+                            },
+                            ..CubeSkyParams::default()
                         },
-                        ..CubeSkyParams::default()
-                    },
-                }),
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+                    }),
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let sky = world(
         &mut assets,
         2.0,
@@ -491,34 +508,42 @@ fn texture(assets: &mut Assets, palette: PaletteId, index: u8, fence: bool) -> I
         IndexedTexture::load(16, 16, std::array::from_fn(|i| mips[i].as_slice()), fence).unwrap();
     assets.register_indexed_image(texture, palette).unwrap()
 }
-fn material(assets: &mut Assets, image: ImageId, fence: bool) -> MaterialId {
-    assets
-        .register_material(
-            "fixture",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                alpha_test: if fence {
-                    AlphaTest::GreaterZero
-                } else {
-                    AlphaTest::None
+fn material(assets: &mut Assets, image: ImageId, fence: bool) -> ShaderBindingId {
+    {
+        let material = assets
+            .register_material(
+                "fixture",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    alpha_test: if fence {
+                        AlphaTest::GreaterZero
+                    } else {
+                        AlphaTest::None
+                    },
+                    sampler: Sampler {
+                        filter: Filter::Nearest,
+                        ..Sampler::default()
+                    },
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
                 },
-                sampler: Sampler {
-                    filter: Filter::Nearest,
-                    ..Sampler::default()
-                },
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 fn world(
     assets: &mut Assets,
     depth: f32,
-    material: MaterialId,
+    material: ShaderBindingId,
     light: Option<u8>,
     partition: GeometryPartition,
 ) -> WorldId {
@@ -528,7 +553,7 @@ fn world_with_extent(
     assets: &mut Assets,
     depth: f32,
     extent: f32,
-    material: MaterialId,
+    material: ShaderBindingId,
     light: Option<u8>,
     partition: GeometryPartition,
 ) -> WorldId {
@@ -538,7 +563,7 @@ fn world_mutated(
     assets: &mut Assets,
     depth: f32,
     extent: f32,
-    material: MaterialId,
+    material: ShaderBindingId,
     light: Option<u8>,
     partition: GeometryPartition,
     mutate: impl FnOnce(&mut WorldGeometry),
@@ -548,7 +573,7 @@ fn world_mutated(
         depth,
         extent,
         SurfaceMaterial {
-            material,
+            shader: *assets.shader_binding(material).unwrap(),
             texture_scale: [1.0 / 16.0; 2],
             ..SurfaceMaterial::default()
         },
@@ -665,7 +690,12 @@ fn world_bound(
         .unwrap()
 }
 
-fn rgba_pair(assets: &mut Assets, base: ImageId, light_first: bool, identity: bool) -> MaterialId {
+fn rgba_pair(
+    assets: &mut Assets,
+    base: ImageId,
+    light_first: bool,
+    identity: bool,
+) -> ShaderBindingId {
     use qa_render::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
     let base_stage = Stage {
         texture: StageTexture::Image(base),
@@ -701,21 +731,29 @@ fn rgba_pair(assets: &mut Assets, base: ImageId, light_first: bool, identity: bo
     });
     stages[1].depth_write = false;
     stages[1].depth_func = qa_render::assets::DepthFunc::Equal;
-    assets
-        .register_material(
-            "static RGB pair",
-            &stages,
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+    {
+        let material = assets
+            .register_material(
+                "static RGB pair",
+                &stages,
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 fn rgba_world(
     assets: &mut Assets,
-    material: MaterialId,
+    material: ShaderBindingId,
     lightmap: ImageId,
     uv: [[f32; 2]; 4],
     light_uv: [[f32; 2]; 4],
@@ -727,10 +765,12 @@ fn rgba_world(
         depth,
         1.0,
         SurfaceMaterial {
-            material,
-            lightmap,
-            lightmap_region: region,
-            lightmap_conversion: None,
+            shader: qa_render::ShaderBinding {
+                lightmap: lightmap,
+                lightmap_region: region,
+                lightmap_conversion: None,
+                ..*assets.shader_binding(material).unwrap()
+            },
             texture_scale: [1.0; 2],
         },
         None,
@@ -1111,33 +1151,41 @@ fn transformed_2d_coordinates_select_the_native_prepared_mip() {
             },
         )
         .unwrap();
-    let material = assets
-        .register_material(
-            "scaled prepared 2D image",
-            &[Stage {
-                texture: StageTexture::Image(image),
-                sampler: Sampler {
-                    filter: Filter::Nearest,
-                    ..Sampler::default()
-                },
-                tcmods: [
-                    Some(TcMod::Script(TexMod::Scale([16.0; 2]))),
-                    None,
-                    None,
-                    None,
-                ],
-                ..Stage::default()
-            }],
-            MaterialSettings::default(),
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "scaled prepared 2D image",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    sampler: Sampler {
+                        filter: Filter::Nearest,
+                        ..Sampler::default()
+                    },
+                    tcmods: [
+                        Some(TcMod::Script(TexMod::Scale([16.0; 2]))),
+                        None,
+                        None,
+                        None,
+                    ],
+                    ..Stage::default()
+                }],
+                MaterialSettings::default(),
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let mut cpu = CpuBackend::load(64, 64).unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
     assert!(frame.draw_2d(Draw2d {
         rect: [0.0, 0.0, 64.0, 64.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
-        material,
+        shader: material,
         color: [255; 4],
     }));
     let frame = frame.finish();
@@ -1161,37 +1209,45 @@ fn linear_rank_one_texture_uses_native_texel_lattice_and_reuses_cache() {
         .collect();
     let base = assets.register_image(2, 2, &pixels).unwrap();
     let light = assets.register_image(1, 1, &[255; 4]).unwrap();
-    let material = assets
-        .register_material(
-            "rank-one filtered texture",
-            &[
-                Stage {
-                    texture: StageTexture::Image(base),
-                    sampler: Sampler {
-                        wrap: qa_render::assets::Wrap::Clamp,
-                        filter: Filter::Linear,
-                        mipmaps: false,
+    let material = {
+        let material = assets
+            .register_material(
+                "rank-one filtered texture",
+                &[
+                    Stage {
+                        texture: StageTexture::Image(base),
+                        sampler: Sampler {
+                            wrap: qa_render::assets::Wrap::Clamp,
+                            filter: Filter::Linear,
+                            mipmaps: false,
+                        },
+                        ..Stage::default()
                     },
-                    ..Stage::default()
+                    Stage {
+                        texture: StageTexture::Lightmap,
+                        texgen: TexCoordGen::Lightmap,
+                        blend: Some(StageBlend {
+                            source: BlendFactor::DestinationColor,
+                            destination: BlendFactor::Zero,
+                        }),
+                        depth_write: false,
+                        depth_func: qa_render::assets::DepthFunc::Equal,
+                        ..Stage::default()
+                    },
+                ],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
                 },
-                Stage {
-                    texture: StageTexture::Lightmap,
-                    texgen: TexCoordGen::Lightmap,
-                    blend: Some(StageBlend {
-                        source: BlendFactor::DestinationColor,
-                        destination: BlendFactor::Zero,
-                    }),
-                    depth_write: false,
-                    depth_func: qa_render::assets::DepthFunc::Equal,
-                    ..Stage::default()
-                },
-            ],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, 0.5]);
     let world = rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0);
     let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
@@ -1241,34 +1297,42 @@ fn variable_linear_lightmap_is_baked_on_native_texture_lattice() {
         filter: Filter::Linear,
         mipmaps: false,
     };
-    let material = assets
-        .register_material(
-            "variable lightmap lattice",
-            &[
-                Stage {
-                    texture: StageTexture::Image(base),
-                    sampler,
-                    ..Stage::default()
+    let material = {
+        let material = assets
+            .register_material(
+                "variable lightmap lattice",
+                &[
+                    Stage {
+                        texture: StageTexture::Image(base),
+                        sampler,
+                        ..Stage::default()
+                    },
+                    Stage {
+                        texture: StageTexture::Lightmap,
+                        texgen: TexCoordGen::Lightmap,
+                        sampler,
+                        blend: Some(StageBlend {
+                            source: BlendFactor::DestinationColor,
+                            destination: BlendFactor::Zero,
+                        }),
+                        depth_write: false,
+                        depth_func: qa_render::assets::DepthFunc::Equal,
+                        ..Stage::default()
+                    },
+                ],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
                 },
-                Stage {
-                    texture: StageTexture::Lightmap,
-                    texgen: TexCoordGen::Lightmap,
-                    sampler,
-                    blend: Some(StageBlend {
-                        source: BlendFactor::DestinationColor,
-                        destination: BlendFactor::Zero,
-                    }),
-                    depth_write: false,
-                    depth_func: qa_render::assets::DepthFunc::Equal,
-                    ..Stage::default()
-                },
-            ],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, 0.5]);
     let world = rgba_world(&mut assets, material, light, uv, uv, None, 2.0);
     let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
@@ -1318,34 +1382,42 @@ fn linear_identity_lattice_invalidates_on_lighting_change_and_then_reuses() {
         filter: Filter::Linear,
         mipmaps: false,
     };
-    let material = assets
-        .register_material(
-            "view identity gate",
-            &[
-                Stage {
-                    texture: StageTexture::Image(base),
-                    sampler,
-                    rgb_gen: RgbGen::IdentityLighting,
-                    ..Stage::default()
+    let material = {
+        let material = assets
+            .register_material(
+                "view identity gate",
+                &[
+                    Stage {
+                        texture: StageTexture::Image(base),
+                        sampler,
+                        rgb_gen: RgbGen::IdentityLighting,
+                        ..Stage::default()
+                    },
+                    Stage {
+                        texture: StageTexture::Lightmap,
+                        texgen: TexCoordGen::Lightmap,
+                        blend: Some(StageBlend {
+                            source: BlendFactor::DestinationColor,
+                            destination: BlendFactor::Zero,
+                        }),
+                        depth_write: false,
+                        depth_func: qa_render::assets::DepthFunc::Equal,
+                        ..Stage::default()
+                    },
+                ],
+                MaterialSettings {
+                    cull: Cull::None,
+                    ..MaterialSettings::default()
                 },
-                Stage {
-                    texture: StageTexture::Lightmap,
-                    texgen: TexCoordGen::Lightmap,
-                    blend: Some(StageBlend {
-                        source: BlendFactor::DestinationColor,
-                        destination: BlendFactor::Zero,
-                    }),
-                    depth_write: false,
-                    depth_func: qa_render::assets::DepthFunc::Equal,
-                    ..Stage::default()
-                },
-            ],
-            MaterialSettings {
-                cull: Cull::None,
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, uv[1]]);
     let world = rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0);
     let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
@@ -1518,13 +1590,16 @@ fn cached_boundary_keeps_attributes_through_partial_near_clipping() {
     let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
     let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
     let material = rgba_pair(&mut assets, base, false, false);
+    let shader = *assets.shader_binding(material).unwrap();
     let world = world_bound(
         &mut assets,
         2.0,
         1.0,
         SurfaceMaterial {
-            material,
-            lightmap: light,
+            shader: qa_render::ShaderBinding {
+                lightmap: light,
+                ..shader
+            },
             texture_scale: [1.0; 2],
             ..SurfaceMaterial::default()
         },
@@ -1628,28 +1703,36 @@ fn positional_bulge_keeps_raw_collinear_world_vertices_drawable() {
     use qa_render::shader::Deform;
     let mut assets = Assets::load().unwrap();
     let white = assets.register_image(1, 1, &[255; 4]).unwrap();
-    let material = assets
-        .register_material(
-            "bulged collinear surface",
-            &[Stage {
-                texture: StageTexture::Image(white),
-                ..Stage::default()
-            }],
-            MaterialSettings {
-                cull: Cull::None,
-                deforms: [
-                    Some(Deform::Bulge {
-                        width: std::f32::consts::TAU,
-                        height: 16.0,
-                        speed: 0.0,
-                    }),
-                    None,
-                    None,
-                ],
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap();
+    let material = {
+        let material = assets
+            .register_material(
+                "bulged collinear surface",
+                &[Stage {
+                    texture: StageTexture::Image(white),
+                    ..Stage::default()
+                }],
+                MaterialSettings {
+                    cull: Cull::None,
+                    deforms: [
+                        Some(Deform::Bulge {
+                            width: std::f32::consts::TAU,
+                            height: 16.0,
+                            speed: 0.0,
+                        }),
+                        None,
+                        None,
+                    ],
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let world = world_mutated(
         &mut assets,
         32.0,
@@ -1998,7 +2081,7 @@ fn transformed_hud(operation: PaletteOperation) -> Vec<u32> {
         rect: [0.0, 0.0, 4.0, 4.0],
         texcoords: [0.0, 0.0, 1.0, 1.0],
         color: [255; 4],
-        material
+        shader: material
     }));
     let packet = frame.finish();
     let stats = cpu.render(&packet, &assets);
@@ -2098,20 +2181,28 @@ fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
         let mut assets = Assets::load().unwrap();
         let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
         let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
-        let entity_material = assets
-            .register_material(
-                "entity",
-                &[Stage {
-                    texture: StageTexture::Image(red),
-                    ..Stage::default()
-                }],
-                MaterialSettings {
-                    sort: entity_sort,
-                    cull: Cull::None,
-                    ..MaterialSettings::default()
-                },
-            )
-            .unwrap();
+        let entity_material = {
+            let material = assets
+                .register_material(
+                    "entity",
+                    &[Stage {
+                        texture: StageTexture::Image(red),
+                        ..Stage::default()
+                    }],
+                    MaterialSettings {
+                        sort: entity_sort,
+                        cull: Cull::None,
+                        ..MaterialSettings::default()
+                    },
+                )
+                .unwrap();
+            assets
+                .register_shader_binding(qa_render::ShaderBinding::material(
+                    material,
+                    qa_render::world::geometry::LightSource::TwoDimensional,
+                ))
+                .unwrap()
+        };
         let world_material = material(&mut assets, blue, false);
         let world = world(
             &mut assets,
@@ -2178,7 +2269,7 @@ fn layered_material(
     palette: PaletteId,
     back: &[u8],
     front: &[u8],
-) -> MaterialId {
+) -> ShaderBindingId {
     use qa_render::{
         assets::{Sky, TcGen},
         shader::{BlendFactor, StageBlend},
@@ -2218,18 +2309,26 @@ fn layered_material(
         },
         ..Stage::default()
     });
-    assets
-        .register_material(
-            "layered sky",
-            &stages,
-            MaterialSettings {
-                cull: Cull::None,
-                sort: 2.0,
-                sky: Some(Sky::Layered { images, sphere }),
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+    {
+        let material = assets
+            .register_material(
+                "layered sky",
+                &stages,
+                MaterialSettings {
+                    cull: Cull::None,
+                    sort: 2.0,
+                    sky: Some(Sky::Layered { images, sphere }),
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 #[test]
@@ -2413,7 +2512,7 @@ fn layered_sky_front_scroll_truncates_its_extra_shift_separately() {
     }
 }
 
-fn cube_material(assets: &mut Assets, cpu_rotation: bool) -> MaterialId {
+fn cube_material(assets: &mut Assets, cpu_rotation: bool) -> ShaderBindingId {
     use qa_render::{
         assets::{CubeSkyParams, Sky},
         sky::{CloudSphere, Rotation},
@@ -2426,31 +2525,39 @@ fn cube_material(assets: &mut Assets, cpu_rotation: bool) -> MaterialId {
             .register_rgba_with_indexed(1, 1, &[200, 200, 200, 255], indexed)
             .unwrap()
     });
-    assets
-        .register_material(
-            "cube sky",
-            &[],
-            MaterialSettings {
-                cull: Cull::None,
-                sort: 2.0,
-                sky: Some(Sky::Cube {
-                    outer_box: Some(images),
-                    inner_box: None,
-                    clouds: CloudSphere::native(512.0),
-                    rotation: Some(Rotation {
-                        axis: Vec3([0.0, 0.0, 1.0]),
-                        degrees_per_second: 90.0,
+    {
+        let material = assets
+            .register_material(
+                "cube sky",
+                &[],
+                MaterialSettings {
+                    cull: Cull::None,
+                    sort: 2.0,
+                    sky: Some(Sky::Cube {
+                        outer_box: Some(images),
+                        inner_box: None,
+                        clouds: CloudSphere::native(512.0),
+                        rotation: Some(Rotation {
+                            axis: Vec3([0.0, 0.0, 1.0]),
+                            degrees_per_second: 90.0,
+                        }),
+                        params: CubeSkyParams {
+                            cpu_background: true,
+                            cpu_rotation,
+                            ..CubeSkyParams::default()
+                        },
                     }),
-                    params: CubeSkyParams {
-                        cpu_background: true,
-                        cpu_rotation,
-                        ..CubeSkyParams::default()
-                    },
-                }),
-                ..MaterialSettings::default()
-            },
-        )
-        .unwrap()
+                    ..MaterialSettings::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    }
 }
 
 #[test]
@@ -2916,22 +3023,30 @@ fn rejected_cold_cloud_candidate_preserves_admission_pixels_cache_and_settings()
     let admitted = cpu.admitted_assets();
     // Zero cloud height is accepted material metadata, but cannot generate
     // the scripted cloud grid required by this CPU raster candidate.
-    assets
-        .register_material(
-            "zero-height cold cloud",
-            &[cloud_stage(image)],
-            MaterialSettings {
-                sky: Some(qa_render::assets::Sky::Cube {
-                    outer_box: None,
-                    inner_box: None,
-                    clouds: qa_render::sky::CloudSphere::native(0.),
-                    rotation: None,
-                    params: Default::default(),
-                }),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    {
+        let material = assets
+            .register_material(
+                "zero-height cold cloud",
+                &[cloud_stage(image)],
+                MaterialSettings {
+                    sky: Some(qa_render::assets::Sky::Cube {
+                        outer_box: None,
+                        inner_box: None,
+                        clouds: qa_render::sky::CloudSphere::native(0.),
+                        rotation: None,
+                        params: Default::default(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     assert_ne!(admitted, Some(assets.counts()));
     for _ in 0..2 {
         assert!(cpu.prepare_assets(&assets, None).is_err());
@@ -3032,7 +3147,7 @@ fn cold_world_append_preserves_old_ids_and_renders_the_new_palette() {
         assets
             .surface_binding(original_presentation, 0)
             .unwrap()
-            .material,
+            .shader,
         original_material
     );
     assert_eq!(assets.image(image).unwrap().rgba[0], 7);
@@ -3102,22 +3217,30 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
 
     let rejected_palette = palette(&mut assets, false);
     let rejected_image = texture(&mut assets, rejected_palette, 31, false);
-    let rejected_material = assets
-        .register_material(
-            "rejected appended world cloud",
-            &[cloud_stage(rejected_image)],
-            MaterialSettings {
-                sky: Some(qa_render::assets::Sky::Cube {
-                    outer_box: None,
-                    inner_box: None,
-                    clouds: qa_render::sky::CloudSphere::native(0.),
-                    rotation: None,
-                    params: Default::default(),
-                }),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let rejected_material = {
+        let material = assets
+            .register_material(
+                "rejected appended world cloud",
+                &[cloud_stage(rejected_image)],
+                MaterialSettings {
+                    sky: Some(qa_render::assets::Sky::Cube {
+                        outer_box: None,
+                        inner_box: None,
+                        clouds: qa_render::sky::CloudSphere::native(0.),
+                        rotation: None,
+                        params: Default::default(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assets
+            .register_shader_binding(qa_render::ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::TwoDimensional,
+            ))
+            .unwrap()
+    };
     let rejected_world = world(
         &mut assets,
         2.,
@@ -3152,7 +3275,7 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
     assert!(assets.world(rejected_world).is_none());
     assert!(assets.world_presentation(rejected_presentation).is_none());
     assert!(assets.model(rejected_mesh).is_none());
-    assert!(assets.material(rejected_material).is_none());
+    assert!(assets.shader_binding(rejected_material).is_none());
     assert!(assets.image(rejected_image).is_none());
     assert!(assets.palette(rejected_palette).is_none());
     let stats = cpu.world_stats();

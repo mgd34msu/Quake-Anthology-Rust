@@ -2,7 +2,7 @@
 //! test run checks sorted keys and payload ownership; it does not execute C.
 use qa_render::assets::{MaterialSettings, Stage};
 use qa_render::scene::DrawKind;
-use qa_render::{Assets, Command, FrontEnd, Limits, MaterialId, Refdef, Vertex};
+use qa_render::{Assets, Command, FrontEnd, Limits, Refdef, ShaderBindingId, Vertex};
 use std::fmt::Write;
 
 fn fixtures() -> Vec<(String, Vec<usize>)> {
@@ -55,7 +55,7 @@ fn fixtures() -> Vec<(String, Vec<usize>)> {
     cases
 }
 
-fn sorted_items(assets: &Assets, materials: &[MaterialId], keys: &[usize]) -> Vec<(u32, u32)> {
+fn sorted_items(assets: &Assets, materials: &[ShaderBindingId], keys: &[usize]) -> Vec<(u32, u32)> {
     let count = keys.len().max(1);
     let mut front = FrontEnd::load(Limits {
         commands: 2,
@@ -88,12 +88,12 @@ fn sorted_items(assets: &Assets, materials: &[MaterialId], keys: &[usize]) -> Ve
         .map(|draw| {
             assert_eq!(draw.kind, DrawKind::Poly);
             let poly = packet.poly(draw.index);
-            assert_eq!(poly.material, materials[keys[draw.index as usize]]);
+            assert_eq!(poly.shader, materials[keys[draw.index as usize]]);
             assert_eq!(
                 packet.vertices(poly.vertices)[0].texcoord[0],
                 draw.index as f32
             );
-            (poly.material.0, draw.index)
+            (poly.shader.0, draw.index)
         })
         .collect();
     assert_eq!(items.len(), keys.len());
@@ -109,7 +109,7 @@ fn original_draw_sort_fixture_export() {
     let mut assets = Assets::load().unwrap();
     let materials: Vec<_> = (0..32)
         .map(|key| {
-            assets
+            let material = assets
                 .register_material(
                     &format!("draw-sort-{key}"),
                     &[Stage::default()],
@@ -118,6 +118,12 @@ fn original_draw_sort_fixture_export() {
                         ..MaterialSettings::default()
                     },
                 )
+                .unwrap();
+            assets
+                .register_shader_binding(qa_render::ShaderBinding::material(
+                    material,
+                    qa_render::world::geometry::LightSource::TwoDimensional,
+                ))
                 .unwrap()
         })
         .collect();

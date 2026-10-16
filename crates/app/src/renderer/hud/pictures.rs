@@ -1,6 +1,6 @@
 //! Load-time image registration; layout execution uses the shared asset names.
 use super::{
-    super::console::{FontAssets, bitmap_material, bitmap_sampler},
+    super::console::{FontAssets, bitmap_sampler, bitmap_shader},
     HudStats,
 };
 use qa_content::vfs::Vfs;
@@ -9,14 +9,14 @@ use qa_core::{
     text::FixedText,
 };
 use qa_render::{
-    Assets, Draw2d, Frame, MaterialId, Viewport,
+    Assets, Draw2d, Frame, ShaderBindingId, Viewport,
     material::resources::{ImageSettings, ImageUse, Images},
 };
 use std::fmt::Write;
 
 #[derive(Clone, Copy)]
 pub struct Picture {
-    material: MaterialId,
+    shader: ShaderBindingId,
     size: [u32; 2],
 }
 #[derive(Default)]
@@ -68,11 +68,11 @@ impl Pictures {
                 )
                 .map_err(|e| format!("{e:?}"))
                 .and_then(|image| {
-                    bitmap_material(&mut images, path, image, bitmap_sampler(), None)
+                    bitmap_shader(&mut images, path, image, bitmap_sampler(), None)
                         .map_err(str::to_owned)
                 });
             match loaded {
-                Ok(material) => result.register(images.assets, path, material)?,
+                Ok(shader) => result.register(images.assets, path, shader)?,
                 Err(error) => {
                     qa_console::logger::console(format_args!("HUD picture {path}: {error}\n"))
                 }
@@ -85,10 +85,11 @@ impl Pictures {
         &mut self,
         assets: &mut Assets,
         path: &str,
-        material: MaterialId,
+        shader: ShaderBindingId,
     ) -> Result<(), String> {
         let image = assets
-            .material(material)
+            .shader_binding(shader)
+            .and_then(|binding| assets.material(binding.material))
             .and_then(|m| m.stages.first())
             .and_then(|stage| {
                 if let qa_render::assets::StageTexture::Image(id) = stage.texture {
@@ -97,9 +98,9 @@ impl Pictures {
                     None
                 }
             })
-            .ok_or("HUD picture needs an image material")?;
+            .ok_or("HUD picture needs an image shader")?;
         let picture = Picture {
-            material,
+            shader,
             size: [image.width, image.height],
         };
         let name = assets.intern_name(path).map_err(str::to_owned)?;
@@ -213,7 +214,7 @@ impl Picture {
             rect: [x as f32, y as f32, self.size[0] as f32, self.size[1] as f32],
             texcoords: [0., 0., 1., 1.],
             color: [255; 4],
-            material: self.material,
+            shader: self.shader,
         })
         .clipped(viewport) else {
             return;

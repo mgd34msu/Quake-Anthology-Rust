@@ -311,8 +311,8 @@ pub struct SceneComposer {
     native_owned: [bool; SeatId::COUNT],
     native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
     kind: Kind,
-    beam: qa_render::MaterialId,
-    beam_alpha: qa_render::MaterialId,
+    beam: qa_render::ShaderBindingId,
+    beam_alpha: qa_render::ShaderBindingId,
     console: Option<console::ConsoleAssets>,
     hud: [Option<hud::HudAssets>; 5],
 }
@@ -475,7 +475,7 @@ impl SceneComposer {
         limits = scene_surface_limits(limits, max_surfaces)?;
 
         let frontend = FrontEnd::load(limits)?;
-        let beam = qa_render::entities::register_beam_material(
+        let beam = qa_render::entities::register_beam_shader(
             assets,
             qa_render::shader::StageBlend {
                 source: qa_render::shader::BlendFactor::One,
@@ -483,11 +483,9 @@ impl SceneComposer {
             },
         )
         .map_err(str::to_owned)?;
-        let beam_alpha = qa_render::entities::register_beam_material(
-            assets,
-            qa_render::shader::StageBlend::ALPHA,
-        )
-        .map_err(str::to_owned)?;
+        let beam_alpha =
+            qa_render::entities::register_beam_shader(assets, qa_render::shader::StageBlend::ALPHA)
+                .map_err(str::to_owned)?;
         Ok((
             Self {
                 frontend,
@@ -596,7 +594,7 @@ impl SceneComposer {
 
 pub struct Renderer {
     effects: qa_render::effects::Effects,
-    particle_material: qa_render::MaterialId,
+    particle_shader: qa_render::ShaderBindingId,
     particle_presentation: qa_render::scene::ParticlePresentation,
     effect_clients: [Option<qa_render::effects::EffectClient>; SeatId::COUNT],
     effect_time: qa_core::sys_events::EventTime,
@@ -659,8 +657,8 @@ impl Renderer {
         if display.width != width || display.height != height {
             return Err("renderer target changed during registration".into());
         }
-        let particle_material =
-            qa_render::particles::register_point_material(assets, "engine/particles/point")?;
+        let particle_shader =
+            qa_render::particles::register_point_shader(assets, "engine/particles/point")?;
         let mut limits = Limits::default();
         limits.particles = effects
             .capacity()
@@ -715,7 +713,7 @@ impl Renderer {
         Ok((
             Self {
                 effects,
-                particle_material,
+                particle_shader,
                 particle_presentation: qa_render::scene::ParticlePresentation::Square {
                     pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
                 },
@@ -744,7 +742,7 @@ impl Renderer {
                 event.effect,
                 qa_render::effects::ParticleBinding {
                     palette,
-                    material: self.particle_material,
+                    shader: self.particle_shader,
                     presentation: self.particle_presentation,
                 },
             );
@@ -921,7 +919,7 @@ impl Renderer {
                         &refdef,
                         matches!(self.kind, Kind::Cpu),
                         Some(crate::client_scene::BeamInput {
-                            material: composition.beam_alpha,
+                            shader: composition.beam_alpha,
                             random: &mut random,
                         }),
                     );

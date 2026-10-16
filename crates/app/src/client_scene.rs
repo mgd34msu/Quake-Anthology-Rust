@@ -1182,7 +1182,7 @@ pub struct ClientSceneInput<'a> {
 }
 
 pub struct BeamInput<'a> {
-    pub material: qa_render::MaterialId,
+    pub shader: qa_render::ShaderBindingId,
     pub random: &'a mut dyn FnMut() -> u32,
 }
 
@@ -1357,7 +1357,7 @@ impl ClientSceneInput<'_> {
                     color[2],
                     (capabilities.alpha * 255.0) as u8,
                 ],
-                material: Some(presentation.material),
+                shader: Some(presentation.shader),
                 ..Default::default()
             });
             counts.beams += u32::from(added);
@@ -1443,7 +1443,7 @@ impl ClientSceneInput<'_> {
                         entity.material_opacity = capabilities
                             .inline_opacity
                             .and_then(qa_render::scene::MaterialOpacity::new);
-                        // Native brush opacity covers the complete material;
+                        // Native brush opacity covers the complete shader;
                         // it must not also attenuate an entity-alpha stage.
                         if entity.material_opacity.is_some() {
                             entity.alpha = None;
@@ -1477,7 +1477,7 @@ impl ClientSceneInput<'_> {
                         if capabilities.alias_motion && model.sprite.is_none() {
                             entity.previous_origin = Some(record.appearance.old_origin);
                         }
-                        entity.material = Some(binding.material);
+                        entity.shader = Some(binding.shader);
                         entity.frame = current_frame;
                         entity.old_frame = old_frame;
                         entity.back_lerp = 1.0 - fraction;
@@ -1613,7 +1613,7 @@ impl ClientSceneInput<'_> {
                 };
             let entity = SceneEntity {
                 model: binding.model.into(),
-                material: Some(binding.material),
+                shader: Some(binding.shader),
                 origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
                 axes: angle_vectors(angles).axes(),
                 frame: current_frame,

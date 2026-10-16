@@ -333,7 +333,11 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             .shader_binding(shaders[index], second)
             .unwrap();
         assert_eq!(
-            owner.assets().material(material).unwrap().stages[0]
+            owner
+                .assets()
+                .material(owner.assets().shader_binding(material).unwrap().material)
+                .unwrap()
+                .stages[0]
                 .sampler
                 .mipmaps,
             index == 1
@@ -440,7 +444,12 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         })
         .unwrap();
     let material = owner.catalog().shader_binding(shader, second).unwrap();
-    let StageTexture::Image(image) = owner.assets().material(material).unwrap().stages[0].texture
+    let StageTexture::Image(image) = owner
+        .assets()
+        .material(owner.assets().shader_binding(material).unwrap().material)
+        .unwrap()
+        .stages[0]
+        .texture
     else {
         panic!("shader texture")
     };
@@ -449,7 +458,11 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         [211, 17, 29, 255].repeat(16)
     );
     assert!(
-        !owner.assets().material(material).unwrap().stages[0]
+        !owner
+            .assets()
+            .material(owner.assets().shader_binding(material).unwrap().material)
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );
@@ -495,8 +508,18 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         shader
     );
     let third_material = owner.catalog().shader_binding(shader, third).unwrap();
-    let StageTexture::Image(image) =
-        owner.assets().material(third_material).unwrap().stages[0].texture
+    let StageTexture::Image(image) = owner
+        .assets()
+        .material(
+            owner
+                .assets()
+                .shader_binding(third_material)
+                .unwrap()
+                .material,
+        )
+        .unwrap()
+        .stages[0]
+        .texture
     else {
         panic!("shader texture")
     };
@@ -505,7 +528,17 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         [31, 223, 47, 255].repeat(16)
     );
     assert!(
-        owner.assets().material(third_material).unwrap().stages[0]
+        owner
+            .assets()
+            .material(
+                owner
+                    .assets()
+                    .shader_binding(third_material)
+                    .unwrap()
+                    .material
+            )
+            .unwrap()
+            .stages[0]
             .sampler
             .mipmaps
     );

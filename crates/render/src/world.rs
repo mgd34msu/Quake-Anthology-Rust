@@ -1,6 +1,6 @@
 //! BSP boundary conversion. Drawing uses only the normalized world primitives.
 use crate::{
-    assets::{ImageId, MaterialId, ModelId},
+    assets::{MaterialId, ModelId, ShaderBinding, ShaderBindingId},
     scene::{Refdef, Span},
 };
 use qa_core::primitives::{Plane, RuleSetId};
@@ -31,17 +31,16 @@ impl WorldPresentation {
         world: WorldId,
         materials: &[SurfaceMaterial],
         mesh_ranges: impl Iterator<Item = Span>,
+        shaders: impl Iterator<Item = ShaderBindingId>,
     ) -> Self {
         Self {
             world,
             bindings: materials
                 .iter()
                 .zip(mesh_ranges)
-                .map(|(material, mesh_indices)| SurfaceBinding {
-                    material: material.material,
-                    lightmap: material.lightmap,
-                    lightmap_region: material.lightmap_region,
-                    lightmap_conversion: material.lightmap_conversion,
+                .zip(shaders)
+                .map(|((material, mesh_indices), shader)| SurfaceBinding {
+                    shader,
                     texture_scale: material.texture_scale,
                     mesh_indices,
                 })
@@ -59,36 +58,21 @@ impl WorldPresentation {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceBinding {
-    pub material: MaterialId,
-    /// Range in the world's packed static triangle mesh, independent of its
-    /// retained polygon-boundary index storage.
+    pub shader: ShaderBindingId,
+    /// Range in the world's packed static triangle mesh.
     pub mesh_indices: Span,
-    pub lightmap: ImageId,
-    /// Owned packed-face texels within the numeric lightmap image. None uses
-    /// the whole image with authored coordinates, including original Q3 pages.
-    /// The atlas page number is provenance, never an ImageId/table index.
-    pub lightmap_region: Option<crate::lightmap::AtlasRegion>,
-    pub lightmap_conversion: Option<crate::lightmap::LightmapConversion>,
-    /// Legacy projections retain texel coordinates for the native cache.
-    /// Generic stages resolve them to normalized coordinates at draw setup.
+    /// Source geometry retains its original texture projection scale.
     pub texture_scale: [f32; 2],
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceMaterial {
-    pub material: MaterialId,
-    pub lightmap: ImageId,
-    /// Some selects a packed face; None retains full authored-image sampling.
-    pub lightmap_region: Option<crate::lightmap::AtlasRegion>,
-    pub lightmap_conversion: Option<crate::lightmap::LightmapConversion>,
+    pub shader: ShaderBinding,
     pub texture_scale: [f32; 2],
 }
 impl Default for SurfaceMaterial {
     fn default() -> Self {
         Self {
-            material: MaterialId(0),
-            lightmap: ImageId(0),
-            lightmap_region: None,
-            lightmap_conversion: None,
+            shader: ShaderBinding::material(MaterialId(0), geometry::LightSource::TwoDimensional),
             texture_scale: [1.0; 2],
         }
     }

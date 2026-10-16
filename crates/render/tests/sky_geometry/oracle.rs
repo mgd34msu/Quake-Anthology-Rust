@@ -1,4 +1,5 @@
 use super::*;
+use crate::ShaderBindingId;
 
 #[test]
 fn shared_cloud_triangles_keep_native_face_cell_and_vertex_order() {
@@ -135,7 +136,7 @@ fn sky_entity_triangles_use_the_same_selected_frame_pair_as_mesh_draws() {
         })
         .collect();
     let model = assets
-        .register_animated_model(&vertices, 3, &[0, 1, 2], MaterialId(0))
+        .register_animated_model(&vertices, 3, &[0, 1, 2], ShaderBindingId(0))
         .unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     for (frame, old_frame, back, valid) in [(1, 0, 0.25, true), (2, 0, 0.0, false)] {
@@ -330,15 +331,23 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
 
     let mut assets = Assets::load().unwrap();
     let materials = ["first-sky-face", "second-sky-face"].map(|name| {
-        assets
+        let material = assets
             .register_material(name, &[Stage::default()], MaterialSettings::default())
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
             .unwrap()
     });
     let lightmaps = [[17, 0, 0, 255], [0, 0, 231, 255]]
         .map(|color| assets.register_image(1, 1, &color).unwrap());
     let bindings: [SurfaceMaterial; 2] = std::array::from_fn(|index| SurfaceMaterial {
-        material: materials[index],
-        lightmap: lightmaps[index],
+        shader: crate::ShaderBinding {
+            lightmap: lightmaps[index],
+            ..*assets.shader_binding(materials[index]).unwrap()
+        },
         texture_scale: [1.0 / (32 << index) as f32, 1.0 / (64 << index) as f32],
         ..SurfaceMaterial::default()
     });
@@ -379,7 +388,7 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
                 Vec3([-1.0, 0.0, 0.0]),
                 Vec3([0.0, 0.0, 1.0]),
             ],
-            material,
+            shader: material,
             ..SceneEntity::default()
         };
         assert!(submission.add_entity(second_entity));
@@ -422,8 +431,14 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
                 }),
             ));
             let binding = assets.surface_binding(presentation, index as u32).unwrap();
-            assert_eq!(binding.material, bindings[index].material);
-            assert_eq!(binding.lightmap, bindings[index].lightmap);
+            assert_eq!(
+                assets.shader_binding(binding.shader).unwrap().material,
+                bindings[index].shader.material
+            );
+            assert_eq!(
+                assets.shader_binding(binding.shader).unwrap().lightmap,
+                bindings[index].shader.lightmap
+            );
             assert_eq!(binding.texture_scale, bindings[index].texture_scale);
         }
         actual.sort();
@@ -437,7 +452,7 @@ fn world_sky_faces_use_captured_instance_pose_and_keep_each_face_binding() {
 fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
     use crate::assets::MaterialSettings;
     use crate::scene::{Command, FrontEnd, Limits, Refdef, SceneEntity, SceneModel};
-    use crate::world::{SurfaceMaterial, VisibleSurface, WorldPresentationId};
+    use crate::world::{SurfaceMaterial, VisibleSurface};
 
     let mut assets = Assets::load().unwrap();
     let materials = [
@@ -447,17 +462,23 @@ fn world_sky_variants_share_geometry_and_keep_the_selected_material() {
         "sky-alternate-second",
     ]
     .map(|name| {
-        assets
+        let material = assets
             .register_material(name, &[Stage::default()], MaterialSettings::default())
+            .unwrap();
+        assets
+            .register_shader_binding(crate::ShaderBinding::material(
+                material,
+                crate::world::geometry::LightSource::TwoDimensional,
+            ))
             .unwrap()
     });
     let variants = [
         [0, 1].map(|index| SurfaceMaterial {
-            material: materials[index],
+            shader: *assets.shader_binding(materials[index]).unwrap(),
             ..SurfaceMaterial::default()
         }),
         [2, 3].map(|index| SurfaceMaterial {
-            material: materials[index],
+            shader: *assets.shader_binding(materials[index]).unwrap(),
             ..SurfaceMaterial::default()
         }),
     ];

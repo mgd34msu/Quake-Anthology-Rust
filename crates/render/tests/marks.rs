@@ -124,7 +124,10 @@ fn selected_compiled_flags_and_world_membership_filter_shared_leaf_references() 
     });
     let open = [SurfaceMaterial::default(); 2];
     let hidden = [SurfaceMaterial {
-        material: blocked,
+        shader: qa_render::ShaderBinding::material(
+            blocked,
+            qa_render::world::geometry::LightSource::None,
+        ),
         ..Default::default()
     }; 2];
     let world = assets
@@ -177,7 +180,7 @@ fn point_budget_skips_whole_fragment_but_candidate_cap_keeps_ordered_prefix() {
     }
     let open = vec![SurfaceMaterial::default(); 65];
     let mut skip_first = open.clone();
-    skip_first[0].material = blocked;
+    skip_first[0].shader.material = blocked;
     let world = assets
         .register_world(
             geometry,

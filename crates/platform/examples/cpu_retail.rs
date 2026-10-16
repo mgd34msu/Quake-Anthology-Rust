@@ -638,8 +638,13 @@ fn run() -> Result<(), String> {
                     surface.surface,
                     result.rejected,
                     assets
-                        .surface_binding(presentation.id, surface.surface)
-                        .ok_or("missing diagnostic surface binding")?
+                        .shader_binding(
+                            assets
+                                .surface_binding(presentation.id, surface.surface)
+                                .ok_or("missing diagnostic surface binding")?
+                                .shader
+                        )
+                        .ok_or("missing diagnostic shader binding")?
                         .material
                         .0,
                 ));
