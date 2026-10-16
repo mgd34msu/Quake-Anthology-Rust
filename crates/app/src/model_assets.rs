@@ -5,7 +5,7 @@ use qa_compat::services::{
     ShaderLighting,
 };
 use qa_content::vfs::Vfs;
-use qa_core::names::{NameTable, canonical_path};
+use qa_core::names::{NameTable, canonical_path, file_stem};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
@@ -499,7 +499,7 @@ impl Iterator for ModelBindings<'_> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelLodInfo<'a> {
     native_count: usize,
-    md3: bool,
+    supports_lods: bool,
     radii: &'a [f32],
 }
 impl ModelLodInfo<'_> {
@@ -510,7 +510,7 @@ impl ModelLodInfo<'_> {
         self.radii.len()
     }
     pub fn frame_count(self, native_frames: u32) -> u32 {
-        if self.md3 {
+        if self.supports_lods {
             self.radii.len() as u32
         } else {
             native_frames
@@ -519,8 +519,8 @@ impl ModelLodInfo<'_> {
     pub fn radius(self, frame: u32) -> Option<f32> {
         self.radii.get(frame as usize).copied()
     }
-    pub fn is_md3(self) -> bool {
-        self.md3
+    pub fn supports_lods(self) -> bool {
+        self.supports_lods
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -782,7 +782,7 @@ enum ModelLodSlot {
 struct ModelLods {
     slots: [ModelLodSlot; 3],
     native_count: usize,
-    md3: bool,
+    supports_lods: bool,
 }
 impl ModelLods {
     fn source(self, mut slot: usize) -> Option<NameId> {
@@ -801,7 +801,7 @@ enum ModelSourceFile {
     Empty,
     Invalid {
         error: FileError,
-        md3: bool,
+        supports_lods: bool,
     },
     Ready {
         bytes: Arc<[u8]>,
@@ -3431,7 +3431,7 @@ impl ModelAssets {
             Ok(model) => model,
             Err(error) => {
                 self.catalog.sources[name.0 as usize] = ModelSourceFile::Invalid {
-                    md3: bytes.starts_with(b"IDP3"),
+                    supports_lods: bytes.starts_with(b"IDP3") || bytes.starts_with(b"IDPC"),
                     error: FileError {
                         kind: CallError::File,
                         message: format!("decode: {error:?}"),
@@ -3443,9 +3443,10 @@ impl ModelAssets {
         let metadata = ModelMetadata {
             format: model.format,
             bounds: model.bounds,
-            renderer_bounds: match model.format {
-                ModelFormat::Md3 | ModelFormat::Mdc => model.frames[0].bounds,
-                _ => model.bounds,
+            renderer_bounds: if supports_lods(model.format) {
+                model.frames[0].bounds
+            } else {
+                model.bounds
             },
         };
         let radii = model
@@ -3479,58 +3480,76 @@ impl ModelAssets {
     }
 
     fn model_lods(&mut self, vfs: &Vfs, path: &str) -> Result<ModelLods, FileError> {
+        let stem = file_stem(path);
+        let preferred = match path[stem.len()..].strip_prefix('.') {
+            Some(extension) if extension.eq_ignore_ascii_case("md3") => "md3",
+            Some(extension) if extension.eq_ignore_ascii_case("mdc") => "mdc",
+            _ => {
+                let name = self.model_source(vfs, path)?.ok_or_else(|| FileError {
+                    kind: CallError::File,
+                    message: format!("missing model {path}"),
+                })?;
+                match &self.catalog.sources[name.0 as usize] {
+                    ModelSourceFile::Ready { metadata, .. } if supports_lods(metadata.format) => {
+                        if metadata.format == ModelFormat::Mdc {
+                            "mdc"
+                        } else {
+                            "md3"
+                        }
+                    }
+                    ModelSourceFile::Ready { .. } => {
+                        return Ok(ModelLods {
+                            slots: [
+                                ModelLodSlot::Source(name),
+                                ModelLodSlot::Missing,
+                                ModelLodSlot::Missing,
+                            ],
+                            native_count: 1,
+                            supports_lods: false,
+                        });
+                    }
+                    ModelSourceFile::Invalid { error, .. } => return Err(error.clone()),
+                    ModelSourceFile::Empty => {
+                        return Err(FileError::capacity("model source unavailable"));
+                    }
+                }
+            }
+        };
+        let alternate = if preferred == "md3" { "mdc" } else { "md3" };
         let mut lods = ModelLods {
             slots: [ModelLodSlot::Missing; 3],
             native_count: 0,
-            md3: true,
+            supports_lods: true,
         };
-        let md3_path = path
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("md3"));
-        if !md3_path {
-            let name = self.model_source(vfs, path)?.ok_or_else(|| FileError {
-                kind: CallError::File,
-                message: format!("missing model {path}"),
-            })?;
-            match &self.catalog.sources[name.0 as usize] {
-                ModelSourceFile::Ready { metadata, .. } if metadata.format == ModelFormat::Md3 => {}
-                ModelSourceFile::Ready { .. } => {
-                    return Ok(ModelLods {
-                        slots: [
-                            ModelLodSlot::Source(name),
-                            ModelLodSlot::Missing,
-                            ModelLodSlot::Missing,
-                        ],
-                        native_count: 1,
-                        md3: false,
-                    });
-                }
-                ModelSourceFile::Invalid { error, .. } => {
-                    return Err(error.clone());
-                }
-                ModelSourceFile::Empty => {
-                    return Err(FileError::capacity("model source unavailable"));
-                }
-            }
-        }
-        let stem = path.rsplit_once('.').map_or(path, |(stem, _)| stem);
         for slot in (0..3).rev() {
-            let sibling;
             let filename = if slot == 0 {
-                path
+                path.to_owned()
             } else {
-                sibling = format!("{stem}_{slot}.md3");
-                &sibling
+                format!("{stem}_{slot}.{preferred}")
             };
-            let Some(name) = self.model_source(vfs, filename)? else {
+            let name = match self.model_source(vfs, &filename)? {
+                Some(name) => Some(name),
+                None => {
+                    let alternate = if slot == 0 {
+                        format!("{stem}.{alternate}")
+                    } else {
+                        format!("{stem}_{slot}.{alternate}")
+                    };
+                    self.model_source(vfs, &alternate)?
+                }
+            };
+            let Some(name) = name else {
                 continue;
             };
             match &self.catalog.sources[name.0 as usize] {
-                ModelSourceFile::Ready { metadata, .. } if metadata.format == ModelFormat::Md3 => {
+                ModelSourceFile::Ready { metadata, .. } if supports_lods(metadata.format) => {
                     lods.slots[slot] = ModelLodSlot::Source(name);
                     lods.native_count += 1;
                 }
-                ModelSourceFile::Invalid { error, md3: true } if slot != 0 => {
+                ModelSourceFile::Invalid {
+                    error,
+                    supports_lods: true,
+                } if slot != 0 => {
                     lods.slots[slot] = ModelLodSlot::Invalid;
                     if lods.native_count == 0 {
                         return Err(error.clone());
@@ -3545,7 +3564,10 @@ impl ModelAssets {
                 _ => {
                     return Err(FileError {
                         kind: CallError::File,
-                        message: format!("unknown MD3 file identifier: {filename}"),
+                        message: format!(
+                            "unknown vertex model identifier: {}",
+                            self.catalog.name(name).unwrap_or(&filename)
+                        ),
                     });
                 }
             }
@@ -3714,7 +3736,7 @@ impl ModelAssets {
             drop(model);
             inputs.push((slot, source, bytes, surfaces, meshes, animation));
         }
-        if lods.md3 {
+        if lods.supports_lods {
             self.shader_catalog(vfs);
         }
         let mut renderer_sources = match &self.catalog.files[name.0 as usize] {
@@ -3840,8 +3862,8 @@ impl ModelAssets {
                                     first: self.catalog.bindings.len() as u32,
                                     count: skins.len() as u32,
                                 },
-                                wrap_skins: lods.md3,
-                                sprite_frames: !lods.md3
+                                wrap_skins: lods.supports_lods,
+                                sprite_frames: !lods.supports_lods
                                     && self.catalog.sources[inputs[0].1.0 as usize]
                                         .metadata()
                                         .is_some_and(|metadata| {
@@ -3948,10 +3970,7 @@ impl ModelAssets {
                 .iter()
                 .map(|mesh| {
                     let raw = mesh.name;
-                    if model.format == ModelFormat::Md3
-                        && raw.len() > 2
-                        && raw[raw.len() - 2] == b'_'
-                    {
+                    if supports_lods(model.format) && raw.len() > 2 && raw[raw.len() - 2] == b'_' {
                         &raw[..raw.len() - 2]
                     } else {
                         raw
@@ -3984,7 +4003,7 @@ impl ModelAssets {
     }
 
     fn admit_tags(&mut self, model: &Model<'_>) -> Result<Option<TagLayout>, String> {
-        if model.format != ModelFormat::Md3 || model.tags_per_frame == 0 {
+        if !supports_lods(model.format) || model.tags_per_frame == 0 {
             return Ok(None);
         }
         let first = self.catalog.tags.len();
@@ -5515,7 +5534,7 @@ impl ModelCatalog {
             remaining,
             info: ModelLodInfo {
                 native_count: lods.native_count,
-                md3: lods.md3,
+                supports_lods: lods.supports_lods,
                 radii,
             },
         })
@@ -5701,6 +5720,10 @@ fn append_inline_bindings(
     Ok(())
 }
 
+fn supports_lods(format: ModelFormat) -> bool {
+    matches!(format, ModelFormat::Md3 | ModelFormat::Mdc)
+}
+
 fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, String> {
     if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Spr) {
         return Ok(None);
@@ -5740,20 +5763,18 @@ fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, Str
 }
 
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
-    if !matches!(
-        model.format,
-        ModelFormat::Mdl
-            | ModelFormat::Md2
-            | ModelFormat::Md3
-            | ModelFormat::Spr
-            | ModelFormat::Sp2
-    ) {
+    if !supports_lods(model.format)
+        && !matches!(
+            model.format,
+            ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Spr | ModelFormat::Sp2
+        )
+    {
         return Err(format!(
             "model format not yet registered: {:?}",
             model.format
         ));
     }
-    if model.format != ModelFormat::Md3
+    if !supports_lods(model.format)
         && !matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2)
         && model.skins.is_empty()
     {
@@ -5796,7 +5817,7 @@ fn register(
         .checked_add(model.meshes.len())
         .filter(|&count| count <= limits.surfaces && count <= u32::MAX as usize)
         .ok_or("model surface capacity")?;
-    let alias = if model.format == ModelFormat::Md3 {
+    let alias = if supports_lods(model.format) {
         None
     } else {
         Some(alias_materials(

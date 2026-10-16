@@ -1,5 +1,7 @@
 #[path = "model_assets/lods.rs"]
 mod lods;
+#[path = "model_assets/mdc.rs"]
+mod mdc;
 #[path = "model_assets/profiles.rs"]
 mod profiles;
 #[path = "model_assets/registrations.rs"]

@@ -101,7 +101,7 @@ fn md3_lod_family_keeps_native_discovery_order_and_independent_surface_skin_list
     assert_eq!(lods.radius(0), Some(13.0));
     assert_eq!(lods.radius(1), Some(parsed.frames[1].bounds.radius()));
     assert_eq!(lods.radius(2), None);
-    assert!(lods.info().is_md3());
+    assert!(lods.info().supports_lods());
     let rows = lods.collect::<Vec<_>>();
     assert_eq!(rows.len(), 3);
     assert_eq!(
