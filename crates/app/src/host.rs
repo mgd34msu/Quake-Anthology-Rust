@@ -30,6 +30,25 @@ pub struct ClientView {
 /// The live adapter delegates every OS operation to platform. The same host
 /// function can be checked headlessly with supplied event times.
 pub trait FrameSource {
+    fn prepare_video(
+        &mut self,
+        _kind: Option<crate::renderer::Kind>,
+        _assets: &qa_render::Assets,
+        _limits: qa_render::Limits,
+    ) -> Result<crate::renderer::PreparedVideo, String> {
+        Err("video restart is unavailable".into())
+    }
+    fn publish_video(
+        &mut self,
+        _candidate: crate::renderer::PreparedVideo,
+        _scene: &mut crate::renderer::SceneComposer,
+    ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
+        Err("video restart is unavailable".into())
+    }
+    fn discard_video(&mut self, candidate: crate::renderer::PreparedVideo) -> Result<(), String> {
+        drop(candidate);
+        Ok(())
+    }
     fn asset_preparer(&mut self) -> Option<&mut (dyn crate::renderer::AssetPreparer + '_)> {
         None
     }
@@ -127,6 +146,24 @@ pub struct LiveFrame<'a> {
     pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn prepare_video(
+        &mut self,
+        kind: Option<crate::renderer::Kind>,
+        assets: &qa_render::Assets,
+        limits: qa_render::Limits,
+    ) -> Result<crate::renderer::PreparedVideo, String> {
+        crate::renderer::prepare_live_video(self, kind, assets, limits)
+    }
+    fn publish_video(
+        &mut self,
+        candidate: crate::renderer::PreparedVideo,
+        scene: &mut crate::renderer::SceneComposer,
+    ) -> Result<std::sync::Arc<qa_core::presentation::RendererConfiguration>, String> {
+        crate::renderer::publish_live_video(self, candidate, scene)
+    }
+    fn discard_video(&mut self, candidate: crate::renderer::PreparedVideo) -> Result<(), String> {
+        crate::renderer::discard_live_video(self, candidate)
+    }
     fn driver(&mut self) -> crate::modules::Driver<'_> {
         let preparer = self
             .renderer
@@ -290,6 +327,11 @@ struct ClientUserinfo {
     queued: qa_core::text::FixedText<{ qa_session::clients::USERINFO_BYTES }>,
 }
 
+#[derive(Clone, Copy)]
+struct VideoRequest {
+    kind: Option<crate::renderer::Kind>,
+}
+
 pub struct FrameHost {
     pub(crate) modules: Option<crate::modules::Modules>,
     pub(crate) renderer_contexts: crate::modules::renderer_contexts::Contexts,
@@ -308,6 +350,10 @@ pub struct FrameHost {
     pub close_without_transport: u64,
     pub developer: CvarHandle,
     pub(crate) renderer_smp: Option<CvarHandle>,
+    pub(crate) video_command: qa_core::primitives::NameId,
+    pub(crate) video_serial: u64,
+    video_request: Option<VideoRequest>,
+    video_active: bool,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     pub(crate) connection_commands: [qa_core::primitives::NameId; 3],
     /// A seat's world/presentation choice is independent of its physics rules.
@@ -515,6 +561,107 @@ impl FrameHost {
         Ok(())
     }
 
+    pub(crate) fn request_video_restart(&mut self, kind: Option<crate::renderer::Kind>) {
+        self.video_request = Some(VideoRequest { kind });
+    }
+    pub(crate) fn video_restart_pending(&self) -> bool {
+        self.video_request.is_some() || self.video_active
+    }
+    fn restart_video(&mut self, source: &mut impl FrameSource) {
+        let Some(request) = self.video_request else {
+            return;
+        };
+        let ready = self.video_restart_ready();
+        if matches!(ready, Ok(false)) {
+            return;
+        }
+        let limits = match self.runtime.scene.as_mut() {
+            Some(scene) => {
+                if !scene.asset_stage_ready() {
+                    return;
+                }
+                Some(scene.limits())
+            }
+            None => None,
+        };
+        self.video_request = None;
+        let candidate = (|| {
+            ready?;
+            let serial = self.video_serial.checked_add(1).ok_or("video generation")?;
+            let limits = limits.ok_or("video restart has no scene")?;
+            let owner = self
+                .runtime
+                .model_assets
+                .as_ref()
+                .ok_or("missing model assets")?;
+            source
+                .prepare_video(request.kind, owner.assets(), limits)
+                .map(|candidate| (candidate, serial))
+        })();
+        let (mut candidate, serial) = match candidate {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("Video restart rejected: {error}\n"));
+                return;
+            }
+        };
+        self.video_active = true;
+        let prepared = self
+            .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver())
+            .and_then(|()| {
+                let owner = self
+                    .runtime
+                    .model_assets
+                    .as_ref()
+                    .ok_or("missing model assets")?;
+                let limits = self
+                    .runtime
+                    .scene
+                    .as_ref()
+                    .ok_or("missing scene composer")?
+                    .limits();
+                candidate.prepare_assets(owner.assets(), limits)?;
+                if candidate.admitted_assets() != Some(owner.assets().counts()) {
+                    return Err("video restart resource prefix".into());
+                }
+                Ok(())
+            });
+        let publication = prepared.and(
+            self.runtime
+                .scene
+                .as_mut()
+                .ok_or_else(|| "missing scene composer".to_owned()),
+        );
+        let published = match publication {
+            Ok(scene) => source.publish_video(candidate, scene),
+            Err(error) => match source.discard_video(candidate) {
+                Ok(()) => Err(error),
+                Err(discard) => Err(format!("{error}; candidate cleanup: {discard}")),
+            },
+        };
+        match published {
+            Ok(configuration) => {
+                self.runtime.renderer_configuration = Some(configuration);
+                self.video_serial = serial;
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_bytes(b"Renderer restarted.\n");
+            }
+            Err(error) => {
+                let _ = self.runtime.server.events.console_formatted(format_args!(
+                    "Video restart rejected after guest shutdown: {error}\n"
+                ));
+            }
+        }
+        self.video_active = false;
+    }
+
     pub fn native_shaders(&self) -> &dyn qa_render::shader::reference::NativeShaders {
         &self.renderer_contexts
     }
@@ -674,6 +821,9 @@ impl FrameHost {
             return Err("connection command registration".into());
         };
         let connection_commands = [connect, disconnect, reconnect];
+        let video_command = console
+            .register_external("vid_restart")
+            .ok_or("video restart command registration")?;
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let music_volume = console
             .cvars
@@ -826,6 +976,10 @@ impl FrameHost {
             close_without_transport: 0,
             developer,
             renderer_smp,
+            video_command,
+            video_serial: 0,
+            video_request: None,
+            video_active: false,
             local_clients: [None; SeatId::COUNT],
             connection_commands,
             local_worlds: [None; SeatId::COUNT],
@@ -998,7 +1152,17 @@ impl FrameHost {
             return result;
         }
         self.flush_client_connect_requests(source);
-        self.restart_client_modules(&mut source.driver());
+        self.restart_video(source);
+        if let Err(error) = self.restart_client_modules(
+            crate::modules::RendererRestart::ChangedClient,
+            &mut source.driver(),
+        ) {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("CLIENT renderer reset: {error}\n"));
+        }
         self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
         self.flush_nq_signon_replies();

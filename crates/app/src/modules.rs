@@ -319,6 +319,12 @@ impl RendererClient {
 struct RendererStamp {
     client: Option<RendererClient>,
     reset: Option<u64>,
+    video: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RendererRestart {
+    ChangedClient,
+    Video,
 }
 #[derive(Clone, Copy)]
 enum RendererGeneration {
@@ -1450,10 +1456,20 @@ impl FrameHost {
             }
             None => None,
         };
-        Some(RendererStamp { client, reset })
+        Some(RendererStamp {
+            client,
+            reset,
+            video: self.video_serial,
+        })
     }
 
     fn module_generation_ready(&self, module: ModuleId) -> bool {
+        self.module_row(module).is_some_and(|row| {
+            (row.renderer_generation.is_none() || !self.video_restart_pending())
+                && self.module_generation_current(module)
+        })
+    }
+    fn module_generation_current(&self, module: ModuleId) -> bool {
         let Some(row) = self.module_row(module) else {
             return false;
         };
@@ -1623,16 +1639,56 @@ impl FrameHost {
             scope,
         )
     }
+    pub(crate) fn video_restart_ready(&self) -> Result<bool, String> {
+        let Some(modules) = self.modules.as_ref() else {
+            return Ok(true);
+        };
+        for row in modules.rows.iter().flatten() {
+            if row.request.program.is_active() {
+                return Ok(false);
+            }
+            if row.state == State::Running
+                && row.request.phase == Phase::Client
+                && row
+                    .request
+                    .program
+                    .imports()
+                    .and_then(CallTable::command_export)
+                    .is_some_and(|entry| {
+                        matches!(
+                            entry.role,
+                            qa_compat::abi::CommandRole::Ui | qa_compat::abi::CommandRole::Cgame
+                        )
+                    })
+                && row.request.q3_image.is_none()
+            {
+                return Err("CLIENT renderer has no reload image".into());
+            }
+        }
+        Ok(true)
+    }
+
     /// Stop all old renderer instances before publishing their shared reset fence.
-    pub(crate) fn restart_client_modules(&mut self, driver: &mut Driver<'_>) {
+    pub(crate) fn restart_client_modules(
+        &mut self,
+        reason: RendererRestart,
+        driver: &mut Driver<'_>,
+    ) -> Result<(), String> {
         let count = self
             .modules
             .as_ref()
             .map_or(0, |modules| modules.rows.len());
-        for role in [
-            qa_compat::abi::CommandRole::Cgame,
-            qa_compat::abi::CommandRole::Ui,
-        ] {
+        let roles = match reason {
+            RendererRestart::ChangedClient => [
+                qa_compat::abi::CommandRole::Cgame,
+                qa_compat::abi::CommandRole::Ui,
+            ],
+            RendererRestart::Video => [
+                qa_compat::abi::CommandRole::Ui,
+                qa_compat::abi::CommandRole::Cgame,
+            ],
+        };
+        for role in roles {
             for index in 0..count {
                 let module = ModuleId(index as u16);
                 let Some(row) = self.module_row(module) else {
@@ -1648,7 +1704,8 @@ impl FrameHost {
                         .imports()
                         .and_then(CallTable::command_export)
                         .is_none_or(|entry| entry.role != role)
-                    || self.renderer_stamp(row) == Some(stamp)
+                    || reason == RendererRestart::ChangedClient
+                        && self.renderer_stamp(row) == Some(stamp)
                     || self.renderer_context_busy(module)
                 {
                     continue;
@@ -1689,34 +1746,42 @@ impl FrameHost {
                 let handle = modules.rows[index]
                     .as_mut()
                     .filter(|row| {
-                        matches!(
-                            row.renderer_generation,
-                            Some(RendererGeneration::Stopped { .. })
-                        )
+                        reason == RendererRestart::Video
+                            || matches!(
+                                row.renderer_generation,
+                                Some(RendererGeneration::Stopped { .. })
+                            )
                     })
                     .and_then(|row| row.renderer_context.take());
                 self.renderer_contexts.release(handle);
             }
+        }
+        if reason == RendererRestart::Video {
+            self.renderer_contexts.reset_all()?;
         }
         // All old callback/finalizer vectors complete before one reset per CLIENT.
         for client_index in 0..self.runtime.server.clients.len() {
             let client = ClientId(client_index as u32);
             let lifetime = self.runtime.server.clients[client_index].entity;
             let reset = self.runtime.server.clients[client_index].connection.is_some()
-                && self.modules.as_ref().is_some_and(|modules| modules.rows.iter().flatten().any(|row| {
-                    matches!(row.renderer_generation, Some(RendererGeneration::Stopped { stamp, reset: true })
-                        if stamp.client.is_some_and(|owner| owner.connection() == (client, lifetime)))
-                }));
+                && (reason == RendererRestart::Video
+                    && self.local_clients.contains(&Some(client))
+                    || self.modules.as_ref().is_some_and(|modules| modules.rows.iter().flatten().any(|row| {
+                        matches!(row.renderer_generation, Some(RendererGeneration::Stopped { stamp, reset: true })
+                            if stamp.client.is_some_and(|owner| owner.connection() == (client, lifetime)))
+                    })));
             if reset {
-                if let Some(modules) = self.modules.as_mut() {
-                    for row in modules.rows.iter_mut().flatten() {
-                        if row.renderer_context.is_some_and(|handle| {
-                            self.renderer_contexts.owns_client(handle, client, lifetime)
-                        }) {
-                            self.renderer_contexts.release(row.renderer_context.take());
+                if reason == RendererRestart::ChangedClient {
+                    if let Some(modules) = self.modules.as_mut() {
+                        for row in modules.rows.iter_mut().flatten() {
+                            if row.renderer_context.is_some_and(|handle| {
+                                self.renderer_contexts.owns_client(handle, client, lifetime)
+                            }) {
+                                self.renderer_contexts.release(row.renderer_context.take());
+                            }
                         }
+                        self.renderer_contexts.reset_client(client, lifetime)?;
                     }
-                    let _ = self.renderer_contexts.reset_client(client, lifetime);
                 }
                 if let Some(resources) = self.runtime.client_resources[client_index].as_mut() {
                     resources.state.request_presentation_reset(lifetime);
@@ -1747,6 +1812,7 @@ impl FrameHost {
                 row.renderer_generation = Some(RendererGeneration::Retired(stamp));
             }
         }
+        Ok(())
     }
 
     fn fail_renderer_restart(&mut self, module: ModuleId, driver: &mut Driver<'_>) {
@@ -1900,8 +1966,9 @@ impl FrameHost {
                     continue;
                 }
                 if !shutdown
-                    && ((row.requires_startup
-                        && self.client_startup(row.client_connection).is_none())
+                    && (row.renderer_generation.is_some() && self.video_restart_pending()
+                        || (row.requires_startup
+                            && self.client_startup(row.client_connection).is_none())
                         || row.renderer_generation.is_some()
                             && (self.renderer_stamp(row).is_none()
                                 || self.renderer_context_retiring(module)))

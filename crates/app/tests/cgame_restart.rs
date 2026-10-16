@@ -47,6 +47,9 @@ const SOUND: u32 = 0x400c;
 const PATH: u32 = 0x4018;
 const GRAPHICS_HANDLE: u32 = 0x4020;
 const GRAPHICS_TEXT: u32 = 0x4740;
+const REMAP_TEXT: u32 = 0x4780;
+const REMAP_OFFSET: u32 = 0x47c0;
+const VIDEO_TEXT: u32 = 0x47d0;
 const INIT_TEXT: u32 = 0x4200;
 const STOP_TEXT: u32 = 0x4220;
 const ERROR_TEXT: u32 = 0x4240;
@@ -72,6 +75,9 @@ fn data() -> Vec<u8> {
         (UI_INIT_TEXT, b"renderer ui init\n\0".as_slice()),
         (UI_STOP_TEXT, b"renderer ui shutdown\n\0".as_slice()),
         (GRAPHICS_TEXT, b"graphics/after-engine\0".as_slice()),
+        (REMAP_TEXT, b"graphics/replacement\0".as_slice()),
+        (REMAP_OFFSET, b"2.5\0".as_slice()),
+        (VIDEO_TEXT, b"vid_restart cpu\n\0".as_slice()),
         (
             ERROR_TEXT,
             b"restart did not recreate pristine memory\0".as_slice(),
@@ -227,8 +233,27 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                         );
                     }
                 }
+                6 if graphics => qvm_call(
+                    &mut ops,
+                    80,
+                    &[
+                        ImportArg::Pointer(GRAPHICS_TEXT),
+                        ImportArg::Pointer(REMAP_TEXT),
+                        ImportArg::Pointer(REMAP_OFFSET),
+                    ],
+                ),
                 7 => ops.extend([(Const, INITIAL as i32), (Load4, 0)]),
                 8 if graphics => ops.extend([(Const, GRAPHICS_HANDLE as i32), (Load4, 0)]),
+                9 if graphics => {
+                    qvm_call(
+                        &mut ops,
+                        12,
+                        &[ImportArg::Integer(0), ImportArg::Pointer(VIDEO_TEXT)],
+                    );
+                    ops.push((Pop, 0));
+                    qvm_store(&mut ops, INITIAL, 0x600d);
+                    ops.push((Const, 0x600d));
+                }
                 10 => ops.extend([(Const, BSS as i32), (Load4, 0)]),
                 _ => ops.push((Const, 0)),
             }
@@ -239,6 +264,12 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
             0 => {
                 qvm_check(&mut ops, INITIAL, 7, 1);
                 qvm_check(&mut ops, BSS, 0, 1);
+                if graphics {
+                    ops.push((Const, GRAPHICS_HANDLE as i32));
+                    qvm_call(&mut ops, 39, &[ImportArg::Pointer(GRAPHICS_TEXT)]);
+                    ops.push((Store4, 0));
+                    qvm_check(&mut ops, GRAPHICS_HANDLE, 4, 1);
+                }
                 ops.extend([(Const, CLIENT as i32), (Local, 84), (Load4, 0), (Store4, 0)]);
                 ops.extend([(Const, CLIENT as i32), (Load4, 0), (Const, 44), (Ne, 0)]);
                 let healthy = ops.len() - 1;
@@ -332,6 +363,16 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                     ],
                 );
             }
+            2 if graphics => qvm_call(
+                &mut ops,
+                79,
+                &[
+                    ImportArg::Pointer(GRAPHICS_TEXT),
+                    ImportArg::Pointer(REMAP_TEXT),
+                    ImportArg::Pointer(REMAP_OFFSET),
+                ],
+            ),
+            6 if graphics => ops.extend([(Const, GRAPHICS_HANDLE as i32), (Load4, 0)]),
             4 | 5 | 6 => {
                 let (ordinal, pointer) = match command {
                     4 => (72, COMMAND_OWNED),
@@ -517,8 +558,40 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                     }
                     code.extend([0x31, 0xc0, 0xc3]);
                 }
+                6 if graphics => {
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(
+                        &mut code,
+                        80,
+                        &[
+                            ImportArg::Pointer(GRAPHICS_TEXT),
+                            ImportArg::Pointer(REMAP_TEXT),
+                            ImportArg::Pointer(REMAP_OFFSET),
+                        ],
+                        base,
+                    );
+                    code.extend([0x48, 0x83, 0xc4, 8, 0xc3]);
+                }
                 8 if graphics => {
                     rip(&mut code, &[0x8b, 0x05], GRAPHICS_HANDLE, base);
+                    code.push(0xc3);
+                }
+                9 if graphics => {
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(
+                        &mut code,
+                        12,
+                        &[ImportArg::Integer(0), ImportArg::Pointer(VIDEO_TEXT)],
+                        base,
+                    );
+                    code.extend([0x48, 0x83, 0xc4, 8]);
+                    rip(&mut code, &[0xc7, 0x05], INITIAL, base);
+                    let displacement = code.len() - 4;
+                    let adjusted = i32::from_le_bytes(code[displacement..].try_into().unwrap()) - 4;
+                    code[displacement..].copy_from_slice(&adjusted.to_le_bytes());
+                    code.extend(0x600du32.to_le_bytes());
+                    code.push(0xb8);
+                    code.extend(0x600du32.to_le_bytes());
                     code.push(0xc3);
                 }
                 7 | 10 => {
@@ -544,6 +617,12 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                 code[displacement..].copy_from_slice(&adjusted.to_le_bytes());
                 code.extend(1234u32.to_le_bytes());
                 code.extend([0x74, 2, 0x0f, 0x0b, 0x48, 0x83, 0xec, 8]);
+                if graphics {
+                    call(&mut code, 39, &[ImportArg::Pointer(GRAPHICS_TEXT)], base);
+                    rip(&mut code, &[0x89, 0x05], GRAPHICS_HANDLE, base);
+                    code.extend([0x83, 0xf8, 4, 0x74, 2, 0x0f, 0x0b]);
+                    rip(&mut code, &[0x8b, 0x0d], CLIENT, base);
+                }
                 code.extend([0x83, 0xf9, 44, 0x0f, 0x85]);
                 let healthy = code.len();
                 code.extend([0; 4]);
@@ -631,6 +710,24 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                 );
                 code.extend([0x48, 0x83, 0xc4, 8, 0xc3]);
             }
+            2 if graphics => {
+                code.extend([0x48, 0x83, 0xec, 8]);
+                call(
+                    &mut code,
+                    79,
+                    &[
+                        ImportArg::Pointer(GRAPHICS_TEXT),
+                        ImportArg::Pointer(REMAP_TEXT),
+                        ImportArg::Pointer(REMAP_OFFSET),
+                    ],
+                    base,
+                );
+                code.extend([0x48, 0x83, 0xc4, 8, 0xc3]);
+            }
+            6 if graphics => {
+                rip(&mut code, &[0x8b, 0x05], GRAPHICS_HANDLE, base);
+                code.push(0xc3);
+            }
             4 | 5 | 6 => {
                 let (ordinal, pointer) = match command {
                     4 => (72, COMMAND_OWNED),
@@ -669,6 +766,11 @@ struct Source {
     listener_receipts: [Option<(EntityId, ModuleId)>; 2],
     play_receipts: [u32; 2],
     reset_receipts: [u32; 2],
+    video_prepares: usize,
+    video_publishes: usize,
+    video_reject: bool,
+    video_kinds: Vec<Option<qa_app::renderer::Kind>>,
+    video_configuration: Arc<qa_core::presentation::RendererConfiguration>,
     views: Vec<(
         qa_render::Viewport,
         qa_render::world::WorldId,
@@ -681,6 +783,36 @@ impl Source {
     }
 }
 impl FrameSource for Source {
+    fn prepare_video(
+        &mut self,
+        kind: Option<qa_app::renderer::Kind>,
+        assets: &Assets,
+        limits: Limits,
+    ) -> Result<qa_app::renderer::PreparedVideo, String> {
+        self.video_prepares += 1;
+        self.video_kinds.push(kind);
+        if self.video_reject || matches!(kind, Some(qa_app::renderer::Kind::Gl)) {
+            return Err("headless candidate preparation rejected".into());
+        }
+        qa_app::renderer::PreparedVideo::cpu(
+            Arc::clone(&self.video_configuration),
+            assets,
+            limits,
+            Some(qa_render::cpu::RasterBands::One),
+        )
+    }
+    fn publish_video(
+        &mut self,
+        candidate: qa_app::renderer::PreparedVideo,
+        scene: &mut SceneComposer,
+    ) -> Result<Arc<qa_core::presentation::RendererConfiguration>, String> {
+        assert!(scene.asset_stage_ready());
+        let (cpu, configuration) = candidate.into_cpu()?;
+        self.backend.cpu = cpu;
+        self.video_configuration = Arc::clone(&configuration);
+        self.video_publishes += 1;
+        Ok(configuration)
+    }
     fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
         if self.backend.enabled {
             Some(&mut self.backend)
@@ -829,7 +961,7 @@ fn setup_renderers_with_graphics(
     if graphics {
         entries.push((
             "scripts/engine-graphics.shader",
-            b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\n".to_vec(),
+            b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\ngraphics/after-engine { { map $whiteimage } }\ngraphics/replacement { { map $whiteimage rgbGen const ( 0.25 0.5 0.75 ) } }\n".to_vec(),
         ));
     }
     let mut fixture = files::Fixture::new(&entries);
@@ -980,8 +1112,23 @@ fn setup_renderers_with_graphics(
         .unwrap();
     qa_app::audio::finish_registration(&mut host).unwrap();
     let rate = host.runtime.sound_bank().unwrap().rate;
+    let [width, height] = backend.cpu.dimensions();
+    let video_configuration = Arc::new(qa_core::presentation::RendererConfiguration {
+        display: qa_core::presentation::DisplayConfiguration {
+            width,
+            height,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    host.runtime.renderer_configuration = Some(Arc::clone(&video_configuration));
     let source = Source {
         time: 0,
+        video_prepares: 0,
+        video_publishes: 0,
+        video_reject: false,
+        video_kinds: Vec::new(),
+        video_configuration,
         backend,
         mixer: Mixer::load(rate, 16, SeatId::COUNT),
         reject_reset: None,
@@ -1787,10 +1934,394 @@ fn verify_ui_association_replacement(module: Vec<u8>, ui: Vec<u8>) {
     );
 }
 
+fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
+    use qa_render::shader::{
+        context::ShaderNodeId,
+        reference::{NativeShaderRef, ShaderRef},
+        registration::{ShaderOwner, ShaderResource},
+    };
+    let (_fixture, mut host, mut source, ids, anchors) =
+        setup_renderers_with_graphics(module, Some(ui), true);
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    queue_snapshot(&mut host, ids[0], 11, 1000);
+    queue_snapshot(&mut host, ids[1], 22, 1000);
+    source.step(&mut host);
+    assert_eq!(source.backend.cpu.pixels()[0], u32::from_le_bytes([255; 4]));
+    assert_eq!(
+        source.backend.cpu.pixels()[32],
+        u32::from_le_bytes([255; 4])
+    );
+    let lifetimes = ids.map(|id| host.runtime.server.clients[id.0 as usize].entity);
+    let worlds = host.local_worlds;
+    let server_geometry = host.runtime.collision.as_ref().map(|world| world.geometry);
+    let clients = ids.map(|id| {
+        let row = &host.runtime.server.clients[id.0 as usize];
+        (
+            row.input_rules,
+            row.client_rules,
+            row.player.movement_rules,
+            row.player.trace_rules,
+        )
+    });
+    let native_players = ids.map(|id| {
+        host.runtime.snapshots[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .native_client()
+    });
+    let connections = ids.map(|id| {
+        let row = host.runtime.network.get(id, Endpoint::Client).unwrap();
+        (row.phase, row.route, row.output, row.channel.endpoint())
+    });
+    let font = host
+        .runtime
+        .scene
+        .as_ref()
+        .unwrap()
+        .hud_font(RuleSetId::Quake3)
+        .unwrap();
+    let profile = font.profile;
+    let font_receipt = font.registration.unwrap();
+    let owners =
+        std::array::from_fn::<_, 2, _>(|seat| ShaderOwner::Client(ids[seat], lifetimes[seat]));
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
+    let handles = [
+        ui_query(&mut host, ModuleId(3), 8).unwrap(),
+        ui_query(&mut host, ModuleId(4), 8).unwrap(),
+    ];
+    assert_eq!(handles, [4, 4]);
+    assert_eq!(query(&mut host, ModuleId(1), 6), Ok(handles[0]));
+    assert_eq!(query(&mut host, ModuleId(2), 6), Ok(handles[1]));
+    let old_refs = std::array::from_fn::<_, 2, _>(|seat| {
+        ShaderRef::Native(NativeShaderRef {
+            context: contexts[seat],
+            node: ShaderNodeId(handles[seat] - 1),
+        })
+    });
+    let original = old_refs[0].source(host.native_shaders()).unwrap();
+    host.call_module_export_with_driver(
+        ModuleId(3),
+        Export::words(CallbackId(6), &[]),
+        ThinkTime::Milliseconds(9000),
+        &mut source.driver(),
+    )
+    .unwrap();
+    let resolved = old_refs[0]
+        .resolve(
+            host.runtime.model_assets.as_ref().unwrap().assets(),
+            host.native_shaders(),
+        )
+        .unwrap();
+    assert_ne!(resolved.binding(), original);
+    assert_eq!(resolved.time_offset(), 2.5);
+    assert_eq!(
+        old_refs[1]
+            .resolve(
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                host.native_shaders()
+            )
+            .unwrap()
+            .binding(),
+        original
+    );
+    source.step(&mut host);
+    let remapped_pixel = source.backend.cpu.pixels()[0];
+    assert_ne!(remapped_pixel, u32::from_le_bytes([255; 4]));
+    assert_ne!(remapped_pixel, 0);
+    assert_eq!(
+        source.backend.cpu.pixels()[32],
+        u32::from_le_bytes([255; 4])
+    );
+    paint(&host, &mut source);
+
+    let context = Context {
+        source: RuleSetId::Quake3,
+        seat: SeatId::FIRST,
+        ..Context::default()
+    };
+    let old_markers = renderer_markers(&host);
+    let before = old_markers.len();
+    let resets = source.reset_receipts;
+    let draws = query(&mut host, ModuleId(1), 10).unwrap();
+    let prefix = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    source.video_reject = true;
+    host.console.append("vid_restart cpu\n", context).unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    host.runtime.vfs.take_lookup_count();
+    source.step(&mut host);
+    assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_eq!(renderer_markers(&host), old_markers);
+    assert_eq!(source.reset_receipts, resets);
+    assert_eq!(
+        host.native_shaders().context(owners[0], profile),
+        Some(contexts[0])
+    );
+    assert_eq!(
+        host.native_shaders().context(owners[1], profile),
+        Some(contexts[1])
+    );
+    assert_eq!(
+        old_refs[0]
+            .resolve(
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                host.native_shaders()
+            )
+            .unwrap(),
+        resolved
+    );
+    assert!(query(&mut host, ModuleId(1), 10).unwrap() > draws);
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+    }
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        prefix
+    );
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(source.backend.cpu.pixels()[0], remapped_pixel);
+
+    source.video_reject = false;
+    // The reliable native command remains owned by this same channel while
+    // the console records a coalesced renderer request.
+    assert_eq!(query(&mut host, ModuleId(1), 5), Ok(0));
+    let reliable = host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel
+        .command_state();
+    let channel = host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel
+        .state();
+    host.console
+        .append("vid_restart gl\nvid_restart\nvid_restart cpu\n", context)
+        .unwrap();
+    host.execute_commands_with_driver(&mut source.driver());
+    assert_eq!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .command_state(),
+        reliable
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .state(),
+        channel
+    );
+    let prepares = source.video_prepares;
+    host.runtime.vfs.take_lookup_count();
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!(source.video_prepares, prepares + 1);
+    assert_eq!(source.video_publishes, 1);
+    assert!(matches!(
+        source.video_kinds.last(),
+        Some(Some(qa_app::renderer::Kind::Cpu))
+    ));
+    assert_eq!(&renderer_markers(&host)[before..], b"uuccUUCC");
+    assert!(Arc::ptr_eq(
+        host.runtime.renderer_configuration.as_ref().unwrap(),
+        &source.video_configuration
+    ));
+    assert_eq!(query(&mut host, ModuleId(1), 9), Ok(11));
+    assert_eq!(query(&mut host, ModuleId(2), 9), Ok(22));
+    assert_eq!(query(&mut host, ModuleId(1), 8), Ok(2));
+    assert_eq!(query(&mut host, ModuleId(2), 8), Ok(2));
+    assert_eq!(host.local_worlds, worlds);
+    assert_eq!(
+        host.runtime.collision.as_ref().map(|world| world.geometry),
+        server_geometry
+    );
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        prefix
+    );
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(prefix));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    for seat in 0..2 {
+        assert_eq!(host.local_clients[seat], Some(ids[seat]));
+        let row = &host.runtime.server.clients[ids[seat].0 as usize];
+        assert_eq!(row.entity, lifetimes[seat]);
+        assert_eq!(
+            (
+                row.input_rules,
+                row.client_rules,
+                row.player.movement_rules,
+                row.player.trace_rules
+            ),
+            clients[seat]
+        );
+        assert_eq!(
+            host.runtime.snapshots[ids[seat].0 as usize]
+                .as_ref()
+                .unwrap()
+                .native_client(),
+            native_players[seat]
+        );
+        let row = host
+            .runtime
+            .network
+            .get(ids[seat], Endpoint::Client)
+            .unwrap();
+        assert_eq!(
+            (row.phase, row.route, row.output, row.channel.endpoint()),
+            connections[seat]
+        );
+        assert!(
+            host.runtime
+                .server
+                .entities
+                .resolve(anchors[seat])
+                .is_some()
+        );
+        let renewed = host
+            .native_shaders()
+            .context(owners[seat], profile)
+            .unwrap();
+        assert_ne!(renewed, contexts[seat]);
+        assert_eq!(old_refs[seat].source(host.native_shaders()), None);
+        let handle = ui_query(&mut host, ModuleId(seat as u16 + 3), 8).unwrap();
+        assert_eq!(handle, 4);
+        assert_eq!(query(&mut host, ModuleId(seat as u16 + 1), 6), Ok(handle));
+        let shader = ShaderRef::Native(NativeShaderRef {
+            context: renewed,
+            node: ShaderNodeId(handle - 1),
+        });
+        assert_eq!(shader.source(host.native_shaders()), Some(original));
+        let selected = shader
+            .resolve(
+                host.runtime.model_assets.as_ref().unwrap().assets(),
+                host.native_shaders(),
+            )
+            .unwrap();
+        assert_eq!((selected.binding(), selected.time_offset()), (original, 0.));
+        let nodes = host
+            .native_shaders()
+            .resource_nodes(renewed, ShaderResource::Graphic(font_receipt.key))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            host.native_shaders()
+                .source(NativeShaderRef {
+                    context: renewed,
+                    node: nodes[0]
+                })
+                .unwrap()
+                .shader,
+            font_receipt.shader
+        );
+    }
+    let queued = host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued;
+    assert_eq!(query(&mut host, ModuleId(1), 5), Ok(0));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .queued,
+        queued + 1
+    );
+    queue_snapshot(&mut host, ids[0], 11, 2000);
+    queue_snapshot(&mut host, ids[1], 22, 2000);
+    source.step(&mut host);
+    assert!(source.backend.cpu.world_stats().spans > 0);
+    assert_eq!(source.backend.cpu.pixels()[0], u32::from_le_bytes([255; 4]));
+    assert_eq!(
+        source.backend.cpu.pixels()[32],
+        u32::from_le_bytes([255; 4])
+    );
+    for seat in 0..2 {
+        assert_eq!(
+            source.listener_receipts[seat],
+            Some((lifetimes[seat], ModuleId(seat as u16 + 1)))
+        );
+        assert!(source.play_receipts[seat] > 0);
+    }
+    paint(&host, &mut source);
+
+    // EXEC_NOW records the request while this UI invocation is still active.
+    // Its continuation must finish; only later ordinary entries are fenced.
+    let before = renderer_markers(&host).len();
+    let prepares = source.video_prepares;
+    let publishes = source.video_publishes;
+    assert_eq!(
+        host.call_module_export_with_driver(
+            ModuleId(3),
+            Export::words(CallbackId(9), &[]),
+            ThinkTime::Milliseconds(9000),
+            &mut source.driver(),
+        ),
+        Ok(())
+    );
+    assert!(matches!(
+        host.module_counts(ModuleId(3)).unwrap().last_result,
+        Some(ModuleResult::Qvm(0x600d) | ModuleResult::Native(0x600d))
+    ));
+    assert_eq!(source.video_prepares, prepares);
+    assert_eq!(renderer_markers(&host).len(), before);
+    assert!(ui_query(&mut host, ModuleId(3), 8).is_err());
+    assert!(query(&mut host, ModuleId(1), 9).is_err());
+    source.step(&mut host);
+    until_running(&mut host, &mut source);
+    assert_eq!(&renderer_markers(&host)[before..], b"uuccUUCC");
+    assert_eq!(source.video_prepares, prepares + 1);
+    assert_eq!(source.video_publishes, publishes + 1);
+    assert_eq!(ui_query(&mut host, ModuleId(3), 8), Ok(4));
+    assert_eq!(query(&mut host, ModuleId(1), 9), Ok(11));
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    verify_video_restart(
+        qvm_role_with_graphics(false, false, true),
+        qvm_role_with_graphics(true, false, true),
+    );
     verify_standalone_ui(qvm_role(true, false));
     verify_renderer_lifecycle(qvm_file(), qvm_role_with_graphics(true, false, true));
     verify_ui_shutdown_failure_isolation(qvm_file(), qvm_role(true, true));
@@ -1802,6 +2333,10 @@ fn main() {
     println!("actual load_q3 QVM same-lifetime restart checks passed");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        verify_video_restart(
+            native_role_with_graphics(false, false, true),
+            native_role_with_graphics(true, false, true),
+        );
         verify_standalone_ui(native_role(true, false));
         verify_renderer_lifecycle(native_file(), native_role_with_graphics(true, false, true));
         verify_ui_shutdown_failure_isolation(native_file(), native_role(true, true));

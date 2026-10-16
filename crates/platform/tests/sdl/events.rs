@@ -285,3 +285,104 @@ fn failed_sync_restores_previous_mode_and_does_not_claim_capture() {
     assert!(!input.relative);
     assert!(queue.is_empty());
 }
+
+#[test]
+fn window_handoff_waits_for_queue_room_then_releases_before_new_input() {
+    use qa_core::{
+        primitives::CommandProducer,
+        sys_events::{KeySource, SeatId},
+    };
+
+    struct Sink;
+    impl qa_input::Target for Sink {
+        fn character(&mut self, _: SeatId, _: char) {}
+        fn command(
+            &mut self,
+            _: SeatId,
+            _: EventTime,
+            _: Option<KeySource>,
+            _: Option<CommandProducer>,
+            _: &str,
+        ) -> bool {
+            true
+        }
+        fn cancel_commands(&mut self, _: KeySource, _: Option<CommandProducer>) {}
+    }
+
+    let mut held = qa_input::Input::load();
+    let mut sink = Sink;
+    let mut old = SdlInput::new(41, true);
+    let press = key(41, 17, false);
+    held.dispatch(
+        SysEvent {
+            time: EventTime(1),
+            kind: unsafe { old.decode(&press) }.unwrap(),
+        },
+        &mut sink,
+    );
+    assert!(held.is_down(SeatId::FIRST, 26));
+
+    let mut input = SdlInput::new(42, true);
+    input.capture_requested = true;
+    input.handoff_pending = true;
+    let mut queue = SysEventQueue::load(4, 8).unwrap();
+    for time in 2..5 {
+        queue
+            .push(SysEvent {
+                time: EventTime(time),
+                kind: EventKind::Focus(true),
+            })
+            .unwrap();
+    }
+    assert!(!queue.has_ordinary_room());
+    assert!(!input.publish_handoff(&mut queue, EventTime(5)));
+    assert!(input.handoff_pending);
+    assert!(input.focused);
+    assert!(held.is_down(SeatId::FIRST, 26));
+    assert_eq!(queue.len(), 3);
+    while let Some(event) = queue.pop() {
+        held.dispatch(event, &mut sink);
+    }
+
+    let old_release = SdlEvent {
+        key: SdlKey {
+            common: SdlCommon {
+                kind: 0x301,
+                ..SdlCommon::default()
+            },
+            window: 41,
+            which: 17,
+            scancode: 26,
+            down: false,
+            ..SdlKey::default()
+        },
+    };
+    assert_eq!(unsafe { input.decode(&old_release) }, None);
+    assert!(input.publish_handoff(&mut queue, EventTime(6)));
+    assert!(!input.handoff_pending);
+    assert!(input.focused);
+    assert!(input.publish_handoff(&mut queue, EventTime(7)));
+    assert_eq!(queue.len(), 1);
+    input.reconcile_capture(&mut queue, EventTime(8), true, &mut |_| true);
+    let next_press = key(42, 17, false);
+    queue
+        .push(SysEvent {
+            time: EventTime(9),
+            kind: unsafe { input.decode(&next_press) }.unwrap(),
+        })
+        .unwrap();
+
+    let release = queue.pop().unwrap();
+    assert_eq!(release.time, EventTime(6));
+    assert_eq!(release.kind, EventKind::Focus(false));
+    held.dispatch(release, &mut sink);
+    assert!(!held.is_down(SeatId::FIRST, 26));
+    let capture = queue.pop().unwrap();
+    assert_eq!(capture.kind, EventKind::MouseCapture(true));
+    held.dispatch(capture, &mut sink);
+    assert!(!held.is_down(SeatId::FIRST, 26));
+    held.dispatch(queue.pop().unwrap(), &mut sink);
+    assert!(held.is_down(SeatId::FIRST, 26));
+    assert!(queue.is_empty());
+    assert_eq!(queue.rejected(), 0);
+}

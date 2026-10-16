@@ -3,6 +3,7 @@ pub mod console;
 pub mod hud;
 pub(crate) mod native;
 pub mod text;
+mod video;
 use crate::model_assets::ModelProfile;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
@@ -21,6 +22,8 @@ use qa_render::{
     material::world_load::LoadedWorld,
     world::WorldView,
 };
+pub use video::PreparedVideo;
+pub(crate) use video::{discard_live_video, prepare_live_video, publish_live_video};
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 use qa_platform::allocations::Counts;
@@ -144,7 +147,7 @@ pub fn report_cpu_config(config: RasterConfig, workers: usize) {
     ));
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
     Cpu,
@@ -243,6 +246,76 @@ enum Backend {
     },
     Gl(GlBackend),
 }
+
+impl Backend {
+    fn load(
+        context: Context,
+        width: u32,
+        height: u32,
+        assets: &Assets,
+        limits: Limits,
+        bands: Option<RasterBands>,
+    ) -> Result<Self, String> {
+        let backend = match context {
+            Context::Cpu(_) => {
+                let physical_cores = qa_platform::physical_core_count();
+                let backend = CpuBackend::load_with_limits(
+                    width,
+                    height,
+                    assets,
+                    CpuLimits {
+                        scene: limits,
+                        bands: bands.unwrap_or_else(|| RasterBands::at_most(physical_cores)),
+                        auto_bands: bands.is_none(),
+                        ..CpuLimits::default()
+                    },
+                )?;
+                let dispatch = CpuDispatch::load(backend.raster_config().bands)
+                    .map_err(|error| format!("CPU workers: {error}"))?;
+                report_cpu_config(backend.raster_config(), dispatch.worker_count());
+                qa_console::logger::console(format_args!(
+                    "{{\"event\":\"cpu_band_selection\",\"automatic\":{},\"physical_cores\":{},\"bands\":{}}}\n",
+                    bands.is_none(),
+                    physical_cores,
+                    backend.raster_config().bands.count()
+                ));
+                Backend::Cpu { backend, dispatch }
+            }
+            Context::Gl(context) => Backend::Gl(unsafe {
+                GlBackend::load(context, assets, width, height, limits.vertices)?
+            }),
+        };
+        if let Backend::Gl(gl) = &backend {
+            let (renderer, version) = gl.renderer_info();
+            qa_console::logger::console(format_args!(
+                "{{\"event\":\"gl_context\",\"renderer\":{},\"version\":{}}}\n",
+                serde_json::to_string(renderer).map_err(|e| format!("GL renderer report: {e}"))?,
+                serde_json::to_string(version).map_err(|e| format!("GL version report: {e}"))?
+            ));
+        }
+        Ok(backend)
+    }
+    fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String> {
+        match self {
+            Self::Cpu { backend, .. } => {
+                backend.prepare_assets(assets, scene).map_err(str::to_owned)
+            }
+            Self::Gl(backend) => backend.prepare_assets(assets, scene),
+        }
+    }
+    fn admitted_assets(&self) -> Option<qa_render::assets::AssetCounts> {
+        match self {
+            Self::Cpu { backend, .. } => backend.admitted_assets(),
+            Self::Gl(backend) => backend.admitted_assets(),
+        }
+    }
+    fn context_lost(self) {
+        if let Self::Gl(backend) = self {
+            backend.context_lost();
+        }
+    }
+}
+
 struct WorldScene {
     views: [WorldView; SeatId::COUNT],
 }
@@ -382,6 +455,9 @@ fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, S
 }
 
 impl SceneComposer {
+    pub fn limits(&self) -> Limits {
+        self.frontend.limits()
+    }
     pub(crate) fn has_world(&self, world: qa_render::world::WorldId) -> bool {
         self.scenes
             .get(world.0 as usize)
@@ -682,6 +758,7 @@ pub struct Renderer {
     effect_time: qa_core::sys_events::EventTime,
     effect_gravity: f32,
     backend: Backend,
+    bands: Option<RasterBands>,
     kind: Kind,
     pub sample: Sample,
     width: u32,
@@ -703,20 +780,12 @@ impl AssetPreparer for Renderer {
         Some([self.width, self.height])
     }
     fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String> {
-        match &mut self.backend {
-            Backend::Cpu { backend, .. } => {
-                backend.prepare_assets(assets, scene).map_err(str::to_owned)
-            }
-            Backend::Gl(backend) => backend.prepare_assets(assets, scene),
-        }
+        self.backend.prepare_assets(assets, scene)
     }
 }
 impl Renderer {
     pub fn admitted_assets(&self) -> Option<qa_render::assets::AssetCounts> {
-        match &self.backend {
-            Backend::Cpu { backend, .. } => backend.admitted_assets(),
-            Backend::Gl(backend) => backend.admitted_assets(),
-        }
+        self.backend.admitted_assets()
     }
 
     /// Backend resources borrow the one owner during registration and drawing.
@@ -755,43 +824,7 @@ impl Renderer {
         scene.kind = kind;
         scene.console = Some(console);
         scene.hud = hud;
-        let backend = match context {
-            Context::Cpu(_) => {
-                let physical_cores = qa_platform::physical_core_count();
-                let backend = CpuBackend::load_with_limits(
-                    width,
-                    height,
-                    assets,
-                    CpuLimits {
-                        scene: limits,
-                        bands: bands.unwrap_or_else(|| RasterBands::at_most(physical_cores)),
-                        auto_bands: bands.is_none(),
-                        ..CpuLimits::default()
-                    },
-                )?;
-                let dispatch = CpuDispatch::load(backend.raster_config().bands)
-                    .map_err(|error| format!("CPU workers: {error}"))?;
-                report_cpu_config(backend.raster_config(), dispatch.worker_count());
-                qa_console::logger::console(format_args!(
-                    "{{\"event\":\"cpu_band_selection\",\"automatic\":{},\"physical_cores\":{},\"bands\":{}}}\n",
-                    bands.is_none(),
-                    physical_cores,
-                    backend.raster_config().bands.count()
-                ));
-                Backend::Cpu { backend, dispatch }
-            }
-            Context::Gl(context) => Backend::Gl(unsafe {
-                GlBackend::load(context, assets, width, height, limits.vertices)?
-            }),
-        };
-        if let Backend::Gl(gl) = &backend {
-            let (renderer, version) = gl.renderer_info();
-            qa_console::logger::console(format_args!(
-                "{{\"event\":\"gl_context\",\"renderer\":{},\"version\":{}}}\n",
-                serde_json::to_string(renderer).map_err(|e| format!("GL renderer report: {e}"))?,
-                serde_json::to_string(version).map_err(|e| format!("GL version report: {e}"))?
-            ));
-        }
+        let backend = Backend::load(context, width, height, assets, limits, bands)?;
         Ok((
             Self {
                 effects,
@@ -803,6 +836,7 @@ impl Renderer {
                 effect_time: qa_core::sys_events::EventTime::default(),
                 effect_gravity: 800.0,
                 backend,
+                bands,
                 kind,
                 sample: Sample::default(),
                 width,

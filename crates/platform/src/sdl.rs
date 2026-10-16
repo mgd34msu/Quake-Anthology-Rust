@@ -352,6 +352,7 @@ fn synchronized_capture(
 struct SdlInput {
     window: u32,
     focused: bool,
+    handoff_pending: bool,
     capture_requested: bool,
     relative: bool,
     mice: [Option<MouseRemainder>; MAX_INPUT_DEVICES],
@@ -364,6 +365,7 @@ impl SdlInput {
         Self {
             window,
             focused,
+            handoff_pending: false,
             capture_requested: false,
             relative: false,
             mice: [None; MAX_INPUT_DEVICES],
@@ -371,6 +373,23 @@ impl SdlInput {
             dropped_mouse: 0,
             capture_errors: 0,
         }
+    }
+    fn publish_handoff(&mut self, queue: &mut SysEventQueue, time: EventTime) -> bool {
+        if !self.handoff_pending {
+            return true;
+        }
+        if !queue.has_ordinary_room()
+            || queue
+                .push(SysEvent {
+                    time,
+                    kind: EventKind::Focus(false),
+                })
+                .is_err()
+        {
+            return false;
+        }
+        self.handoff_pending = false;
+        true
     }
     fn reconcile_capture(
         &mut self,
@@ -785,7 +804,14 @@ impl Window {
     pub fn request_mouse_capture(&mut self, requested: bool) {
         self.input.capture_requested = requested;
     }
+    /// Release the previous window's held input at the next ordinary intake.
+    pub fn handoff_input(&mut self) {
+        self.input.handoff_pending = true;
+    }
     pub(crate) fn poll(&mut self, queue: &mut SysEventQueue, clock: &Clock) {
+        if self.input.handoff_pending && !self.input.publish_handoff(queue, clock.now()) {
+            return;
+        }
         let window = self.window.as_ptr();
         // SAFETY: the owned SDL window remains on its creating thread. Failed
         // synchronization rolls back capture instead of claiming completion.
@@ -841,20 +867,30 @@ impl Window {
             }
         }
     }
+    /// Restores this window's GL context on its creating main thread.
+    /// Software windows need no context switch.
+    pub fn ensure_gl_current(&self) -> bool {
+        let Presentation::Gl { context } = &self.presentation else {
+            return true;
+        };
+        // SAFETY: Window retains this context and its creating thread owns SDL.
+        unsafe {
+            SDL_GL_GetCurrentContext() == context.as_ptr()
+                || SDL_GL_MakeCurrent(self.window.as_ptr(), context.as_ptr())
+        }
+    }
     /// Resolves a GL function for this window's current context during loading.
     /// Returns null on a software window, failed context switch or missing name.
     /// The caller must use the function's GL ABI and keep it within this context's
     /// lifetime. Calling the resulting function pointer is unsafe.
     pub fn gl_proc(&self, name: &CStr) -> *const c_void {
-        let Presentation::Gl { context } = &self.presentation else {
+        let Presentation::Gl { .. } = &self.presentation else {
             return std::ptr::null();
         };
+        if !self.ensure_gl_current() {
+            return std::ptr::null();
+        }
         unsafe {
-            if SDL_GL_GetCurrentContext() != context.as_ptr()
-                && !SDL_GL_MakeCurrent(self.window.as_ptr(), context.as_ptr())
-            {
-                return std::ptr::null();
-            }
             match SDL_GL_GetProcAddress(name.as_ptr()) {
                 Some(function) => function as *const () as *const c_void,
                 None => std::ptr::null(),
@@ -863,14 +899,10 @@ impl Window {
     }
     /// Swaps this window's GL buffers on its creating main thread.
     pub fn present_gl(&mut self) -> bool {
-        let Presentation::Gl { context } = &self.presentation else {
+        let Presentation::Gl { .. } = &self.presentation else {
             return false;
         };
-        unsafe {
-            (SDL_GL_GetCurrentContext() == context.as_ptr()
-                || SDL_GL_MakeCurrent(self.window.as_ptr(), context.as_ptr()))
-                && SDL_GL_SwapWindow(self.window.as_ptr())
-        }
+        self.ensure_gl_current() && unsafe { SDL_GL_SwapWindow(self.window.as_ptr()) }
     }
     /// Copies an exact-size ABGR8888 framebuffer to the fixed software texture.
     /// On little-endian hosts each u32 stores R, G, B, A bytes in that order.

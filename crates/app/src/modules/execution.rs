@@ -575,7 +575,7 @@ fn valid(host: &FrameHost, start: GuestStart, live_self: bool) -> bool {
     };
     if !row.state.can_invoke()
         || matches!(start.scope, EntryScope::Ordinary)
-            && !host.module_generation_ready(start.module)
+            && !host.module_generation_current(start.module)
         || row.request.anchor != start.anchor
         || row.client_connection != start.connection
     {
@@ -1308,10 +1308,48 @@ fn console_step(
             FrameStep::Continue
         }
         CommandStep::External(command) => {
-            frame.connection =
-                connection::begin(host, command, scratch, frame.run.context(), driver);
-            if frame.connection.is_none() {
+            if command == host.video_command {
+                let context = frame.run.context();
+                let local = context.side == qa_console::catalog::Scope::Client
+                    && !context.dedicated
+                    && context.producer.is_none_or(|producer| {
+                        host.module_row(producer.module)
+                            .is_some_and(|row| row.request.phase == super::Phase::Client)
+                    });
+                if !local {
+                    let _ = host
+                        .runtime
+                        .server
+                        .events
+                        .console_bytes(b"vid_restart is a local client command.\n");
+                    frame.run.reply(CommandReply::Handled);
+                    return FrameStep::Continue;
+                }
+                let arguments = scratch.arguments();
+                let kind = match arguments.len() {
+                    1 => Some(None),
+                    2 => std::str::from_utf8(arguments.get_bytes(1))
+                        .ok()
+                        .and_then(|kind| crate::renderer::Kind::parse(kind).ok())
+                        .map(Some),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    host.request_video_restart(kind);
+                } else {
+                    let _ = host
+                        .runtime
+                        .server
+                        .events
+                        .console_bytes(b"Usage: vid_restart [cpu|gl]\n");
+                }
                 frame.run.reply(CommandReply::Handled);
+            } else {
+                frame.connection =
+                    connection::begin(host, command, scratch, frame.run.context(), driver);
+                if frame.connection.is_none() {
+                    frame.run.reply(CommandReply::Handled);
+                }
             }
             FrameStep::Continue
         }

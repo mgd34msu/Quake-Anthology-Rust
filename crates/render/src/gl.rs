@@ -494,6 +494,7 @@ impl GlContext {
 /// Owns GPU resources on the thread with the current SDL GL context.
 pub struct GlBackend {
     gl: Gl,
+    gpu_teardown: bool,
     configuration: std::sync::Arc<RendererConfiguration>,
     width: u32,
     height: u32,
@@ -523,7 +524,8 @@ pub struct GlBackend {
 impl GlBackend {
     /// # Safety
     /// `context` must contain this current context's GL entry points. Keep that
-    /// context current on this thread until this backend has been dropped.
+    /// context current on this thread until ordinary backend destruction. If it
+    /// cannot be restored, consume the backend with context_lost instead.
     /// Call prepare_assets after appending assets, before submitting their IDs.
     pub unsafe fn load(
         context: GlContext,
@@ -582,6 +584,7 @@ impl GlBackend {
         };
         let mut backend = Self {
             gl,
+            gpu_teardown: true,
             configuration,
             width,
             height,
@@ -654,6 +657,12 @@ impl GlBackend {
             }
         }
         Ok(backend)
+    }
+
+    /// Releases Rust storage after losing access to this backend's context.
+    /// The owning window must destroy that context to reclaim its GPU objects.
+    pub fn context_lost(mut self) {
+        self.gpu_teardown = false;
     }
 
     /// Renderer identity and GL version, captured once at context load.
@@ -2173,6 +2182,9 @@ impl GlBackend {
 
 impl Drop for GlBackend {
     fn drop(&mut self) {
+        if !self.gpu_teardown {
+            return;
+        }
         self.material_targets.delete(&self.gl);
         StaticObjects {
             static_vao: self.static_vao,

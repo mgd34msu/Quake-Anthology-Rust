@@ -565,6 +565,7 @@ fn console_fallback_propagates_only_the_internal_owner_scope() {
             crate::modules::RendererGeneration::Current(crate::modules::RendererStamp {
                 client: None,
                 reset: Some(17),
+                video: host.video_serial,
             }),
             2,
         ),

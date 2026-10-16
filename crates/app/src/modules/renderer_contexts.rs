@@ -237,11 +237,17 @@ impl Contexts {
             .is_some_and(|context| context.owner == Owner::Client(client, lifetime))
     }
     pub fn reset_client(&mut self, client: ClientId, lifetime: EntityId) -> Result<(), String> {
+        self.reset_selected(|owner| owner == Owner::Client(client, lifetime))
+    }
+    pub fn reset_all(&mut self) -> Result<(), String> {
+        self.reset_selected(|_| true)
+    }
+    fn reset_selected(&mut self, selected: impl Fn(Owner) -> bool) -> Result<(), String> {
         if self
             .slots
             .iter()
             .flatten()
-            .any(|context| context.owner == Owner::Client(client, lifetime) && context.users != 0)
+            .any(|context| selected(context.owner) && context.users != 0)
         {
             return Err("renderer context reset still active".into());
         }
@@ -249,7 +255,7 @@ impl Contexts {
             .slots
             .iter()
             .flatten()
-            .filter(|context| context.owner == Owner::Client(client, lifetime))
+            .filter(|context| selected(context.owner))
             .count();
         self.generation
             .checked_add(u64::try_from(count).map_err(|_| "renderer context generation")?)
@@ -258,7 +264,7 @@ impl Contexts {
             .slots
             .iter_mut()
             .flatten()
-            .filter(|context| context.owner == Owner::Client(client, lifetime))
+            .filter(|context| selected(context.owner))
         {
             context.shaders.reset();
             context.uses.clear();
