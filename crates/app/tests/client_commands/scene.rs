@@ -21,6 +21,9 @@ fn admit_assets(host: &mut FrameHost) -> qa_render::cpu::CpuBackend {
 }
 
 const SHADER_HANDLE: u32 = 864;
+const CURVE_NAME: u32 = 976;
+const CURVE_FIRST: u32 = 992;
+const CURVE_SECOND: u32 = 1000;
 const CALLS: &[(u8, &[u32])] = &[
     (39, &[16]),
     (45, &[32]),
@@ -112,6 +115,13 @@ fn data() -> [u8; 1024] {
     }
     data[780..784].copy_from_slice(&1i32.to_le_bytes());
     data[816..820].copy_from_slice(&[201, 150, 90, 255]);
+    for (offset, text) in [
+        (CURVE_NAME, b"r_lodCurveError\0".as_slice()),
+        (CURVE_FIRST, b"12.5\0"),
+        (CURVE_SECOND, b"-2\0"),
+    ] {
+        data[offset as usize..offset as usize + text.len()].copy_from_slice(text);
+    }
     data
 }
 
@@ -129,6 +139,7 @@ fn ordinal(ui: bool, value: u8) -> u8 {
         return value;
     }
     match value {
+        5 => 3,
         39 => 20,
         45 => 26,
         87 => 23,
@@ -149,14 +160,31 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..29 {
+    for command in 0..30 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 26 {
+        if command == 29 {
+            for (number, words) in [
+                (5, &[CURVE_NAME, CURVE_FIRST][..]),
+                (44, &[256][..]),
+                (5, &[CURVE_NAME, CURVE_SECOND][..]),
+                (44, &[256][..]),
+            ] {
+                for (index, &word) in words.iter().enumerate() {
+                    operations.extend([(Const, word as i32), (Arg, 8 + index as i32 * 4)]);
+                }
+                operations.extend([
+                    (Const, -i32::from(ordinal(ui, number)) - 1),
+                    (Call, 0),
+                    (Pop, 0),
+                ]);
+            }
+            operations.push((Const, 0));
+        } else if command == 26 {
             // The reached malformed-string witness names the final masked byte.
             operations.extend([(Const, 65535), (Const, 255), (Store1, 0)]);
             for index in 0..3 {
@@ -291,7 +319,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..29)
+        &(0..30)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -306,12 +334,31 @@ fn native_scene_data(ui: bool, initial: &[u8; 1024]) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2400;
     let mut code = vec![];
-    for command in 0..29usize {
+    for command in 0..30usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if command == 26 || command == 27 {
+        if command == 29 {
+            for (number, words) in [
+                (5, &[CURVE_NAME, CURVE_FIRST][..]),
+                (44, &[256][..]),
+                (5, &[CURVE_NAME, CURVE_SECOND][..]),
+                (44, &[256][..]),
+            ] {
+                for (index, &word) in words.iter().enumerate() {
+                    code.extend(if index == 0 {
+                        [0x48, 0xba]
+                    } else {
+                        [0x49, 0xb8]
+                    });
+                    code.extend((source + u64::from(word)).to_le_bytes());
+                }
+                code.extend([0xb9, ordinal(ui, number), 0, 0, 0, 0x48, 0xb8]);
+                code.extend(callback.to_le_bytes());
+                code.extend([0xff, 0xd0]);
+            }
+        } else if command == 26 || command == 27 {
             let registers = if command == 26 { 3 } else { 1 };
             for index in 0..registers {
                 code.extend(match index {
@@ -492,38 +539,46 @@ pub(super) fn submissions(native: bool, ui: bool) {
         }
         qvm_scene(ui)
     };
-    let (mut host, _) = if ui {
-        let (mut runtime, ids) = runtime(2);
-        let requests = ids
-            .iter()
-            .enumerate()
-            .map(|(seat, &client)| {
-                let mut request =
-                    request(&mut runtime, ModuleId(seat as u16 + 1), client, program());
+    let (mut runtime, ids) = runtime(2);
+    let requests = ids
+        .iter()
+        .enumerate()
+        .map(|(seat, &client)| {
+            let mut request = request(&mut runtime, ModuleId(seat as u16 + 1), client, program());
+            request.entries = (0..30).collect();
+            if ui {
                 request.frame.client = None;
                 request.context.console.seat = SeatId::new(seat as u8).unwrap();
-                request
-            })
-            .collect::<Vec<_>>();
+            }
+            request
+        })
+        .collect::<Vec<_>>();
+    if ui {
         assert!(
             requests
                 .iter()
                 .all(|request| request.frame.client.is_none())
         );
-        let mut host = FrameHost::load_modules(
-            Console::new(Context::default()).unwrap(),
-            runtime,
-            TickRate::FrameDriven,
-            requests,
-        )
-        .unwrap();
-        for (seat, &client) in ids.iter().enumerate() {
-            host.local_clients[seat] = Some(client);
-        }
-        (host, ids)
-    } else {
-        host(program, 2)
-    };
+    }
+    let mut console = Console::new(Context::default()).unwrap();
+    if !ui {
+        let history = console
+            .cvars
+            .bind("cl_commandHistory", Context::default())
+            .unwrap();
+        console
+            .cvars
+            .write(
+                history,
+                &qa_core::command_history::DEFAULT_CAPACITY.to_string(),
+            )
+            .unwrap();
+    }
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, requests).unwrap();
+    for (seat, &client) in ids.iter().enumerate() {
+        host.local_clients[seat] = Some(client);
+    }
     host.runtime.vfs = std::mem::take(&mut fixture.vfs);
     let mut peer_profile = profile;
     peer_profile.rules = RuleSetId::Quake2;
@@ -594,6 +649,19 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .0,
     );
     let _backend = admit_assets(&mut host);
+    let curve_error = host
+        .console
+        .cvars
+        .bind(
+            "r_lodCurveError",
+            Context {
+                source: RuleSetId::Quake3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    host.console.cvars.force_write(curve_error, "37.5").unwrap();
+    assert_eq!(host.client_views()[0].unwrap().curve_error, 37.5);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 1, 0), 0);
     assert_eq!(probe(&mut host, 0, 2, 0), 0);
@@ -604,6 +672,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
     }
     assert_eq!(probe(&mut host, 0, 3, 0), 0);
     assert_eq!(probe(&mut host, 0, 4, 0), 0);
+    host.console.cvars.force_write(curve_error, "-1").unwrap();
     assert_eq!(probe(&mut host, 0, 10, 0), 0); // Change guest source after publication.
     assert_eq!(probe(&mut host, 0, 5, 0), 0); // Clear preserves 2D color and earlier view.
     if !ui {
@@ -618,6 +687,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         panic!("native view")
     };
     assert_eq!(view.refdef.time_ms, -12345);
+    assert_eq!(view.refdef.curve_error, 37.5);
     assert_eq!(view.refdef.text[7][1], 0xe7);
     assert_eq!(view.scene.polys.count, 2);
     let recipient = host.local_clients[0].map(|client| qa_render::effects::EffectClient {
@@ -644,6 +714,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         panic!("second native view")
     };
     assert_eq!(second.refdef.time_ms, 777);
+    assert_eq!(second.refdef.curve_error, -1.0);
     assert_eq!(second.particle_client, if ui { None } else { recipient });
     assert_eq!(packet.hidden_areas(second.hidden_areas), &[0xa5; 32]);
     let Command::Draw2d(peer) = packet.commands()[4] else {
@@ -657,6 +728,21 @@ pub(super) fn submissions(native: bool, ui: bool) {
     );
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
+    assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
+    // Both guest writes and submissions occur in one uninterrupted callback.
+    assert_eq!(probe(&mut host, 0, 29, 0), 0);
+    let same_callback = host.runtime.scene.as_mut().unwrap().finish_frame().unwrap();
+    let captured = same_callback
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            Command::View(view) => Some(view.refdef.curve_error),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(captured, [12.5, -2.0]);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }
 
 fn named_scene_program(native: bool, ui: bool, name: &[u8]) -> Program {
@@ -1131,6 +1217,7 @@ pub(super) fn ownership() {
         flags: Default::default(),
         time_ms: 16,
         lighting_scales: [0.6, 1.],
+        curve_error: qa_render::scene::DEFAULT_CURVE_ERROR,
     };
     let mut source = Source {
         renderer,

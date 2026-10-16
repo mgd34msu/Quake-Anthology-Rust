@@ -1515,7 +1515,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     scene_view: |s, view| {
         s.scene
             .as_deref_mut()
-            .map_or(Ok(false), |scene| scene.view(view))
+            .map_or(Ok(false), |scene| scene.view(view, s.cvars))
     },
     renderer: |s| s.renderer.ok_or(CallError::Geometry),
     userinfo: |s, native| s.storage.userinfo(s.server, native),

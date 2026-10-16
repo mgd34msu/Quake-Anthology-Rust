@@ -107,3 +107,60 @@ fn entity_inputs_preserve_face_bindings_and_independent_view_data() {
     };
     assert_eq!(view.for_entity(&world_entity), inputs);
 }
+
+#[test]
+fn world_patch_draw_selection_uses_static_full_ranges_and_bounded_selected_triangle_chunks() {
+    use crate::{scene::PatchSelection, world::geometry::PatchGrid};
+    let grid = PatchGrid {
+        control_vertices: Span {
+            first: 0,
+            count: 15,
+        },
+        control_dimensions: [5, 3],
+        dimensions: [5, 3],
+        width_lod_error: vec![0.0, 1.0, 4.0, 2.0, 0.0].into_boxed_slice(),
+        height_lod_error: vec![0.0, 2.0, 0.0].into_boxed_slice(),
+        lod_origin: Vec3([32.0, 0.0, 0.0]),
+        lod_radius: 0.0,
+    };
+    let stored = Span {
+        first: 73,
+        count: 48,
+    };
+    for patch in [None, Some(&grid)] {
+        let SurfaceDraw::Static(actual) =
+            surface_draw(patch, 10, PatchSelection::default(), stored)
+        else {
+            panic!("full topology uses the static mesh")
+        };
+        assert_eq!(actual, stored);
+    }
+    let selection =
+        PatchSelection::select(&grid, None, Vec3::default(), Vec3([1.0, 0.0, 0.0]), 32.0);
+    let SurfaceDraw::Patch(mut triangles) = surface_draw(Some(&grid), 10, selection, stored) else {
+        panic!("simplified topology uses shared selected indices")
+    };
+    assert_eq!(
+        triangle_chunk(&mut triangles, 2, |_, _| panic!(
+            "partial triangle must not be emitted"
+        )),
+        0
+    );
+    let mut chunks = Vec::new();
+    loop {
+        let mut indices = Vec::new();
+        let count = triangle_chunk(&mut triangles, 5, |offset, index| {
+            assert_eq!(offset, indices.len());
+            indices.push(index);
+        });
+        if count == 0 {
+            break;
+        }
+        assert_eq!(count, 3);
+        chunks.push(indices);
+    }
+    assert_eq!(
+        chunks,
+        [[10, 20, 11], [11, 20, 21], [11, 21, 14], [14, 21, 24]]
+    );
+}

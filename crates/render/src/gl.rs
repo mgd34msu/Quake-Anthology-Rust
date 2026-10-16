@@ -7,18 +7,19 @@ use crate::assets::{
     MaterialId, MaterialSettings, Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
-    BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity,
-    SceneParticle, Span, Viewport,
+    BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, PatchSelection, PatchTriangles,
+    Refdef, SceneEntity, SceneParticle, Span, Viewport,
 };
 use crate::shader::reference::ResolvedShader;
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip, SkyKey};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
+use crate::world::geometry::{PatchGrid, WorldVertex};
 use qa_core::presentation::{DisplayConfiguration, RendererConfiguration};
 use qa_core::primitives::Vec3;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
-use std::mem::{offset_of, size_of, size_of_val};
+use std::mem::{MaybeUninit, offset_of, size_of, size_of_val};
 use std::ptr::{self, NonNull};
 
 mod composite;
@@ -323,6 +324,41 @@ struct Mesh {
     count: i32,
     base_vertex: i32,
 }
+
+enum SurfaceDraw {
+    Static(Span),
+    Patch(PatchTriangles),
+}
+
+fn surface_draw(
+    patch: Option<&PatchGrid>,
+    first_vertex: u32,
+    selection: PatchSelection,
+    mesh_indices: Span,
+) -> SurfaceDraw {
+    match patch {
+        Some(grid) if !selection.is_full(grid) => {
+            SurfaceDraw::Patch(selection.triangles(grid, first_vertex))
+        }
+        _ => SurfaceDraw::Static(mesh_indices),
+    }
+}
+
+fn triangle_chunk(
+    triangles: &mut impl Iterator<Item = [u32; 3]>,
+    capacity: usize,
+    mut emit: impl FnMut(usize, u32),
+) -> usize {
+    let mut written = 0;
+    for triangle in triangles.take(capacity / 3) {
+        for vertex in triangle {
+            emit(written, vertex);
+            written += 1;
+        }
+    }
+    written
+}
+
 struct Uniforms {
     mvp: i32,
     frame_weights: i32,
@@ -402,6 +438,90 @@ impl Default for Dynamic {
             used: 0,
             acquired: false,
         }
+    }
+}
+impl Dynamic {
+    fn begin(&mut self, gl: &Gl) -> bool {
+        self.slot = self.next;
+        self.next = (self.next + 1) % RING_SLOTS;
+        self.used = 0;
+        self.acquired = !self.blocked[self.slot];
+        let fence = self.fences[self.slot];
+        if !fence.is_null() {
+            // Wait for the bytes this slot owns instead of discarding correct
+            // draws merely because the GPU trails the CPU by three frames.
+            // This driver wait remains part of measured backend time.
+            let result = unsafe { (gl.wait_fence)(fence, 1, 1_000_000_000) };
+            if result == 0x911a || result == 0x911c {
+                unsafe { (gl.delete_fence)(fence) };
+                self.fences[self.slot] = ptr::null_mut();
+            } else {
+                self.acquired = false;
+                if result == 0x911d {
+                    self.blocked[self.slot] = true;
+                }
+            }
+        }
+        self.acquired
+    }
+
+    fn end(&mut self, gl: &Gl) {
+        if self.acquired && self.used != 0 {
+            let fence = unsafe { (gl.fence)(0x9117, 0) };
+            self.fences[self.slot] = fence;
+            if fence.is_null() {
+                // A failed fence cannot establish safe reuse of mapped bytes.
+                self.blocked[self.slot] = true;
+            }
+        }
+        self.acquired = false;
+    }
+
+    fn space(&mut self, gl: &Gl, minimum: usize) -> Option<usize> {
+        self.mapped?;
+        if !self.acquired || minimum > self.capacity {
+            return None;
+        }
+        if minimum > self.capacity - self.used {
+            self.end(gl);
+            if !self.begin(gl) {
+                return None;
+            }
+        }
+        Some(self.capacity - self.used)
+    }
+
+    fn reserve(&mut self, gl: &Gl, count: usize) -> Option<usize> {
+        self.space(gl, count)?;
+        let first = self.slot * self.capacity + self.used;
+        self.used += count;
+        Some(first)
+    }
+
+    fn upload_range(
+        &mut self,
+        gl: &Gl,
+        capacity: usize,
+        fill: impl FnOnce(&mut [MaybeUninit<Vertex>]) -> usize,
+    ) -> Option<(usize, usize)> {
+        let first = self.reserve(gl, capacity)?;
+        let mapped = self.mapped?;
+        // SAFETY: reserve bounds this exclusively owned range in the mapped
+        // slot; begin waited for its previous GPU consumer. Storage need not
+        // be initialized until fill writes its returned prefix.
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                mapped.as_ptr().add(first).cast::<MaybeUninit<Vertex>>(),
+                capacity,
+            )
+        };
+        let count = fill(output);
+        if count > capacity {
+            self.used -= capacity;
+            return None;
+        }
+        self.used -= capacity - count;
+        Some((first, count))
     }
 }
 
@@ -787,7 +907,7 @@ impl GlBackend {
             ..BackendStats::default()
         };
         unsafe { (self.gl.use_program)(self.program) };
-        if !self.begin_dynamic() {
+        if !self.dynamic.begin(&self.gl) {
             stats.rejected = stats.rejected.saturating_add(1);
         }
         let mut inputs = DrawInputs::default();
@@ -939,7 +1059,7 @@ impl GlBackend {
                 }
             }
         }
-        self.end_dynamic();
+        self.dynamic.end(&self.gl);
         stats
     }
 
@@ -1027,42 +1147,6 @@ impl GlBackend {
         }
     }
 
-    fn begin_dynamic(&mut self) -> bool {
-        let dynamic = &mut self.dynamic;
-        dynamic.slot = dynamic.next;
-        dynamic.next = (dynamic.next + 1) % RING_SLOTS;
-        dynamic.used = 0;
-        dynamic.acquired = !dynamic.blocked[dynamic.slot];
-        let fence = dynamic.fences[dynamic.slot];
-        if !fence.is_null() {
-            // Wait for the bytes this slot owns instead of discarding correct
-            // draws merely because the GPU trails the CPU by three frames.
-            // This driver wait remains part of measured backend time.
-            let result = unsafe { (self.gl.wait_fence)(fence, 1, 1_000_000_000) };
-            if result == 0x911a || result == 0x911c {
-                unsafe { (self.gl.delete_fence)(fence) };
-                dynamic.fences[dynamic.slot] = ptr::null_mut();
-            } else {
-                dynamic.acquired = false;
-                if result == 0x911d {
-                    dynamic.blocked[dynamic.slot] = true;
-                }
-            }
-        }
-        dynamic.acquired
-    }
-
-    fn end_dynamic(&mut self) {
-        if self.dynamic.acquired && self.dynamic.used != 0 {
-            let fence = unsafe { (self.gl.fence)(0x9117, 0) };
-            self.dynamic.fences[self.dynamic.slot] = fence;
-            if fence.is_null() {
-                // A failed fence cannot establish safe reuse of mapped bytes.
-                self.dynamic.blocked[self.dynamic.slot] = true;
-            }
-        }
-    }
-
     fn upload(&mut self, vertices: &[Vertex]) -> Option<usize> {
         self.upload_with(vertices.len(), |index| vertices[index])
     }
@@ -1072,27 +1156,27 @@ impl GlBackend {
         count: usize,
         mut vertex: impl FnMut(usize) -> Vertex,
     ) -> Option<usize> {
-        let first = self.reserve(count)?;
-        let mapped = self.dynamic.mapped?;
-        for index in 0..count {
-            // SAFETY: reserve bounds this range in the current owned mapped
-            // slot; its prior GPU consumer finished before begin_dynamic.
-            unsafe {
-                mapped.as_ptr().add(first + index).write(vertex(index));
-            }
-        }
-        Some(first)
+        self.dynamic
+            .upload_range(&self.gl, count, |output| {
+                for (index, target) in output.iter_mut().enumerate() {
+                    target.write(vertex(index));
+                }
+                output.len()
+            })
+            .map(|(first, _)| first)
     }
 
-    fn reserve(&mut self, count: usize) -> Option<usize> {
-        let dynamic = &mut self.dynamic;
-        if !dynamic.acquired || count > dynamic.capacity - dynamic.used {
-            return None;
-        }
-        dynamic.mapped?;
-        let first = dynamic.slot * dynamic.capacity + dynamic.used;
-        dynamic.used += count;
-        Some(first)
+    fn upload_triangle_chunk(
+        &mut self,
+        triangles: &mut impl Iterator<Item = [u32; 3]>,
+        vertices: &[WorldVertex],
+    ) -> Option<(usize, usize)> {
+        let capacity = self.dynamic.space(&self.gl, 3)? / 3 * 3;
+        self.dynamic.upload_range(&self.gl, capacity, |output| {
+            triangle_chunk(triangles, output.len(), |offset, index| {
+                output[offset].write(vertices[index as usize].vertex);
+            })
+        })
     }
 
     fn clear(&mut self, color: [u8; 4]) {
@@ -1326,44 +1410,32 @@ impl GlBackend {
         if material.stages.is_empty() {
             return;
         }
-        let Some(cloud) = self.sky_clouds.get(material_id.0 as usize) else {
+        let Some(Some(grid)) = self.sky_clouds.get(material_id.0 as usize) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if cloud.is_none() {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        }
         let count = crate::sky::cloud_triangle_count(bounds) * 3;
         if count == 0 {
             return;
         }
-        let Some(first) = self.reserve(count) else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let Some(mapped) = self.dynamic.mapped else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let Some(grid) = self.sky_clouds[material_id.0 as usize].as_ref() else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let mut written = 0;
-        for triangle in crate::sky::cloud_triangles(
-            bounds,
-            grid,
-            params.distance.value(far),
-            inputs.view_origin,
-        ) {
-            for vertex in triangle {
-                unsafe {
-                    mapped.as_ptr().add(first + written).write(vertex);
+        let Some((first, written)) = self.dynamic.upload_range(&self.gl, count, |output| {
+            let mut written = 0;
+            for triangle in crate::sky::cloud_triangles(
+                bounds,
+                grid,
+                params.distance.value(far),
+                inputs.view_origin,
+            ) {
+                for vertex in triangle {
+                    output[written].write(vertex);
+                    written += 1;
                 }
-                written += 1;
             }
-        }
+            written
+        }) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         self.bind_vao(self.dynamic.vao);
         for &stage in &material.stages {
             // The shared load-generated cloud grid already supplies this
@@ -1609,30 +1681,81 @@ impl GlBackend {
         }
         inputs.lightmap = shader_binding.lightmap;
         inputs.texture_scale = binding.texture_scale;
-        self.bind_vao(self.static_vao);
         self.set_depth_hack(entity.is_some_and(|entity| entity.depth_hack));
-        for stage in &material.stages {
+        let geometry = world.geometry();
+        let source = &geometry.surfaces[surface.surface as usize];
+        match surface_draw(
+            source.patch.as_ref(),
+            source.vertices.first,
+            surface.patch_lod,
+            binding.mesh_indices,
+        ) {
+            SurfaceDraw::Static(indices) => {
+                self.bind_vao(self.static_vao);
+                self.surface_stages(
+                    &material.stages,
+                    settings,
+                    inputs,
+                    projection,
+                    stats,
+                    |gl| unsafe {
+                        (gl.draw_elements)(
+                            TRIANGLES,
+                            indices.count as i32,
+                            UNSIGNED_INT,
+                            ((mesh.first_index + indices.first as usize) * size_of::<u32>())
+                                as *const c_void,
+                            mesh.base_vertex,
+                        );
+                    },
+                );
+                stats.triangles = stats.triangles.saturating_add(indices.count / 3);
+            }
+            SurfaceDraw::Patch(triangles) => {
+                let mut triangles = triangles.peekable();
+                while triangles.peek().is_some() {
+                    let Some((first, count)) =
+                        self.upload_triangle_chunk(&mut triangles, &geometry.vertices)
+                    else {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        break;
+                    };
+                    self.bind_vao(self.dynamic.vao);
+                    self.surface_stages(
+                        &material.stages,
+                        settings,
+                        inputs,
+                        projection,
+                        stats,
+                        |gl| unsafe {
+                            (gl.draw_arrays)(TRIANGLES, first as i32, count as i32);
+                        },
+                    );
+                    stats.triangles = stats.triangles.saturating_add((count / 3) as u32);
+                }
+            }
+        }
+        stats.surfaces = stats.surfaces.saturating_add(1);
+        self.set_depth_hack(false);
+    }
+
+    fn surface_stages(
+        &mut self,
+        stages: &[Stage],
+        settings: MaterialSettings,
+        inputs: DrawInputs,
+        projection: &[f32; 16],
+        stats: &mut BackendStats,
+        mut draw: impl FnMut(&Gl),
+    ) {
+        for stage in stages {
             if !self.stage(*stage, settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             }
-            unsafe {
-                (self.gl.draw_elements)(
-                    TRIANGLES,
-                    binding.mesh_indices.count as i32,
-                    UNSIGNED_INT,
-                    ((mesh.first_index + binding.mesh_indices.first as usize) * size_of::<u32>())
-                        as *const c_void,
-                    mesh.base_vertex,
-                );
-            }
+            draw(&self.gl);
             stats.stages = stats.stages.saturating_add(1);
         }
-        stats.surfaces = stats.surfaces.saturating_add(1);
-        stats.triangles = stats
-            .triangles
-            .saturating_add(binding.mesh_indices.count / 3);
-        self.set_depth_hack(false);
     }
 
     fn refresh_lightmap(

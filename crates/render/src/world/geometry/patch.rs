@@ -10,7 +10,7 @@ use qa_core::{
 };
 
 const MAX_CONTROL_SIZE: usize = 32;
-const MAX_GRID_SIZE: usize = 65;
+pub(super) const MAX_GRID_SIZE: usize = 65;
 const COLLINEAR: f32 = 999.0;
 
 pub(super) struct Tessellation {
@@ -333,12 +333,7 @@ pub(super) fn finish_world_patches(
         }
         let width = patch.dimensions[0] as usize;
         let height = patch.dimensions[1] as usize;
-        if !(2..=MAX_GRID_SIZE).contains(&width)
-            || !(2..=MAX_GRID_SIZE).contains(&height)
-            || width * height != surface.vertices.count as usize
-            || patch.width_lod_error.len() != width
-            || patch.height_lod_error.len() != height
-        {
+        if !patch.valid(surface.vertices, geometry.vertices.len()) {
             return Err(GeometryError::InvalidPatch(surface.source_id));
         }
         let vertices = super::section(

@@ -27,6 +27,7 @@ struct Target {
     rails: [qa_console::cvars::View; 3],
     lighting: [qa_console::cvars::View; 2],
     software_waterwarp: qa_console::cvars::View,
+    curve_error: qa_console::cvars::View,
 }
 impl Target {
     fn world_presentation(
@@ -156,6 +157,7 @@ impl SceneRole {
         rails: [qa_console::cvars::View; 3],
         lighting: [qa_console::cvars::View; 2],
         software_waterwarp: qa_console::cvars::View,
+        curve_error: qa_console::cvars::View,
     ) {
         self.target = Some(Target {
             profile,
@@ -166,6 +168,7 @@ impl SceneRole {
             rails,
             lighting,
             software_waterwarp,
+            curve_error,
         });
     }
 }
@@ -562,7 +565,11 @@ impl SceneService for SceneBorrow<'_> {
             .and_then(|composer| composer.frame.as_mut())
             .is_some_and(|frame| frame.draw_2d(draw))
     }
-    fn view(&mut self, mut view: SceneView) -> Result<bool, CallError> {
+    fn view(
+        &mut self,
+        mut view: SceneView,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<bool, CallError> {
         view.world &= !view
             .refdef
             .flags
@@ -583,6 +590,7 @@ impl SceneService for SceneBorrow<'_> {
         view.refdef.viewport.y += target.viewport.y;
         super::apply_presentation(&mut view.refdef, &target.presentation, composer.kind);
         view.refdef.software_waterwarp &= self.software_waterwarp;
+        view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);
         view.refdef
             .validate(u32::MAX, u32::MAX)
             .ok_or(CallError::Geometry)?;

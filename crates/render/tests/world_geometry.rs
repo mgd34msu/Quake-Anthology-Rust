@@ -1114,3 +1114,185 @@ fn original_patch_comparison_fixtures() {
         std::fs::write(path, output).unwrap();
     }
 }
+
+#[test]
+fn patch_selection_keeps_native_distance_thresholds_and_triangle_order() {
+    use qa_render::scene::PatchSelection;
+    let mut source = fixture_grid(5, 3, |x, y| [32.0, x as f32, y as f32]);
+    source.width_errors = vec![0.0, 1.0, 4.0, 2.0, 0.0];
+    source.height_errors = vec![0.0, 2.0, 0.0];
+    source.origin = Vec3([32.0, 0.0, 0.0]);
+    source.radius = 0.0;
+    let geometry = fixture_geometry(&[source], false, 4.0);
+    let grid = geometry.surfaces[0].patch.as_ref().unwrap();
+    let full = PatchSelection::select(
+        grid,
+        None,
+        Vec3([24.0, 0.0, 0.0]),
+        Vec3([1.0, 0.0, 0.0]),
+        32.0,
+    );
+    assert!(full.is_full(grid));
+    assert!(PatchSelection::default().is_full(grid));
+    assert_eq!(full.triangle_count(grid), 16);
+    assert_eq!(full.triangles(grid, 10).next(), Some([10, 15, 11]));
+    let golden = [[10, 20, 11], [11, 20, 21], [11, 21, 14], [14, 21, 24]];
+    for origin in [Vec3::default(), Vec3([64.0, 0.0, 0.0])] {
+        let selection = PatchSelection::select(grid, None, origin, Vec3([1.0, 0.0, 0.0]), 32.0);
+        assert!(!selection.is_full(grid));
+        assert_eq!(selection.triangles(grid, 10).collect::<Vec<_>>(), golden);
+    }
+    let at_boundary =
+        PatchSelection::select(grid, None, Vec3::default(), Vec3([1.0, 0.0, 0.0]), 64.0);
+    assert_eq!(at_boundary.triangle_count(grid), 12);
+    assert!(
+        at_boundary
+            .triangles(grid, 10)
+            .any(|triangle| triangle == [11, 16, 13])
+    );
+    let below_boundary = PatchSelection::select(
+        grid,
+        None,
+        Vec3::default(),
+        Vec3([1.0, 0.0, 0.0]),
+        f32::from_bits(64.0f32.to_bits() - 1),
+    );
+    assert_eq!(
+        below_boundary.triangles(grid, 10).collect::<Vec<_>>(),
+        golden
+    );
+    assert_eq!(grid.width_lod_error.as_ref(), [0.0, 1.0, 4.0, 2.0, 0.0]);
+    assert_eq!(grid.height_lod_error.as_ref(), [0.0, 2.0, 0.0]);
+}
+
+#[test]
+fn patch_selection_preserves_zero_errors_origin_last_and_unscaled_radius() {
+    use qa_render::scene::PatchSelection;
+    let mut source = fixture_grid(3, 2, |x, y| [x as f32, y as f32, 0.0]);
+    source.width_errors = vec![0.0, 2.0, 0.0];
+    source.height_errors = vec![0.0; 2];
+    source.origin = Vec3([1.0e20, 1.0e20, 0.0]);
+    source.radius = 0.0;
+    let geometry = fixture_geometry(&[source], false, 4.0);
+    let mut grid = geometry.surfaces[0].patch.as_ref().unwrap().clone();
+    let sine = std::f32::consts::FRAC_1_SQRT_2;
+    let axes = [
+        Vec3([sine, sine, 0.0]),
+        Vec3([-sine, sine, 0.0]),
+        Vec3([0.0, 0.0, 1.0]),
+    ];
+    // Native local products cancel before adding x=3; origin-first yields x=0.
+    let selected = PatchSelection::select(
+        &grid,
+        Some((Vec3([3.0, 0.0, 0.0]), axes)),
+        Vec3::default(),
+        Vec3([1.0, 0.0, 0.0]),
+        3.0,
+    );
+    assert_eq!(
+        selected.triangles(&grid, 0).collect::<Vec<_>>(),
+        [[0, 3, 2], [2, 3, 5]]
+    );
+    grid.lod_origin = Vec3([2.0, 0.0, 0.0]);
+    grid.lod_radius = 1.0;
+    let scaled = [
+        Vec3([2.0, 0.0, 0.0]),
+        Vec3([0.0, 2.0, 0.0]),
+        Vec3([0.0, 0.0, 2.0]),
+    ];
+    let selected = PatchSelection::select(
+        &grid,
+        Some((Vec3::default(), scaled)),
+        Vec3::default(),
+        Vec3([1.0, 0.0, 0.0]),
+        4.0,
+    );
+    assert_eq!(
+        selected.triangle_count(&grid),
+        2,
+        "native does not scale the stored LOD radius with entity axes"
+    );
+    grid.lod_radius = 100.0;
+    let inside = PatchSelection::select(&grid, None, Vec3::default(), Vec3([1.0, 0.0, 0.0]), 2.0);
+    assert!(
+        inside.is_full(&grid),
+        "distance inside the LOD volume clamps to one"
+    );
+    let below = PatchSelection::select(
+        &grid,
+        None,
+        Vec3::default(),
+        Vec3([1.0, 0.0, 0.0]),
+        f32::from_bits(2.0f32.to_bits() - 1),
+    );
+    assert_eq!(below.triangle_count(&grid), 2);
+    grid.width_lod_error[1] = 0.0;
+    let invalid = Vec3([f32::NAN; 3]);
+    let negative =
+        PatchSelection::select(&grid, Some((invalid, [invalid; 3])), invalid, invalid, -1.0);
+    assert!(
+        negative.is_full(&grid),
+        "negative curve error selects threshold zero before evaluating pose"
+    );
+}
+
+#[test]
+fn stitched_patch_edges_select_matching_vertices_without_mutating_the_full_grids() {
+    use qa_render::scene::PatchSelection;
+    for (reverse, rotated) in [(false, false), (true, false), (false, true), (true, true)] {
+        let geometry = fixture_geometry(&seam_grids(reverse, rotated), false, 4.0);
+        let vertices = geometry.vertices.clone();
+        let indices = geometry.indices.clone();
+        for curve_error in [0.0, 112.5] {
+            for surface in &geometry.surfaces {
+                let grid = surface.patch.as_ref().unwrap();
+                let selection = PatchSelection::select(
+                    grid,
+                    None,
+                    Vec3([0.0, 0.0, 1000.0]),
+                    Vec3([0.0, 0.0, -1.0]),
+                    curve_error,
+                );
+                let has_midpoint = selection
+                    .triangles(grid, surface.vertices.first)
+                    .flatten()
+                    .any(|index| {
+                        geometry.vertices[index as usize].vertex.position == Vec3([32.0, 0.0, 8.0])
+                    });
+                assert_eq!(
+                    has_midpoint,
+                    curve_error != 0.0,
+                    "reverse={reverse} rotated={rotated}"
+                );
+            }
+        }
+        assert_eq!(geometry.vertices, vertices);
+        assert_eq!(geometry.indices, indices);
+    }
+}
+
+#[test]
+fn maximum_patch_selection_keeps_endpoint_indices_in_the_bounded_masks() {
+    use qa_render::scene::PatchSelection;
+    let grid = PatchGrid {
+        control_vertices: Span {
+            first: 0,
+            count: 65 * 65,
+        },
+        control_dimensions: [65, 65],
+        dimensions: [65, 65],
+        width_lod_error: vec![1.0; 65].into_boxed_slice(),
+        height_lod_error: vec![1.0; 65].into_boxed_slice(),
+        lod_origin: Vec3([32.0, 0.0, 0.0]),
+        lod_radius: 0.0,
+    };
+    let full = PatchSelection::default();
+    assert_eq!(full.triangle_count(&grid), 8192);
+    assert_eq!(full.triangles(&grid, 200).count(), 8192);
+    assert_eq!(full.triangles(&grid, 200).last(), Some([4359, 4423, 4424]));
+    let coarse = PatchSelection::select(&grid, None, Vec3::default(), Vec3([1.0, 0.0, 0.0]), -1.0);
+    assert_eq!(
+        coarse.triangles(&grid, 200).collect::<Vec<_>>(),
+        [[200, 4360, 264], [264, 4360, 4424]]
+    );
+}

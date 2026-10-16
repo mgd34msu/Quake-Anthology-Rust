@@ -43,6 +43,7 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         time_ms: 123,
         presentation: presentation(PaletteId(0), IndexedLighting::Gray),
         lighting_scales: [0.6, 1.],
+        curve_error: 250.0,
     };
     let mut second = first;
     second.world_presentation = WorldPresentationId(4);
@@ -51,6 +52,7 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     second.presentation = presentation(PaletteId(1), IndexedLighting::NativeRgb);
     second.presentation.lightstyles[0].indexed_scale = 384;
     second.presentation.identity_light = 0.5;
+    second.curve_error = 17.25;
     let a = view_refdef(first, viewport, Kind::Cpu);
     let b = view_refdef(second, viewport, Kind::Cpu);
     assert_eq!(a.cpu_presentation, first.presentation.cpu);
@@ -58,6 +60,8 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_ne!(a.cpu_presentation, b.cpu_presentation);
     assert_eq!(b.lightstyles[0].indexed_scale, 384);
     assert_eq!(b.identity_light, 0.5);
+    assert_eq!(a.curve_error, first.curve_error);
+    assert_eq!(b.curve_error, second.curve_error);
     assert_eq!(a.axes, b.axes);
     assert_eq!(a.origin, b.origin);
     assert_eq!(a.fov, b.fov);
@@ -68,4 +72,5 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_eq!(gl.blend_phase, BlendPhase::AfterView);
     assert_eq!(gl.palette_transform, None);
     assert_eq!(gl.lightstyles[0], second.presentation.lightstyles[0]);
+    assert_eq!(gl.curve_error, second.curve_error);
 }

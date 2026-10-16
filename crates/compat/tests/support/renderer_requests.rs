@@ -86,7 +86,7 @@ impl SceneService for Scene<'_> {
     fn picture(&mut self, _: i32, _: [f32; 4], _: [f32; 4]) -> bool {
         true
     }
-    fn view(&mut self, _: SceneView) -> Result<bool, CallError> {
+    fn view(&mut self, _: SceneView, _: &qa_console::cvars::Cvars) -> Result<bool, CallError> {
         Ok(true)
     }
 }

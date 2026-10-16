@@ -98,6 +98,25 @@ pub struct PatchGrid {
     pub lod_origin: Vec3,
     pub lod_radius: f32,
 }
+impl PatchGrid {
+    pub(super) fn valid(&self, vertices: Span, loaded: usize) -> bool {
+        let [width, height] = self.dimensions.map(usize::from);
+        (2..=patch::MAX_GRID_SIZE).contains(&width)
+            && (2..=patch::MAX_GRID_SIZE).contains(&height)
+            && width * height == vertices.count as usize
+            && vertices.fits(loaded)
+            && self.width_lod_error.len() == width
+            && self.height_lod_error.len() == height
+            && self
+                .width_lod_error
+                .iter()
+                .chain(&self.height_lod_error)
+                .all(|error| error.is_finite())
+            && self.lod_origin.is_finite()
+            && self.lod_radius.is_finite()
+            && self.lod_radius >= 0.0
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WorldSurface {
@@ -169,6 +188,20 @@ pub struct WorldGeometry {
     pub light_samples: Vec<[u8; 3]>,
     pub models: Vec<WorldModel>,
     pub patch_stats: PatchStats,
+}
+impl WorldGeometry {
+    pub(crate) fn validate_patch_grids(&self) -> Result<(), GeometryError> {
+        for surface in &self.surfaces {
+            if surface
+                .patch
+                .as_ref()
+                .is_some_and(|patch| !patch.valid(surface.vertices, self.vertices.len()))
+            {
+                return Err(GeometryError::InvalidPatch(surface.source_id));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -14,6 +14,9 @@ pub(super) struct WorldMesh {
 }
 
 pub(super) fn world_mesh(geometry: &WorldGeometry) -> Result<WorldMesh, &'static str> {
+    geometry
+        .validate_patch_grids()
+        .map_err(|_| "invalid world patch grid")?;
     let mut indices = Vec::new();
     let mut ranges = Vec::with_capacity(geometry.surfaces.len());
     for (source, surface) in geometry.surfaces.iter().enumerate() {

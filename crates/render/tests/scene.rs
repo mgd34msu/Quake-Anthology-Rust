@@ -230,12 +230,20 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
 }
 
 fn world_variants(assets: &mut Assets, variants: &[&[SurfaceMaterial]]) -> WorldId {
+    world_variants_with(assets, variants, |_| {})
+}
+
+fn world_variants_with(
+    assets: &mut Assets,
+    variants: &[&[SurfaceMaterial]],
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
     let materials = variants[0];
     let bounds = Bounds {
         mins: Vec3([1.0, -1.0, -1.0]),
         maxs: Vec3([1.0, 1.0, 1.0]),
     };
-    let geometry = WorldGeometry {
+    let mut geometry = WorldGeometry {
         partition: GeometryPartition::SplitBsp,
         world_has_lightdata: false,
         vertices: [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 0.0, 1.0]]
@@ -287,6 +295,7 @@ fn world_variants(assets: &mut Assets, variants: &[&[SurfaceMaterial]]) -> World
         models: vec![],
         patch_stats: PatchStats::default(),
     };
+    mutate(&mut geometry);
     let visibility = VisibilityWorld::load(
         vec![],
         vec![],
@@ -1666,4 +1675,125 @@ fn inline_surface_capacity_failure_leaves_entity_and_draw_arenas_unchanged() {
         assert_eq!(packet.surface(0).entity, Some(0));
         assert_eq!(packet.rejected, 1);
     }
+}
+
+#[test]
+fn bounded_patch_views_keep_prior_selection_after_failed_inline_submission() {
+    let mut assets = Assets::load().unwrap();
+    let materials = [SurfaceMaterial::default(); 2];
+    let id = world_variants_with(&mut assets, &[&materials], |geometry| {
+        geometry.vertices = [
+            [1.0, -1.0, -1.0],
+            [1.0, 0.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, -1.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ]
+        .map(|position| WorldVertex {
+            vertex: Vertex {
+                position: Vec3(position),
+                ..Default::default()
+            },
+        })
+        .into();
+        geometry.indices = vec![
+            0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5, 3, 6, 4, 4, 6, 7, 4, 7, 5, 5, 7, 8,
+        ];
+        geometry.boundaries = (0..8)
+            .map(|triangle| Span {
+                first: triangle * 3,
+                count: 3,
+            })
+            .collect();
+        for surface in &mut geometry.surfaces {
+            surface.kind = GeometryKind::Patch;
+            surface.vertices = Span { first: 0, count: 9 };
+            surface.indices = Span {
+                first: 0,
+                count: 24,
+            };
+            surface.boundaries = Span { first: 0, count: 8 };
+            surface.patch = Some(PatchGrid {
+                control_vertices: surface.vertices,
+                control_dimensions: [3, 3],
+                dimensions: [3, 3],
+                width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                lod_origin: Vec3([1.0, 0.0, 0.0]),
+                lod_radius: 0.0,
+            });
+        }
+    });
+    let mut frontend = FrontEnd::load(Limits {
+        commands: 3,
+        entities: 1,
+        surfaces: 2,
+        draws: 2,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut frame = frontend.begin_frame([0; 4]).unwrap();
+    assert!(frame.add_world(
+        id,
+        presentation(&assets, id),
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.render_scene(
+        Refdef {
+            curve_error: 4.0,
+            ..Default::default()
+        },
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    assert!(!frame.add_entity(SceneEntity {
+        model: SceneModel::World {
+            world: id,
+            presentation: presentation(&assets, id),
+            surfaces: Span { first: 0, count: 2 }
+        },
+        ..Default::default()
+    }));
+    assert!(frame.add_world(
+        id,
+        presentation(&assets, id),
+        &[VisibleSurface {
+            surface: 1,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.render_scene(
+        Refdef {
+            curve_error: 0.0,
+            ..Default::default()
+        },
+        &[],
+        &assets,
+        qa_render::shader::reference::ShaderView::direct()
+    ));
+    let packet = frame.finish();
+    let mut counts = Vec::new();
+    for command in packet.commands() {
+        if let Command::View(view) = command {
+            assert_eq!(view.scene.entities.count, 0);
+            assert_eq!(view.scene.surfaces.count, 1);
+            assert_eq!(view.scene.draws.count, 1);
+            let reference = packet.surfaces(view.scene.surfaces)[0];
+            let grid = assets.world(id).unwrap().geometry().surfaces[reference.surface as usize]
+                .patch
+                .as_ref()
+                .unwrap();
+            counts.push(reference.patch_lod.triangle_count(grid));
+        }
+    }
+    assert_eq!(counts, [8, 2]);
+    assert_eq!(packet.rejected, 1);
 }

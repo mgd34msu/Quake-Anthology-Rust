@@ -8,6 +8,9 @@ use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
 use qa_core::primitives::{Orientation, PlayerViewFlags, Vec3};
 use std::cmp::Ordering as SortOrdering;
+mod patch;
+pub use patch::{PatchSelection, PatchTriangles};
+pub const DEFAULT_CURVE_ERROR: f32 = 250.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
@@ -121,6 +124,7 @@ pub struct Refdef {
     /// GL continues to use the combined screen blend. None is unshifted.
     pub palette_transform: Option<PaletteTransform>,
     pub lightstyles: [LightStyle; 256],
+    pub curve_error: f32,
 }
 pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
     let fov_x = if fov_x.is_finite() {
@@ -209,6 +213,7 @@ impl Default for Refdef {
             perspective_step: PerspectiveStep::Eight,
             palette_transform: None,
             lightstyles: [LightStyle::default(); 256],
+            curve_error: DEFAULT_CURVE_ERROR,
         }
     }
 }
@@ -630,11 +635,22 @@ pub(crate) fn for_each_triangle(
                 return false;
             };
             let entity = reference.entity.map(|index| list.entity(index));
-            for triangle in geometry.indices[surface.indices.range()].chunks_exact(3) {
+            let mut emit = |triangle: [u32; 3]| {
                 visit(
-                    [triangle[0], triangle[1], triangle[2]]
+                    triangle
                         .map(|index| transform(geometry.vertices[index as usize].vertex, entity)),
                 );
+            };
+            if let Some(patch) = &surface.patch
+                && !reference.patch_lod.is_full(patch)
+            {
+                for triangle in reference.patch_lod.triangles(patch, surface.vertices.first) {
+                    emit(triangle);
+                }
+            } else {
+                for triangle in geometry.indices[surface.indices.range()].chunks_exact(3) {
+                    emit([triangle[0], triangle[1], triangle[2]]);
+                }
             }
         }
         DrawKind::Entity => {
@@ -676,6 +692,7 @@ pub struct SurfaceRef {
     /// Absolute index in this packet's one copied entity arena. Static world
     /// visibility keeps None; inline geometry borrows its instance inputs.
     pub entity: Option<u32>,
+    pub patch_lod: PatchSelection,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrawKind {
@@ -1195,6 +1212,7 @@ impl Frame {
     ) -> bool {
         let checkpoint = self.checkpoint();
         let source = checkpoint.first.through(checkpoint.end);
+        self.select_patch_lod(source.surfaces, refdef, assets);
         let has_portal = !refdef.portal
             && !refdef.hyperspace
             && self
@@ -1591,6 +1609,31 @@ impl Frame {
         };
         self.list.draw_count += 1;
     }
+    fn select_patch_lod(&mut self, range: Span, view: Refdef, assets: &Assets) {
+        let entities = &self.list.entities;
+        for reference in &mut self.list.surfaces[range.range()] {
+            reference.patch_lod = PatchSelection::default();
+            if let Some(surface) = assets
+                .world(reference.world)
+                .and_then(|world| world.geometry().surfaces.get(reference.surface as usize))
+                && !surface.no_draw
+                && surface.indices.count != 0
+                && let Some(patch) = &surface.patch
+            {
+                let pose = reference.entity.map(|index| {
+                    let entity = &entities[index as usize];
+                    (entity.origin, entity.axes)
+                });
+                reference.patch_lod = PatchSelection::select(
+                    patch,
+                    pose,
+                    view.origin,
+                    view.axes[0],
+                    view.curve_error,
+                );
+            }
+        }
+    }
     pub fn render_scene(
         &mut self,
         refdef: Refdef,
@@ -1604,6 +1647,14 @@ impl Frame {
             self.list.rejected += 1;
             return false;
         }
+        self.select_patch_lod(
+            Span {
+                first: self.first.surfaces.first,
+                count: self.list.surface_count as u32 - self.first.surfaces.first,
+            },
+            refdef,
+            assets,
+        );
         for surface in
             &mut self.list.surfaces[self.first.surfaces.first as usize..self.list.surface_count]
         {

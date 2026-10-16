@@ -327,6 +327,53 @@ enum PrimitiveDomain {
     GeneratedSky,
 }
 
+#[derive(Clone, Copy)]
+enum PrimitiveBoundary {
+    Stored(u32),
+    Triangle([u32; 3]),
+}
+impl Default for PrimitiveBoundary {
+    fn default() -> Self {
+        Self::Stored(0)
+    }
+}
+enum SurfaceBoundaries {
+    Stored(std::ops::Range<usize>),
+    Patch(crate::scene::PatchTriangles),
+}
+fn simplified_patch(
+    reference: SurfaceRef,
+    surface: &crate::world::geometry::WorldSurface,
+) -> Option<&crate::world::geometry::PatchGrid> {
+    surface
+        .patch
+        .as_ref()
+        .filter(|patch| !reference.patch_lod.is_full(patch))
+}
+impl SurfaceBoundaries {
+    fn new(reference: SurfaceRef, surface: &crate::world::geometry::WorldSurface) -> Self {
+        if let Some(patch) = simplified_patch(reference, surface) {
+            Self::Patch(reference.patch_lod.triangles(patch, surface.vertices.first))
+        } else {
+            Self::Stored(surface.boundaries.range())
+        }
+    }
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Stored(range) if range.is_empty())
+    }
+}
+impl Iterator for SurfaceBoundaries {
+    type Item = PrimitiveBoundary;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Stored(range) => range
+                .next()
+                .map(|index| PrimitiveBoundary::Stored(index as u32)),
+            Self::Patch(triangles) => triangles.next().map(PrimitiveBoundary::Triangle),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Primitive {
     domain: PrimitiveDomain,
@@ -334,7 +381,7 @@ struct Primitive {
     presentation: WorldPresentationId,
     surface: u32,
     lightmap_region: Option<crate::lightmap::AtlasRegion>,
-    boundary: u32,
+    boundary: PrimitiveBoundary,
     depth_key: u32,
     draw_rank: u32,
     cache: u32,
@@ -1253,6 +1300,14 @@ impl WorldPrepare {
                             .catalog
                             .surface_info(reference.presentation, reference.surface)
                             .is_some_and(|info| info.raster_empty)
+                            && assets
+                                .world(reference.world)
+                                .and_then(|world| {
+                                    world.geometry().surfaces.get(reference.surface as usize)
+                                })
+                                .is_some_and(|surface| {
+                                    simplified_patch(*reference, surface).is_none()
+                                })
                         {
                             return false;
                         }
@@ -1619,7 +1674,10 @@ impl SurfacePrepare {
                 self.reject(stats);
                 continue;
             };
-            if info.raster_empty && settings.deforms.iter().all(Option::is_none) {
+            if info.raster_empty
+                && simplified_patch(*reference, surface).is_none()
+                && settings.deforms.iter().all(Option::is_none)
+            {
                 continue;
             }
             if settings.sky.is_some() {
@@ -1728,7 +1786,7 @@ impl SurfacePrepare {
                         .image(base.image)
                         .and_then(|image| image.indexed.as_ref())
                         .is_some_and(|texture| texture.cutout()));
-            let loops = surface.boundaries.range();
+            let loops = SurfaceBoundaries::new(*reference, surface);
             if loops.is_empty() {
                 self.reject(stats);
                 continue;
@@ -1744,8 +1802,14 @@ impl SurfacePrepare {
                     break;
                 }
                 let current = if camera.rgb() && native.is_none() && cache_compatible {
-                    self.catalog
-                        .current_rgba(reference.presentation, boundary, assets)
+                    match boundary {
+                        PrimitiveBoundary::Stored(index) => self.catalog.current_rgba(
+                            reference.presentation,
+                            index as usize,
+                            assets,
+                        ),
+                        _ => None,
+                    }
                 } else {
                     None
                 };
@@ -1754,7 +1818,7 @@ impl SurfacePrepare {
                     presentation: reference.presentation,
                     surface: reference.surface,
                     lightmap_region: binding.lightmap_region,
-                    boundary: boundary as u32,
+                    boundary,
                     depth_key: reference.depth_key,
                     draw_rank: reference.draw_rank,
                     cache: info.cache,
@@ -2092,12 +2156,12 @@ impl SurfacePrepare {
         };
         let surface = &world.geometry().surfaces[reference.surface as usize];
         let mut visible = false;
-        for boundary in surface.boundaries.range() {
+        for boundary in SurfaceBoundaries::new(reference, surface) {
             let mut primitive = Primitive {
                 world: reference.world,
                 presentation: reference.presentation,
                 surface: reference.surface,
-                boundary: boundary as u32,
+                boundary,
                 depth_key: reference.depth_key,
                 draw_rank: reference.draw_rank,
                 sky: Some(source),
@@ -2157,8 +2221,12 @@ impl SurfacePrepare {
         let world = assets.world(primitive.world)?;
         let geometry = world.geometry();
         let surface = &geometry.surfaces[primitive.surface as usize];
-        let boundary = geometry.boundaries[primitive.boundary as usize];
-        let indices = &geometry.indices[boundary.range()];
+        let indices = match &primitive.boundary {
+            PrimitiveBoundary::Stored(index) => {
+                &geometry.indices[geometry.boundaries[*index as usize].range()]
+            }
+            PrimitiveBoundary::Triangle(indices) => indices.as_slice(),
+        };
         let recipe = match primitive.rgba {
             Some(index) => Some(self.catalog.rgba[index].as_ref()?),
             None => None,

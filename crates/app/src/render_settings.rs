@@ -259,6 +259,16 @@ fn setting_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'s
     )
     .ok_or("missing render cvar")
 }
+
+pub(crate) fn curve_error_view(vars: &Cvars) -> Result<View, &'static str> {
+    setting_view(vars, RuleSetId::Quake3, "r_lodCurveError")
+}
+
+pub(crate) fn curve_error(vars: &Cvars, view: View) -> f32 {
+    vars.numeric(view)
+        .unwrap_or(qa_render::scene::DEFAULT_CURVE_ERROR)
+}
+
 fn setting_numbers(
     vars: &Cvars,
     source: RuleSetId,

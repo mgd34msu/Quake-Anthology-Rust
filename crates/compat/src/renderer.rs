@@ -33,7 +33,11 @@ pub trait SceneService {
     fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool;
     fn color(&mut self, color: Option<[f32; 4]>);
     fn picture(&mut self, shader: i32, rect: [f32; 4], texcoords: [f32; 4]) -> bool;
-    fn view(&mut self, view: SceneView) -> Result<bool, CallError>;
+    fn view(
+        &mut self,
+        view: SceneView,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<bool, CallError>;
 }
 
 pub const Q3_REFDEF_BYTES: usize = 368;

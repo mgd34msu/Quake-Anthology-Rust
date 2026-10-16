@@ -668,6 +668,97 @@ fn offset_row_windows_keep_three_stage_depth_blend_and_rank_bits() {
     exact_rows(&assets, &packet(&assets, &[world], view));
 }
 
+fn curved_patch_world(
+    assets: &mut Assets,
+    shader: crate::ShaderBindingId,
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
+    let shader_input_0 = *assets.shader_binding(shader).unwrap();
+    fixture_world(
+        assets,
+        2.0,
+        1.5,
+        SurfaceMaterial {
+            shader: shader_input_0,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |g| {
+            // A quadratic 3x3 control patch with the center 0.5 units deeper.
+            // Native PutPointsOnCurve at this no-subdivision tolerance leaves
+            // a 3x3 grid, whose center is 0.125 units deeper (tr_curve.c).
+            g.vertices.clear();
+            for row in 0..3 {
+                for column in 0..3 {
+                    let u = column as f32 * 0.5;
+                    let v = row as f32 * 0.5;
+                    g.vertices.push(WorldVertex {
+                        vertex: Vertex {
+                            normal: Vec3([-1.0, 0.0, 0.0]),
+                            position: Vec3([
+                                2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
+                                3.0 - 6.0 * u,
+                                3.0 - 6.0 * v,
+                            ]),
+                            texcoord: [u, v],
+                            lightmap_coord: [u, v],
+                            ..Vertex::default()
+                        },
+                    });
+                }
+            }
+            for row in 0..3 {
+                for column in 0..3 {
+                    let u = column as f32 * 0.5;
+                    let v = row as f32 * 0.5;
+                    let bu = 2.0 * u * (1.0 - u);
+                    let bv = 2.0 * v * (1.0 - v);
+                    let mut vertex = g.vertices[row * 3 + column];
+                    vertex.vertex.position.0[0] = 2.0 + 0.5 * bu * bv;
+                    g.vertices.push(vertex);
+                }
+            }
+            g.indices.clear();
+            g.boundaries.clear();
+            for row in 0..2u32 {
+                for column in 0..2u32 {
+                    let a = 9 + row * 3 + column;
+                    let b = a + 3;
+                    for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
+                        g.boundaries.push(RangeSpan {
+                            first: g.indices.len() as u32,
+                            count: 3,
+                        });
+                        g.indices.extend_from_slice(&triangle);
+                    }
+                }
+            }
+            let surface = &mut g.surfaces[0];
+            surface.kind = GeometryKind::Patch;
+            surface.vertices = RangeSpan { first: 9, count: 9 };
+            surface.indices = RangeSpan {
+                first: 0,
+                count: 24,
+            };
+            surface.boundaries = RangeSpan { first: 0, count: 8 };
+            surface.plane = None;
+            surface.bounds.maxs.0[0] = 2.125;
+            surface.texture_coordinates = TextureCoordinates::Normalized;
+            surface.patch = Some(PatchGrid {
+                control_vertices: RangeSpan { first: 0, count: 9 },
+                control_dimensions: [3, 3],
+                dimensions: [3, 3],
+                width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                lod_origin: Vec3([2.0, 0.0, 0.0]),
+                lod_radius: 18.0f32.sqrt(),
+            });
+            mutate(g);
+        },
+    )
+}
+
 #[test]
 fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
     let mut assets = Assets::load().unwrap();
@@ -715,91 +806,7 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
             ..MaterialSettings::default()
         },
     );
-    let world = {
-        let shader_input_0 = *assets.shader_binding(material).unwrap();
-        fixture_world(
-            &mut assets,
-            2.0,
-            1.5,
-            SurfaceMaterial {
-                shader: shader_input_0,
-                ..SurfaceMaterial::default()
-            },
-            None,
-            GeometryPartition::Unpartitioned,
-            |g| {
-                // A quadratic 3x3 control patch with the center 0.5 units deeper.
-                // Native PutPointsOnCurve at this no-subdivision tolerance leaves
-                // a 3x3 grid, whose center is 0.125 units deeper (tr_curve.c).
-                g.vertices.clear();
-                for row in 0..3 {
-                    for column in 0..3 {
-                        let u = column as f32 * 0.5;
-                        let v = row as f32 * 0.5;
-                        g.vertices.push(WorldVertex {
-                            vertex: Vertex {
-                                normal: Vec3([-1.0, 0.0, 0.0]),
-                                position: Vec3([
-                                    2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
-                                    3.0 - 6.0 * u,
-                                    3.0 - 6.0 * v,
-                                ]),
-                                texcoord: [u, v],
-                                lightmap_coord: [u, v],
-                                ..Vertex::default()
-                            },
-                        });
-                    }
-                }
-                for row in 0..3 {
-                    for column in 0..3 {
-                        let u = column as f32 * 0.5;
-                        let v = row as f32 * 0.5;
-                        let bu = 2.0 * u * (1.0 - u);
-                        let bv = 2.0 * v * (1.0 - v);
-                        let mut vertex = g.vertices[row * 3 + column];
-                        vertex.vertex.position.0[0] = 2.0 + 0.5 * bu * bv;
-                        g.vertices.push(vertex);
-                    }
-                }
-                g.indices.clear();
-                g.boundaries.clear();
-                for row in 0..2u32 {
-                    for column in 0..2u32 {
-                        let a = 9 + row * 3 + column;
-                        let b = a + 3;
-                        for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
-                            g.boundaries.push(RangeSpan {
-                                first: g.indices.len() as u32,
-                                count: 3,
-                            });
-                            g.indices.extend_from_slice(&triangle);
-                        }
-                    }
-                }
-                let surface = &mut g.surfaces[0];
-                surface.kind = GeometryKind::Patch;
-                surface.vertices = RangeSpan { first: 9, count: 9 };
-                surface.indices = RangeSpan {
-                    first: 0,
-                    count: 24,
-                };
-                surface.boundaries = RangeSpan { first: 0, count: 8 };
-                surface.plane = None;
-                surface.bounds.maxs.0[0] = 2.125;
-                surface.texture_coordinates = TextureCoordinates::Normalized;
-                surface.patch = Some(PatchGrid {
-                    control_vertices: RangeSpan { first: 0, count: 9 },
-                    control_dimensions: [3, 3],
-                    dimensions: [3, 3],
-                    width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
-                    height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
-                    lod_origin: Vec3([2.0, 0.0, 0.0]),
-                    lod_radius: 18.0f32.sqrt(),
-                });
-            },
-        )
-    };
+    let world = curved_patch_world(&mut assets, material, |_| {});
     let geometry = assets.world(world).unwrap().geometry();
     let surface = &geometry.surfaces[0];
     let grid = surface.patch.as_ref().unwrap();
@@ -3297,4 +3304,302 @@ fn band_counts_one_scanner_rejection_and_keeps_healthy_surface() {
     assert_eq!(stats.rejected, 1);
     assert_eq!(world.stats().rejected, 1);
     assert!(cpu.frame.pixels.contains(&u32::MAX));
+}
+
+#[test]
+fn selected_patch_topology_changes_real_depth_and_remains_owned_by_each_view_and_pose() {
+    let mut assets = Assets::load().unwrap();
+    let shader = stages(
+        &mut assets,
+        &[Stage::default()],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let world = curved_patch_world(&mut assets, shader, |_| {});
+    let full_vertices = assets.world(world).unwrap().geometry().vertices.clone();
+    let full_indices = assets.world(world).unwrap().geometry().indices.clone();
+    let grid = assets.world(world).unwrap().geometry().surfaces[0]
+        .patch
+        .as_ref()
+        .unwrap();
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let fine = packet(
+        &assets,
+        &[world],
+        Refdef {
+            curve_error: 250.0,
+            ..test_view()
+        },
+    );
+    assert_eq!(cpu.render(&fine, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().patch_polygons, 8);
+    assert!(cpu.world_stats().curve_pixels > 0);
+    let fine_depth = cpu
+        .frame
+        .inverse_depth
+        .iter()
+        .map(|depth| depth.to_bits())
+        .collect::<Vec<_>>();
+    let coarse = packet(
+        &assets,
+        &[world],
+        Refdef {
+            curve_error: 0.0,
+            ..test_view()
+        },
+    );
+    assert_eq!(cpu.render(&coarse, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().patch_polygons, 2);
+    assert!(cpu.world_stats().curve_pixels > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel != u32::from_le_bytes([3, 5, 7, 255]))
+    );
+    assert_ne!(
+        cpu.frame
+            .inverse_depth
+            .iter()
+            .map(|depth| depth.to_bits())
+            .collect::<Vec<_>>(),
+        fine_depth
+    );
+    let mut ordered_pixels = None;
+    for reversed in [false, true] {
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+        let mut requests = [(0, 14, 250.0), (14, 15, 0.0)];
+        if reversed {
+            requests.reverse();
+        }
+        for (x, width, curve_error) in requests {
+            assert!(frame.add_world(
+                world,
+                only_presentation(&assets, world),
+                &[VisibleSurface {
+                    surface: 0,
+                    depth_key: 0
+                }]
+            ));
+            assert!(frame.render_scene(
+                Refdef {
+                    viewport: Viewport {
+                        x,
+                        y: 0,
+                        width,
+                        height: 19
+                    },
+                    curve_error,
+                    ..test_view()
+                },
+                &[],
+                &assets,
+                crate::shader::reference::ShaderView::direct()
+            ));
+        }
+        let list = frame.finish();
+        for command in list.commands() {
+            if let Command::View(view) = command {
+                let surface = list.surfaces(view.scene.surfaces)[0];
+                assert_eq!(
+                    surface.patch_lod.triangle_count(grid),
+                    if view.refdef.curve_error == 0.0 { 2 } else { 8 }
+                );
+            }
+        }
+        assert_eq!(cpu.render(&list, &assets).rejected, 0);
+        assert_eq!(cpu.world_stats().patch_polygons, 10);
+        if let Some(expected) = &ordered_pixels {
+            assert_eq!(cpu.pixels(), expected);
+        } else {
+            ordered_pixels = Some(cpu.pixels().to_vec());
+        }
+    }
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    for (x, origin) in [(0, Vec3::default()), (14, Vec3([10.0, 0.0, 0.0]))] {
+        assert!(frame.add_entity(crate::SceneEntity {
+            model: crate::SceneModel::World {
+                world,
+                presentation: only_presentation(&assets, world),
+                surfaces: RangeSpan { first: 0, count: 1 }
+            },
+            origin,
+            ..Default::default()
+        }));
+        assert!(frame.render_scene(
+            Refdef {
+                viewport: Viewport {
+                    x,
+                    y: 0,
+                    width: if x == 0 { 14 } else { 15 },
+                    height: 19
+                },
+                curve_error: 4.0,
+                ..test_view()
+            },
+            &[],
+            &assets,
+            crate::shader::reference::ShaderView::direct()
+        ));
+    }
+    let instances = frame.finish();
+    for command in instances.commands() {
+        if let Command::View(view) = command {
+            let surface = instances.surfaces(view.scene.surfaces)[0];
+            let entity = instances.entity(surface.entity.unwrap());
+            assert_eq!(
+                surface.patch_lod.triangle_count(grid),
+                if entity.origin == Vec3::default() {
+                    8
+                } else {
+                    2
+                }
+            );
+        }
+    }
+    assert_eq!(cpu.render(&instances, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().patch_polygons, 10);
+    assert!(cpu.pixels().chunks_exact(29).any(|row| {
+        row[14..]
+            .iter()
+            .any(|&pixel| pixel != u32::from_le_bytes([3, 5, 7, 255]))
+    }));
+    assert_eq!(
+        assets.world(world).unwrap().geometry().vertices,
+        full_vertices
+    );
+    assert_eq!(
+        assets.world(world).unwrap().geometry().indices,
+        full_indices
+    );
+}
+
+#[test]
+fn coarse_patch_join_draws_when_every_stored_full_grid_triangle_is_collinear() {
+    let mut assets = Assets::load().unwrap();
+    let shader = stages(
+        &mut assets,
+        &[Stage::default()],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let world = curved_patch_world(&mut assets, shader, |geometry| {
+        for (vertex, position) in geometry.vertices[9..15].iter_mut().zip([
+            [2.0, -2.0, -1.0],
+            [2.0, 0.0, -1.0],
+            [2.0, 2.0, 1.0],
+            [2.0, 0.0, -1.0],
+            [2.0, 0.0, -1.0],
+            [2.0, 2.0, 1.0],
+        ]) {
+            vertex.vertex.position = Vec3(position);
+        }
+        geometry.indices = vec![9, 12, 10, 10, 12, 13, 10, 13, 11, 11, 13, 14];
+        geometry.boundaries = (0..4)
+            .map(|triangle| RangeSpan {
+                first: triangle * 3,
+                count: 3,
+            })
+            .collect();
+        let surface = &mut geometry.surfaces[0];
+        surface.vertices.count = 6;
+        surface.indices.count = 12;
+        surface.boundaries.count = 4;
+        surface.bounds.maxs.0[0] = 2.0;
+        let grid = surface.patch.as_mut().unwrap();
+        grid.dimensions = [3, 2];
+        grid.height_lod_error = vec![0.0; 2].into_boxed_slice();
+    });
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let full = packet(
+        &assets,
+        &[world],
+        Refdef {
+            curve_error: 250.0,
+            ..test_view()
+        },
+    );
+    assert_eq!(cpu.render(&full, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().curve_pixels, 0);
+    let coarse = packet(
+        &assets,
+        &[world],
+        Refdef {
+            curve_error: 0.0,
+            ..test_view()
+        },
+    );
+    assert_eq!(cpu.render(&coarse, &assets).rejected, 0);
+    assert!(
+        cpu.world_stats().curve_pixels > 0,
+        "a new noncollinear coarse triangle cannot use the full-grid empty shortcut"
+    );
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel != u32::from_le_bytes([3, 5, 7, 255]))
+    );
+}
+
+#[test]
+fn inline_nodraw_patch_cannot_synthesize_coarse_triangles_from_empty_draw_geometry() {
+    let mut assets = Assets::load().unwrap();
+    let shader = stages(
+        &mut assets,
+        &[Stage::default()],
+        MaterialSettings {
+            cull: Cull::None,
+            ..Default::default()
+        },
+    );
+    let world = curved_patch_world(&mut assets, shader, |geometry| {
+        let surface = &mut geometry.surfaces[0];
+        surface.no_draw = true;
+        surface.indices.count = 0;
+        surface.boundaries.count = 0;
+    });
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    assert!(frame.add_entity(crate::SceneEntity {
+        model: crate::SceneModel::World {
+            world,
+            presentation: only_presentation(&assets, world),
+            surfaces: RangeSpan { first: 0, count: 1 }
+        },
+        ..Default::default()
+    }));
+    assert!(frame.render_scene(
+        Refdef {
+            curve_error: 0.0,
+            ..test_view()
+        },
+        &[],
+        &assets,
+        crate::shader::reference::ShaderView::direct()
+    ));
+    let list = frame.finish();
+    let grid = assets.world(world).unwrap().geometry().surfaces[0]
+        .patch
+        .as_ref()
+        .unwrap();
+    for command in list.commands() {
+        if let Command::View(view) = command {
+            let surface = list.surfaces(view.scene.surfaces)[0];
+            assert!(surface.entity.is_some());
+            assert!(surface.patch_lod.is_full(grid));
+        }
+    }
+    let mut cpu = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(cpu.render(&list, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().curve_pixels, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([3, 5, 7, 255]))
+    );
 }
