@@ -176,6 +176,14 @@ impl SnapshotBinding {
         gamestate: &qa_network::channel::commands::Q3GameState<'_>,
     ) {
         self.native_client = gamestate.client_num;
+        self.reset_received();
+    }
+    pub(crate) fn receive_server_info(&mut self) {
+        // A camera service never supplies the physical native player number.
+        self.reset_received();
+    }
+    fn reset_received(&mut self) {
+        self.view_entity_override = None;
         if let Some(client) = self.presentation.as_mut() {
             client.clock.reset();
             client.sequence = None;

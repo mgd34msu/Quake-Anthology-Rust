@@ -21,6 +21,7 @@ impl EventConsumer for Consumer {
             FrameEvent::Native(_) | FrameEvent::GameState { .. } => {
                 u32::from(record.delivery.unwrap().module.0)
             }
+            FrameEvent::ResetPresentation { client, .. } => client.0,
             FrameEvent::Hud(event) => event.client.0,
             FrameEvent::ViewFeedback(event) => event.client.0,
             FrameEvent::PlayerValue { id, value } => {

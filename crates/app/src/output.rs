@@ -23,6 +23,8 @@ pub struct OutputCounts {
     pub prints: u64,
     pub hud: u64,
     pub view_feedback: u64,
+    pub presentation_resets: u64,
+    pub unhandled_presentation_resets: u64,
     pub native_messages: u64,
     pub native_filtered: u64,
     pub unhandled_sounds: u64,
@@ -171,6 +173,7 @@ pub(crate) fn dispatch_frame(
     {
         runtime.publish_audio_retirements();
     }
+    runtime.publish_presentation_resets();
     let server = &mut runtime.server;
     let snapshots = &mut runtime.snapshots;
     runtime
@@ -200,7 +203,62 @@ pub(crate) fn dispatch_frame(
                 &mut |record: qa_core::events::OutputRecord,
                       texts: &mut qa_core::events::TextStore| {
                     let submitted = match record.event {
+                        FrameEvent::ResetPresentation { client, lifetime } => {
+                            let slot = client.0 as usize;
+                            if let Some(row) = server.clients.get_mut(slot)
+                                && row.connection == Some(Connection::Local)
+                                && row.entity == lifetime
+                                && let Some(resources) = runtime
+                                    .client_resources
+                                    .get_mut(slot)
+                                    .and_then(Option::as_mut)
+                                && resources.state.complete_presentation_reset(
+                                    lifetime,
+                                    server.presentation,
+                                    record.sequence,
+                                )
+                            {
+                                row.hud.reset(texts);
+                                if let Some(seat) = snapshots
+                                    .get(slot)
+                                    .and_then(Option::as_ref)
+                                    .and_then(crate::snapshots::SnapshotBinding::seat)
+                                {
+                                    runtime.catalog.hud.project_stats(
+                                        &runtime.prediction[seat.index()].player,
+                                        &mut row.hud,
+                                    );
+                                }
+                                row.hud_publication.reset();
+                                row.value_publication.clear();
+                                counts.presentation_resets += 1;
+                                if !source.reset_presentation(client, lifetime) {
+                                    resources.state.request_presentation_reset(lifetime);
+                                    counts.unhandled_presentation_resets += 1;
+                                }
+                            }
+                            true
+                        }
                         FrameEvent::Music(control) => {
+                            let client = match control {
+                                qa_core::primitives::MusicControl::Start { owner, .. }
+                                | qa_core::primitives::MusicControl::Track { owner, .. } => {
+                                    owner.client
+                                }
+                                _ => None,
+                            };
+                            if client.is_some_and(|(client, _)| {
+                                runtime
+                                    .client_resources
+                                    .get(client.0 as usize)
+                                    .and_then(Option::as_ref)
+                                    .is_some_and(|resources| {
+                                        !resources.state.presentation_after_reset(record.sequence)
+                                    })
+                            }) {
+                                counts.unhandled_music += 1;
+                                return OutputSubmission::BestEffort;
+                            }
                             counts.music += 1;
                             if let qa_core::primitives::MusicControl::Report(query) = control {
                                 reply = source
@@ -231,13 +289,28 @@ pub(crate) fn dispatch_frame(
                         }
                         FrameEvent::Sound(event) => {
                             counts.sounds += 1;
-                            let sent = source.sound(
-                                runtime
-                                    .sound_assets
-                                    .as_deref()
-                                    .map(crate::audio::SoundAssets::bank),
-                                event,
-                            );
+                            let creates_voice =
+                                matches!(event.action, SoundAction::Play | SoundAction::StartLoop);
+                            let ready = !creates_voice
+                                || event.client.is_none_or(|client| {
+                                    runtime
+                                        .client_resources
+                                        .get(client.0 as usize)
+                                        .and_then(Option::as_ref)
+                                        .is_none_or(|resources| {
+                                            resources
+                                                .state
+                                                .presentation_after_reset(record.sequence)
+                                        })
+                                });
+                            let sent = ready
+                                && source.sound(
+                                    runtime
+                                        .sound_assets
+                                        .as_deref()
+                                        .map(crate::audio::SoundAssets::bank),
+                                    event,
+                                );
                             counts.unhandled_sounds += u64::from(!sent);
                             complete_sound(
                                 server.clients.as_mut(),
@@ -254,7 +327,16 @@ pub(crate) fn dispatch_frame(
                         }
                         FrameEvent::Effect(event) => {
                             counts.effects += 1;
-                            let sent = source.effect(event);
+                            let ready = event.client.is_none_or(|client| {
+                                runtime
+                                    .client_resources
+                                    .get(client.0 as usize)
+                                    .and_then(Option::as_ref)
+                                    .is_none_or(|resources| {
+                                        resources.state.presentation_after_reset(record.sequence)
+                                    })
+                            });
+                            let sent = ready && source.effect(event);
                             counts.unhandled_effects += u64::from(!sent);
                             true
                         }
@@ -742,7 +824,19 @@ pub(crate) fn dispatch_frame(
                 } else if is_local {
                     // Audio/particles have one presentation consumer. Each HUD
                     // independently leases its text before retiring its record.
+                    let resources = runtime.client_resources.get(slot).and_then(Option::as_ref);
+                    if resources
+                        .is_some_and(|resources| resources.state.presentation_reset_pending())
+                    {
+                        // Preserve this CLIENT's new display records on its
+                        // existing cursor until its reset fence is consumed.
+                        return OutputSubmission::Unsent;
+                    }
+                    let ready = resources.is_none_or(|resources| {
+                        resources.state.presentation_after_reset(record.sequence)
+                    });
                     let success = match record.event {
+                        _ if !ready => true,
                         FrameEvent::Hud(event) => {
                             counts.hud += 1;
                             if !runtime.catalog.hud.apply(&mut client.hud, event.change) {

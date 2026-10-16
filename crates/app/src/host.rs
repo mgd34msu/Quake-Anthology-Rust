@@ -60,6 +60,13 @@ pub trait FrameSource {
         true
     }
     /// False reports an unloaded backend, not successful audio/particle proof.
+    fn reset_presentation(
+        &mut self,
+        _client: ClientId,
+        _lifetime: qa_core::primitives::EntityId,
+    ) -> bool {
+        true
+    }
     fn sound(&mut self, _bank: Option<&qa_audio::Bank>, _event: SoundEvent) -> bool {
         false
     }
@@ -140,6 +147,20 @@ impl FrameSource for LiveFrame<'_> {
         if let Some(renderer) = self.renderer.as_deref_mut() {
             renderer.set_effect_clients(*clients, time, gravity);
         }
+    }
+    fn reset_presentation(
+        &mut self,
+        client: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) -> bool {
+        if let Some(audio) = self.audio.as_deref_mut() {
+            audio.mixer.reset_client(client, lifetime, false);
+            audio.music.reset_client(&mut audio.mixer, client, lifetime);
+        }
+        if let Some(renderer) = self.renderer.as_deref_mut() {
+            renderer.reset_client_effects(client, lifetime);
+        }
+        true
     }
     fn sound(&mut self, bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
         self.audio.as_deref_mut().is_some_and(|audio| {
@@ -1450,6 +1471,31 @@ impl FrameHost {
         Ok(())
     }
 
+    fn admit_received_presentation(&mut self, client: ClientId) -> bool {
+        if self.runtime.ensure_client_presentation_reset(client) {
+            true
+        } else {
+            if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
+                resources.state.rejected += 1;
+            }
+            false
+        }
+    }
+
+    fn reset_received_client(&mut self, client: ClientId, seat: SeatId) {
+        let lifetime = self.runtime.server.clients[client.0 as usize].entity;
+        if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
+            resources.state.request_presentation_reset(lifetime);
+        }
+        let _ = self.runtime.ensure_client_presentation_reset(client);
+        let prediction = &mut self.runtime.prediction[seat.index()];
+        prediction.clear_history();
+        prediction.player.clear_received();
+        if let Some(collision) = self.runtime.client_collision[client.0 as usize].as_mut() {
+            collision.reset();
+        }
+    }
+
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
         let effect_clients = std::array::from_fn(|seat| {
             let (client, row, _) = self.local_seat(seat)?;
@@ -1755,20 +1801,29 @@ impl FrameHost {
                                     print.text,
                                 );
                             }
-                            Incoming::Cue { cue, current } => self.received_cue(id, cue, current),
+                            Incoming::Cue { cue, current } => {
+                                if self.admit_received_presentation(id) {
+                                    self.received_cue(id, cue, current);
+                                }
+                            }
                             Incoming::CdTrack(track) => {
                                 // Native Q1/QW clients loop the primary track;
                                 // NetQuake's second byte remains a wire field.
-                                crate::audio::cd_track(&mut self.runtime, id, u32::from(track.track));
+                                if self.admit_received_presentation(id) {
+                                    crate::audio::cd_track(&mut self.runtime, id, u32::from(track.track));
+                                }
                             }
                             Incoming::Particle(particle) => {
+                                if !self.admit_received_presentation(id) {
+                                    return std::ops::ControlFlow::Continue(());
+                                }
                                 if let Some(mut event) = self.runtime.snapshots[id.0 as usize]
                                     .as_ref()
                                     .and_then(|binding| binding.particle_event(particle))
                                 {
                                     event.client = Some(id);
                                     event.client_lifetime =
-                                        Some(server.clients[id.0 as usize].entity);
+                                        Some(self.runtime.server.clients[id.0 as usize].entity);
                                     event.time = time;
                                     let _ = self.runtime.server.events.push_to(
                                         qa_core::events::OutputTarget::Presentation,
@@ -1807,9 +1862,42 @@ impl FrameHost {
                                     crate::audio::config_music(&mut self.runtime, id, config.text);
                                 }
                             }
+                            Incoming::ServerInfo(info) => {
+                                let old_world = self.local_worlds[seat.index()];
+                                let owner = self.runtime.model_assets.as_ref();
+                                let mut world = None;
+                                let _ = info.for_each_config(|config| {
+                                    if config.index == 1
+                                        && let Some(owner) = owner
+                                        && let Some(binding) = qa_compat::services::ModelLookup::loaded_world(owner.catalog(), config.text)
+                                        && binding.collision.is_some()
+                                        && let Some((render, presentation)) = old_world
+                                        && render == binding.render
+                                        && owner.assets().world_presentation(presentation)
+                                            .is_some_and(|entry| entry.world() == render)
+                                    {
+                                        world = Some((binding, presentation));
+                                    }
+                                });
+                                self.local_worlds[seat.index()] = world.map(|(world, presentation)| (world.render, presentation));
+                                self.reset_received_client(id, seat);
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.apply_server_info(
+                                        &info,
+                                        world,
+                                        self.runtime.model_assets.as_ref().filter(|owner| !owner.initial_registration()).map(crate::model_assets::ModelAssets::catalog),
+                                        self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
+                                    );
+                                    if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                    }
+                                }
+                                if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_mut() {
+                                    binding.receive_server_info();
+                                }
+                            }
                             Incoming::Gamestate(gamestate) => {
-                                self.runtime.prediction[seat.index()].clear_history();
-                                if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() { view.reset(); }
+                                self.reset_received_client(id, seat);
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()
                                 {

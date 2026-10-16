@@ -394,3 +394,52 @@ fn strict_oldest_steal_preserves_announcer_and_listener_channels() {
     ));
     assert_eq!(sample(&bank, &mut m), [expected(-1001, 127, 1.0); 2]);
 }
+
+#[test]
+fn presentation_reset_keeps_the_live_listener_and_scopes_voice_removal() {
+    let (bank, mut m) = mixer(4);
+    assert!(respatialize(&bank, &mut m, Vec3::default()));
+    let mut own = event(&bank, 4, 0);
+    own.playback = None;
+    own.channel = 2;
+    own.positioned = true;
+    own.position = Vec3([400.0, 0.0, 0.0]);
+    assert!(m.sound(&bank, own));
+    let mut peer = own;
+    peer.client = Some(ClientId(8));
+    peer.entity = Some(SoundEmitter::Native {
+        namespace: ResourceNamespace::Client(ClientId(8)),
+        slot: 4,
+    });
+    peer.bus = SoundBus::Local;
+    assert!(m.sound(&bank, peer));
+    m.reset_client(CLIENT, LIFE, false);
+    assert_eq!(m.counts.stopped, 1);
+    assert!(sample(&bank, &mut m).iter().all(|&value| value > 0));
+    assert!(m.sound(
+        &bank,
+        SoundEvent {
+            action: SoundAction::Stop,
+            ..peer
+        }
+    ));
+    assert_eq!(m.counts.stopped, 2);
+    m.reset_client(
+        CLIENT,
+        EntityId {
+            generation: LIFE.generation + 1,
+            ..LIFE
+        },
+        true,
+    );
+    m.listen(&[None, None], 1.0);
+    assert!(m.sound(&bank, own));
+    assert_eq!(sample(&bank, &mut m), [0, ((1001i64 * 189) >> 8) as i16]);
+    m.reset_client(CLIENT, LIFE, true);
+    assert_eq!(m.counts.stopped, 3);
+    let mut replacement_owner = own;
+    replacement_owner.listener_owner = Some(ModuleId(99));
+    replacement_owner.bus = SoundBus::Local;
+    assert!(m.sound(&bank, replacement_owner));
+    assert!(sample(&bank, &mut m).iter().all(|&value| value > 0));
+}

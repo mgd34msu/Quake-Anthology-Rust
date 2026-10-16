@@ -84,6 +84,7 @@ pub enum Incoming<'a> {
         text: &'a [u8],
     },
     Gamestate(crate::channel::commands::Q3GameState<'a>),
+    ServerInfo(crate::commands::startup::NqServerInfo<'a>),
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     /// A native sequenced ACK maps to the newest submitted common command.
     /// It is not an output-record ACK or a server execution-time assertion.

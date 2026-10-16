@@ -327,6 +327,15 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         *to = *words;
         true
     }
+    /// A validated new gamestate replaces native baselines and accepted frames.
+    /// Load-sized storage and cumulative admission counters remain owned here.
+    pub(crate) fn reset_gamestate(&mut self) {
+        self.slots.fill(Slot::ZERO);
+        self.baselines.fill([0; E]);
+        self.parsed_rows = 0;
+        self.latest = None;
+        self.previous = None;
+    }
     fn expired(&self, slot: &Slot<P>) -> bool {
         self.retained_rows
             .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
@@ -482,15 +491,6 @@ pub struct Q3ClientSnapshot<'a> {
 impl Q3Ring {
     pub(crate) fn native_numbers(&self) -> usize {
         self.baselines.len()
-    }
-    /// A validated new gamestate replaces native baselines and accepted frames.
-    /// Load-sized storage and cumulative admission counters remain owned here.
-    pub(crate) fn reset_gamestate(&mut self) {
-        self.slots.fill(Slot::ZERO);
-        self.baselines.fill([0; states::ENTITY_WORDS]);
-        self.parsed_rows = 0;
-        self.latest = None;
-        self.previous = None;
     }
     pub(crate) fn client_number(&self) -> (u32, qa_core::primitives::ThinkTime) {
         self.latest.map_or(

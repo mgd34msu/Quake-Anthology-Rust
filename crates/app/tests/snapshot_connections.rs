@@ -1,3 +1,7 @@
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod assets_support;
+
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -64,6 +68,7 @@ struct Source {
     limit: Option<usize>,
     packets: Vec<Vec<u8>>,
     polls: usize,
+    presentation_paused: bool,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> Duration {
@@ -85,6 +90,9 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
+    fn presentation_ready(&self) -> bool {
+        !self.presentation_paused
+    }
     fn send_packet(&mut self, socket: u16, peer: std::net::SocketAddr, bytes: &[u8]) -> bool {
         assert_eq!(socket, 0);
         assert_eq!(peer.port(), REMOTE);
@@ -748,6 +756,18 @@ fn queue_nq_view_snapshot(
     camera: (u32, Vec3),
     view: Option<u16>,
 ) {
+    queue_nq_view_snapshot_with_prefix(host, client, seconds, origin, camera, view, &[]);
+}
+
+fn queue_nq_view_snapshot_with_prefix(
+    host: &mut FrameHost,
+    client: ClientId,
+    seconds: f64,
+    origin: Option<Vec3>,
+    camera: (u32, Vec3),
+    view: Option<u16>,
+    prefix: &[u8],
+) {
     use qa_network::{
         message::{Encoding, Writer},
         projection::{EntityContext, EntityProjection},
@@ -819,6 +839,9 @@ fn queue_nq_view_snapshot(
     });
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    for &byte in prefix {
+        writer.write_bits(u32::from(byte), 8).unwrap();
+    }
     channel
         .write_snapshot_candidate(&mut writer, frame, None, 16)
         .unwrap();
@@ -1413,4 +1436,872 @@ fn queued_native_flags_select_position_and_angle_permissions_independently_of_mo
             0
         );
     }
+}
+
+fn nq_server_info(level: &[u8], models: &[&[u8]], sounds: &[&[u8]]) -> Vec<u8> {
+    use qa_network::message::{Encoding, Writer};
+    let mut bytes = vec![0; 8192];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(11, 8).unwrap();
+    writer.write_bits(15, 32).unwrap();
+    writer.write_bits(16, 8).unwrap();
+    writer.write_bits(1, 8).unwrap();
+    writer
+        .write_string(Protocol::NetQuake15.string_policy(), level)
+        .unwrap();
+    for list in [models, sounds] {
+        for name in list {
+            writer
+                .write_string(Protocol::NetQuake15.string_policy(), name)
+                .unwrap();
+        }
+        writer
+            .write_string(Protocol::NetQuake15.string_policy(), b"")
+            .unwrap();
+    }
+    let length = writer.size();
+    bytes.truncate(length);
+    bytes
+}
+
+fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> GeometryId {
+    use qa_app::model_assets::{ModelAssets, ModelLimits, ModelRequest};
+    use qa_world::collision::{
+        brushes::{BrushTree, CollisionLeaf, ModelRoot},
+        surfaces::SurfaceTable,
+    };
+    let bounds = Bounds {
+        mins: Vec3([-1024.; 3]),
+        maxs: Vec3([1024.; 3]),
+    };
+    let geometry = host
+        .runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            vec![],
+            SurfaceTable::flags(vec![]),
+            BrushTree {
+                planes: vec![],
+                nodes: vec![],
+                leaves: vec![CollisionLeaf {
+                    stored_contents: None,
+                    brushes: IndexSpan::default(),
+                    patches: IndexSpan::default(),
+                }],
+                leaf_brushes: vec![],
+                leaf_patches: vec![],
+                models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(0)],
+            },
+            vec![bounds; 2],
+        )
+        .unwrap();
+    let mut assets = qa_render::Assets::load().unwrap();
+    let world = assets_support::world(&mut assets, 0.);
+    let presentation =
+        qa_render::WorldPresentationId(assets.world(world).unwrap().presentations().first);
+    let profile = ModelRequest::native("", RuleSetId::QuakeWorld, None).profile();
+    let mut owner = ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
+    owner
+        .bind_loaded_world("maps/ready.bsp", world, Some(geometry), bounds)
+        .unwrap();
+    host.runtime.model_assets = Some(owner);
+    for (seat, &client) in clients.iter().enumerate() {
+        host.local_worlds[seat] = Some((world, presentation));
+        let state = &mut host.runtime.client_resources[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .state;
+        let index = state.layout.resources[0].get(1).unwrap();
+        state.configs.set(index, b"maps/ready.bsp").unwrap();
+    }
+    host.bind_client_model_assets(
+        clients
+            .iter()
+            .copied()
+            .map(|client| (client, profile, Some((world, presentation)))),
+    );
+    geometry
+}
+
+#[test]
+fn queued_netquake_serverinfo_replaces_client_resources_without_reassigning_the_player_or_peer() {
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    let first = clients[0];
+    let second = clients[1];
+    let geometry = bind_nq_preloaded_world(&mut host, &clients);
+    queue_nq_view_snapshot(
+        &mut host,
+        first,
+        1.,
+        Some(Vec3([120., 24., 48.])),
+        (42, Vec3([1., 2., 3.])),
+        Some(42),
+    );
+    queue_nq_view_snapshot(
+        &mut host,
+        second,
+        1.,
+        Some(Vec3([30., 40., 50.])),
+        (42, Vec3([4., 5., 6.])),
+        Some(42),
+    );
+    host.drain(&mut Default::default());
+    let server = host
+        .runtime
+        .server
+        .clients
+        .iter()
+        .map(|row| {
+            (
+                row.entity,
+                row.player.body.position,
+                row.player.body.velocity,
+                row.player.view_angles,
+                row.player.movement_rules,
+                row.player.trace_rules,
+            )
+        })
+        .collect::<Vec<_>>();
+    let peer_frame = host
+        .runtime
+        .network
+        .get(second, Endpoint::Client)
+        .unwrap()
+        .channel
+        .current_snapshot()
+        .unwrap()
+        .sequence();
+    let peer_configs = host.runtime.client_resources[second.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(1)
+        .unwrap()
+        .revision;
+    let old_world = host.local_worlds[0];
+    let model = ModelRef::native(ResourceNamespace::Client(first), 1);
+    {
+        let resources = host.runtime.client_resources[first.0 as usize]
+            .as_mut()
+            .unwrap();
+        resources.state.receive_static_entity(
+            EntityRecord {
+                appearance: EntityAppearance {
+                    models: [model, None, None, None],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Some(host.runtime.model_assets.as_ref().unwrap().catalog()),
+            old_world,
+        );
+        resources
+            .state
+            .configs
+            .set(3, b"old-removed-model.mdl")
+            .unwrap();
+        assert_eq!(resources.state.static_entities().len(), 1);
+    }
+    host.runtime.prediction[0].player.inventory.collectibles = 7;
+    host.runtime.prediction[0].player.health = 87;
+    let level = vec![b'L'; 100];
+    let header = nq_server_info(&level, &[b"maps/ready.bsp", b"*1"], &[]);
+    queue_netquake_control(&mut host, first, &header);
+    host.drain(&mut Default::default());
+    let resources = &host.runtime.client_resources[first.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state;
+    let info = resources.server_info().unwrap();
+    assert_eq!((info.max_clients, info.game_type), (16, 1));
+    assert_eq!(info.level_name.as_bytes(), level);
+    assert_eq!(resources.max_clients(), 16);
+    assert_eq!(resources.configs.config(1).unwrap().text, b"maps/ready.bsp");
+    assert_eq!(resources.configs.config(2).unwrap().text, b"*1");
+    assert_eq!(resources.configs.config(3).unwrap().text, b"");
+    assert!(resources.static_entities().is_empty());
+    assert_eq!(resources.models.collision_world(), Some((geometry, 0)));
+    assert_eq!(host.local_worlds[0], old_world);
+    assert!(
+        host.runtime
+            .network
+            .get(first, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    let entities = host.client_entities_inputs()[0].unwrap();
+    assert!(entities.current.is_none());
+    assert!(entities.previous.is_none());
+    assert!(entities.get(42).is_none());
+    let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+    assert_eq!(
+        (
+            binding.native_client(),
+            binding.player_entity(None),
+            binding.view_entity(None)
+        ),
+        (5, Some(6), Some(6))
+    );
+    assert_eq!(host.runtime.prediction[0].player.health, 0);
+    assert_eq!(host.runtime.prediction[0].player.inventory.collectibles, 0);
+    assert_eq!(
+        (
+            host.runtime.prediction[0].player.movement_rules,
+            host.runtime.prediction[0].player.trace_rules
+        ),
+        (RuleSetId::Quake3, RuleSetId::Quake2)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(second, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap()
+            .sequence(),
+        peer_frame
+    );
+    assert_eq!(
+        host.runtime.client_resources[second.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(1)
+            .unwrap()
+            .revision,
+        peer_configs
+    );
+    assert_eq!(
+        host.runtime.snapshots[second.0 as usize]
+            .as_ref()
+            .unwrap()
+            .view_entity(None),
+        Some(42)
+    );
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .collision_world(old_world.unwrap().0),
+        Some(geometry)
+    );
+
+    // A truncated replacement cannot clear any admitted row or camera target.
+    queue_netquake_control(&mut host, first, &[5, 42, 0]);
+    host.drain(&mut Default::default());
+    let revision = host.runtime.client_resources[first.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(1)
+        .unwrap()
+        .revision;
+    let errors = host.runtime.network.command_errors;
+    queue_netquake_control(&mut host, first, &header[..header.len() - 1]);
+    host.drain(&mut Default::default());
+    assert_eq!(host.runtime.network.command_errors, errors + 1);
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(1)
+            .unwrap()
+            .revision,
+        revision
+    );
+    assert_eq!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .view_entity(None),
+        Some(42)
+    );
+
+    // Checked header, replacement rows, SetView and native update share the
+    // ordinary packet decoder and become visible in that admitted order.
+    let mut prefix = nq_server_info(b"same packet", &[b"maps/ready.bsp", b"*1"], &[]);
+    prefix.extend([5, 43, 0]);
+    queue_nq_view_snapshot_with_prefix(
+        &mut host,
+        first,
+        2.,
+        Some(Vec3([64., 32., 16.])),
+        (43, Vec3([200., 300., 400.])),
+        None,
+        &prefix,
+    );
+    host.drain(&mut Default::default());
+    let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+    assert_eq!(
+        (binding.player_entity(None), binding.view_entity(None)),
+        (Some(6), Some(43))
+    );
+    assert_eq!(
+        host.runtime.prediction[0].player.body.position,
+        Vec3([64., 32., 16.])
+    );
+    assert_eq!(
+        host.client_views()[0].unwrap().origin,
+        Vec3([200., 300., 422.])
+    );
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .server_info()
+            .unwrap()
+            .level_name
+            .as_bytes(),
+        b"same packet"
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .clients
+            .iter()
+            .map(|row| (
+                row.entity,
+                row.player.body.position,
+                row.player.body.velocity,
+                row.player.view_angles,
+                row.player.movement_rules,
+                row.player.trace_rules,
+            ))
+            .collect::<Vec<_>>(),
+        server
+    );
+
+    host.runtime.server.clients[first.0 as usize].hud.health = 999;
+    host.runtime.server.clients[first.0 as usize]
+        .hud
+        .inventory
+        .collectibles = 7;
+    let output = qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut Source::default(),
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    );
+    assert_eq!(output.presentation_resets, 1);
+    assert_eq!(host.runtime.server.clients[first.0 as usize].hud.health, 87);
+    assert_eq!(
+        host.runtime.server.clients[first.0 as usize]
+            .hud
+            .inventory
+            .collectibles,
+        0
+    );
+
+    // An unknown map does not silently reuse the previous world or collision.
+    queue_netquake_control(
+        &mut host,
+        first,
+        &nq_server_info(b"pending map", &[b"maps/not-preloaded.bsp"], &[]),
+    );
+    host.drain(&mut Default::default());
+    assert_eq!(host.local_worlds[0], None);
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .models
+            .collision_world(),
+        None
+    );
+    assert!(host.client_views()[0].is_none());
+    assert!(host.local_worlds[1].is_some());
+}
+
+struct ServerInfoAudio {
+    mixer: qa_audio::Mixer,
+    order: Vec<(bool, ClientId, Option<u32>)>,
+    actions: Vec<SoundAction>,
+    reject_reset: bool,
+}
+impl FrameSource for ServerInfoAudio {
+    fn begin_frame(&mut self) -> Duration {
+        Duration::ZERO
+    }
+    fn poll_events(&mut self, _: &mut SysEventQueue) {}
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::ZERO
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn present(&mut self) {}
+    fn reset_presentation(&mut self, client: ClientId, lifetime: EntityId) -> bool {
+        self.order.push((true, client, None));
+        if std::mem::take(&mut self.reject_reset) {
+            return false;
+        }
+        self.mixer.reset_client(client, lifetime, false);
+        true
+    }
+    fn sound(&mut self, bank: Option<&qa_audio::Bank>, event: SoundEvent) -> bool {
+        self.actions.push(event.action);
+        self.order.push((
+            false,
+            event.client.unwrap(),
+            match event.entity {
+                Some(SoundEmitter::Static { slot, .. }) => Some(slot),
+                _ => None,
+            },
+        ));
+        self.mixer.sound(bank.unwrap(), event)
+    }
+}
+fn nq_ambient() -> Vec<u8> {
+    let mut bytes = [0; 64];
+    let length = qa_network::outputs::write_cue(
+        Protocol::NetQuake15,
+        qa_network::outputs::Cue::StaticSound(qa_network::outputs::Sound {
+            flags: 1 | 2 | 4,
+            index: 1,
+            volume: 255,
+            attenuation: 0,
+            time_offset: 0,
+            entity: 0,
+            channel: 0,
+            position: Vec3::default(),
+        }),
+        &mut bytes,
+    )
+    .unwrap();
+    bytes[..length].to_vec()
+}
+fn dispatch_server_info_audio(
+    host: &mut FrameHost,
+    source: &mut ServerInfoAudio,
+) -> qa_app::output::OutputCounts {
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    )
+}
+
+#[test]
+fn queued_netquake_serverinfo_reset_fence_retires_old_ambient_before_new_sound_without_retiring_listener_or_peer()
+ {
+    use std::num::NonZeroU32;
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    bind_nq_preloaded_world(&mut host, &clients);
+    let rate = NonZeroU32::new(44100).unwrap();
+    let pcm = || Pcm {
+        rate,
+        channels: PcmChannels::Mono,
+        samples: vec![1200; 32],
+        loop_start: Some(0),
+        loop_end: None,
+        loop_invalid: false,
+    };
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![
+            ("sound/old.wav".into(), pcm()),
+            ("sound/new.wav".into(), pcm()),
+        ],
+    )
+    .unwrap();
+    let old = bank.find("sound/old.wav").unwrap();
+    let new = bank.find("sound/new.wav").unwrap();
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.bind_sounds().unwrap();
+    let mut source = ServerInfoAudio {
+        mixer: qa_audio::Mixer::load(rate, 8, 2),
+        order: vec![],
+        actions: vec![],
+        reject_reset: false,
+    };
+    source.mixer.listen(
+        &clients
+            .iter()
+            .copied()
+            .map(|client| {
+                Some(qa_audio::Listener {
+                    client,
+                    entity: None,
+                    origin: Vec3::default(),
+                    right: Vec3([1., 0., 0.]),
+                    negate_dot: false,
+                })
+            })
+            .collect::<Vec<_>>(),
+        1.,
+    );
+    for &client in &clients {
+        let mut bytes = nq_server_info(b"old", &[b"maps/ready.bsp"], &[b"old.wav"]);
+        bytes.extend(nq_ambient());
+        queue_netquake_control(&mut host, client, &bytes);
+    }
+    host.drain(&mut Default::default());
+    let first = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            first.presentation_resets,
+            first.sounds,
+            first.unhandled_sounds
+        ),
+        (2, 2, 0)
+    );
+    assert_eq!(
+        source.order,
+        vec![
+            (true, clients[0], None),
+            (false, clients[0], Some(0)),
+            (true, clients[1], None),
+            (false, clients[1], Some(0))
+        ]
+    );
+    assert_eq!(
+        (source.mixer.counts.started, source.mixer.counts.invalid),
+        (2, 0)
+    );
+    let owner = host.runtime.sound_assets.as_ref().unwrap();
+    let retained = (owner.bank().len(), owner.reads, owner.decodes);
+    let peer_sound = host.runtime.client_resources[clients[1].0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .sound(1);
+    assert_eq!(peer_sound, Some(old));
+
+    source.order.clear();
+    let mut bytes = nq_server_info(b"new", &[b"maps/ready.bsp"], &[b"new.wav"]);
+    bytes.extend(nq_ambient());
+    queue_netquake_control(&mut host, clients[0], &bytes);
+    host.drain(&mut Default::default());
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.presentation_resets,
+            output.unhandled_presentation_resets,
+            output.sounds,
+            output.unhandled_sounds
+        ),
+        (1, 0, 1, 0)
+    );
+    assert_eq!(
+        source.order,
+        vec![(true, clients[0], None), (false, clients[0], Some(0))]
+    );
+    assert_eq!(source.mixer.counts.stopped, 1);
+    assert_eq!(
+        (source.mixer.counts.started, source.mixer.counts.invalid),
+        (3, 0)
+    );
+    assert_eq!(
+        host.runtime.client_resources[clients[0].0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        Some(new)
+    );
+    assert_eq!(
+        host.runtime.client_resources[clients[1].0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        Some(old)
+    );
+    let owner = host.runtime.sound_assets.as_ref().unwrap();
+    assert_eq!((owner.bank().len(), owner.reads, owner.decodes), retained);
+    let mut pcm = [0; 8];
+    assert!(source.mixer.paint(owner.bank(), &mut pcm));
+    assert!(pcm.iter().any(|&sample| sample != 0));
+    source.order.clear();
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(output.presentation_resets, 0);
+    assert!(source.order.is_empty());
+    assert_eq!(source.mixer.counts.stopped, 1);
+
+    // A failed sink reset drops its following cue rather than playing it into
+    // the prior level. The same retained owner retries once on the next pass.
+    source.reject_reset = true;
+    queue_netquake_control(&mut host, clients[0], &bytes);
+    host.drain(&mut Default::default());
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.unhandled_presentation_resets,
+            output.unhandled_sounds
+        ),
+        (1, 1)
+    );
+    assert_eq!(source.order, vec![(true, clients[0], None)]);
+    source.order.clear();
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.presentation_resets,
+            output.unhandled_presentation_resets
+        ),
+        (1, 0)
+    );
+    assert_eq!(source.order, vec![(true, clients[0], None)]);
+    queue_netquake_control(&mut host, clients[0], &nq_ambient());
+    host.drain(&mut Default::default());
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!((output.sounds, output.unhandled_sounds), (1, 0));
+    assert_eq!(source.mixer.counts.invalid, 0);
+
+    // Native listener ownership must retire even when a preceding map reset
+    // rejects. Otherwise a later successful map reset deliberately preserves
+    // the old owner and blocks the same client slot's next connection.
+    let first = clients[0];
+    let peer = clients[1];
+    let lifetime = host.runtime.server.clients[first.0 as usize].entity;
+    let listener_event = |lifetime| SoundEvent {
+        action: SoundAction::Respatialize,
+        client: Some(first),
+        client_lifetime: Some(lifetime),
+        listener_owner: Some(RESOURCES),
+        listener: Some(qa_audio::Listener {
+            client: first,
+            entity: None,
+            origin: Vec3::default(),
+            right: Vec3([1., 0., 0.]),
+            negate_dot: false,
+        }),
+        volume: 1.,
+        ..Default::default()
+    };
+    assert!(
+        source
+            .mixer
+            .sound(host.runtime.sound_bank().unwrap(), listener_event(lifetime))
+    );
+    source.order.clear();
+    source.actions.clear();
+    source.reject_reset = true;
+    let mut close = nq_server_info(b"closing level", &[b"maps/ready.bsp"], &[b"new.wav"]);
+    close.push(2); // Native svc_disconnect follows the checked replacement.
+    queue_netquake_control(&mut host, first, &close);
+    queue_netquake_control(&mut host, peer, &nq_ambient());
+    host.drain(&mut Default::default());
+    assert!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(
+        host.runtime.server.clients[first.0 as usize]
+            .audio_retirement
+            .is_some()
+    );
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.unhandled_presentation_resets,
+            output.unhandled_sounds
+        ),
+        (1, 0)
+    );
+    assert_eq!(
+        source.actions,
+        vec![SoundAction::StartLoop, SoundAction::RetireClient]
+    );
+    assert_eq!(
+        source.order,
+        vec![
+            (true, first, None),
+            (false, peer, Some(1)),
+            (false, first, None)
+        ]
+    );
+    assert!(
+        host.runtime.server.clients[first.0 as usize]
+            .audio_retirement
+            .is_none()
+    );
+    source.order.clear();
+    source.actions.clear();
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.presentation_resets,
+            output.unhandled_presentation_resets
+        ),
+        (1, 0)
+    );
+    assert_eq!(source.order, vec![(true, first, None)]);
+    assert!(source.actions.is_empty());
+    assert!(host.runtime.disconnect_client(first));
+    let replacement = host
+        .runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Vec3::default(),
+                angles: Vec3::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy {
+                input: RuleSetId::Quake,
+                client: RuleSetId::QuakeWorld,
+                movement: RuleSetId::Quake3,
+                trace: RuleSetId::Quake2,
+            },
+            Protocol::NetQuake15,
+            5,
+        )
+        .unwrap();
+    assert_eq!(replacement, first);
+    let replacement_lifetime = host.runtime.server.clients[first.0 as usize].entity;
+    assert_ne!(replacement_lifetime, lifetime);
+    assert!(source.mixer.sound(
+        host.runtime.sound_bank().unwrap(),
+        listener_event(replacement_lifetime)
+    ));
+    host.bind_sounds().unwrap();
+    source.order.clear();
+    let mut replacement = nq_server_info(b"reconnected", &[b"maps/ready.bsp"], &[b"new.wav"]);
+    replacement.extend(nq_ambient());
+    queue_netquake_control(&mut host, first, &replacement);
+    host.drain(&mut Default::default());
+    let output = dispatch_server_info_audio(&mut host, &mut source);
+    assert_eq!(
+        (
+            output.presentation_resets,
+            output.sounds,
+            output.unhandled_sounds
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        source.order,
+        vec![(true, first, None), (false, first, Some(0))]
+    );
+    assert_eq!(source.mixer.counts.invalid, 0);
+    assert_eq!(
+        host.runtime.client_resources[peer.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        Some(old)
+    );
+    let owner = host.runtime.sound_assets.as_ref().unwrap();
+    assert_eq!((owner.bank().len(), owner.reads, owner.decodes), retained);
+    let mut pcm = [0; 8];
+    assert!(source.mixer.paint(owner.bank(), &mut pcm));
+    assert!(pcm.iter().any(|&sample| sample != 0));
+}
+
+#[test]
+fn queued_netquake_reset_keeps_new_display_records_pending_without_stalling_a_healthy_peer() {
+    let (mut host, clients) = netquake_camera_host(&[5, 9]);
+    bind_nq_preloaded_world(&mut host, &clients);
+    let first = clients[0];
+    let second = clients[1];
+    let print = |text: &[u8]| {
+        let mut bytes = [0; 128];
+        let length = qa_network::outputs::print(
+            Protocol::NetQuake15,
+            PrintKind::Center,
+            0,
+            text,
+            None,
+            &mut bytes,
+        )
+        .unwrap();
+        bytes[..length].to_vec()
+    };
+    let mut bytes = nq_server_info(b"new level", &[b"maps/ready.bsp"], &[]);
+    bytes.extend(print(b"new level message"));
+    queue_netquake_control(&mut host, first, &bytes);
+    queue_netquake_control(&mut host, second, &print(b"healthy peer"));
+    host.drain(&mut Default::default());
+    let first_owner = host.runtime.server.clients[first.0 as usize]
+        .output
+        .unwrap();
+    let mut source = Source {
+        presentation_paused: true,
+        ..Default::default()
+    };
+    let output = qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    );
+    assert_eq!(output.presentation_resets, 0);
+    assert!(
+        host.runtime.server.clients[first.0 as usize]
+            .hud
+            .centerprint
+            .is_none()
+    );
+    let peer = host.runtime.server.clients[second.0 as usize]
+        .hud
+        .centerprint
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    assert_eq!(
+        host.runtime.server.events.texts.get(peer),
+        Some(b"healthy peer".as_slice())
+    );
+    assert!(host.runtime.server.events.sequence_range().any(|sequence| {
+        host.runtime
+            .server
+            .events
+            .retained_for(first_owner, sequence)
+    }));
+    source.presentation_paused = false;
+    let output = qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    );
+    assert_eq!(output.presentation_resets, 1);
+    let first_text = host.runtime.server.clients[first.0 as usize]
+        .hud
+        .centerprint
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    assert_eq!(
+        host.runtime.server.events.texts.get(first_text),
+        Some(b"new level message".as_slice())
+    );
+    assert_eq!(
+        host.runtime.server.events.texts.get(peer),
+        Some(b"healthy peer".as_slice())
+    );
 }

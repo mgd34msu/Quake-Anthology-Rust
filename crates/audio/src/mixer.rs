@@ -555,6 +555,31 @@ impl Mixer {
         }
     }
 
+    fn reset_client_voices(&mut self, client: ClientId, lifetime: EntityId, loops_only: bool) {
+        for slot in &mut self.voices {
+            if slot.as_ref().is_some_and(|voice| {
+                voice.event.client == Some(client)
+                    && voice.event.client_lifetime == Some(lifetime)
+                    && (!loops_only || voice.event.looping.is_some())
+            }) {
+                *slot = None;
+                self.counts.stopped += 1;
+            }
+        }
+    }
+    pub fn reset_client(&mut self, client: ClientId, lifetime: EntityId, release_listener: bool) {
+        self.reset_client_voices(client, lifetime, false);
+        if release_listener {
+            for slot in &mut self.listeners {
+                if slot
+                    .owner
+                    .is_some_and(|owner| owner.client == client && owner.lifetime == lifetime)
+                {
+                    *slot = ListenerSlot::default();
+                }
+            }
+        }
+    }
     pub fn sound(&mut self, bank: &Bank, event: SoundEvent) -> bool {
         if matches!(
             event.action,
@@ -564,26 +589,10 @@ impl Mixer {
                 self.counts.invalid += 1;
                 return false;
             };
-            for slot in &mut self.voices {
-                if slot.as_ref().is_some_and(|voice| {
-                    voice.event.client == Some(client)
-                        && voice.event.client_lifetime == Some(lifetime)
-                        && (event.action == SoundAction::RetireClient
-                            || voice.event.looping.is_some())
-                }) {
-                    *slot = None;
-                    self.counts.stopped += 1;
-                }
-            }
             if event.action == SoundAction::RetireClient {
-                for slot in &mut self.listeners {
-                    if slot
-                        .owner
-                        .is_some_and(|owner| owner.client == client && owner.lifetime == lifetime)
-                    {
-                        *slot = ListenerSlot::default();
-                    }
-                }
+                self.reset_client(client, lifetime, true);
+            } else {
+                self.reset_client_voices(client, lifetime, true);
             }
             return true;
         }

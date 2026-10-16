@@ -620,6 +620,15 @@ impl Commands {
                         packet.changed = true;
                         at += 1 + reader.byte_position();
                     }
+                    (Protocol::NetQuake15, 11) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let info = super::startup::NqServerInfo::read(&mut reader)?;
+                        let storage = channel.nq_state_mut().ok_or(packet::Error::Context)?;
+                        storage.ring.reset_gamestate();
+                        nq = Some(storage.begin());
+                        at += 1 + reader.byte_position();
+                        consume(Incoming::ServerInfo(info));
+                    }
                     (Protocol::NetQuake15, 15) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let storage = channel.nq_state_mut().ok_or(packet::Error::Context)?;

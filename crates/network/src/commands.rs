@@ -5,6 +5,7 @@ use qa_gameplay::rules::command_units;
 pub mod connection;
 pub mod delta;
 pub mod packet;
+pub mod startup;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Q1Move {

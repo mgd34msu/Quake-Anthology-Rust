@@ -458,6 +458,31 @@ impl Runtime {
         result
     }
 
+    pub(crate) fn ensure_client_presentation_reset(&mut self, id: ClientId) -> bool {
+        let slot = id.0 as usize;
+        let Some(client) = self.server.clients.get(slot).filter(|client| {
+            client.connection == Some(qa_session::clients::Connection::Local)
+                && self.server.entities.resolve(client.entity).is_some()
+        }) else {
+            return false;
+        };
+        let Some(resources) = self.client_resources.get_mut(slot).and_then(Option::as_mut) else {
+            return false;
+        };
+        resources.state.publish_presentation_reset(
+            id,
+            client.entity,
+            &mut self.server.events,
+            &mut self.server.presentation,
+        )
+    }
+
+    pub(crate) fn publish_presentation_resets(&mut self) {
+        for slot in 0..self.client_resources.len() {
+            let _ = self.ensure_client_presentation_reset(ClientId(slot as u32));
+        }
+    }
+
     fn retire_client_audio(&mut self, id: ClientId) {
         let slot = id.0 as usize;
         if self.client_resources.get(slot).is_some_and(Option::is_some)

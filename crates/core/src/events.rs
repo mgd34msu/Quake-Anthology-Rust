@@ -1,8 +1,9 @@
 use crate::primitives::{
-    ClientId, EffectEvent, EntityRecord, HudEvent, IndexSpan, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
-    NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES,
-    NativeDelivery, NativePayload, NativeTarget, NumericValue, PrintEvent, PrintKind, PrintText,
-    RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3, ViewFeedbackEvent,
+    ClientId, EffectEvent, EntityId, EntityRecord, HudEvent, IndexSpan, ModuleId,
+    NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES,
+    NATIVE_WIRE_PAGES, NativeDelivery, NativePayload, NativeTarget, NumericValue, PrintEvent,
+    PrintKind, PrintText, RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3,
+    ViewFeedbackEvent,
 };
 use std::fmt::{self, Write};
 
@@ -15,6 +16,10 @@ pub const CONSOLE_DISPLAY_RECORDS: usize = 128;
     reason = "Fixed ring slots retain native page handles without allocating on publication."
 )]
 pub enum FrameEvent {
+    ResetPresentation {
+        client: ClientId,
+        lifetime: EntityId,
+    },
     Sound(SoundEvent),
     Music(crate::primitives::MusicControl),
     StaticEntity(EntityRecord),

@@ -574,3 +574,67 @@ fn malformed_empty_variants_and_missing_owners_fail_without_emission() {
     assert_eq!(effects.stats.rejected_events, 4);
     assert!(effects.is_empty());
 }
+
+#[test]
+fn presentation_reset_retires_only_matching_particles_and_restarts_its_clock() {
+    let mut effects = effects(4);
+    let peer = EffectClient {
+        client: ClientId(2),
+        lifetime: EntityId {
+            slot: 9,
+            generation: 3,
+        },
+    };
+    effects.synchronize(&[
+        Some(EffectClient {
+            client: CLIENT,
+            lifetime: LIFE,
+        }),
+        Some(peer),
+    ]);
+    let time = EventTime(10_000_000_000);
+    let own_event = EffectEvent {
+        time,
+        ..event(1, 1)
+    };
+    let peer_event = EffectEvent {
+        client: Some(peer.client),
+        client_lifetime: Some(peer.lifetime),
+        ..own_event
+    };
+    assert!(effects.accept_with_random(own_event, || 256));
+    assert!(effects.accept_with_random(peer_event, || 256));
+    for (client, lifetime) in [(CLIENT, LIFE), (peer.client, peer.lifetime)] {
+        assert!(effects.begin_frame(client, lifetime, time, 800.0));
+        assert!(effects.finish_frame(client, lifetime, time, 800.0));
+    }
+    let mut peer_before = None;
+    effects.visit(peer.client, peer.lifetime, |particle| {
+        peer_before = Some((particle.position, particle.velocity, particle.death));
+    });
+    assert!(peer_before.is_some());
+    effects.reset_client(
+        CLIENT,
+        EntityId {
+            generation: LIFE.generation + 1,
+            ..LIFE
+        },
+    );
+    assert_eq!(effects.len(), 2);
+    effects.reset_client(CLIENT, LIFE);
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects.stats.retired, 1);
+    let mut peer_after = None;
+    effects.visit(peer.client, peer.lifetime, |particle| {
+        peer_after = Some((particle.position, particle.velocity, particle.death));
+    });
+    assert_eq!(peer_after, peer_before);
+    assert!(!effects.begin_frame(peer.client, peer.lifetime, EventTime(0), 800.0));
+    assert!(effects.accept_with_random(event(1, 1), || 256));
+    assert!(effects.begin_frame(CLIENT, LIFE, EventTime(0), 800.0));
+    assert!(effects.finish_frame(CLIENT, LIFE, EventTime(0), 800.0));
+    assert_eq!(effects.len(), 2);
+    effects.reset_client(CLIENT, LIFE);
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects.stats.retired, 2);
+}

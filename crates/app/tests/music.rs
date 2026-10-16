@@ -929,3 +929,54 @@ fn console_bare_music_names_reach_the_same_source_selected_resolver() {
         assert_eq!(music.counts.invalid, 0);
     }
 }
+
+#[test]
+fn presentation_reset_keeps_peer_music_and_requires_the_exact_client_lifetime() {
+    let bank = bank();
+    let fixture = Fixture::new();
+    let mut mix = mixer();
+    let mut music = Music::load(&fixture.vfs);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(2), false, false),
+        Some(b"music/repeat.wav"),
+        Some(b"music/repeat.wav"),
+    );
+    let (client, lifetime) = owner(2).client.unwrap();
+    music.update(&fixture.vfs, &mut mix, 1.0);
+    music.reset_client(&mut mix, ClientId(client.0 + 1), lifetime);
+    music.reset_client(&mut mix, client, owner(1).client.unwrap().1);
+    assert!(music.playing());
+    assert_eq!(music.counts.stopped, 0);
+    let mut pcm = [0; 8];
+    assert!(mix.paint(&bank, &mut pcm));
+    assert!(pcm.iter().any(|&value| value != 0));
+    music.reset_client(&mut mix, client, lifetime);
+    assert!(!music.playing());
+    assert_eq!(music.counts.stopped, 1);
+    assert!(mix.paint(&bank, &mut pcm));
+    assert_eq!(pcm, [0; 8]);
+    music.control(
+        &fixture.vfs,
+        &mut mix,
+        start(owner(3), false, false),
+        Some(b"music/repeat.wav"),
+        Some(b"music/repeat.wav"),
+    );
+    music.reset_client(&mut mix, client, lifetime);
+    assert!(music.playing());
+    let mut release = SoundEvent {
+        action: SoundAction::ReleaseListener,
+        client: Some(client),
+        client_lifetime: owner(3).client.map(|(_, lifetime)| lifetime),
+        listener_owner: Some(ModuleId(99)),
+        ..Default::default()
+    };
+    music.sound_control(&mut mix, release);
+    assert!(music.playing());
+    release.listener_owner = owner(3).module;
+    music.sound_control(&mut mix, release);
+    assert!(!music.playing());
+    assert_eq!(music.counts.stopped, 2);
+}

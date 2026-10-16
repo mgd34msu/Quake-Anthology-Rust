@@ -154,6 +154,24 @@ impl ClientModelBindings {
         self.colors = None;
     }
 
+    pub(crate) fn world_binding(
+        &self,
+    ) -> Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)> {
+        self.world
+    }
+
+    pub(crate) fn reset_received(
+        &mut self,
+        world: Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)>,
+    ) {
+        let profile = self.profile;
+        let colors = self.colors;
+        self.reset();
+        self.profile = profile;
+        self.colors = colors;
+        self.world = world;
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

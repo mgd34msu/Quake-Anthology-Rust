@@ -578,6 +578,14 @@ impl Renderer {
         self.effect_time = time;
         self.effect_gravity = gravity;
     }
+    pub fn reset_client_effects(
+        &mut self,
+        client: qa_core::primitives::ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) {
+        self.effects.reset_client(client, lifetime);
+    }
+
     fn effect_phase(
         &mut self,
         action: fn(

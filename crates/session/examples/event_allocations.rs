@@ -13,6 +13,9 @@ struct Consumer {
 impl EventConsumer for Consumer {
     fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
         match record.event {
+            FrameEvent::ResetPresentation { client, lifetime } => {
+                std::hint::black_box((client, lifetime));
+            }
             FrameEvent::Music(control) => {
                 std::hint::black_box(control);
             }

@@ -1862,6 +1862,29 @@ impl PlayerState {
         }
     }
 
+    /// Start a received resource generation with the existing physical and input policy.
+    pub fn clear_received(&mut self) {
+        self.values.clear();
+        self.inventory.reset();
+        self.health = 0;
+        self.armor = 0;
+        self.armor_absorption = 0.0;
+        self.armor_energy_absorption = 0.0;
+        self.armor_type = Default::default();
+        self.pending_weapon = None;
+        self.view = Default::default();
+        self.punch_angles = Default::default();
+        self.view_weapon = Default::default();
+        self.loop_sound = None;
+        self.ideal_pitch = 0.0;
+        self.flags = 0;
+        self.score = 0;
+        self.frags = 0;
+        self.weapon_state = None;
+        self.native = None;
+        self.native_clock = None;
+    }
+
     pub fn reset(&mut self) {
         self.values.clear();
         self.inventory.reset();

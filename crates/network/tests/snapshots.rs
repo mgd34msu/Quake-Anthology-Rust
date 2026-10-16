@@ -1495,6 +1495,62 @@ fn server_payload(
     Ok(())
 }
 
+fn nq_reliable_payload(
+    server: &mut Channel,
+    connections: &mut Connections,
+    payload: &[u8],
+    mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+) -> Result<(), Error> {
+    let receipt = server.queue_reliable(payload).map_err(|_| Error::Context)?;
+    loop {
+        let time = server.send_state().last_sent.0 + 4;
+        let packet = server
+            .prepare_output(EventTime(time))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?;
+        let mut bytes = [0; 1400];
+        let length = packet.bytes.len();
+        bytes[..length].copy_from_slice(packet.bytes);
+        server
+            .submitted(EventTime(time))
+            .map_err(|_| Error::Context)?;
+        let remaining = server.send_state().reliable_bytes;
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &bytes[..length],
+            EventTime(time + 1),
+            |id, endpoint, incoming| {
+                consume(id, endpoint, incoming);
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        assert!(!server.reliable_receipts().contains(&receipt));
+        let client = connections
+            .get_mut(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        let ack = client
+            .channel
+            .prepare_output(EventTime(time + 2))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?;
+        let length = ack.bytes.len();
+        bytes[..length].copy_from_slice(ack.bytes);
+        client
+            .channel
+            .submitted(EventTime(time + 2))
+            .map_err(|_| Error::Context)?;
+        server
+            .receive(&bytes[..length], EventTime(time + 3))
+            .map_err(|_| Error::Context)?;
+        assert!(server.send_state().reliable_bytes < remaining);
+        if server.send_state().reliable_bytes == 0 {
+            assert_eq!(server.reliable_receipts(), &[receipt]);
+            return Ok(());
+        }
+    }
+}
+
 fn q1_service_payload(
     protocol: Protocol,
     server: &mut Channel,
@@ -1532,6 +1588,7 @@ fn q1_frame_row<'a>(frame: snapshots::ReceivedFrame<'a>, number: u32) -> Result<
 const Q1_BASELINE: [u8; 16] = [22, 0, 1, 7, 3, 2, 4, 247, 255, 255, 162, 0, 64, 1, 4, 128];
 const NQ_BASELINE_UPDATE: &[u8] = b"\x07\0\0\x80\x3f\x81\x40\0\x01";
 const QW_BASELINE_UPDATE: &[u8] = b"\x2f\0\x01\0\0";
+const NQ_SERVERINFO: &[u8] = b"\x0b\x0f\0\0\0\x10\xfeLev\x80el\0maps/a.bsp\0*1\0\0misc/a.wav\0\0";
 
 fn assert_q1_baseline_row(words: &[u32], model: u32) {
     assert_eq!(&words[..5], &[model, 3, 2, 4, 0]);
@@ -2746,6 +2803,348 @@ fn q1_wire_baselines_are_independent_between_connected_namespaces() -> Result<()
 }
 
 #[test]
+fn nq_serverinfo_borrows_header_and_resource_rows_before_following_controls() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut payload = NQ_SERVERINFO.to_vec();
+    payload.extend_from_slice(&Q1_BASELINE);
+    payload.extend_from_slice(b"\x05\x2a\0\x20\x03\x04\x08after\0");
+    let mut order = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        &payload,
+        |_, _, incoming| match incoming {
+            Incoming::ServerInfo(info) => {
+                assert_eq!((info.max_clients, info.game_type), (16, 254));
+                assert_eq!(info.level_name, b"Lev\x80el");
+                let mut rows = Vec::new();
+                info.for_each_config(|row| rows.push((row.index, row.text)))
+                    .unwrap();
+                assert_eq!(
+                    rows,
+                    [
+                        (1, b"maps/a.bsp".as_slice()),
+                        (2, b"*1"),
+                        (257, b"misc/a.wav")
+                    ]
+                );
+                assert_eq!(
+                    rows[0].1.as_ptr() as usize - info.level_name.as_ptr() as usize,
+                    info.level_name.len() + 1
+                );
+                let mut repeated = Vec::new();
+                info.clone()
+                    .for_each_config(|row| repeated.push((row.index, row.text.as_ptr())))
+                    .unwrap();
+                assert_eq!(
+                    repeated,
+                    rows.iter()
+                        .map(|&(index, text)| (index, text.as_ptr()))
+                        .collect::<Vec<_>>()
+                );
+                order.push(11);
+            }
+            Incoming::SetView { entity } => {
+                assert_eq!(entity, 42);
+                order.push(5);
+            }
+            Incoming::CdTrack(track) => {
+                assert_eq!((track.track, track.loop_track), (3, Some(4)));
+                order.push(32);
+            }
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"after");
+                order.push(8);
+            }
+            _ => panic!("serverinfo/baseline/control packet fabricated another event"),
+        },
+    )?;
+    assert_eq!(order, [11, 5, 32, 8]);
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    server_payload(
+        &mut server,
+        &mut connections,
+        NQ_BASELINE_UPDATE,
+        |_, _, incoming| {
+            let Incoming::Snapshot(frame) = incoming else {
+                panic!("following native snapshot")
+            };
+            assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
+        },
+    )?;
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_replacement_resets_only_received_state_and_the_in_progress_packet()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_data(&Q1_BASELINE)?;
+    writer.write_data(NQ_BASELINE_UPDATE)?;
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    player[12] = 57.0f32.to_bits();
+    states::write_nq_player(&mut writer, &player)?;
+    server_payload(&mut server, &mut connections, writer.bytes(), |_, _, _| {})?;
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let old = client
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?
+        .sequence();
+    assert_eq!(
+        client
+            .channel
+            .current_snapshot()
+            .ok_or(Error::Context)?
+            .player_words()
+            .ok_or(Error::Context)?[12],
+        57
+    );
+    client.channel.set_nq_weapon_mask(true)?;
+    client
+        .commands
+        .as_mut()
+        .ok_or(Error::Context)?
+        .record(qa_core::primitives::UserCmd::default())
+        .map_err(|_| Error::Context)?;
+    client
+        .channel
+        .queue_client_command(Protocol::NetQuake15, b"retained")
+        .map_err(|_| Error::Context)?;
+    assert!(
+        client
+            .channel
+            .prepare_output(EventTime(4))
+            .map_err(|_| Error::Context)?
+            .is_some()
+    );
+    client
+        .channel
+        .submitted(EventTime(4))
+        .map_err(|_| Error::Context)?;
+    let send = client.channel.send_state();
+    assert!(send.reliable_bytes > 0);
+    let datagram = client.channel.state().next_datagram;
+    // These changed time/player/entity values precede a fully accepted new
+    // serverinfo in the SAME packet and must not escape into its new state.
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(7, 8)?;
+    writer.write_bits(99.0f32.to_bits(), 32)?;
+    writer.write_data(b"\x81\x40\0\x01")?;
+    player[12] = 99.0f32.to_bits();
+    states::write_nq_player(&mut writer, &player)?;
+    writer.write_data(NQ_SERVERINFO)?;
+    writer.write_data(b"\x05\x03\0")?;
+    let mut headers = 0;
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| match incoming {
+            Incoming::ServerInfo(_) => headers += 1,
+            Incoming::SetView { entity: 3 } => {}
+            _ => panic!("new serverinfo leaked its preceding in-progress snapshot"),
+        },
+    )?;
+    assert_eq!(headers, 1);
+    let client = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    assert!(client.channel.current_snapshot().is_none());
+    assert!(client.channel.snapshot(old).is_none());
+    assert_eq!(client.channel.send_state(), send);
+    assert!(client.channel.state().next_datagram > datagram);
+    assert_eq!(
+        client
+            .commands
+            .as_ref()
+            .ok_or(Error::Context)?
+            .history()
+            .ok_or(Error::Context)?
+            .len(),
+        1
+    );
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x81\x40\0\x01",
+        |_, _, incoming| {
+            let Incoming::Snapshot(frame) = incoming else {
+                panic!("new-state entity update")
+            };
+            assert_eq!(frame.time(), ThinkTime::Seconds(0.0));
+            assert!(frame.player_words().unwrap().iter().all(|&word| word == 0));
+            assert!(
+                q1_frame_row(frame, 256)
+                    .unwrap()
+                    .iter()
+                    .all(|&word| word == 0)
+            );
+        },
+    )?;
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    player[18] = 3;
+    states::write_nq_player(&mut writer, &player)?;
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| {
+            let Incoming::Snapshot(frame) = incoming else {
+                panic!("explicit weapon-mask policy")
+            };
+            assert_eq!(frame.player_words().unwrap()[18], 8);
+        },
+    )?;
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_truncation_or_invalid_header_keeps_the_prior_ring_and_baselines()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut payload = Q1_BASELINE.to_vec();
+    payload.extend_from_slice(NQ_BASELINE_UPDATE);
+    server_payload(&mut server, &mut connections, &payload, |_, _, _| {})?;
+    let old = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?
+        .sequence();
+    let mut rejected = 0;
+    for cut in 1..NQ_SERVERINFO.len() {
+        server_payload(
+            &mut server,
+            &mut connections,
+            &NQ_SERVERINFO[..cut],
+            |_, _, _| panic!("partially validated header escaped"),
+        )?;
+        rejected += 1;
+        let channel = &connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel;
+        let frame = channel.current_snapshot().ok_or(Error::Context)?;
+        assert_eq!(frame.sequence(), old);
+        assert_q1_baseline_row(q1_frame_row(frame, 256)?, 7);
+    }
+    for (offset, value) in [(1, 28), (5, 0), (5, 17)] {
+        let mut invalid = NQ_SERVERINFO.to_vec();
+        invalid[offset] = value;
+        server_payload(&mut server, &mut connections, &invalid, |_, _, _| {
+            panic!("invalid header escaped")
+        })?;
+        rejected += 1;
+    }
+    assert_eq!(connections.command_errors, rejected);
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .snapshot(old)
+            .is_some()
+    );
+    // If any rejected header reset the old baseline, this omitted-field
+    // update would decode to zeros instead of the admitted model and pose.
+    server_payload(
+        &mut server,
+        &mut connections,
+        NQ_BASELINE_UPDATE,
+        |_, _, incoming| {
+            let Incoming::Snapshot(frame) = incoming else {
+                panic!("old-state update")
+            };
+            assert_q1_baseline_row(q1_frame_row(frame, 256).unwrap(), 7);
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn nq_serverinfo_resource_lists_keep_native_ordinals_counts_and_path_widths() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    // Models/sounds both reserve zero and permit 255 admitted names. Empty
+    // lists are syntactically valid; world readiness is a later operation.
+    for (models, sounds, model_bytes, sound_bytes, valid) in [
+        (0, 0, 1, 1, true),
+        (255, 255, 1, 1, true),
+        (256, 1, 1, 1, false),
+        (1, 256, 1, 1, false),
+        (1, 1, 63, 63, true),
+        (1, 1, 64, 1, false),
+        (1, 1, 1, 64, false),
+    ] {
+        let mut payload = b"\x0b\x0f\0\0\0\x01\xff".to_vec();
+        let level = vec![b'L'; 127];
+        payload.extend_from_slice(&level);
+        payload.push(0);
+        for (count, path_bytes) in [(models, model_bytes), (sounds, sound_bytes)] {
+            let path = vec![b'x'; path_bytes];
+            for _ in 0..count {
+                payload.extend_from_slice(&path);
+                payload.push(0);
+            }
+            payload.push(0);
+        }
+        let before = connections.command_errors;
+        let mut admitted = 0;
+        nq_reliable_payload(&mut server, &mut connections, &payload, |_, _, incoming| {
+            let Incoming::ServerInfo(info) = incoming else {
+                panic!("resource-only header fabricated an event")
+            };
+            assert!(valid, "invalid resource list escaped validation");
+            assert_eq!((info.max_clients, info.game_type), (1, 255));
+            assert_eq!(info.level_name, level.as_slice());
+            let mut indices = Vec::new();
+            info.for_each_config(|row| {
+                let path_bytes = if row.index < 256 {
+                    model_bytes
+                } else {
+                    sound_bytes
+                };
+                assert_eq!(row.text.len(), path_bytes);
+                assert!(row.text.iter().all(|&byte| byte == b'x'));
+                indices.push(row.index);
+            })
+            .unwrap();
+            let expected = (1..=models)
+                .map(|n| n as u32)
+                .chain((1..=sounds).map(|n| 256 + n as u32))
+                .collect::<Vec<_>>();
+            assert_eq!(indices, expected);
+            admitted += 1;
+        })?;
+        assert_eq!(admitted, usize::from(valid));
+        assert_eq!(connections.command_errors - before, u64::from(!valid));
+        assert!(
+            connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_import()
 -> Result<(), Error> {
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
@@ -3272,61 +3671,25 @@ fn nq_reliable_service_stream_waits_for_native_ack_after_client_publication() ->
     states::write_nq_player(&mut writer, &player)?;
     writer.write_bits(8, 8)?;
     writer.write_data(b"reliable\0")?;
-    let receipt = server
-        .queue_reliable(writer.bytes())
-        .map_err(|_| Error::Context)?;
-    let packet = server
-        .prepare_output(EventTime(1))
-        .map_err(|_| Error::Context)?
-        .ok_or(Error::Context)?;
-    let mut bytes = [0; 1400];
-    let length = packet.bytes.len();
-    bytes[..length].copy_from_slice(packet.bytes);
-    server.submitted(EventTime(1)).map_err(|_| Error::Context)?;
-    assert!(server.reliable_receipts().is_empty());
     let mut seen = 0;
-    connections.receive(
-        Endpoint::Client.socket(),
-        Peer::Loopback(ClientId(0)),
-        &bytes[..length],
-        EventTime(2),
-        |_, _, incoming| {
-            match incoming {
-                Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
-                    assert_eq!(frame.time, ThinkTime::Seconds(1.0625));
-                    assert_eq!(frame.player[12] as i32, -17);
-                    seen += 1;
-                }
-                Incoming::Print(print) => {
-                    assert_eq!(print.text, b"reliable");
-                    seen += 1;
-                }
-                _ => panic!("NQ reliable service stream"),
-            };
-            std::ops::ControlFlow::Continue(())
+    nq_reliable_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| match incoming {
+            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                assert_eq!(frame.time, ThinkTime::Seconds(1.0625));
+                assert_eq!(frame.player[12] as i32, -17);
+                seen += 1;
+            }
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"reliable");
+                seen += 1;
+            }
+            _ => panic!("NQ reliable service stream"),
         },
-    );
+    )?;
     assert_eq!((seen, connections.command_errors), (2, 0));
-    assert!(server.reliable_receipts().is_empty());
-    let client = connections
-        .get_mut(ClientId(0), Endpoint::Client)
-        .ok_or(Error::Context)?;
-    let ack = client
-        .channel
-        .prepare_output(EventTime(3))
-        .map_err(|_| Error::Context)?
-        .ok_or(Error::Context)?;
-    let length = ack.bytes.len();
-    bytes[..length].copy_from_slice(ack.bytes);
-    client
-        .channel
-        .submitted(EventTime(3))
-        .map_err(|_| Error::Context)?;
-    server
-        .receive(&bytes[..length], EventTime(4))
-        .map_err(|_| Error::Context)?;
-    assert_eq!(server.reliable_receipts(), &[receipt]);
-    assert_eq!(server.send_state().reliable_bytes, 0);
     Ok(())
 }
 

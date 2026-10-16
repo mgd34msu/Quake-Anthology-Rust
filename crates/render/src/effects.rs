@@ -346,6 +346,17 @@ impl Effects {
                 .is_none_or(|state| state.lifetime != Some(particles.lifetimes[slot]))
         });
     }
+    pub fn reset_client(&mut self, client: ClientId, lifetime: EntityId) {
+        if let Some(state) = self.clients.get_mut(client.0 as usize)
+            && state.lifetime == Some(lifetime)
+        {
+            state.completed = None;
+            state.prepared = None;
+        }
+        self.stats.retired += self.particles.remove_if(|particles, slot| {
+            particles.clients[slot] == client && particles.lifetimes[slot] == lifetime
+        });
+    }
     pub fn accept(&mut self, event: EffectEvent) -> bool {
         let random = &mut self.random;
         self.particles.accept(

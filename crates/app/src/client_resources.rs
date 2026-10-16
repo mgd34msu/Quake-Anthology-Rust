@@ -32,11 +32,32 @@ pub struct ClientResources {
     joined: qa_core::text::FixedText<8192>,
     pub unsupported_commands: u64,
 }
+/// Native server header retained independently of camera and physical identity.
+#[derive(Clone, Debug)]
+pub struct ReceivedServerInfo {
+    pub max_clients: u8,
+    pub game_type: u8,
+    pub level_name: qa_core::text::FixedText<{ qa_network::message::LEGACY_STRING_BYTES }>,
+}
+
+#[derive(Clone, Copy)]
+enum PresentationReset {
+    Complete(Option<u64>),
+    Required(EntityId),
+    Published {
+        lifetime: EntityId,
+        owner: qa_core::events::OutputConsumerId,
+        sequence: u64,
+    },
+}
+
 pub struct ResourceState {
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
     pub layout: ConfigLayout,
     pub rejected: u64,
+    server_info: Option<ReceivedServerInfo>,
+    presentation_reset: PresentationReset,
     client_capacity: u32,
     sounds: qa_audio::SoundBindings,
     sound_dirty: qa_core::bits::BitSet,
@@ -70,6 +91,8 @@ impl ClientResources {
                 models: ClientModelBindings::load(client, layout),
                 layout,
                 rejected: 0,
+                server_info: None,
+                presentation_reset: PresentationReset::Complete(None),
                 client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
@@ -106,29 +129,81 @@ impl ClientResources {
         catalog: Option<&ModelCatalog>,
         bank: Option<&qa_audio::Bank>,
     ) {
-        // The channel validated every native row, baseline and aggregate byte
-        // count before this callback. Replace the sole CLIENT storage; readiness
-        // still belongs to the channel's completed outer-message marker.
+        // Both native readers validate the complete replacement before entering
+        // this shared CLIENT reset and registration boundary.
+        let world = self.state.models.world_binding();
+        self.reset_received(world);
+        let result = gamestate.for_each_config(|config| self.store_received_config(config));
+        self.complete_received(result.is_err(), catalog, bank);
+    }
+
+    pub(crate) fn apply_server_info(
+        &mut self,
+        info: &qa_network::commands::startup::NqServerInfo<'_>,
+        world: Option<(
+            qa_compat::services::LoadedWorldBinding,
+            qa_render::world::WorldPresentationId,
+        )>,
+        catalog: Option<&ModelCatalog>,
+        bank: Option<&qa_audio::Bank>,
+    ) {
+        self.reset_received(world);
+        let mut level_name = qa_core::text::FixedText::default();
+        // The checked native string policy admits at most this buffer's size.
+        let _ = level_name.set_bytes(info.level_name);
+        self.state.server_info = Some(ReceivedServerInfo {
+            max_clients: info.max_clients,
+            game_type: info.game_type,
+            level_name,
+        });
+        let result = info.for_each_config(|config| self.store_received_config(config));
+        self.complete_received(result.is_err(), catalog, bank);
+    }
+
+    fn reset_received(
+        &mut self,
+        world: Option<(
+            qa_compat::services::LoadedWorldBinding,
+            qa_render::world::WorldPresentationId,
+        )>,
+    ) {
         self.state.configs.reset();
         self.commands.reset();
         self.selected.clear();
         self.joined.clear();
-        let mut rejected = 0;
-        let result = gamestate.for_each_config(|config| {
-            rejected += u64::from(
-                self.state
-                    .configs
-                    .set(config.index as usize, config.text)
-                    .is_err(),
-            );
-        });
-        self.state.rejected += rejected + u64::from(result.is_err());
+        self.state.server_info = None;
+        self.state.models.reset_received(world);
+        self.state.sounds.clear();
+        self.state.sound_dirty.clear();
+        self.state.static_sounds = 0;
+        for entity in &mut self.state.static_entities[..self.state.static_entity_count] {
+            *entity = Default::default();
+        }
+        self.state.static_entity_count = 0;
+        self.state.static_dirty = false;
+    }
+
+    fn store_received_config(&mut self, config: qa_network::outputs::ConfigString<'_>) {
+        self.state.rejected += u64::from(
+            self.state
+                .configs
+                .set(config.index as usize, config.text)
+                .is_err(),
+        );
+    }
+
+    fn complete_received(
+        &mut self,
+        invalid: bool,
+        catalog: Option<&ModelCatalog>,
+        bank: Option<&qa_audio::Bank>,
+    ) {
+        self.state.rejected += u64::from(invalid);
         self.state.models.configs_replaced();
         if let Some(catalog) = catalog {
             self.state.rejected +=
                 u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
         }
-        self.state.sounds.clear();
         for ordinal in 1..self.state.layout.resources[1].count as usize {
             self.state.sound_dirty.insert(ordinal);
         }
@@ -454,9 +529,96 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub(crate) fn request_presentation_reset(&mut self, lifetime: EntityId) {
+        self.presentation_reset = PresentationReset::Required(lifetime);
+    }
+
+    pub(crate) fn publish_presentation_reset(
+        &mut self,
+        client: ClientId,
+        current_lifetime: EntityId,
+        events: &mut qa_core::events::EventRing,
+        owner: &mut qa_core::events::OutputConsumerId,
+    ) -> bool {
+        let lifetime = match self.presentation_reset {
+            PresentationReset::Complete(_) => return true,
+            PresentationReset::Required(lifetime) => lifetime,
+            PresentationReset::Published {
+                lifetime,
+                owner,
+                sequence,
+            } => {
+                if events.retained_for(owner, sequence) {
+                    return true;
+                }
+                lifetime
+            }
+        };
+        if lifetime != current_lifetime {
+            self.presentation_reset = PresentationReset::Complete(None);
+            return false;
+        }
+        self.presentation_reset = PresentationReset::Required(lifetime);
+        for _ in 0..2 {
+            if !events.resume_if_needed(owner) {
+                break;
+            }
+            let Ok(sequence) = events.push_to(
+                qa_core::events::OutputTarget::Presentation,
+                qa_core::events::FrameEvent::ResetPresentation { client, lifetime },
+            ) else {
+                break;
+            };
+            if events.retained_for(*owner, sequence) {
+                self.presentation_reset = PresentationReset::Published {
+                    lifetime,
+                    owner: *owner,
+                    sequence,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn complete_presentation_reset(
+        &mut self,
+        lifetime: EntityId,
+        owner: qa_core::events::OutputConsumerId,
+        sequence: u64,
+    ) -> bool {
+        if matches!(self.presentation_reset,
+            PresentationReset::Published { lifetime: pending, owner: recipient, sequence: published }
+                if pending == lifetime && recipient == owner && published == sequence)
+        {
+            self.presentation_reset = PresentationReset::Complete(Some(sequence));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn presentation_reset_pending(&self) -> bool {
+        !matches!(self.presentation_reset, PresentationReset::Complete(_))
+    }
+
+    pub(crate) fn presentation_after_reset(&self, sequence: u64) -> bool {
+        match self.presentation_reset {
+            PresentationReset::Complete(reset) => reset.is_none_or(|reset| sequence > reset),
+            PresentationReset::Required(_) | PresentationReset::Published { .. } => false,
+        }
+    }
+
     /// Accepted CLIENT configuration supplies the native player-number range.
     /// Missing, zero or invalid counts never classify ordinary bodies as players.
+    pub fn server_info(&self) -> Option<&ReceivedServerInfo> {
+        self.server_info.as_ref()
+    }
+
     pub fn max_clients(&self) -> u32 {
+        if let Some(info) = &self.server_info {
+            return u32::from(info.max_clients);
+        }
         self.layout
             .max_clients()
             .and_then(|index| self.configs.config(index))

@@ -2,8 +2,8 @@
 use qa_audio::Mixer;
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::primitives::{
-    MUSIC_REMAP_TRACKS, MusicControl, MusicOwner, MusicPlayback, MusicQuery, MusicRemap, PcmFormat,
-    SoundAction, SoundEvent,
+    ClientId, EntityId, MUSIC_REMAP_TRACKS, MusicControl, MusicOwner, MusicPlayback, MusicQuery,
+    MusicRemap, PcmFormat, SoundAction, SoundEvent,
 };
 use qa_formats::{
     FormatError,
@@ -473,25 +473,28 @@ impl Music {
             query,
         }
     }
-    pub fn sound_control(&mut self, mixer: &mut Mixer, event: SoundEvent) {
-        let Some(owner) = self.owner else {
-            return;
-        };
-        let retire = match event.action {
-            SoundAction::RetireClient => owner.client.is_some_and(|(client, lifetime)| {
-                event.client == Some(client) && event.client_lifetime == Some(lifetime)
-            }),
-            SoundAction::ReleaseListener => {
-                owner.module.is_some()
-                    && event.listener_owner == owner.module
-                    && owner.client.is_some_and(|(client, lifetime)| {
-                        event.client == Some(client) && event.client_lifetime == Some(lifetime)
-                    })
-            }
-            _ => false,
-        };
-        if retire {
+    pub fn reset_client(&mut self, mixer: &mut Mixer, client: ClientId, lifetime: EntityId) {
+        if self
+            .owner
+            .is_some_and(|owner| owner.client == Some((client, lifetime)))
+        {
             self.stop(mixer);
+        }
+    }
+    pub fn sound_control(&mut self, mixer: &mut Mixer, event: SoundEvent) {
+        if event.action == SoundAction::ReleaseListener
+            && self
+                .owner
+                .is_none_or(|owner| owner.module.is_none() || event.listener_owner != owner.module)
+        {
+            return;
+        }
+        if matches!(
+            event.action,
+            SoundAction::RetireClient | SoundAction::ReleaseListener
+        ) && let (Some(client), Some(lifetime)) = (event.client, event.client_lifetime)
+        {
+            self.reset_client(mixer, client, lifetime);
         }
     }
     /// Called once per presentation frame, independently of PCM write retries.
