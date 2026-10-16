@@ -4,7 +4,7 @@ use std::cell::Cell;
 
 #[allow(dead_code)]
 #[path = "../model_assets/support.rs"]
-mod support;
+pub(super) mod support;
 
 fn profile(source: RuleSetId) -> ModelProfile {
     ModelRequest::native("", source, None).profile()

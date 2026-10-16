@@ -555,3 +555,110 @@ fn model_radius_uses_farthest_axis_extents_about_origin() {
     assert_eq!(bounds.radius(), 13.0);
     assert_eq!(Bounds::default().radius().to_bits(), 0.0_f32.to_bits());
 }
+
+#[test]
+fn quaternion_slerp_endpoints_preserve_raw_nonunit_components_and_zero_signs() {
+    let previous = [-0.0, 2.0, -3.0, 4.0];
+    let current = [5.0, -6.0, 7.0, -0.0];
+    for back in [-1.0, -0.0, 0.0] {
+        assert_eq!(
+            slerp_quaternion(previous, current, back).map(f32::to_bits),
+            current.map(f32::to_bits)
+        );
+    }
+    for back in [1.0, 2.0] {
+        assert_eq!(
+            slerp_quaternion(previous, current, back).map(f32::to_bits),
+            previous.map(f32::to_bits)
+        );
+    }
+}
+
+#[test]
+fn quaternion_slerp_chooses_the_short_arc_without_normalizing_antipodal_inputs() {
+    for back in [0.25, 0.5, 0.75] {
+        assert_eq!(
+            slerp_quaternion([0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, -2.0], back),
+            [0.0, 0.0, 0.0, 2.0]
+        );
+    }
+
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let midpoint = slerp_quaternion([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, -half, -half], 0.5);
+    // The current endpoint represents +90° Z despite its negative quaternion
+    // sign. The shortest midpoint is +45°, with quaternion half-angle 22.5°.
+    for (actual, expected) in midpoint
+        .into_iter()
+        .zip([0.0, 0.0, 0.382_683_43, 0.923_879_5])
+    {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    }
+    let rotated = quaternion_rotation_rows(midpoint).map(|row| row.dot(Vec3([1.0, 0.0, 0.0])));
+    for (actual, expected) in rotated.into_iter().zip([half, half, 0.0]) {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    }
+}
+
+#[test]
+fn close_quaternions_use_the_unnormalized_linear_branch() {
+    // Dot=4095/4096 exceeds the native .9995 threshold. These binary fractions
+    // make a 1/4-old, 3/4-new blend exact and expose any extra normalization.
+    assert_eq!(
+        slerp_quaternion(
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0 / 64.0, 0.0, 0.0, 4095.0 / 4096.0],
+            0.25,
+        ),
+        [3.0 / 256.0, 0.0, 0.0, 16_381.0 / 16_384.0]
+    );
+}
+
+#[test]
+fn quaternion_rows_project_a_quarter_turn_and_preserve_native_nonunit_axes() {
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let rows = quaternion_rotation_rows([0.0, 0.0, half, half]);
+    for (actual, expected) in rows.into_iter().zip([
+        Vec3([0.0, -1.0, 0.0]),
+        Vec3([1.0, 0.0, 0.0]),
+        Vec3([0.0, 0.0, 1.0]),
+    ]) {
+        for (actual, expected) in actual.0.into_iter().zip(expected.0) {
+            assert!((actual - expected).abs() < 2e-7, "{actual} != {expected}");
+        }
+    }
+    for (actual, expected) in rows
+        .map(|row| row.dot(Vec3([2.0, 3.0, 5.0])))
+        .into_iter()
+        .zip([-3.0, 2.0, 5.0])
+    {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    }
+
+    let nonunit = [1.0, 2.0, 3.0, 4.0];
+    let rows = quaternion_rotation_rows(nonunit);
+    assert_eq!(
+        rows,
+        [
+            Vec3([33.0, -20.0, 22.0]),
+            Vec3([28.0, 39.0, 4.0]),
+            Vec3([-10.0, 20.0, 49.0]),
+        ]
+    );
+    let point = Vec3([2.0, -1.0, 0.5]);
+    assert_eq!(rows.map(|row| row.dot(point)), [97.0, 19.0, -15.5]);
+    assert_eq!(rotate_quaternion(nonunit, point), Vec3([39.0, 48.0, -30.0]));
+
+    let zero = [-0.0, 0.0, -0.0, 0.0];
+    assert_eq!(
+        normalize_quaternion(zero).map(f32::to_bits),
+        zero.map(f32::to_bits)
+    );
+    assert_eq!(
+        quaternion_rotation_rows(zero),
+        [
+            Vec3([-1.0, 0.0, 0.0]),
+            Vec3([0.0, -1.0, 0.0]),
+            Vec3([0.0, 0.0, -1.0]),
+        ]
+    );
+}

@@ -153,6 +153,7 @@ pub struct JointPose {
     pub orientation: [f32; 4],
     pub scale: Vec3,
 }
+
 impl Default for JointPose {
     fn default() -> Self {
         Self {
@@ -161,6 +162,14 @@ impl Default for JointPose {
             scale: Vec3([1.0; 3]),
         }
     }
+}
+
+/// A vertex influence in a shared skeleton's joint namespace.
+#[derive(Clone, Copy, Debug)]
+pub struct SkeletalWeight {
+    pub joint: u32,
+    pub bias: f32,
+    pub offset: Vec3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

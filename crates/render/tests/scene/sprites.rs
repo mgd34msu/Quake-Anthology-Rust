@@ -250,6 +250,7 @@ fn sp2_wraps_geometry_and_shader_at_the_same_boundary_and_choice_failure_is_atom
     let mut front = FrontEnd::load(Limits {
         entities: 2,
         model_choices: 2,
+        model_joints: 0,
         ..Default::default()
     })
     .unwrap();

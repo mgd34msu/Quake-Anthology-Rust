@@ -20,8 +20,8 @@ pub mod surface_cache;
 pub mod world;
 pub use assets::{
     Assets, ImageId, MaterialId, ModelAnimation, ModelId, NativeDefaultKind, PaletteId,
-    ShaderBinding, ShaderBindingId, ShaderRegistration, SpriteFrame, SpriteGeometry,
-    SpriteOrientation, TimedGroup, Vertex,
+    ShaderBinding, ShaderBindingId, ShaderRegistration, SkeletalMesh, SkeletalWeight, Skeleton,
+    SpriteFrame, SpriteGeometry, SpriteOrientation, TimedGroup, Vertex,
 };
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame,

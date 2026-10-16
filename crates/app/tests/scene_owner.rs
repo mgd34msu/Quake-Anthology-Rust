@@ -20,6 +20,7 @@ fn scene(commands: usize) -> SceneComposer {
             commands,
             entities: 1,
             model_choices: 0,
+            model_joints: 0,
             polys: 1,
             vertices: 3,
             lights: 1,

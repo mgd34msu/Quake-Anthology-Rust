@@ -10,7 +10,7 @@ pub mod skin;
 use crate::FormatError;
 pub use md5::{Md5Animation, Md5AnimationFrame, Md5HierarchyJoint, Md5ScaleDiagnostic};
 use qa_core::primitives::{Bounds, Orientation, Vec3};
-pub use qa_core::primitives::{IndexSpan, JointPose};
+pub use qa_core::primitives::{IndexSpan, JointPose, SkeletalWeight as Weight};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,12 +38,6 @@ pub struct Triangle {
 pub struct Shader<'a> {
     pub name: &'a [u8],
     pub native_index: i32,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct Weight {
-    pub bone: u32,
-    pub bias: f32,
-    pub offset: Vec3,
 }
 #[derive(Debug, Default)]
 pub struct Mesh<'a> {

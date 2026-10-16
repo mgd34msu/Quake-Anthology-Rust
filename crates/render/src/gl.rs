@@ -1091,9 +1091,13 @@ impl GlBackend {
                 item, shader, list, assets, projection, inputs, view.far, stats,
             ),
             DrawKind::Entity => {
-                if let Some(entity) = crate::scene::draw_entity(list, item) {
+                if let (Some(entity), Some(frames)) = (
+                    crate::scene::draw_entity(list, item),
+                    crate::scene::item_frames(list, assets, item),
+                ) {
                     self.entity(
                         &entity,
+                        frames,
                         shader,
                         SkyKey::for_item(item, list, assets),
                         assets,
@@ -1467,6 +1471,7 @@ impl GlBackend {
     fn entity(
         &mut self,
         entity: &SceneEntity,
+        frames: crate::assets::ModelFrames<'_>,
         shader: ResolvedShader,
         key: Option<SkyKey>,
         assets: &Assets,
@@ -1479,13 +1484,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let (Some(model), Some(&mesh)) =
-            (assets.model(model_id), self.meshes.get(model_id.0 as usize))
-        else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let Some(frames) = model.posed_frames(entity) else {
+        let Some(&mesh) = self.meshes.get(model_id.0 as usize) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };

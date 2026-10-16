@@ -405,6 +405,7 @@ fn choice_capacity_rolls_back_the_whole_group_and_single_levels_use_no_arena() {
     let mut front = FrontEnd::load(Limits {
         entities: 2,
         model_choices: 3,
+        model_joints: 0,
         ..Default::default()
     })
     .unwrap();
@@ -474,6 +475,7 @@ fn zero_choice_capacity_keeps_ordinary_meshes_and_can_grow_cold() {
     let mut front = FrontEnd::load(Limits {
         entities: 2,
         model_choices: 0,
+        model_joints: 0,
         ..Default::default()
     })
     .unwrap();
@@ -507,6 +509,7 @@ fn zero_choice_capacity_keeps_ordinary_meshes_and_can_grow_cold() {
 
     let required = Limits {
         model_choices: 3,
+        model_joints: 0,
         ..front.limits()
     };
     front.stage_capacity(required).unwrap().commit();
@@ -648,6 +651,7 @@ fn portal_copies_share_choices_but_capture_their_own_selected_mesh() {
     let mut scratch = qa_render::world::WorldView::load(assets.world(world).unwrap());
     let mut front = FrontEnd::load(Limits {
         model_choices: 3,
+        model_joints: 0,
         ..Default::default()
     })
     .unwrap();

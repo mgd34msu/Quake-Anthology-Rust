@@ -865,7 +865,7 @@ impl CpuBackend {
             false,
             draw_rank,
             |index| vertices[index],
-            |index| vertices[index].normal,
+            |_, normal| normal,
             crate::affine::fan(vertices.len()),
             |position| position,
             assets,
@@ -908,8 +908,11 @@ impl CpuBackend {
         };
         match item.kind {
             DrawKind::Entity => {
-                if let Some(entity) = crate::scene::draw_entity(list, item) {
-                    self.entity(camera, &entity, shader, rank as u32, assets, stats);
+                if let (Some(entity), Some(frames)) = (
+                    crate::scene::draw_entity(list, item),
+                    crate::scene::item_frames(list, assets, item),
+                ) {
+                    self.entity(camera, &entity, frames, shader, rank as u32, assets, stats);
                 } else {
                     stats.rejected = stats.rejected.saturating_add(1);
                 }
@@ -928,20 +931,21 @@ impl CpuBackend {
         Ok(rank + 1)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The draw consumes one sealed pose and shader with its camera and rank."
+    )]
     fn entity(
         &mut self,
         camera: &Camera,
         entity: &SceneEntity,
+        frames: crate::assets::ModelFrames<'_>,
         shader: crate::shader::reference::ResolvedShader,
         draw_rank: u32,
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
         let Some(model) = entity.model.mesh().and_then(|id| assets.model(id)) else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        let Some(frames) = model.posed_frames(entity) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -973,7 +977,7 @@ impl CpuBackend {
             entity.depth_hack,
             draw_rank,
             |index| frames.vertex(index),
-            |index| frames.current_vertex(index).normal,
+            |index, normal| frames.lighting_normal(index, normal),
             model.indices.chunks_exact(3).map(|indices| {
                 [
                     indices[0] as usize,
@@ -1000,7 +1004,7 @@ impl CpuBackend {
         depth_hack: bool,
         draw_rank: u32,
         vertex: impl Fn(usize) -> Vertex,
-        lighting_normal: impl Fn(usize) -> Vec3,
+        lighting_normal: impl Fn(usize, Vec3) -> Vec3,
         triangles: impl Iterator<Item = [usize; 3]> + Clone,
         to_world: impl Fn(Vec3) -> Vec3,
         assets: &Assets,
@@ -1051,15 +1055,18 @@ impl CpuBackend {
             stats.stages = stats.stages.saturating_add(1);
             for indices in triangles.clone() {
                 let triangle = indices.map(|i| {
+                    let vertex = vertex(i);
+                    let normal = vertex.normal;
                     let vertex =
-                        world::evaluated_vertex(vertex(i), deforms, Some(stage), &self.evaluator);
+                        world::evaluated_vertex(vertex, deforms, Some(stage), &self.evaluator);
                     let mut clipped = camera.vertex(
                         vertex,
                         to_world(vertex.position),
                         stage.unit_color(vertex.color),
                     );
                     if let Some(indexed) = indexed {
-                        clipped.indexed_light = indexed.light(lighting_normal(i), vertex.color);
+                        clipped.indexed_light =
+                            indexed.light(lighting_normal(i, normal), vertex.color);
                     }
                     clipped
                 });

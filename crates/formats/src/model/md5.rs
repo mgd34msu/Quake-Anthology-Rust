@@ -127,7 +127,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         mesh.weights.resize(
             weights,
             Weight {
-                bone: 0,
+                joint: 0,
                 bias: 0.0,
                 offset: Vec3::default(),
             },
@@ -135,13 +135,13 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         let mut seen = vec![false; weights];
         for _ in 0..weights {
             let index = record(&mut t, b"weight", &mut seen)?;
-            let bone = t.integer(0, bones as i32 - 1)? as u32;
+            let joint = t.integer(0, bones as i32 - 1)? as u32;
             let bias = t.scalar()?;
             if !(0.0..=1.0).contains(&bias) {
                 return Err(FormatError::InvalidValue);
             }
             mesh.weights[index] = Weight {
-                bone,
+                joint,
                 bias,
                 offset: vector(&mut t)?,
             };
@@ -155,7 +155,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             let weights = &mesh.weights[range.range()];
             let mut position = Vec3::default();
             for w in weights {
-                let bone = &m.bones[w.bone as usize];
+                let bone = &m.bones[w.joint as usize];
                 position = position
                     + (bone.position + rotate_quaternion(bone.orientation, w.offset)) * w.bias;
             }
@@ -224,7 +224,7 @@ fn bind_normals(mesh: &mut Mesh<'_>, bones: &[Bone<'_>]) -> Result<(), FormatErr
         let normal = normals[groups[vertex]];
         let mut local = Vec3::default();
         for weight in &mesh.weights[range.range()] {
-            let q = bones[weight.bone as usize].orientation;
+            let q = bones[weight.joint as usize].orientation;
             local = local + rotate_quaternion([-q[0], -q[1], -q[2], q[3]], normal) * weight.bias;
         }
         finite_vec(local)?;
@@ -234,7 +234,7 @@ fn bind_normals(mesh: &mut Mesh<'_>, bones: &[Bone<'_>]) -> Result<(), FormatErr
         let mut output = Vec3::default();
         for weight in &mesh.weights[range.range()] {
             output = output
-                + rotate_quaternion(bones[weight.bone as usize].orientation, local) * weight.bias;
+                + rotate_quaternion(bones[weight.joint as usize].orientation, local) * weight.bias;
         }
         finite_vec(output)?;
         mesh.vertices[vertex].normal = output;

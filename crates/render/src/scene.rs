@@ -753,8 +753,7 @@ pub(crate) fn for_each_triangle(
             let Some(model) = entity.model.mesh().and_then(|id| assets.model(id)) else {
                 return false;
             };
-            let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp)
-            else {
+            let Some(frames) = item_frames(list, assets, item) else {
                 return false;
             };
             for triangle in model.indices.chunks_exact(3) {
@@ -806,6 +805,8 @@ pub struct DrawItem {
     pub mesh: Option<ModelId>,
     /// Flattened current/previous poses selected for this copied view.
     pub frames: Option<[u32; 2]>,
+    /// Prepared model-space joint rows in this owned packet.
+    pub pose: Option<Span>,
     key: DrawKey,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -855,6 +856,8 @@ pub struct Limits {
     pub entities: usize,
     /// Zero disables deferred model choices; ordinary meshes remain available.
     pub model_choices: usize,
+    /// Zero disables skeletal pose preparation for directly bounded callers.
+    pub model_joints: usize,
     pub polys: usize,
     pub vertices: usize,
     pub lights: usize,
@@ -873,6 +876,11 @@ impl Limits {
             .checked_mul(assets.max_model_choices())
             .ok_or("scene model choice capacity overflow")?;
         self.model_choices = self.model_choices.max(required);
+        let joints = self
+            .entities
+            .checked_mul(assets.max_model_joints())
+            .ok_or("scene model joint capacity overflow")?;
+        self.model_joints = self.model_joints.max(joints);
         self.resolved()?;
         Ok(self)
     }
@@ -905,7 +913,7 @@ impl Limits {
     fn capacities(self) -> impl Iterator<Item = usize> {
         self.required_capacities()
             .into_iter()
-            .chain(std::iter::once(self.model_choices))
+            .chain([self.model_choices, self.model_joints])
     }
 
     pub(crate) fn resolved(mut self) -> Result<Self, &'static str> {
@@ -915,6 +923,7 @@ impl Limits {
             .iter()
             .any(|&n| n == 0 || n > u32::MAX as usize)
             || self.model_choices > u32::MAX as usize
+            || self.model_joints > u32::MAX as usize
         {
             return Err("invalid scene capacity");
         }
@@ -940,6 +949,7 @@ impl Default for Limits {
             commands: 4096,
             entities: 2048,
             model_choices: 6144,
+            model_joints: 0,
             polys: 8192,
             vertices: 65536,
             lights: 256,
@@ -955,6 +965,7 @@ pub struct CommandList {
     commands: Box<[Command]>,
     entities: Box<[SceneEntity]>,
     model_choices: Box<[Option<ModelPart>]>,
+    model_joints: Box<[crate::assets::PreparedJoint]>,
     polys: Box<[Poly]>,
     vertices: Box<[Vertex]>,
     lights: Box<[Light]>,
@@ -965,6 +976,7 @@ pub struct CommandList {
     command_count: usize,
     entity_count: usize,
     model_choice_count: usize,
+    model_joint_count: usize,
     poly_count: usize,
     vertex_count: usize,
     light_count: usize,
@@ -983,6 +995,8 @@ impl CommandList {
             commands: vec![Command::Empty; l.commands].into_boxed_slice(),
             entities: vec![SceneEntity::default(); l.entities].into_boxed_slice(),
             model_choices: vec![None; l.model_choices].into_boxed_slice(),
+            model_joints: vec![crate::assets::PreparedJoint::default(); l.model_joints]
+                .into_boxed_slice(),
             polys: vec![Poly::default(); l.polys].into_boxed_slice(),
             vertices: vec![Vertex::default(); l.vertices].into_boxed_slice(),
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
@@ -993,6 +1007,7 @@ impl CommandList {
             command_count: 0,
             entity_count: 0,
             model_choice_count: 0,
+            model_joint_count: 0,
             poly_count: 0,
             vertex_count: 0,
             light_count: 0,
@@ -1017,6 +1032,9 @@ impl CommandList {
         next.model_choices[..self.model_choice_count]
             .copy_from_slice(&self.model_choices[..self.model_choice_count]);
         next.model_choice_count = self.model_choice_count;
+        next.model_joints[..self.model_joint_count]
+            .copy_from_slice(&self.model_joints[..self.model_joint_count]);
+        next.model_joint_count = self.model_joint_count;
         next.polys[..self.poly_count].copy_from_slice(&self.polys[..self.poly_count]);
         next.poly_count = self.poly_count;
         next.vertices[..self.vertex_count].copy_from_slice(&self.vertices[..self.vertex_count]);
@@ -1121,6 +1139,7 @@ impl CommandList {
         self.command_count = 0;
         self.entity_count = 0;
         self.model_choice_count = 0;
+        self.model_joint_count = 0;
         self.poly_count = 0;
         self.vertex_count = 0;
         self.light_count = 0;
@@ -1183,6 +1202,7 @@ struct SceneCheckpoint {
     commands: usize,
     areas: usize,
     model_choices: usize,
+    model_joints: usize,
 }
 impl FrontEnd {
     pub fn load(limits: Limits) -> Result<Self, &'static str> {
@@ -1246,6 +1266,7 @@ impl FrontEnd {
             commands: current.commands.max(required.commands),
             entities: current.entities.max(required.entities),
             model_choices: current.model_choices.max(required.model_choices),
+            model_joints: current.model_joints.max(required.model_joints),
             polys: current.polys.max(required.polys),
             vertices: current.vertices.max(required.vertices),
             lights: current.lights.max(required.lights),
@@ -1317,6 +1338,7 @@ impl Frame {
             commands: self.list.command_count,
             areas: self.list.area_count,
             model_choices: self.list.model_choice_count,
+            model_joints: self.list.model_joint_count,
         }
     }
     fn restore(&mut self, checkpoint: SceneCheckpoint) {
@@ -1331,6 +1353,17 @@ impl Frame {
         self.list.command_count = checkpoint.commands;
         self.list.area_count = checkpoint.areas;
         self.list.model_choice_count = checkpoint.model_choices;
+        self.list.model_joint_count = checkpoint.model_joints;
+        // Portal probing may have attached new receipts to the retained source
+        // draws. Retire them before the abandoned tail can be reused.
+        for draw in &mut self.list.draws[..self.list.draw_count] {
+            if draw
+                .pose
+                .is_some_and(|pose| !pose.fits(checkpoint.model_joints))
+            {
+                draw.pose = None;
+            }
+        }
     }
     fn copy_scene(&mut self, source: SceneRanges, skip_world: Option<WorldId>) -> bool {
         if source.entities.count as usize > self.list.entities.len() - self.list.entity_count
@@ -1384,6 +1417,68 @@ impl Frame {
         }
         true
     }
+    fn prepare_model_draw(
+        &mut self,
+        assets: &Assets,
+        source: DrawItem,
+        view: &Refdef,
+        projection: Option<[f32; 2]>,
+    ) -> Result<Option<DrawItem>, ()> {
+        let Some(mut draw) = select_model_draw(&self.list, assets, source, view, projection)?
+        else {
+            return Ok(None);
+        };
+        let Some(skeleton) = draw
+            .mesh
+            .and_then(|id| assets.model(id))
+            .and_then(|model| model.skeleton())
+        else {
+            return Ok(Some(draw));
+        };
+        let frames = draw.frames.ok_or(())?;
+        let back = self.list.entity(draw.index).back_lerp;
+        // Existing draw receipts are the only reuse index. Multipart meshes share
+        // their source Arc and joint span; no second pose map is retained.
+        for prior in &self.list.draws[..self.list.draw_count] {
+            let Some(pose) = prior.pose else {
+                continue;
+            };
+            if prior.kind != DrawKind::Entity
+                || prior.frames != Some(frames)
+                || pose.count != skeleton.joint_count()
+                || !pose.fits(self.list.model_joint_count)
+                || self.list.entity(prior.index).back_lerp.to_bits() != back.to_bits()
+            {
+                continue;
+            }
+            if prior
+                .mesh
+                .and_then(|id| assets.model(id))
+                .and_then(|model| model.skeleton())
+                .is_some_and(|other| std::sync::Arc::ptr_eq(skeleton, other))
+            {
+                draw.pose = Some(pose);
+                return Ok(Some(draw));
+            }
+        }
+        let first = self.list.model_joint_count;
+        let count = skeleton.joint_count() as usize;
+        let output = self
+            .list
+            .model_joints
+            .get_mut(first..first.checked_add(count).ok_or(())?)
+            .ok_or(())?;
+        skeleton
+            .prepare(frames[0], frames[1], back, output)
+            .ok_or(())?;
+        self.list.model_joint_count += count;
+        draw.pose = Some(Span {
+            first: first as u32,
+            count: count as u32,
+        });
+        Ok(Some(draw))
+    }
+
     fn generated_fits(&self, refdef: Refdef, assets: &Assets) -> bool {
         let projection = refdef.projection_scales();
         let generated = self.list.draws[self.first.draws.first as usize..self.list.draw_count]
@@ -1392,7 +1487,7 @@ impl Frame {
                 draw.kind == DrawKind::Entity && draw_allowed(&self.list, draw, refdef.policy)
             })
             .filter_map(|&draw| {
-                model_draw(&self.list, assets, draw, &refdef, projection)
+                select_model_draw(&self.list, assets, draw, &refdef, projection)
                     .ok()
                     .flatten()
             })
@@ -1438,8 +1533,7 @@ impl Frame {
                     if !draw_allowed(&self.list, self.list.draws[index], refdef.policy) {
                         continue;
                     }
-                    let Ok(Some(mut draw)) = model_draw(
-                        &self.list,
+                    let Ok(Some(mut draw)) = self.prepare_model_draw(
                         assets,
                         self.list.draws[index],
                         &refdef,
@@ -1447,6 +1541,7 @@ impl Frame {
                     ) else {
                         continue;
                     };
+                    self.list.draws[index] = draw;
                     draw.shader = source_shader(&self.list, assets, draw, shaders);
                     if let Some(key) = draw_key(&self.list, assets, draw, shaders) {
                         draw.key = key;
@@ -1935,6 +2030,7 @@ impl Frame {
             shader: None,
             mesh: None,
             frames: None,
+            pose: None,
         };
         self.list.draw_count += 1;
     }
@@ -1997,8 +2093,7 @@ impl Frame {
             if !draw_allowed(&self.list, self.list.draws[index], refdef.policy) {
                 continue;
             }
-            let draw = match model_draw(
-                &self.list,
+            let draw = match self.prepare_model_draw(
                 assets,
                 self.list.draws[index],
                 &refdef,
@@ -2125,6 +2220,27 @@ fn draw_allowed(list: &CommandList, draw: DrawItem, policy: ViewPolicy) -> bool 
     }
 }
 
+/// The sealed model pose consumed by rasterizers and geometric queries alike.
+/// Skeletal models require their packet-owned joint receipt; raw bind frames
+/// are never a drawing fallback.
+pub fn item_frames<'a>(
+    list: &'a CommandList,
+    assets: &'a Assets,
+    draw: DrawItem,
+) -> Option<crate::assets::ModelFrames<'a>> {
+    let entity = draw_entity(list, draw)?;
+    let model = assets.model(entity.model.mesh()?)?;
+    if model.skeleton().is_some() {
+        let pose = draw.pose?;
+        if !pose.fits(list.model_joint_count) {
+            return None;
+        }
+        model.prepared_frames(&entity, &list.model_joints[pose.range()])
+    } else {
+        model.posed_frames(&entity)
+    }
+}
+
 pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEntity> {
     let mut entity = *list.entity(draw_entity_index(list, draw)?);
     if let Some(mesh) = draw.mesh {
@@ -2145,7 +2261,7 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEnt
     Some(entity)
 }
 
-fn model_draw(
+fn select_model_draw(
     list: &CommandList,
     assets: &Assets,
     mut draw: DrawItem,
@@ -2155,6 +2271,8 @@ fn model_draw(
     if draw.kind != DrawKind::Entity {
         return Ok(Some(draw));
     }
+    draw.pose = None;
+    draw.frames = None;
     let entity = list.entity(draw.index);
     match entity.model {
         SceneModel::Mesh(model) => draw.mesh = Some(model),
@@ -2242,6 +2360,16 @@ fn model_draw(
             }
             draw.shader = entity.shader.or(Some(part.shader));
         }
+        if model.skeleton().is_some() {
+            draw.frames = Some([entity.frame, entity.old_frame]);
+            if entity.frame >= model.frame_count()
+                || entity.old_frame >= model.frame_count()
+                || !entity.back_lerp.is_finite()
+                || !(0.0..=1.0).contains(&entity.back_lerp)
+            {
+                return Err(());
+            }
+        }
         if matches!(
             entity.model,
             SceneModel::Lods { .. } | SceneModel::Timed { .. }
@@ -2250,7 +2378,7 @@ fn model_draw(
             let selected = draw_entity(list, draw).ok_or(())?;
             if model.sprite.is_some() {
                 model.sprite_frame(selected.frame).ok_or(())?;
-            } else {
+            } else if model.skeleton().is_none() {
                 model.posed_frames(&selected).ok_or(())?;
             }
         }

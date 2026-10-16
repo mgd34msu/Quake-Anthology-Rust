@@ -2767,6 +2767,7 @@ fn cold_scene_capacity_growth_rebuilds_an_unchanged_prefix_and_survives_later_as
         commands: 4,
         entities: 1,
         model_choices: 0,
+        model_joints: 0,
         polys: 1,
         vertices: 3,
         lights: 1,

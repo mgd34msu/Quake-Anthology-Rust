@@ -760,6 +760,7 @@ fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission
     let grown = Limits {
         entities: 3,
         model_choices: 0,
+        model_joints: 0,
         ..Default::default()
     }
     .for_assets(&assets)
@@ -769,6 +770,7 @@ fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission
     let mut frontend = FrontEnd::load(Limits {
         entities: 2,
         model_choices: 2,
+        model_joints: 0,
         ..Default::default()
     })
     .unwrap();

@@ -2,11 +2,14 @@
 mod admission;
 mod animation;
 mod retessellation;
+mod skeletal;
 pub mod upload;
 pub(crate) use admission::AssetAdmission;
 pub use admission::AssetCounts;
 pub use animation::{FrameTiming, ModelAnimation, SkinTiming, TimedGroup};
 pub use retessellation::WorldRetessellation;
+pub(crate) use skeletal::PreparedJoint;
+pub use skeletal::{SkeletalMesh, SkeletalWeight, Skeleton};
 
 use crate::scene::Span;
 pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
@@ -420,6 +423,7 @@ pub struct Model {
     pub sprite: Option<SpriteGeometry>,
     alias: Option<AliasFrames>,
     animation: Option<Arc<ModelAnimation>>,
+    skeletal: Option<SkeletalMesh>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct AliasFrame {
@@ -490,6 +494,7 @@ pub struct ModelFrames<'a> {
     weights: [f32; 2],
     alias: Option<AliasBlend>,
     motion: Vec3,
+    joints: Option<&'a [PreparedJoint]>,
 }
 impl Model {
     pub fn frame_count(&self) -> u32 {
@@ -502,6 +507,10 @@ impl Model {
             .map_or(self.frame_count, |animation| {
                 animation.frame_groups().len() as u32
             })
+    }
+
+    pub fn skeleton(&self) -> Option<&Arc<Skeleton>> {
+        self.skeletal.as_ref().map(|mesh| &mesh.skeleton)
     }
 
     pub fn native_skin_count(&self) -> u32 {
@@ -532,6 +541,35 @@ impl Model {
         self.frames_at(entity.frame, entity.old_frame, entity.back_lerp, motion)
     }
 
+    pub(crate) fn prepared_frames<'a>(
+        &'a self,
+        entity: &crate::SceneEntity,
+        joints: &'a [PreparedJoint],
+    ) -> Option<ModelFrames<'a>> {
+        let mesh = self.skeletal.as_ref()?;
+        if entity.frame >= self.frame_count
+            || entity.old_frame >= self.frame_count
+            || !entity.back_lerp.is_finite()
+            || !(0.0..=1.0).contains(&entity.back_lerp)
+            || joints.len() != mesh.skeleton.joint_count() as usize
+        {
+            return None;
+        }
+        let bind = Span {
+            first: 0,
+            count: self.vertices_per_frame as u32,
+        };
+        Some(ModelFrames {
+            model: self,
+            current: bind,
+            previous: bind,
+            weights: [0.0, 1.0],
+            alias: None,
+            motion: Vec3::default(),
+            joints: Some(joints),
+        })
+    }
+
     fn frames_at(
         &self,
         frame: u32,
@@ -539,7 +577,8 @@ impl Model {
         back_lerp: f32,
         motion: Vec3,
     ) -> Option<ModelFrames<'_>> {
-        if frame >= self.frame_count
+        if self.skeletal.is_some()
+            || frame >= self.frame_count
             || old_frame >= self.frame_count
             || !back_lerp.is_finite()
             || !(0.0..=1.0).contains(&back_lerp)
@@ -575,6 +614,7 @@ impl Model {
             weights,
             alias,
             motion,
+            joints: None,
         })
     }
 }
@@ -591,6 +631,9 @@ impl ModelFrames<'_> {
     /// or decoded frame blending. UVs/colors stay with the current frame.
     pub fn vertex(self, index: usize) -> Vertex {
         let current = self.current_vertex(index);
+        if self.joints.is_some() {
+            return current;
+        }
         if let (Some(blend), Some(alias)) = (self.alias, self.model.alias.as_ref()) {
             let new = alias.positions[self.current.first as usize + index];
             let old = alias.positions[self.previous.first as usize + index];
@@ -625,7 +668,25 @@ impl ModelFrames<'_> {
     /// Native alias software lighting selects the new frame's normal even
     /// when its position is blended with the old frame.
     pub(crate) fn current_vertex(self, index: usize) -> Vertex {
-        self.model.vertices[self.current.range()][index]
+        let vertex = self.model.vertices[self.current.range()][index];
+        if let (Some(joints), Some(mesh)) = (self.joints, self.model.skeletal.as_ref()) {
+            let (position, normal) = mesh.vertex(index, joints);
+            Vertex {
+                position,
+                normal,
+                ..vertex
+            }
+        } else {
+            vertex
+        }
+    }
+
+    pub(crate) fn lighting_normal(self, index: usize, resolved: Vec3) -> Vec3 {
+        if self.joints.is_some() {
+            resolved
+        } else {
+            self.current_vertex(index).normal
+        }
     }
 
     pub(crate) fn offsets(self) -> [usize; 2] {
@@ -636,7 +697,7 @@ impl ModelFrames<'_> {
         self.weights
     }
     pub(crate) fn resolved_vertices(self) -> bool {
-        self.alias.is_some() || self.motion != Vec3::default()
+        self.joints.is_some() || self.alias.is_some() || self.motion != Vec3::default()
     }
 }
 pub struct Assets {
@@ -718,6 +779,7 @@ impl Assets {
                 sprite: None,
                 alias: None,
                 animation: None,
+                skeletal: None,
             }],
             model_preparation_revision: 0,
             worlds: Vec::new(),
@@ -1193,6 +1255,7 @@ impl Assets {
             sprite: None,
             alias: None,
             animation: None,
+            skeletal: None,
         })
     }
     pub fn register_sprite(
@@ -1222,6 +1285,7 @@ impl Assets {
             sprite: Some(geometry),
             alias: None,
             animation: None,
+            skeletal: None,
         });
         Ok(id)
     }
@@ -1236,7 +1300,7 @@ impl Assets {
             .models
             .get_mut(id.0 as usize)
             .ok_or("unknown animated model")?;
-        if animation.physical_frames() != model.frame_count {
+        if model.skeletal.is_some() || animation.physical_frames() != model.frame_count {
             return Err("model animation frame count mismatch");
         }
         if let Some(existing) = &model.animation {
@@ -1247,6 +1311,30 @@ impl Assets {
             };
         }
         model.animation = Some(animation);
+        Ok(())
+    }
+
+    /// Attach one immutable skeletal mesh to its single raw bind frame.
+    pub fn set_model_skeleton(
+        &mut self,
+        id: ModelId,
+        mesh: SkeletalMesh,
+    ) -> Result<(), &'static str> {
+        let model = self
+            .models
+            .get_mut(id.0 as usize)
+            .ok_or("unknown skeletal model")?;
+        if model.skeletal.is_some()
+            || model.alias.is_some()
+            || model.animation.is_some()
+            || model.sprite.is_some()
+            || model.frame_count != 1
+            || model.vertices_per_frame != mesh.vertex_weights.len()
+        {
+            return Err("invalid skeletal model attachment");
+        }
+        model.frame_count = mesh.skeleton.frame_count();
+        model.skeletal = Some(mesh);
         Ok(())
     }
 
@@ -1266,6 +1354,7 @@ impl Assets {
                 .iter()
                 .any(|frame| !frame.scale.is_finite() || !frame.translation.is_finite())
             || model.sprite.is_some()
+            || model.skeletal.is_some()
         {
             return Err("invalid packed alias frames");
         }
@@ -1312,6 +1401,15 @@ impl Assets {
             .max()
             .unwrap_or(0)
             .max(3)
+    }
+    /// Cold packet demand for the largest admitted shared skeleton.
+    pub fn max_model_joints(&self) -> usize {
+        self.models
+            .iter()
+            .filter_map(Model::skeleton)
+            .map(|skeleton| skeleton.joint_count() as usize)
+            .max()
+            .unwrap_or(0)
     }
     pub fn materials(&self) -> &[Material] {
         &self.materials

@@ -308,6 +308,7 @@ fn windowed(
                         DrawKind::Entity => cpu.entity(
                             &camera,
                             list.entity(item.index),
+                            crate::scene::item_frames(list, assets, *item).unwrap(),
                             crate::scene::item_shader(list, assets, *item).unwrap(),
                             rank as u32,
                             assets,

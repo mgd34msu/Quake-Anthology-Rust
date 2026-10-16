@@ -61,6 +61,7 @@ fn sorted_items(assets: &Assets, materials: &[ShaderBindingId], keys: &[usize]) 
         commands: 2,
         entities: 1,
         model_choices: 0,
+        model_joints: 0,
         polys: count,
         vertices: count * 3,
         lights: 1,

@@ -8,11 +8,11 @@ use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path, file_stem};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
-use qa_formats::model::{Image, Mesh, Model, ModelFormat};
+use qa_formats::model::{Image, Md5Animation, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
 use qa_render::assets::{
-    AssetCounts, ImageId, MaterialSettings, ModelAnimation, SoftwareAlias, Stage, StageTexture,
-    TimedGroup,
+    AssetCounts, ImageId, MaterialSettings, ModelAnimation, SkeletalMesh, Skeleton, SoftwareAlias,
+    Stage, StageTexture, TimedGroup,
 };
 use qa_render::material::resources::{
     ImageRegistrationMark, ImageReload, ImageRole, ImageSearchOrder, ImageSettings, ImageUse,
@@ -39,6 +39,10 @@ use std::sync::Arc;
 #[cfg(test)]
 #[path = "../tests/unit/renderer_registrations.rs"]
 mod registration_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/md5_registration.rs"]
+mod md5_registration_tests;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest<'a> {
@@ -797,6 +801,14 @@ impl ModelLods {
     }
 }
 #[derive(Clone)]
+struct Md5Source {
+    // Keep the accepted pair intact across profile changes and image reloads.
+    _animation_bytes: Arc<[u8]>,
+    _scale_bytes: Option<Arc<[u8]>>,
+    skeleton: Arc<Skeleton>,
+    diagnostics: Arc<[String]>,
+}
+#[derive(Clone)]
 enum ModelSourceFile {
     Empty,
     Invalid {
@@ -807,6 +819,7 @@ enum ModelSourceFile {
         bytes: Arc<[u8]>,
         metadata: ModelMetadata,
         animation: Option<Arc<ModelAnimation>>,
+        skeletal: Option<Md5Source>,
         radii: Arc<[f32]>,
         tags: Option<TagLayout>,
         meshes: Vec<Option<ModelId>>,
@@ -3401,6 +3414,85 @@ impl ModelAssets {
         self.ensure_file_profile(vfs, path, None, false)
     }
 
+    fn model_bytes(&mut self, vfs: &Vfs, path: &str) -> Result<Arc<[u8]>, FileError> {
+        vfs.read_file(
+            path.as_bytes(),
+            self.catalog.limits.file_bytes,
+            &mut self.catalog.reader,
+        )
+        .map(Arc::from)
+        .map_err(|error| FileError {
+            kind: CallError::File,
+            message: format!("{path}: {error}"),
+        })
+    }
+
+    fn md5_source(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        mesh: &Model<'_>,
+    ) -> Result<(Md5Source, Bounds, Arc<[f32]>), FileError> {
+        let stem = file_stem(path);
+        let animation_path = format!("{stem}.md5anim");
+        let animation_bytes = self.model_bytes(vfs, &animation_path)?;
+        let scale_path = format!("{stem}.md5scale");
+        let mut diagnostics = Vec::new();
+        let scale_bytes = if vfs.open(scale_path.as_bytes()).is_some() {
+            match self.model_bytes(vfs, &scale_path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    diagnostics.push(error.message);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let animation = Md5Animation::parse(&animation_bytes, scale_bytes.as_deref())
+            .and_then(|animation| {
+                animation.validate_mesh(mesh)?;
+                Ok(animation)
+            })
+            .map_err(|error| FileError {
+                kind: CallError::File,
+                message: format!("{animation_path}: {error:?}"),
+            })?;
+        diagnostics.extend(
+            animation
+                .scale_diagnostics
+                .iter()
+                .map(|diagnostic| format!("{scale_path}: {diagnostic:?}")),
+        );
+        let mut bounds = animation.frames[0].bounds;
+        for frame in &animation.frames[1..] {
+            bounds.add_bounds(frame.bounds);
+        }
+        let radii = animation
+            .frames
+            .iter()
+            .map(|frame| frame.bounds.radius())
+            .collect();
+        let skeleton = Skeleton::new(
+            animation.hierarchy.len() as u32,
+            animation.poses.into_boxed_slice(),
+        )
+        .map_err(|error| FileError {
+            kind: CallError::File,
+            message: format!("{animation_path}: {error}"),
+        })?;
+        Ok((
+            Md5Source {
+                _animation_bytes: animation_bytes,
+                _scale_bytes: scale_bytes,
+                skeleton: Arc::new(skeleton),
+                diagnostics: diagnostics.into(),
+            },
+            bounds,
+            radii,
+        ))
+    }
+
     fn model_source(&mut self, vfs: &Vfs, path: &str) -> Result<Option<NameId>, FileError> {
         if let Some(name) = self.catalog.names.find(path.as_bytes())
             && !matches!(
@@ -3416,17 +3508,7 @@ impl ModelAssets {
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model source name capacity"))?;
-        let bytes: Arc<[u8]> = vfs
-            .read_file(
-                path.as_bytes(),
-                self.catalog.limits.file_bytes,
-                &mut self.catalog.reader,
-            )
-            .map_err(|error| FileError {
-                kind: CallError::File,
-                message: error.to_string(),
-            })?
-            .into();
+        let bytes = self.model_bytes(vfs, path)?;
         let model = match Model::parse(&bytes) {
             Ok(model) => model,
             Err(error) => {
@@ -3440,20 +3522,37 @@ impl ModelAssets {
                 return Ok(Some(name));
             }
         };
+        let (skeletal, bounds, radii) = if model.format == ModelFormat::Md5Mesh {
+            match self.md5_source(vfs, path, &model) {
+                Ok((skeletal, bounds, radii)) => (Some(skeletal), bounds, radii),
+                Err(error) => {
+                    self.catalog.sources[name.0 as usize] = ModelSourceFile::Invalid {
+                        supports_lods: false,
+                        error,
+                    };
+                    return Ok(Some(name));
+                }
+            }
+        } else {
+            (
+                None,
+                model.bounds,
+                model
+                    .frames
+                    .iter()
+                    .map(|frame| frame.bounds.radius())
+                    .collect::<Arc<[_]>>(),
+            )
+        };
         let metadata = ModelMetadata {
             format: model.format,
-            bounds: model.bounds,
+            bounds,
             renderer_bounds: if supports_lods(model.format) {
                 model.frames[0].bounds
             } else {
-                model.bounds
+                bounds
             },
         };
-        let radii = model
-            .frames
-            .iter()
-            .map(|frame| frame.bounds.radius())
-            .collect::<Arc<[_]>>();
         let animation = model_animation(&model).map_err(|message| FileError {
             kind: CallError::File,
             message,
@@ -3472,6 +3571,7 @@ impl ModelAssets {
             bytes,
             metadata,
             animation,
+            skeletal,
             radii,
             tags,
             meshes,
@@ -3686,6 +3786,7 @@ impl ModelAssets {
                 bytes,
                 meshes,
                 animation,
+                skeletal,
                 ..
             } = &self.catalog.sources[source.0 as usize]
             else {
@@ -3697,6 +3798,7 @@ impl ModelAssets {
             };
             let bytes = Arc::clone(bytes);
             let animation = animation.clone();
+            let skeletal = skeletal.clone();
             let meshes = meshes.clone();
             let model = match Model::parse(&bytes) {
                 Ok(model) => model,
@@ -3734,9 +3836,13 @@ impl ModelAssets {
                 }
             }
             drop(model);
-            inputs.push((slot, source, bytes, surfaces, meshes, animation));
+            inputs.push((slot, source, bytes, surfaces, meshes, animation, skeletal));
         }
-        if lods.supports_lods {
+        if inputs.iter().any(|(_, source, ..)| {
+            self.catalog.sources[source.0 as usize]
+                .metadata()
+                .is_some_and(|metadata| named_model_shaders(metadata.format))
+        }) {
             self.shader_catalog(vfs);
         }
         let mut renderer_sources = match &self.catalog.files[name.0 as usize] {
@@ -3763,6 +3869,15 @@ impl ModelAssets {
                 || selected.is_some_and(|profile| entry.profile != profile)
             {
                 continue;
+            }
+            for source in inputs.iter().filter_map(|input| input.6.as_ref()) {
+                self.catalog
+                    .diagnostics
+                    .extend(source.diagnostics.iter().map(|error| ModelDiagnostic {
+                        name,
+                        profile: entry.profile,
+                        error: error.clone(),
+                    }));
             }
             let indexed_palette = if entry.profile.source_palette.is_none()
                 && inputs.iter().any(|(_, source, ..)| {
@@ -3798,7 +3913,7 @@ impl ModelAssets {
                     images.with_images(vfs, &mut self.assets, |temporary| {
                         let mut compiled = Vec::new();
                         let mut registrations = Vec::new();
-                        for (slot, _, bytes, _, meshes, animation) in &mut inputs {
+                        for (slot, _, bytes, _, meshes, animation, skeletal) in &mut inputs {
                             let model = Model::parse(bytes)
                                 .map_err(|error| format!("decode: {error:?}"))?;
                             validate_model(&model)?;
@@ -3810,6 +3925,7 @@ impl ModelAssets {
                                 native_default,
                                 meshes,
                                 animation.as_ref(),
+                                skeletal.as_ref().map(|source| &source.skeleton),
                                 self.catalog.shader_catalog.as_ref(),
                                 &mut self.catalog.capacity,
                                 self.catalog.limits,
@@ -3904,7 +4020,7 @@ impl ModelAssets {
                 }
             };
         }
-        for (_, source, _, _, meshes, _) in inputs {
+        for (_, source, _, _, meshes, _, _) in inputs {
             if let ModelSourceFile::Ready {
                 meshes: current, ..
             } = &mut self.catalog.sources[source.0 as usize]
@@ -3962,7 +4078,14 @@ impl ModelAssets {
     }
 
     fn admit_surface_names(&mut self, model: &Model<'_>) -> Result<Vec<NameId>, FileError> {
-        let raw: Vec<_> = if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
+        let generated = (model.format == ModelFormat::Md5Mesh).then(|| {
+            (0..model.meshes.len())
+                .map(|index| format!("mesh{index}"))
+                .collect::<Vec<_>>()
+        });
+        let raw: Vec<_> = if let Some(names) = &generated {
+            names.iter().map(String::as_bytes).collect()
+        } else if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
             vec![b"sprite".as_slice()]
         } else {
             model
@@ -5724,6 +5847,10 @@ fn supports_lods(format: ModelFormat) -> bool {
     matches!(format, ModelFormat::Md3 | ModelFormat::Mdc)
 }
 
+fn named_model_shaders(format: ModelFormat) -> bool {
+    supports_lods(format) || format == ModelFormat::Md5Mesh
+}
+
 fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, String> {
     if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Spr) {
         return Ok(None);
@@ -5763,7 +5890,7 @@ fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, Str
 }
 
 fn validate_model(model: &Model<'_>) -> Result<(), String> {
-    if !supports_lods(model.format)
+    if !named_model_shaders(model.format)
         && !matches!(
             model.format,
             ModelFormat::Mdl | ModelFormat::Md2 | ModelFormat::Spr | ModelFormat::Sp2
@@ -5774,7 +5901,7 @@ fn validate_model(model: &Model<'_>) -> Result<(), String> {
             model.format
         ));
     }
-    if !supports_lods(model.format)
+    if !named_model_shaders(model.format)
         && !matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2)
         && model.skins.is_empty()
     {
@@ -5796,11 +5923,15 @@ fn register(
     native_default: ShaderBindingId,
     shared_meshes: &mut [Option<ModelId>],
     animation: Option<&Arc<ModelAnimation>>,
+    skeleton: Option<&Arc<Skeleton>>,
     shader_catalog: Option<&Result<ShaderCatalog, String>>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
     compile_policy: ShaderCompilePolicy,
 ) -> Result<CompiledModel, String> {
+    if model.format == ModelFormat::Md5Mesh && skeleton.is_none() {
+        return Err("MD5 model requires its registered animation".to_owned());
+    }
     if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
         return register_sprites(
             model,
@@ -5817,7 +5948,7 @@ fn register(
         .checked_add(model.meshes.len())
         .filter(|&count| count <= limits.surfaces && count <= u32::MAX as usize)
         .ok_or("model surface capacity")?;
-    let alias = if supports_lods(model.format) {
+    let alias = if named_model_shaders(model.format) {
         None
     } else {
         Some(alias_materials(
@@ -5896,8 +6027,7 @@ fn register(
             id
         } else {
             let native = (model.format == ModelFormat::Md2).then_some(model.frames.as_slice());
-            let (vertices, frame_size, indices, packed) =
-                mesh_vertices(mesh, native, capacity, limits)?;
+            let packed = mesh_vertices(mesh, native, capacity, limits)?;
             let choice = materials.first().ok_or("model has no skin material")?[0];
             let material = ShaderView::direct()
                 .choice(
@@ -5908,13 +6038,33 @@ fn register(
                 )
                 .and_then(|shader| shader.source(&()))
                 .ok_or("model shader choice")?;
-            let id = images
-                .assets
-                .register_animated_model(&vertices, frame_size, &indices, material)?;
+            let id = images.assets.register_animated_model(
+                &packed.vertices,
+                packed.frame_size,
+                &packed.indices,
+                material,
+            )?;
             if let Some(animation) = animation {
                 images
                     .assets
                     .set_model_animation(id, Arc::clone(animation))?;
+            }
+            if let Some(skeleton) = skeleton {
+                let weights = mesh.weights.clone().into_boxed_slice();
+                let vertex_weights = packed
+                    .source_vertices
+                    .iter()
+                    .map(|&vertex| mesh.vertex_weights[vertex as usize])
+                    .collect();
+                let bind_normals = packed
+                    .source_vertices
+                    .iter()
+                    .map(|&vertex| mesh.bind_normals[vertex as usize])
+                    .collect();
+                images.assets.set_model_skeleton(
+                    id,
+                    SkeletalMesh::new(Arc::clone(skeleton), weights, vertex_weights, bind_normals)?,
+                )?;
             }
             if let Some(frames) = native {
                 let frames: Vec<_> = frames
@@ -5924,7 +6074,9 @@ fn register(
                         translation: frame.translation,
                     })
                     .collect();
-                images.assets.set_alias_frames(id, &frames, &packed)?;
+                images
+                    .assets
+                    .set_alias_frames(id, &frames, &packed.alias_positions)?;
             }
             *shared_mesh = Some(id);
             id
@@ -6251,14 +6403,28 @@ fn alias_materials(
     Ok(materials)
 }
 
+struct PackedMesh {
+    vertices: Vec<Vertex>,
+    frame_size: usize,
+    indices: Vec<u32>,
+    alias_positions: Vec<[u8; 3]>,
+    source_vertices: Vec<u32>,
+}
+
 fn mesh_vertices(
     mesh: &Mesh<'_>,
     native: Option<&[qa_formats::model::Frame<'_>]>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
-) -> Result<(Vec<Vertex>, usize, Vec<u32>, Vec<[u8; 3]>), String> {
+) -> Result<PackedMesh, String> {
     if mesh.vertices_per_frame == 0 {
-        return Ok((Vec::new(), 0, Vec::new(), Vec::new()));
+        return Ok(PackedMesh {
+            vertices: Vec::new(),
+            frame_size: 0,
+            indices: Vec::new(),
+            alias_positions: Vec::new(),
+            source_vertices: Vec::new(),
+        });
     }
     let index_count = mesh
         .triangles
@@ -6322,5 +6488,15 @@ fn mesh_vertices(
     }
     capacity.frame_vertices = next_vertices;
     capacity.indices = next_indices;
-    Ok((vertices, pairs.len(), indices, packed))
+    Ok(PackedMesh {
+        vertices,
+        frame_size: pairs.len(),
+        indices,
+        alias_positions: packed,
+        source_vertices: if mesh.vertex_weights.is_empty() {
+            Vec::new()
+        } else {
+            pairs.into_iter().map(|(vertex, _)| vertex).collect()
+        },
+    })
 }

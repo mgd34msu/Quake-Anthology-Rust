@@ -367,6 +367,63 @@ pub fn rotate_quaternion(q: [f32; 4], p: Vec3) -> Vec3 {
     ])
 }
 
+/// Native Quat_ToAxis rows. Project a vector with `row.dot(vector)`; these
+/// are rows, unlike the column axes accepted by transform_point.
+pub fn quaternion_rotation_rows(q: [f32; 4]) -> [Vec3; 3] {
+    let [x, y, z, w] = q;
+    [
+        Vec3([
+            2.0 * (w * w + x * x) - 1.0,
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ]),
+        Vec3([
+            2.0 * (x * y + w * z),
+            2.0 * (w * w + y * y) - 1.0,
+            2.0 * (y * z - w * x),
+        ]),
+        Vec3([
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            2.0 * (w * w + z * z) - 1.0,
+        ]),
+    ]
+}
+
+/// Native shortest-arc Quat_SLerp. It deliberately does not normalize the
+/// result: the caller's nonunit quaternion retains Quat_ToAxis semantics.
+pub fn slerp_quaternion(previous: [f32; 4], current: [f32; 4], back: f32) -> [f32; 4] {
+    if back <= 0.0 {
+        return current;
+    }
+    if back >= 1.0 {
+        return previous;
+    }
+    let front = 1.0 - back;
+    let mut cosine = previous[0] * current[0]
+        + previous[1] * current[1]
+        + previous[2] * current[2]
+        + previous[3] * current[3];
+    let current = if cosine < 0.0 {
+        cosine = -cosine;
+        current.map(|component| -component)
+    } else {
+        current
+    };
+    let (old_weight, new_weight) = if cosine > 0.9995 {
+        (back, front)
+    } else {
+        let sine = (1.0 - cosine * cosine).sqrt();
+        let angle = sine.atan2(cosine);
+        let inverse_sine = 1.0 / sine;
+        (
+            (back * angle).sin() * inverse_sine,
+            (front * angle).sin() * inverse_sine,
+        )
+    };
+    std::array::from_fn(|axis| old_weight * previous[axis] + new_weight * current[axis])
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AngleBasis {
     pub forward: Vec3,

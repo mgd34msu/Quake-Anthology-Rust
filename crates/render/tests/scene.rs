@@ -11,6 +11,8 @@ use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 #[path = "scene/mdl_groups.rs"]
 mod mdl_groups;
+#[path = "scene/skeletal.rs"]
+mod skeletal;
 #[path = "scene/sprites.rs"]
 mod sprites;
 #[path = "scene/view_policy.rs"]
@@ -783,6 +785,7 @@ fn cold_limits() -> Limits {
         commands: 4,
         entities: 1,
         model_choices: 0,
+        model_joints: 0,
         polys: 1,
         vertices: 3,
         lights: 1,
@@ -898,6 +901,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
         commands: 6,
         entities: 2,
         model_choices: 2,
+        model_joints: 0,
         polys: 2,
         vertices: 6,
         lights: 2,
@@ -910,6 +914,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
         commands: 8,
         entities: 4,
         model_choices: 8,
+        model_joints: 0,
         ..limits
     };
     let client = EffectClient {
@@ -1108,6 +1113,7 @@ fn active_capacity_rejects_another_inflight_packet_or_foreign_frame_then_retries
     let mut active = front.begin_frame([2; 4]).unwrap();
     let required = Limits {
         model_choices: 6,
+        model_joints: 0,
         ..cold_limits()
     };
     assert!(
@@ -1177,6 +1183,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
         commands: 3,
         entities: 1,
         model_choices: 0,
+        model_joints: 0,
         polys: 1,
         vertices: 3,
         lights: 1,
