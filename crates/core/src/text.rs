@@ -170,3 +170,8 @@ impl<const N: usize> Write for FixedText<N> {
         self.append_bytes(text.as_bytes())
     }
 }
+impl<const N: usize> AsRef<[u8]> for FixedText<N> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}

@@ -2035,6 +2035,490 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
 }
 
 #[test]
+fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
+    let colors = [[211, 17, 29, 255], [31, 223, 47, 255], [53, 67, 229, 255]];
+    let paths = ["ui.part/q1.tga", "ui.part/q2.tga", "ui.part/q3.tga"];
+    for first_mips in [[false, true, false], [true, false, true]] {
+        let fixture = support::Fixture::new(&[
+            (paths[0], support::tga(4, 4, &[colors[0]; 16])),
+            (paths[1], support::tga(4, 4, &[colors[1]; 16])),
+            (paths[2], support::tga(4, 4, &[colors[2]; 16])),
+        ]);
+        let profiles = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
+            .map(|source| ModelRequest::native("", source, None).profile());
+        let mut owner = ModelAssets::new(
+            Assets::load().unwrap(),
+            profiles,
+            [],
+            ModelLimits::default(),
+        )
+        .unwrap();
+        let mut handle = None;
+        let mut materials = [None; 3];
+        for (index, profile) in profiles.into_iter().enumerate() {
+            let admitted = owner
+                .register_shader(
+                    &fixture.vfs,
+                    paths[index].as_bytes(),
+                    profile.source_rules,
+                    first_mips[index],
+                )
+                .unwrap();
+            assert!(admitted > 0);
+            if let Some(handle) = handle {
+                assert_eq!(admitted, handle);
+            }
+            handle = Some(admitted);
+            let material = owner.catalog().shader_binding(admitted, profile).unwrap();
+            materials[index] = Some(material);
+            let stage = owner.assets().material(material).unwrap().stages[0];
+            assert_eq!(stage.sampler.mipmaps, first_mips[index]);
+            let StageTexture::Image(image) = stage.texture else {
+                panic!("shader image");
+            };
+            assert_eq!(
+                owner.assets().image(image).unwrap().rgba.as_ref(),
+                colors[index].repeat(16)
+            );
+            for (other, other_profile) in profiles.into_iter().enumerate() {
+                assert_eq!(
+                    owner.catalog().shader_binding(admitted, other_profile),
+                    materials[other]
+                );
+            }
+            let counts = owner.assets().counts();
+            assert_eq!(
+                owner.register_shader(
+                    &fixture.vfs,
+                    b"UI.other/missing.tga",
+                    profile.source_rules,
+                    !first_mips[index],
+                ),
+                Ok(admitted)
+            );
+            assert_eq!(owner.assets().counts(), counts);
+        }
+        assert_eq!(owner.catalog().shader_handle(b"Ui"), handle);
+        assert_eq!(
+            owner.catalog().shader_name(handle.unwrap()),
+            Some(b"ui".as_slice())
+        );
+    }
+}
+
+#[test]
+fn native_shader_profile_rows_preserve_the_configured_name_budget() {
+    let paths = ["ui/one.tga", "ui/two.tga", "ui/three.tga"];
+    let fixture = support::Fixture::new(&[
+        (paths[0], support::tga(1, 1, &[[211, 17, 29, 255]])),
+        (paths[1], support::tga(1, 1, &[[31, 223, 47, 255]])),
+        (paths[2], support::tga(1, 1, &[[53, 67, 229, 255]])),
+    ]);
+    let profiles = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
+        .map(|source| ModelRequest::native("", source, None).profile());
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        profiles,
+        [],
+        ModelLimits {
+            models: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for path in paths {
+        let handle = owner
+            .register_shader(
+                &fixture.vfs,
+                path.as_bytes(),
+                profiles[0].source_rules,
+                false,
+            )
+            .unwrap();
+        assert!(handle > 0);
+        for profile in profiles {
+            assert_eq!(
+                owner.register_shader(&fixture.vfs, path.as_bytes(), profile.source_rules, false,),
+                Ok(handle)
+            );
+            assert!(owner.catalog().shader_binding(handle, profile).is_some());
+        }
+    }
+}
+
+#[test]
+fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
+    use qa_compat::services::{RendererRegistration, RendererRequest};
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let path = format!("models/{}/test.md3", "x".repeat(79));
+    assert_eq!(path.len(), 95);
+    let fixture = support::Fixture::new(&[
+        (&path, support::md3_surfaces()),
+        (
+            "textures/body.tga",
+            support::tga(1, 1, &[[31, 43, 59, 255]]),
+        ),
+        (
+            "textures/alternate.tga",
+            support::tga(1, 1, &[[61, 73, 89, 255]]),
+        ),
+        (
+            "textures/glow.tga",
+            support::tga(1, 1, &[[97, 107, 127, 255]]),
+        ),
+    ]);
+    let profile = shader_profile(RuleSetId::Quake3);
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let request = RendererRequest {
+        name: path.as_bytes(),
+        source: profile.source_rules,
+        kind: RendererRegistration::Model,
+        world: None,
+    };
+    let (handle, counts) = owner
+        .prepare_registration(&fixture.vfs, &request, profile, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(owner.catalog().file_handle(path.as_bytes()), Some(handle));
+    assert!(
+        owner
+            .catalog()
+            .renderer_registration(handle, profile)
+            .is_some()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .name(qa_core::primitives::NameId(handle as u32)),
+        Some(path.as_str())
+    );
+}
+
+#[test]
+fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt() {
+    use qa_compat::services::CallError;
+    let fixture = support::Fixture::new(&[
+        (
+            "ui.part/first.tga",
+            support::tga(1, 1, &[[211, 17, 29, 255]]),
+        ),
+        (
+            "ui.part/second.tga",
+            support::tga(1, 1, &[[31, 223, 47, 255]]),
+        ),
+    ]);
+    let first = ModelRequest::native("", RuleSetId::Quake, None).profile();
+    let second = ModelRequest::native("", RuleSetId::Quake2, None).profile();
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [first, second],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = owner
+        .register_shader(
+            &fixture.vfs,
+            b"ui.part/first.tga",
+            first.source_rules,
+            false,
+        )
+        .unwrap();
+    let retained = owner.catalog().shader_binding(handle, first).unwrap();
+    assert_eq!(
+        owner.register_shader(
+            &fixture.vfs,
+            b"ui.other/missing.tga",
+            second.source_rules,
+            true
+        ),
+        Err(CallError::File)
+    );
+    let counts = owner.assets().counts();
+    let diagnostics = owner.catalog().diagnostics.len();
+    assert_eq!(
+        owner.register_shader(
+            &fixture.vfs,
+            b"ui.part/second.tga",
+            second.source_rules,
+            false
+        ),
+        Ok(0)
+    );
+    assert_eq!(owner.assets().counts(), counts);
+    assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
+    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    assert_eq!(owner.catalog().shader_binding(handle, second), None);
+}
+
+#[test]
+fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::new(&[
+        (
+            "ui.part/first.tga",
+            support::tga(4, 4, &[[211, 17, 29, 255]; 16]),
+        ),
+        (
+            "ui.part/second.tga",
+            support::tga(4, 4, &[[31, 223, 47, 255]; 16]),
+        ),
+    ]);
+    let first = ModelRequest::native("", RuleSetId::Quake, None).profile();
+    let second = ModelRequest::native("", RuleSetId::Quake2, None).profile();
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [first, second],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = owner
+        .register_shader(
+            &fixture.vfs,
+            b"ui.part/first.tga",
+            first.source_rules,
+            false,
+        )
+        .unwrap();
+    let retained = owner.catalog().shader_binding(handle, first).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let before = owner.assets().counts();
+    let request = renderer_request(
+        "ui.part/second.tga",
+        RendererRegistration::Shader { mipmaps: false },
+        second.source_rules,
+        None,
+    );
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, second, |_| {
+                Err("rejected backend".to_owned())
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(cpu.admitted_assets(), Some(before));
+    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    assert_eq!(owner.catalog().shader_binding(handle, second), None);
+    let missing = renderer_request(
+        "ui.other/missing.tga",
+        RendererRegistration::Shader { mipmaps: false },
+        second.source_rules,
+        None,
+    );
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &missing, second, |_| {
+                panic!("failed source must not reach the backend")
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    assert_eq!(owner.catalog().shader_binding(handle, second), None);
+    let retry = renderer_request(
+        "ui.part/second.tga",
+        RendererRegistration::Shader { mipmaps: true },
+        second.source_rules,
+        None,
+    );
+    let (retried, counts) = owner
+        .prepare_registration(&fixture.vfs, &retry, second, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(retried, handle);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    let material = owner.catalog().shader_binding(handle, second).unwrap();
+    assert!(
+        owner.assets().material(material).unwrap().stages[0]
+            .sampler
+            .mipmaps
+    );
+    assert!(
+        !owner.assets().material(retained).unwrap().stages[0]
+            .sampler
+            .mipmaps
+    );
+}
+
+#[test]
+fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
+    use qa_compat::services::RendererRegistration;
+    use qa_render::cpu::{CpuBackend, CpuLimits};
+    let fixture = support::Fixture::new(&[
+        (
+            "ui.part/first.tga",
+            support::tga(4, 4, &[[211, 17, 29, 255]; 16]),
+        ),
+        (
+            "ui.part/second.tga",
+            support::tga(4, 4, &[[31, 223, 47, 255]; 16]),
+        ),
+    ]);
+    let first = ModelRequest::native("", RuleSetId::Quake2, None).profile();
+    let second = shader_profile(RuleSetId::Quake3);
+    let foreign = shader_profile(RuleSetId::Quake2);
+    let mut failed = second;
+    failed.image_settings.max_dimension = 0;
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [first, second, failed, foreign],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let handle = owner
+        .register_shader(
+            &fixture.vfs,
+            b"ui.part/first.tga",
+            first.source_rules,
+            false,
+        )
+        .unwrap();
+    let retained = owner.catalog().shader_binding(handle, first).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        owner.assets(),
+        CpuLimits {
+            cache_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    owner.end_initial_registration();
+    let before = owner.assets().counts();
+    let request = renderer_request(
+        "ui.part/second.tga",
+        RendererRegistration::Shader { mipmaps: true },
+        second.source_rules,
+        None,
+    );
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                panic!("failed invoking profile must not reach the backend")
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(owner.catalog().shader_handle(b"ui"), Some(handle));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    for profile in [second, failed, foreign] {
+        assert_eq!(owner.catalog().shader_binding(handle, profile), None);
+    }
+    let retry = renderer_request(
+        "ui.part/second.tga",
+        RendererRegistration::Shader { mipmaps: false },
+        second.source_rules,
+        None,
+    );
+    let (retried, counts) = owner
+        .prepare_registration(&fixture.vfs, &retry, second, |assets| {
+            cpu.prepare_assets(assets).map_err(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(retried, handle);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(
+        owner.catalog().shader_binding(handle, first),
+        Some(retained)
+    );
+    for profile in [second, foreign] {
+        let material = owner.catalog().shader_binding(handle, profile).unwrap();
+        assert!(
+            !owner.assets().material(material).unwrap().stages[0]
+                .sampler
+                .mipmaps
+        );
+    }
+    assert_eq!(owner.catalog().shader_binding(handle, failed), None);
+    let cached = owner.assets().counts();
+    let diagnostics = owner.catalog().diagnostics.len();
+    assert_eq!(
+        owner.register_shader(
+            &fixture.vfs,
+            b"UI.other/missing.tga",
+            second.source_rules,
+            true,
+        ),
+        Ok(handle)
+    );
+    assert_eq!(owner.assets().counts(), cached);
+    assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
+    assert!(
+        owner
+            .prepare_registration(&fixture.vfs, &request, failed, |_| {
+                panic!("cached failed profile must not reach the backend")
+            })
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), cached);
+    for profile in [first, second, foreign] {
+        assert!(owner.catalog().shader_binding(handle, profile).is_some());
+    }
+}
+
+#[test]
 fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
     let script = b"ui/first\n{\n cull none\n { map $whiteimage\n blendFunc add\n rgbGen vertex\n }\n { map $lightmap\n blendFunc filter\n }\n}\nui/second\n{\n nomipmaps\n { map ui/pic.tga\n blendFunc blend\n rgbGen vertex\n alphaGen vertex\n }\n}\n";
     let fixture = support::Fixture::new(&[

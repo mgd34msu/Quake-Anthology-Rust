@@ -198,8 +198,8 @@ pub enum RendererRegistration {
 }
 
 #[derive(Clone, Debug)]
-pub struct RendererRequest {
-    pub name: qa_core::text::FixedText<64>,
+pub struct RendererRequest<N = qa_core::text::FixedText<64>> {
+    pub name: N,
     pub source: RuleSetId,
     pub kind: RendererRegistration,
     pub world: Option<qa_render::world::WorldId>,

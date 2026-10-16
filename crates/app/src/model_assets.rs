@@ -250,8 +250,16 @@ struct RegisteredShader {
 }
 struct ShaderProfileBinding {
     profile: ModelProfile,
-    material: Option<MaterialId>,
-    required_assets: Option<AssetCounts>,
+    state: ShaderProfileState,
+}
+#[derive(Clone, Copy)]
+enum ShaderProfileState {
+    Unattempted,
+    Failed,
+    Ready {
+        material: MaterialId,
+        required_assets: Option<AssetCounts>,
+    },
 }
 struct RegisteredSkin {
     profiles: Vec<SkinProfile>,
@@ -463,18 +471,27 @@ struct RegistrationCheckpoint {
     diagnostics: usize,
     file: Option<(NameId, IndexSpan)>,
     shader_index: Option<(NameId, Option<u32>)>,
+    shader: Option<ShaderCheckpoint>,
     skin_index: Option<(NameId, Option<u32>)>,
     inline: Option<(usize, Option<NameId>)>,
     images: Vec<Option<ImageRegistrationMark>>,
 }
+struct ShaderCheckpoint {
+    index: usize,
+    ready: bool,
+    bindings: Vec<(usize, ShaderProfileState)>,
+}
 impl RegistrationCheckpoint {
-    fn capture(owner: &ModelAssets, request: &RendererRequest) -> Result<Self, String> {
+    fn capture(
+        owner: &ModelAssets,
+        request: &RendererRequest<impl AsRef<[u8]>>,
+    ) -> Result<Self, String> {
         let catalog = &owner.catalog;
         let mut file_name = None;
         let mut shader_index = None;
         let mut skin_index = None;
         let mut inline = None;
-        let raw = request.name.as_bytes();
+        let raw = request.name.as_ref();
         match request.kind {
             RendererRegistration::Model if raw.starts_with(b"*") => {
                 let world = request.world.ok_or("inline registration world")?;
@@ -501,12 +518,27 @@ impl RegistrationCheckpoint {
                     .map(|group| (group, catalog.skin_indices[group.0 as usize]));
             }
             RendererRegistration::Shader { .. } => {
-                shader_index = catalog
-                    .names
-                    .find_folded(shader_key(raw))
-                    .map(|group| (group, catalog.shader_indices[group.0 as usize]));
+                shader_index = find_shader_index(&catalog.names, &catalog.shader_indices, raw);
             }
         }
+        let shader = shader_index.and_then(|(_, index)| {
+            let index = index? as usize;
+            let shader = &catalog.shaders[index];
+            Some(ShaderCheckpoint {
+                index,
+                ready: shader.ready,
+                bindings: shader
+                    .profiles
+                    .range()
+                    .filter_map(|index| {
+                        let binding = &catalog.shader_bindings[index];
+                        (binding.profile.source_rules == request.source
+                            && matches!(binding.state, ShaderProfileState::Unattempted))
+                        .then_some((index, binding.state))
+                    })
+                    .collect(),
+            })
+        });
         let images = catalog
             .profiles
             .iter()
@@ -532,6 +564,7 @@ impl RegistrationCheckpoint {
                 .filter(|name| matches!(catalog.files[name.0 as usize], ModelFile::Empty))
                 .map(|name| (name, catalog.models[name.0 as usize])),
             shader_index,
+            shader,
             skin_index,
             inline,
             images,
@@ -568,6 +601,12 @@ impl RegistrationCheckpoint {
         }
         if let Some((group, index)) = self.shader_index {
             catalog.shader_indices[group.0 as usize] = index;
+        }
+        if let Some(shader) = self.shader {
+            catalog.shaders[shader.index].ready = shader.ready;
+            for (index, state) in shader.bindings {
+                catalog.shader_bindings[index].state = state;
+            }
         }
         if let Some((group, index)) = self.skin_index {
             catalog.skin_indices[group.0 as usize] = index;
@@ -734,14 +773,14 @@ impl ModelAssets {
     pub fn prepare_registration(
         &mut self,
         vfs: &Vfs,
-        request: &RendererRequest,
+        request: &RendererRequest<impl AsRef<[u8]>>,
         profile: ModelProfile,
         prepare: impl FnOnce(&Assets) -> Result<(), String>,
     ) -> Result<(i32, AssetCounts), String> {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("late registration requires a published resource prefix".to_owned());
         }
-        if request.name.as_bytes().is_empty() || request.name.as_bytes().len() >= 64 {
+        if request.name.as_ref().is_empty() {
             return Err("renderer registration name length".to_owned());
         }
         if profile.source_rules != request.source
@@ -755,7 +794,7 @@ impl ModelAssets {
         }
         let checkpoint = RegistrationCheckpoint::capture(self, request)?;
         let result = (|| {
-            let raw = request.name.as_bytes();
+            let raw = request.name.as_ref();
             let handle = match request.kind {
                 RendererRegistration::Model if raw.starts_with(b"*") => request
                     .world
@@ -826,12 +865,14 @@ impl ModelAssets {
             .registrations
             .iter_mut()
             .map(|entry| &mut entry.required_assets)
-            .chain(
-                self.catalog
-                    .shader_bindings
-                    .iter_mut()
-                    .map(|entry| &mut entry.required_assets),
-            )
+            .chain(self.catalog.shader_bindings.iter_mut().filter_map(
+                |entry| match &mut entry.state {
+                    ShaderProfileState::Ready {
+                        required_assets, ..
+                    } => Some(required_assets),
+                    ShaderProfileState::Unattempted | ShaderProfileState::Failed => None,
+                },
+            ))
             .chain(
                 self.catalog
                     .skins
@@ -1225,64 +1266,111 @@ impl ModelAssets {
         if raw.len() >= 64 {
             return Err(CallError::Text);
         }
-        if let Some(handle) = shader_handle(
-            &self.catalog.names,
-            &self.catalog.shader_indices,
-            &self.catalog.shaders,
-            raw,
-        ) {
-            return Ok(handle);
-        }
-        std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
-        let key = shader_key(raw);
-        let count = self
+        if !self
             .catalog
             .profiles
             .iter()
-            .filter(|entry| entry.profile.source_rules == source)
-            .count();
-        let next = self
-            .catalog
-            .shader_bindings
-            .len()
-            .checked_add(count)
-            .filter(|&n| n <= self.catalog.limits.models && n <= u32::MAX as usize)
-            .ok_or(CallError::Capacity)?;
-        if self.catalog.shaders.len() >= self.catalog.limits.models
-            || self.catalog.shaders.len() >= i32::MAX as usize
+            .any(|entry| entry.profile.source_rules == source)
         {
-            return Err(CallError::Capacity);
+            return Err(CallError::File);
         }
-        let name = self.admit_name(key)?;
-        let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
-        let index = self.catalog.shaders.len() as u32;
-        self.catalog.shader_indices[group.0 as usize] = Some(index);
-        let span = IndexSpan {
-            first: self.catalog.shader_bindings.len() as u32,
-            count: (next - self.catalog.shader_bindings.len()) as u32,
+        let cached = find_shader_index(&self.catalog.names, &self.catalog.shader_indices, raw)
+            .and_then(|(_, index)| index);
+        if let Some(index) = cached {
+            let span = self.catalog.shaders[index as usize].profiles;
+            let bindings = &self.catalog.shader_bindings[span.range()];
+            if !bindings.iter().any(|binding| {
+                binding.profile.source_rules == source
+                    && matches!(binding.state, ShaderProfileState::Unattempted)
+            }) {
+                return Ok(
+                    if bindings.iter().any(|binding| {
+                        binding.profile.source_rules == source
+                            && matches!(binding.state, ShaderProfileState::Ready { .. })
+                    }) {
+                        index as i32 + 1
+                    } else {
+                        0
+                    },
+                );
+            }
+        }
+        std::str::from_utf8(raw).map_err(|_| CallError::Text)?;
+        let index = match cached {
+            Some(index) => index as usize,
+            None => {
+                let maximum = self
+                    .catalog
+                    .limits
+                    .models
+                    .checked_mul(self.catalog.profiles.len())
+                    .filter(|&n| n <= u32::MAX as usize)
+                    .ok_or(CallError::Capacity)?;
+                let next = self
+                    .catalog
+                    .shader_bindings
+                    .len()
+                    .checked_add(self.catalog.profiles.len())
+                    .filter(|&n| n <= maximum)
+                    .ok_or(CallError::Capacity)?;
+                if self.catalog.shaders.len() >= self.catalog.limits.models
+                    || self.catalog.shaders.len() >= i32::MAX as usize
+                {
+                    return Err(CallError::Capacity);
+                }
+                let name = self.admit_name(shader_key(raw))?;
+                let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
+                let index = self.catalog.shaders.len();
+                self.catalog.shader_indices[group.0 as usize] = Some(index as u32);
+                let span = IndexSpan {
+                    first: self.catalog.shader_bindings.len() as u32,
+                    count: (next - self.catalog.shader_bindings.len()) as u32,
+                };
+                self.catalog.shaders.push(RegisteredShader {
+                    name,
+                    profiles: span,
+                    ready: false,
+                });
+                self.catalog
+                    .shader_bindings
+                    .extend(
+                        self.catalog
+                            .profiles
+                            .iter()
+                            .map(|images| ShaderProfileBinding {
+                                profile: images.profile,
+                                state: ShaderProfileState::Unattempted,
+                            }),
+                    );
+                index
+            }
         };
-        self.catalog.shaders.push(RegisteredShader {
-            name,
-            profiles: span,
-            ready: false,
-        });
+        let shader = &self.catalog.shaders[index];
+        let name = shader.name;
+        let span = shader.profiles;
         let definition = shader_definition(self.shader_catalog(vfs), raw, mipmaps, false);
         let mut ready = false;
-        for images in self
+        for (images, binding) in self
             .catalog
             .profiles
             .iter_mut()
-            .filter(|entry| entry.profile.source_rules == source)
+            .zip(&mut self.catalog.shader_bindings[span.range()])
+            .filter(|(images, binding)| {
+                images.profile.source_rules == source
+                    && matches!(binding.state, ShaderProfileState::Unattempted)
+            })
         {
-            let result = images.compile(
+            binding.state = match images.compile(
                 vfs,
                 &mut self.assets,
                 definition.as_ref().map_err(Clone::clone),
-            );
-            let material = match result {
+            ) {
                 Ok(material) => {
                     ready = true;
-                    Some(material)
+                    ShaderProfileState::Ready {
+                        material,
+                        required_assets: (!self.initial_registration).then(|| self.assets.counts()),
+                    }
                 }
                 Err(error) => {
                     self.catalog.diagnostics.push(ModelDiagnostic {
@@ -1290,17 +1378,11 @@ impl ModelAssets {
                         profile: images.profile,
                         error,
                     });
-                    None
+                    ShaderProfileState::Failed
                 }
             };
-            self.catalog.shader_bindings.push(ShaderProfileBinding {
-                profile: images.profile,
-                material,
-                required_assets: (!self.initial_registration && material.is_some())
-                    .then(|| self.assets.counts()),
-            });
         }
-        self.catalog.shaders[index as usize].ready = ready;
+        self.catalog.shaders[index].ready |= ready;
         if ready {
             Ok(index as i32 + 1)
         } else {
@@ -1507,10 +1589,18 @@ fn shader_handle(
     if raw.is_empty() {
         return Some(0);
     }
-    let group = names.find_folded(shader_key(raw))?;
-    let index = indices.get(group.0 as usize).copied().flatten()?;
+    let (_, index) = find_shader_index(names, indices, raw)?;
+    let index = index?;
     let entry = shaders.get(index as usize)?;
     Some(if entry.ready { index as i32 + 1 } else { 0 })
+}
+fn find_shader_index(
+    names: &NameTable,
+    indices: &[Option<u32>],
+    raw: &[u8],
+) -> Option<(NameId, Option<u32>)> {
+    let group = names.find_folded(shader_key(raw))?;
+    Some((group, indices.get(group.0 as usize).copied().flatten()))
 }
 fn skin_handle(
     names: &NameTable,
@@ -1814,7 +1904,7 @@ impl ModelCatalog {
             RendererRegistration::Skin => self.skin_profile(handle, profile).is_some(),
             RendererRegistration::Shader { .. } => self
                 .shader_profile(handle, profile)
-                .is_some_and(|entry| entry.material.is_some()),
+                .is_some_and(|entry| matches!(entry.state, ShaderProfileState::Ready { .. })),
         }
     }
 
@@ -1829,8 +1919,14 @@ impl ModelCatalog {
     }
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<MaterialId> {
         let entry = self.shader_profile(handle, profile)?;
-        self.admitted(entry.required_assets)
-            .then_some(entry.material?)
+        let ShaderProfileState::Ready {
+            material,
+            required_assets,
+        } = entry.state
+        else {
+            return None;
+        };
+        self.admitted(required_assets).then_some(material)
     }
     fn shader_profile(&self, handle: i32, profile: ModelProfile) -> Option<&ShaderProfileBinding> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
