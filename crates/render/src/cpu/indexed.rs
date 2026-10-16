@@ -58,6 +58,17 @@ impl AliasLight {
 }
 
 #[derive(Clone, Copy)]
+pub(super) enum Shading {
+    Alias {
+        software_alias: Option<SoftwareAlias>,
+        lighting: Option<EntityLighting>,
+    },
+    Evaluated {
+        mip: u8,
+    },
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct Raster<'a> {
     pub palette: &'a PaletteLighting,
     pub palette_id: PaletteId,
@@ -79,8 +90,7 @@ impl<'a> Raster<'a> {
         presentation: CpuPresentation,
         image: &'a Image,
         stage: &PreparedStage,
-        software_alias: Option<SoftwareAlias>,
-        lighting: Option<EntityLighting>,
+        shading: Shading,
         assets: &'a Assets,
     ) -> Result<Option<Self>, &'static str> {
         let CpuPresentation::Indexed {
@@ -105,6 +115,13 @@ impl<'a> Raster<'a> {
         if flat_color.is_none() && texture.is_none() {
             return Err("mesh image has no native indices");
         }
+        let (software_alias, lighting) = match shading {
+            Shading::Alias {
+                software_alias,
+                lighting,
+            } => (software_alias, lighting),
+            Shading::Evaluated { .. } => (None, None),
+        };
         let blend = match stage.stage.blend {
             None => false,
             Some(StageBlend::ALPHA)
@@ -116,8 +133,9 @@ impl<'a> Raster<'a> {
             _ => return Err("unsupported indexed mesh blend"),
         };
         let fullbright_light = software_alias.and_then(|alias| alias.fullbright_light);
-        let alias_light = if matches!(stage.stage.rgb_gen, RgbGen::LightingDiffuse)
-            || fullbright_light.is_some()
+        let alias_light = if matches!(shading, Shading::Alias { .. })
+            && (matches!(stage.stage.rgb_gen, RgbGen::LightingDiffuse)
+                || fullbright_light.is_some())
         {
             let mut lighting = lighting.ok_or("missing alias lighting")?;
             if let Some([ambient, shade]) = fullbright_light {
@@ -132,7 +150,16 @@ impl<'a> Raster<'a> {
             palette: palette_resource,
             palette_id: palette,
             mip: texture
-                .map(|texture| texture.mip(0).ok_or("missing native mesh mip"))
+                .map(|texture| {
+                    let requested = match shading {
+                        Shading::Alias { .. } => 0,
+                        Shading::Evaluated { mip } => mip,
+                    };
+                    (0..=requested)
+                        .rev()
+                        .find_map(|level| texture.mip(level))
+                        .ok_or("missing native mesh mip")
+                })
                 .transpose()?,
             flat_color,
             transparent_index: texture.and_then(|texture| texture.transparent_index()),

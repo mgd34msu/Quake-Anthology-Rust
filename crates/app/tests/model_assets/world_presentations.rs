@@ -57,7 +57,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile).presentation],
+            &[world_registration(profile).presentation.into()],
             Default::default(),
         )
         .unwrap();
@@ -68,7 +68,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile).presentation],
+            &[world_registration(profile).presentation.into()],
             Default::default(),
         )
         .unwrap();
@@ -353,7 +353,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(original_profile).presentation],
+            &[world_registration(original_profile).presentation.into()],
             Default::default(),
         )
         .unwrap();

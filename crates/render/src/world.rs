@@ -23,6 +23,7 @@ pub struct WorldPresentation {
     pub(crate) bindings: Box<[SurfaceBinding]>,
     registrations: Box<[ShaderRegistration]>,
     native_page0: Option<ImageId>,
+    native_default: Option<ShaderBindingId>,
     pub(crate) profile: Option<(
         crate::material::world_load::WorldPresentationProfile,
         crate::material::world_load::PresentationDefaults,
@@ -36,6 +37,7 @@ impl WorldPresentation {
         shaders: impl Iterator<Item = ShaderBindingId>,
         registrations: Box<[ShaderRegistration]>,
         native_page0: Option<ImageId>,
+        native_default: Option<ShaderBindingId>,
     ) -> Self {
         Self {
             world,
@@ -52,10 +54,14 @@ impl WorldPresentation {
             profile: None,
             registrations,
             native_page0,
+            native_default,
         }
     }
     pub fn shader_registrations(&self) -> &[ShaderRegistration] {
         &self.registrations
+    }
+    pub fn native_default(&self) -> Option<ShaderBindingId> {
+        self.native_default
     }
     pub fn native_page0(&self) -> Option<ImageId> {
         self.native_page0
@@ -102,6 +108,7 @@ pub struct WorldPresentationInput<'a> {
     pub surfaces: &'a [SurfaceMaterial],
     pub registrations: &'a [ShaderRegistration<PreparedShader>],
     pub native_page0: Option<ImageId>,
+    pub native_default: Option<ShaderBindingId>,
 }
 impl<'a> WorldPresentationInput<'a> {
     pub fn new(surfaces: &'a [SurfaceMaterial]) -> Self {
@@ -109,6 +116,7 @@ impl<'a> WorldPresentationInput<'a> {
             surfaces,
             registrations: &[],
             native_page0: None,
+            native_default: None,
         }
     }
 }

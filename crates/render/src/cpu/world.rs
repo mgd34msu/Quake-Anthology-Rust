@@ -16,7 +16,7 @@ use crate::surface_cache::{
 };
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
 use crate::world::{WorldId, WorldPresentationId};
-use qa_core::primitives::IndexSpan;
+use qa_core::primitives::{IndexSpan, Vec3};
 use std::sync::Arc;
 
 mod band;
@@ -1574,32 +1574,38 @@ impl SurfacePrepare {
             let native = match camera.refdef.cpu_presentation {
                 CpuPresentation::Rgb => None,
                 CpuPresentation::Indexed { palette, .. } => {
-                    let Some(source) = indexed_material(material, base) else {
-                        self.reject(stats);
-                        continue;
-                    };
-                    let Some(texture) = assets.image(source.image).and_then(|i| i.indexed.as_ref())
-                    else {
-                        self.reject(stats);
-                        continue;
-                    };
-                    let supported = if source.tiled.is_some() {
-                        surface.texture_coordinates == TextureCoordinates::Texels
-                            && texture.mip(0).is_some_and(|mip| {
-                                mip.width == SoftwareTiled::SIZE
-                                    && mip.height == SoftwareTiled::SIZE
-                            })
-                            && texture.transparent_index().is_none()
-                    } else {
-                        info.cache_supported
-                    };
-                    if assets.palette(palette).is_none() || !supported {
+                    if assets.palette(palette).is_none() {
                         self.reject(stats);
                         continue;
                     }
-                    Some(source)
+                    indexed_material(material, base).filter(|source| {
+                        let Some(texture) =
+                            assets.image(source.image).and_then(|i| i.indexed.as_ref())
+                        else {
+                            return false;
+                        };
+                        if source.tiled.is_some() {
+                            surface.texture_coordinates == TextureCoordinates::Texels
+                                && texture.mip(0).is_some_and(|mip| {
+                                    mip.width == SoftwareTiled::SIZE
+                                        && mip.height == SoftwareTiled::SIZE
+                                })
+                                && texture.transparent_index().is_none()
+                        } else {
+                            info.cache_supported
+                        }
+                    })
                 }
             };
+            if !camera.rgb()
+                && native.is_none()
+                && (base.tiled.is_some()
+                    || (surface.texture_coordinates == TextureCoordinates::Texels
+                        && !info.cache_supported))
+            {
+                self.reject(stats);
+                continue;
+            }
             // An eye-plane wall has no coverage. Projected f32 rounding can
             // produce a tiny area, but native gradients have no finite depth.
             let eye = if native.is_some() {
@@ -1617,12 +1623,11 @@ impl SurfacePrepare {
                 || material.stages[0].alpha_test != AlphaFunc::None
                 || !material.stages[0].depth_write
                 || material.stages[0].depth_func != DepthFunc::Lequal
-                || native.is_some_and(|source| {
-                    assets
-                        .image(source.image)
-                        .and_then(|i| i.indexed.as_ref())
-                        .is_some_and(|t| t.cutout())
-                });
+                || (!camera.rgb()
+                    && assets
+                        .image(base.image)
+                        .and_then(|image| image.indexed.as_ref())
+                        .is_some_and(|texture| texture.cutout()));
             let loops = surface.boundaries.range();
             if loops.is_empty() {
                 self.reject(stats);
@@ -1638,12 +1643,13 @@ impl SurfacePrepare {
                     self.reject(stats);
                     break;
                 }
-                let current = if native.is_none() && material_id == source_shader.material {
-                    self.catalog
-                        .current_rgba(reference.presentation, boundary, assets)
-                } else {
-                    None
-                };
+                let current =
+                    if camera.rgb() && native.is_none() && material_id == source_shader.material {
+                        self.catalog
+                            .current_rgba(reference.presentation, boundary, assets)
+                    } else {
+                        None
+                    };
                 let mut primitive = Primitive {
                     world: reference.world,
                     presentation: reference.presentation,
@@ -1770,6 +1776,7 @@ impl SurfacePrepare {
                             count,
                             assets,
                             evaluator,
+                            camera.refdef.cpu_presentation,
                         ) {
                             valid = false;
                             break;
@@ -1884,7 +1891,15 @@ impl SurfacePrepare {
                 self.rollback(primitive.stages.first, stats);
                 return;
             };
-            if !self.append_stage(&mut primitive, stage, prepared, count, assets, evaluator) {
+            if !self.append_stage(
+                &mut primitive,
+                stage,
+                prepared,
+                count,
+                assets,
+                evaluator,
+                camera.refdef.cpu_presentation,
+            ) {
                 self.rollback(primitive.stages.first, stats);
                 return;
             }
@@ -1892,6 +1907,10 @@ impl SurfacePrepare {
         self.commit_primitive(primitive, count, stats);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Stage admission validates presentation before committing shared coverage"
+    )]
     fn append_stage(
         &mut self,
         primitive: &mut Primitive,
@@ -1900,10 +1919,23 @@ impl SurfacePrepare {
         count: usize,
         assets: &Assets,
         evaluator: &StageEvaluator,
+        presentation: CpuPresentation,
     ) -> bool {
         let Some(image) = assets.image(prepared.image) else {
             return false;
         };
+        if matches!(presentation, CpuPresentation::Indexed { .. })
+            && super::indexed::Raster::prepare(
+                presentation,
+                image,
+                &prepared,
+                super::indexed::Shading::Evaluated { mip: 0 },
+                assets,
+            )
+            .is_err()
+        {
+            return false;
+        }
         let count = if stage_index == 0 {
             Some(count)
         } else {
@@ -2609,17 +2641,24 @@ fn consume_spans(
         }
     } else {
         for (_, span) in spans {
-            stage_span(width, span, primitive, stages, assets, buffers, stats);
+            stage_span(
+                width, span, primitive, stages, assets, refdef, buffers, stats,
+            );
         }
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Span dispatch borrows the existing view presentation and shared framebuffer"
+)]
 fn stage_span(
     width: u32,
     span: Span,
     primitive: Primitive,
     stages: &[StagePlanes],
     assets: &Assets,
+    refdef: &crate::scene::Refdef,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
@@ -2632,14 +2671,27 @@ fn stage_span(
             stats.rejected += 1;
             continue;
         };
-        let Some(sampler) = stage.sampler else {
-            stats.rejected += 1;
-            continue;
-        };
         let midpoint = span.x as f32 + span.count as f32 * 0.5;
         let mip = stage
             .planes
             .mip(image, prepared.stage.sampler, midpoint, span.y as f32);
+        let indexed = match super::indexed::Raster::prepare(
+            refdef.cpu_presentation,
+            image,
+            &prepared,
+            super::indexed::Shading::Evaluated { mip },
+            assets,
+        ) {
+            Ok(indexed) => indexed,
+            Err(_) => {
+                stats.rejected += 1;
+                continue;
+            }
+        };
+        let Some(sampler) = stage.sampler else {
+            stats.rejected += 1;
+            continue;
+        };
         let mut texels = super::TexelView::image(image, mip, prepared.stage.texture_intensity);
         if prepared.stage.texture == StageTexture::Lightmap
             && primitive.domain == PrimitiveDomain::WorldSurface
@@ -2674,6 +2726,33 @@ fn stage_span(
             let z = 1.0 / zi;
             let uv = stage.planes.texture.map(|plane| plane.at(px, py) * z);
             let color = stage.planes.color.map(|plane| plane.at(px, py) * z);
+            if let Some(indexed) = indexed {
+                if !alpha_pass(prepared.stage.alpha_test, color[3]) {
+                    continue;
+                }
+                let light = indexed.light(
+                    Vec3::default(),
+                    crate::stage::pack_unit_rgba(color).to_le_bytes(),
+                );
+                let Some((color, write_depth)) = indexed.sample(
+                    uv,
+                    light,
+                    color[3],
+                    buffers.indices[index],
+                    buffers.palettes[index],
+                ) else {
+                    continue;
+                };
+                buffers.write_indexed(
+                    index,
+                    color,
+                    indexed.palette,
+                    indexed.palette_id.0,
+                    write_depth.then_some((depth, primitive.draw_rank)),
+                );
+                stats.pixels = stats.pixels.saturating_add(1);
+                continue;
+            }
             let source = sampler(texels, uv, color);
             if !alpha_pass(prepared.stage.alpha_test, source[3]) {
                 continue;

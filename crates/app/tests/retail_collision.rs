@@ -28,7 +28,7 @@ fn load_input(
             assets,
             geometry,
             source,
-            &[WorldPresentationProfile::native(rules, target)],
+            &[WorldPresentationProfile::native(rules, target).into()],
             WorldLoadOptions::default(),
         )
         .expect("production map/collision admission")

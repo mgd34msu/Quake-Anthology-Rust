@@ -1129,6 +1129,12 @@ impl Assets {
         {
             return Err("invalid native lightmap page");
         }
+        if input
+            .native_default
+            .is_some_and(|shader| self.shader_binding(shader).is_none())
+        {
+            return Err("invalid native default shader");
+        }
         for registration in input.registrations {
             let binding = match registration.shader {
                 PreparedShader::Surface(index) => {
@@ -1210,6 +1216,7 @@ impl Assets {
                 shaders.into_iter(),
                 registrations,
                 input.native_page0,
+                input.native_default,
             );
             self.presentations.push(presentation);
             self.worlds[world.0 as usize].presentations.push(id);
@@ -1273,6 +1280,7 @@ impl Assets {
                     shaders.into_iter(),
                     native_registrations,
                     input.native_page0,
+                    input.native_default,
                 ));
             }
             let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();

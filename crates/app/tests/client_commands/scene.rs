@@ -823,7 +823,16 @@ pub(super) fn entities(native: bool, ui: bool) {
     // A custom shader takes priority; an invalid positive handle uses the default.
     for (handle, expected) in [
         (shader as u64, override_material),
-        (i32::MAX as u64, qa_render::ShaderBindingId(0)),
+        (
+            i32::MAX as u64,
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .catalog()
+                .native_default(profile)
+                .unwrap(),
+        ),
     ] {
         assert_eq!(probe(&mut host, 0, 18, handle), 0);
         assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
@@ -1088,6 +1097,7 @@ pub(super) fn inline_entities(native: bool) {
     );
     assert!(owner.recycle(packet).is_ok());
     assert_eq!(probe(&mut host, 0, 11, 0), 0); // Enable world lighting in the next refdef.
+    assert_eq!(probe(&mut host, 0, 18, i32::MAX as u64), 0);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(probe(&mut host, 0, 13, 0), 0);
     assert_eq!(probe(&mut host, 0, 3, 0), 0);
@@ -1096,6 +1106,11 @@ pub(super) fn inline_entities(native: bool) {
     let Command::View(view) = packet.commands()[1] else {
         panic!("grid view")
     };
+    assert_eq!(
+        packet.entities(view.scene.entities)[0].shader,
+        None,
+        "native inline surfaces ignore customShader, including invalid handles"
+    );
     assert_eq!(
         packet.entities(view.scene.entities)[0]
             .lighting

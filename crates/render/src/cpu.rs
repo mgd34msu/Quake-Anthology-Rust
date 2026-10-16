@@ -1018,8 +1018,10 @@ impl CpuBackend {
                 camera.refdef.cpu_presentation,
                 image,
                 &stage,
-                material.settings.software_alias,
-                inputs.lighting,
+                indexed::Shading::Alias {
+                    software_alias: material.settings.software_alias,
+                    lighting: inputs.lighting,
+                },
                 assets,
             ) else {
                 stats.rejected = stats.rejected.saturating_add(1);

@@ -695,3 +695,95 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
     assert_eq!(loaded.render.presentations[0].profile.indexed_palette, None);
     assert_eq!(cpu.admitted_assets(), Some(counts));
 }
+
+#[test]
+fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_peer() {
+    let fixture = support::Fixture::new(&[]);
+    let first = shader_profile(RuleSetId::Quake3);
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut cpu = cpu(&mut owner);
+    let original = owner.catalog().native_default(first).unwrap();
+    let original_image = match owner
+        .assets()
+        .material(owner.assets().shader_binding(original).unwrap().material)
+        .unwrap()
+        .stages[0]
+        .texture
+    {
+        StageTexture::Image(id) => id,
+        _ => panic!("default image"),
+    };
+    let pixels = owner
+        .assets()
+        .image(original_image)
+        .unwrap()
+        .prepared
+        .as_ref()
+        .unwrap()
+        .levels[0]
+        .rgba
+        .to_vec();
+    let before = owner.assets().counts();
+    let mut second = first;
+    second.image_settings.gamma_exponent = 1.75;
+    assert!(
+        owner
+            .prepare_profile(
+                &fixture.vfs,
+                second.source_rules,
+                second.rules,
+                second.image_settings,
+                |assets| {
+                    assert_eq!(assets.counts().images, before.images + 1);
+                    assert_eq!(assets.counts().shader_bindings, before.shader_bindings + 1);
+                    Err("reject native default backend".to_owned())
+                }
+            )
+            .unwrap_err()
+            .contains("reject native default backend")
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(owner.catalog().native_default(first), Some(original));
+    assert_eq!(owner.catalog().native_default(second), None);
+    let (admitted, counts) = owner
+        .prepare_profile(
+            &fixture.vfs,
+            second.source_rules,
+            second.rules,
+            second.image_settings,
+            |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    assert_eq!(admitted, second);
+    assert_eq!(counts.images, before.images + 1);
+    assert_ne!(owner.catalog().native_default(second), Some(original));
+    assert_eq!(owner.catalog().native_default(first), Some(original));
+    assert_eq!(
+        owner
+            .assets()
+            .image(original_image)
+            .unwrap()
+            .prepared
+            .as_ref()
+            .unwrap()
+            .levels[0]
+            .rgba
+            .as_ref(),
+        pixels
+    );
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    // Exact admitted profile/cache hit performs no new backend work.
+    assert_eq!(
+        owner
+            .prepare_profile(
+                &fixture.vfs,
+                second.source_rules,
+                second.rules,
+                second.image_settings,
+                |_| panic!("cached profile must not reprepare")
+            )
+            .unwrap(),
+        (second, counts)
+    );
+}

@@ -518,7 +518,7 @@ fn run() -> Result<(), String> {
         &mut assets,
         &mut runtime.geometry,
         source_palette,
-        &[presentation_profile],
+        &[presentation_profile.into()],
         WorldLoadOptions::default(),
     )?;
     let presentation = loaded

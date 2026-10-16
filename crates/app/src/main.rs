@@ -505,6 +505,7 @@ fn run() -> Result<(), String> {
                     rules.or(presentation_rules).unwrap_or(input.native_source),
                     &mut palettes,
                 )
+                .map(Into::into)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let loaded = input.load(

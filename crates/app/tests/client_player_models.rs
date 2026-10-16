@@ -92,7 +92,8 @@ fn loading_with_connection(
                 qa_render::material::world_load::WorldPresentationProfile::native(
                     rules,
                     Some(palette),
-                ),
+                )
+                .into(),
             ],
             Default::default(),
         )

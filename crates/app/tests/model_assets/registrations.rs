@@ -290,6 +290,11 @@ fn optional_missing_md3_shader_keeps_model_and_skin_pointer_body_without_white_a
         .register_skin(&fixture.vfs, b"models/test.skin", profile.source_rules)
         .unwrap();
     assert!(model > 0 && skin > 0);
+    let cpu = CpuBackend::load_with_assets(8, 8, owner.assets()).unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+
     let model_rows = owner
         .catalog()
         .renderer_registrations(RendererRegistration::Model, model, profile)
@@ -314,8 +319,8 @@ fn optional_missing_md3_shader_keeps_model_and_skin_pointer_body_without_white_a
     assert_eq!(native.len(), 2);
     assert_eq!(
         native[0].shader,
-        ShaderBindingId(0),
-        "MD3 stores the native public shader index0"
+        owner.catalog().native_default(profile).unwrap(),
+        "MD3 public index0 resolves to the native global default"
     );
     assert_ne!(native[1].shader, ShaderBindingId(0));
     let skin_rows = owner
@@ -351,10 +356,6 @@ fn optional_missing_md3_shader_keeps_model_and_skin_pointer_body_without_white_a
         .unwrap();
     assert!(body.stages.is_empty());
     assert_eq!(body.settings.sort, 7.0);
-    let cpu = CpuBackend::load_with_assets(8, 8, owner.assets()).unwrap();
-    owner
-        .publish_admission(cpu.admitted_assets().unwrap())
-        .unwrap();
     assert!(
         owner
             .catalog()
@@ -465,4 +466,121 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
         ),
         Some(0)
     );
+}
+
+#[test]
+fn indexed_native_builtin_and_shaderless_md3_share_profile_default_image_and_keep_geometry() {
+    use qa_render::cpu::CpuBackend;
+    for empty_shaders in [false, true] {
+        let mut bytes = support::md3();
+        let surface = i32::from_le_bytes(bytes[100..104].try_into().unwrap()) as usize;
+        // The shared format fixture is a collinear metadata mesh. Author a
+        // front-facing triangle for this real CPU appearance proof.
+        let vertices = surface
+            + i32::from_le_bytes(bytes[surface + 100..surface + 104].try_into().unwrap()) as usize;
+        let frame_count =
+            i32::from_le_bytes(bytes[surface + 72..surface + 76].try_into().unwrap()) as usize;
+        for frame in 0..frame_count {
+            for (vertex, position) in [[32i16, 16, 28], [32, 32, 28], [32, 24, 44]]
+                .into_iter()
+                .enumerate()
+            {
+                for (axis, value) in position.into_iter().enumerate() {
+                    let at = vertices + (frame * 3 + vertex) * 8 + axis * 2;
+                    bytes[at..at + 2].copy_from_slice(&(value * 64).to_le_bytes());
+                }
+            }
+        }
+        let coordinates = surface
+            + i32::from_le_bytes(bytes[surface + 96..surface + 100].try_into().unwrap()) as usize;
+        for (vertex, uv) in [[0f32, 0.], [1., 0.], [0.5, 1.]].into_iter().enumerate() {
+            for (axis, value) in uv.into_iter().enumerate() {
+                let at = coordinates + vertex * 8 + axis * 4;
+                bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        if empty_shaders {
+            bytes[surface + 76..surface + 80].copy_from_slice(&0i32.to_le_bytes());
+        } else {
+            let shader = surface
+                + i32::from_le_bytes(bytes[surface + 92..surface + 96].try_into().unwrap())
+                    as usize;
+            bytes[shader..shader + 64].fill(0);
+            bytes[shader..shader + 8].copy_from_slice(b"*default");
+        }
+        let fixture = support::Fixture::new(&[("models/default.md3", bytes)]);
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let mut profile = shader_profile(RuleSetId::Quake);
+        profile.palette = Some(palette);
+        profile.image_settings.picmip = 2;
+        let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+        let before = owner.assets().counts();
+        let handle = owner
+            .register_model(&fixture.vfs, b"models/default.md3", RuleSetId::Quake3)
+            .unwrap();
+        assert!(handle > 0);
+        assert_eq!(
+            owner.assets().counts().images,
+            before.images,
+            "the builtin uses the profile's first indexed image"
+        );
+        assert_eq!(owner.assets().counts().models, before.models + 1);
+        let mut cpu = CpuBackend::load_with_assets(64, 48, owner.assets()).unwrap();
+        owner
+            .publish_admission(cpu.admitted_assets().unwrap())
+            .unwrap();
+        let fallback = owner.catalog().native_default(profile).unwrap();
+        let StageTexture::Image(default_image) = owner
+            .assets()
+            .material(owner.assets().shader_binding(fallback).unwrap().material)
+            .unwrap()
+            .stages[0]
+            .texture
+        else {
+            panic!("native default image")
+        };
+
+        let registration = owner
+            .catalog()
+            .renderer_registration(handle, profile)
+            .unwrap();
+        let draw = owner
+            .catalog()
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .next()
+            .unwrap();
+        let StageTexture::Image(model_image) = owner
+            .assets()
+            .material(owner.assets().shader_binding(draw.shader).unwrap().material)
+            .unwrap()
+            .stages[0]
+            .texture
+        else {
+            panic!("model image")
+        };
+        assert_eq!(model_image, default_image);
+        if empty_shaders {
+            assert_eq!(draw.shader, fallback);
+        }
+        let image = owner.assets().image(model_image).unwrap();
+        assert!(image.indexed.is_some());
+        assert_eq!(
+            (
+                image.prepared.as_ref().unwrap().levels[0].width,
+                image.prepared.as_ref().unwrap().levels[0].height
+            ),
+            (16, 16)
+        );
+        let (pixels, stats) = render_indexed_on(&mut cpu, owner.assets(), draw, palette);
+        assert_eq!(stats.rejected, 0);
+        assert!(
+            pixels
+                .iter()
+                .any(|&pixel| pixel != u32::from_le_bytes([3, 5, 7, 255])),
+            "native default remains visible through the indexed CPU model path"
+        );
+    }
 }

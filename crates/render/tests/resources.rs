@@ -948,3 +948,97 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     );
     assert_eq!(prepared.levels[0].rgba.as_ref(), [5, 8, 15, 255]);
 }
+
+#[test]
+fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capability() {
+    use qa_render::assets::StageTexture;
+    use qa_render::material::{resources::ImagesState, world_load::native_default_shader};
+    for presentation in [RuleSetId::Quake3, RuleSetId::Quake] {
+        let vfs = Vfs::default();
+        let mut assets = Assets::load().unwrap();
+        let colors: Vec<_> = (0..256).flat_map(|value| [value as u8; 3]).collect();
+        let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+        let palette = assets
+            .register_palette(PaletteLighting::load(&colors, &shades, None, 256).unwrap())
+            .unwrap();
+        let mut settings = ImageSettings::native(presentation);
+        settings.picmip = 2;
+        let mut state = ImagesState::new(RuleSetId::Quake3, presentation, settings, None).unwrap();
+        let target = Some(IndexedTarget {
+            palette,
+            transparent_index: None,
+        });
+        let fallback = native_default_shader(&mut state, &mut assets, target, None).unwrap();
+        let binding = assets.shader_binding(fallback).unwrap();
+        let material = assets.material(binding.material).unwrap();
+        assert_eq!(material.settings.sort, 3.0);
+        assert_eq!(material.settings.cull, qa_render::shader::Cull::Front);
+        assert_eq!(
+            material.stages[0].rgb_gen,
+            qa_render::shader::RgbGen::IdentityLighting
+        );
+        assert_eq!(
+            material.stages[0].alpha_gen,
+            qa_render::shader::AlphaGen::Identity
+        );
+        assert!(material.stages[0].depth_write);
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("default image")
+        };
+        let source = assets.image(image).unwrap();
+        assert_eq!((source.width, source.height), (16, 16));
+        assert_eq!(&source.rgba[..4], &[255; 4]);
+        assert_eq!(
+            &source.rgba[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4],
+            &[32; 4]
+        );
+        assert_eq!(source.indexed.as_ref().unwrap().transparent_index(), None);
+        let prepared = source.prepared.as_ref().unwrap();
+        assert_eq!(
+            (prepared.levels[0].width, prepared.levels[0].height),
+            (16, 16)
+        );
+        assert_eq!(prepared.levels.len(), 5);
+        let counts = assets.counts();
+        let mut images = Images::from_state(&vfs, &mut assets, state);
+        // The native first image wins even when this ordinary caller has no
+        // indexed raster target, as in a source-Q3 indexed model profile.
+        let ordinary = images.raster("*default", ImageUse::pic(), None).unwrap();
+        assert_eq!(ordinary.id, image);
+        assert_eq!(ordinary.sampler, Sampler::default());
+        assert_eq!(images.assets.counts(), counts);
+        assert_eq!(
+            images.raster("*default", ImageUse::pic(), None).unwrap(),
+            ordinary
+        );
+        if presentation == RuleSetId::Quake3 {
+            assert_eq!(images.conflicts().len(), 1);
+        }
+        // A seeded capability also survives a foreign geometry-source borrow.
+        let mut state = ImagesState::new(RuleSetId::Quake2, presentation, settings, None).unwrap();
+        assert_eq!(
+            native_default_shader(&mut state, images.assets, target, Some(fallback)).unwrap(),
+            fallback
+        );
+        let mut mixed = Images::from_state(&vfs, images.assets, state);
+        assert_eq!(
+            mixed
+                .raster("*default", ImageUse::default(), None)
+                .unwrap()
+                .id,
+            image
+        );
+        assert_eq!(mixed.assets.counts(), counts);
+        let white = mixed
+            .assets
+            .shader_binding(qa_render::ShaderBindingId(0))
+            .unwrap();
+        let white = mixed.assets.material(white.material).unwrap();
+        assert_eq!(white.settings.sort, 0.0);
+        assert_eq!(white.settings.cull, qa_render::shader::Cull::None);
+        assert_eq!(
+            white.stages[0].rgb_gen,
+            qa_render::shader::RgbGen::ExactVertex
+        );
+    }
+}

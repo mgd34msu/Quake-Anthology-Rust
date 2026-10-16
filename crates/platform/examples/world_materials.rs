@@ -34,10 +34,7 @@ fn run() -> Result<(), String> {
         &mut assets,
         &mut collision,
         source_palette,
-        &[WorldPresentationProfile::native(
-            presentation,
-            target_palette,
-        )],
+        &[WorldPresentationProfile::native(presentation, target_palette).into()],
         WorldLoadOptions::default(),
     )?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;

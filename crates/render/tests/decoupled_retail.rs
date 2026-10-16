@@ -52,10 +52,7 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
         &map,
         &mut assets,
         Some(palette),
-        &[WorldPresentationProfile::native(
-            RuleSetId::Quake2Rerelease,
-            Some(palette),
-        )],
+        &[WorldPresentationProfile::native(RuleSetId::Quake2Rerelease, Some(palette)).into()],
         WorldLoadOptions::default(),
     )
     .unwrap();

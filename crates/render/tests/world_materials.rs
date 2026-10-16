@@ -45,7 +45,7 @@ fn load_native_world(
         map,
         assets,
         source_palette,
-        &[WorldPresentationProfile::native(rules, target_palette)],
+        &[WorldPresentationProfile::native(rules, target_palette).into()],
         options,
     )
 }
@@ -727,7 +727,7 @@ fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() ->
         &map,
         &mut assets,
         Some(palette),
-        &[first, second, third, first],
+        &[first.into(), second.into(), third.into(), first.into()],
         WorldLoadOptions::default(),
     )
     .map_err(|e| format!("material variants: {e:?}"))?;
@@ -869,7 +869,7 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
             &map,
             &mut assets,
             Some(source),
-            &profiles,
+            &profiles.map(Into::into),
             WorldLoadOptions::default(),
         )
         .map_err(|e| format!("palette variants: {e:?}"))?;
@@ -1254,7 +1254,7 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
     let old_mesh = assets.world(loaded.world).unwrap().mesh();
     let mut profile = loaded.presentations[0].profile;
     profile.image_settings.picmip = 0;
-    let candidate = append_world_presentation(&vfs, &mut assets, loaded.world, profile)
+    let candidate = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into())
         .map_err(|error| format!("{error:?}"))?;
     let candidate_id = candidate.presentations[0].id;
     assert_eq!(assets.world(loaded.world).unwrap().mesh(), old_mesh);
@@ -1285,7 +1285,7 @@ fn unreferenced_native_page_zero_is_real_converted_resource_and_late_metadata_ro
         &assets.image(page_zero).unwrap().rgba[..4],
         &[4, 8, 12, 255]
     );
-    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile)
+    let retry = append_world_presentation(&vfs, &mut assets, loaded.world, profile.into())
         .map_err(|error| format!("{error:?}"))?;
     assert_eq!(retry.presentations[0].id, candidate_id);
     let admitted = assets.world_presentation(candidate_id).unwrap();
@@ -1328,7 +1328,8 @@ fn native_hidden_out_of_range_lightmap_registers_vertex_lighting_before_draw_ski
     assert_eq!(presentation.native_page0(), None);
     assert_eq!(
         presentation.bindings()[0].shader,
-        qa_render::ShaderBindingId(0)
+        qa_render::ShaderBindingId(0),
+        "nodraw surfaces have no draw binding"
     );
     let registration = presentation.shader_registrations()[0];
     assert_ne!(registration.shader, qa_render::ShaderBindingId(0));
@@ -1512,6 +1513,8 @@ fn implicit_missing_world_shader_keeps_named_body_and_draws_global_fallback() ->
     let vfs = mount(&root)?;
     let bytes = map_bytes(3);
     let mut map = modern_map(&bytes)?;
+    // Present the authored front face to the existing above-plane camera.
+    map.indices = vec![0, 2, 1, 0, 3, 2];
     map.shaders[0].name = b"textures/missing_visible";
     let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
     let loaded = load_native_world(
@@ -1531,9 +1534,18 @@ fn implicit_missing_world_shader_keeps_named_body_and_draws_global_fallback() ->
         Some(NativeDefaultKind::MissingImage)
     );
     assert_ne!(registration.shader, presentation.bindings()[0].shader);
+    let fallback = presentation.native_default().unwrap();
+    assert_ne!(fallback, qa_render::ShaderBindingId(0));
+    assert_eq!(presentation.bindings()[0].shader, fallback);
+    let shader = assets.shader_binding(fallback).unwrap();
+    let material = assets.material(shader.material).unwrap();
+    assert_eq!(assets.name(material.name), Some("<default>"));
+    let qa_render::assets::StageTexture::Image(image) = material.stages[0].texture else {
+        panic!("global default image")
+    };
     assert_eq!(
-        presentation.bindings()[0].shader,
-        qa_render::ShaderBindingId(0)
+        &assets.image(image).unwrap().rgba[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4],
+        &[32; 4]
     );
     assert_ne!(registration.shader, qa_render::ShaderBindingId(0));
     assert_eq!(
@@ -1554,4 +1566,208 @@ fn implicit_missing_world_shader_keeps_named_body_and_draws_global_fallback() ->
     );
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[test]
+fn q3_default_world_uses_independent_indexed_presentation_without_dropping_native_size()
+-> Result<(), String> {
+    let root = resources("indexed-default-world")?;
+    let mut shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+    shades.push(32);
+    std::fs::write(root.join("gfx/colormap.lmp"), shades).map_err(|error| error.to_string())?;
+    let vfs = mount(&root)?;
+    let bytes = map_bytes(3);
+    let mut map = modern_map(&bytes)?;
+    // Present the authored front face to the existing above-plane camera.
+    map.indices = vec![0, 2, 1, 0, 3, 2];
+    map.shaders[0].name = b"textures/missing_indexed";
+    let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
+    let palette = load_palette(
+        &vfs,
+        &mut assets,
+        PaletteSource::native(RuleSetId::Quake).unwrap(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let mut profile = WorldPresentationProfile::native(RuleSetId::Quake, Some(palette));
+    profile.image_settings.picmip = 2;
+    let loaded = load_world(
+        &vfs,
+        &map,
+        &mut assets,
+        None,
+        &[profile.into()],
+        WorldLoadOptions::default(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let presentation = assets
+        .world_presentation(loaded.presentations[0].id)
+        .unwrap();
+    let fallback = presentation.native_default().unwrap();
+    assert_eq!(presentation.bindings()[0].shader, fallback);
+    let material = assets
+        .material(assets.shader_binding(fallback).unwrap().material)
+        .unwrap();
+    let qa_render::assets::StageTexture::Image(id) = material.stages[0].texture else {
+        panic!("default image")
+    };
+    let image = assets.image(id).unwrap();
+    assert_eq!(
+        (
+            image.prepared.as_ref().unwrap().levels[0].width,
+            image.prepared.as_ref().unwrap().levels[0].height
+        ),
+        (16, 16)
+    );
+    assert_eq!(image.indexed.as_ref().unwrap().transparent_index(), None);
+    let pixels = draw_registered_profiles(&assets, loaded.world, &loaded.presentations)?;
+    assert!(
+        pixels
+            .iter()
+            .any(|&pixel| pixel != u32::from_le_bytes([0, 0, 0, 255]))
+    );
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[path = "support/world_surfaces.rs"]
+mod indexed_world_fixture;
+
+#[test]
+fn indexed_foreground_rejection_and_cutout_preserve_background_coverage() {
+    for cutout in [false, true] {
+        use qa_render::{
+            ShaderBinding,
+            assets::{MaterialSettings, Stage, Vertex},
+            shader::{AlphaGen, Cull},
+            world::{SurfaceMaterial, WorldPresentationInput, geometry::WorldVertex},
+        };
+        let mut assets = Assets::load().unwrap();
+        let colors: Vec<_> = (0..=255u8).flat_map(|i| [i; 3]).collect();
+        let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+        let palette = assets
+            .register_palette(
+                qa_render::surface_cache::PaletteLighting::load(&colors, &shades, None, 256)
+                    .unwrap(),
+            )
+            .unwrap();
+        let front = if cutout {
+            assets
+                .register_indexed_image(
+                    IndexedTexture::load_base(1, 1, &[255], Some(255)).unwrap(),
+                    palette,
+                )
+                .unwrap()
+        } else {
+            assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap()
+        };
+        let back = assets
+            .register_indexed_image(
+                IndexedTexture::load_base(1, 1, &[77], None).unwrap(),
+                palette,
+            )
+            .unwrap();
+        let material = |assets: &mut Assets, name, image| {
+            assets
+                .register_material(
+                    name,
+                    &[Stage {
+                        texture: StageTexture::Image(image),
+                        rgb_gen: RgbGen::IdentityLighting,
+                        alpha_gen: AlphaGen::Identity,
+                        ..Default::default()
+                    }],
+                    MaterialSettings {
+                        cull: Cull::None,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let front = material(&mut assets, "unsupported foreground", front);
+        let back = material(&mut assets, "indexed background", back);
+        let (mut geometry, visibility) = indexed_world_fixture::inputs(2);
+        geometry.vertices = [1f32, 2.]
+            .into_iter()
+            .flat_map(|x| {
+                [[x, -x, -x], [x, 0., x], [x, x, -x]].map(|position| WorldVertex {
+                    vertex: Vertex {
+                        position: Vec3(position),
+                        normal: Vec3([-1., 0., 0.]),
+                        texcoord: [0.5; 2],
+                        ..Default::default()
+                    },
+                })
+            })
+            .collect();
+        geometry.indices = vec![0, 1, 2, 3, 4, 5];
+        geometry
+            .boundaries
+            .push(qa_core::primitives::IndexSpan { first: 3, count: 3 });
+        geometry.surfaces[1].vertices.first = 3;
+        geometry.surfaces[1].indices.first = 3;
+        geometry.surfaces[1].boundaries.first = 1;
+        let surfaces = [front, back].map(|material| SurfaceMaterial {
+            shader: ShaderBinding::material(
+                material,
+                qa_render::world::geometry::LightSource::None,
+            ),
+            ..Default::default()
+        });
+        let world = assets
+            .register_world(
+                geometry,
+                visibility,
+                &[WorldPresentationInput::new(&surfaces)],
+            )
+            .unwrap();
+        let presentation = assets.world(world).unwrap().presentations()[0];
+        let mut cpu = CpuBackend::load_with_assets(16, 16, &assets).unwrap();
+        let mut frontend = FrontEnd::load(Default::default()).unwrap();
+        let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+        assert!(frame.add_world(
+            world,
+            presentation,
+            &[
+                VisibleSurface {
+                    surface: 0,
+                    depth_key: 0
+                },
+                VisibleSurface {
+                    surface: 1,
+                    depth_key: 0
+                }
+            ]
+        ));
+        assert!(frame.render_scene(
+            Refdef {
+                viewport: Viewport {
+                    width: 16,
+                    height: 16,
+                    ..Default::default()
+                },
+                fov: [90.; 2],
+                near: 0.1,
+                far: 16.,
+                cpu_presentation: CpuPresentation::Indexed {
+                    palette,
+                    lighting: IndexedLighting::Gray,
+                    ambient: 0,
+                    fullbright: true
+                },
+                ..Default::default()
+            },
+            &[],
+            &assets
+        ));
+        let stats = cpu.render(&frame.finish(), &assets);
+        if cutout {
+            assert_eq!(stats.rejected, 0);
+        } else {
+            assert!(stats.rejected > 0);
+        }
+        assert_eq!(
+            cpu.pixels()[8 * 16 + 8],
+            u32::from_le_bytes([77, 77, 77, 255])
+        );
+    }
 }

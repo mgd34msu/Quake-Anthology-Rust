@@ -319,33 +319,37 @@ impl SceneService for SceneBorrow<'_> {
         if !pose.origin.is_finite() {
             return frame.reject_submission();
         }
-        let shader = (submitted.custom_shader != 0).then(|| {
-            models
-                .shader_binding(submitted.custom_shader, target.profile)
-                .unwrap_or(qa_render::ShaderBindingId(0))
-        });
+        if let Some((binding, world_present)) = inline {
+            let Some(presentation) = target
+                .world_presentation(
+                    ModelView {
+                        assets,
+                        catalog: models,
+                    },
+                    binding.world,
+                )
+                .filter(|_| world_present)
+            else {
+                return frame.reject_submission();
+            };
+            pose.model = SceneModel::World {
+                world: binding.world,
+                presentation: presentation.id,
+                surfaces: binding.surfaces,
+            };
+            pose.shader = None;
+            return frame.add_entity(pose);
+        }
+        let shader = if submitted.custom_shader != 0 && submitted.kind != EntityKind::Beam {
+            let Some(shader) = models.renderer_shader(submitted.custom_shader, target.profile)
+            else {
+                return frame.reject_submission();
+            };
+            Some(shader)
+        } else {
+            None
+        };
         if submitted.kind == EntityKind::Model {
-            if let Some((binding, world_present)) = inline {
-                let Some(presentation) = target
-                    .world_presentation(
-                        ModelView {
-                            assets,
-                            catalog: models,
-                        },
-                        binding.world,
-                    )
-                    .filter(|_| world_present)
-                else {
-                    return frame.reject_submission();
-                };
-                pose.model = SceneModel::World {
-                    world: binding.world,
-                    presentation: presentation.id,
-                    surfaces: binding.surfaces,
-                };
-                pose.shader = shader;
-                return frame.add_entity(pose);
-            }
             let Some(registration) = models.renderer_registration(submitted.model, target.profile)
             else {
                 return frame.reject_submission();
@@ -399,7 +403,10 @@ impl SceneService for SceneBorrow<'_> {
         pose.shader = Some(if submitted.kind == EntityKind::Beam {
             composer.beam
         } else {
-            shader.unwrap_or(qa_render::ShaderBindingId(0))
+            let Some(shader) = shader.or_else(|| models.native_default(target.profile)) else {
+                return frame.reject_submission();
+            };
+            shader
         });
         pose.model = match submitted.kind {
             EntityKind::Model => return false,
@@ -441,12 +448,15 @@ impl SceneService for SceneBorrow<'_> {
         frame.add_entity(pose)
     }
     fn poly(&mut self, shader: i32, count: usize, vertex: &mut dyn FnMut(usize) -> Vertex) -> bool {
+        if shader == 0 {
+            return false;
+        }
         let Some(target) = self.role.target.as_ref() else {
             return false;
         };
         let Some(shader) = self
             .models
-            .and_then(|models| models.shader_binding(shader, target.profile))
+            .and_then(|models| models.renderer_shader(shader, target.profile))
         else {
             return false;
         };
@@ -466,7 +476,7 @@ impl SceneService for SceneBorrow<'_> {
         };
         let Some(shader) = self
             .models
-            .and_then(|models| models.shader_binding(shader, target.profile))
+            .and_then(|models| models.renderer_shader(shader, target.profile))
         else {
             return false;
         };

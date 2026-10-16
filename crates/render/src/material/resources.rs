@@ -91,6 +91,7 @@ impl ImageSettings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageRole {
     Surface,
+    NativeDefault,
     Pic,
     LayeredSky,
     CubeSky,
@@ -138,6 +139,9 @@ pub struct ImageConflict {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
+    NativeDefault {
+        indexed: Option<IndexedTarget>,
+    },
     MissingSkin {
         palette: Option<PaletteId>,
     },
@@ -284,7 +288,11 @@ impl ImageRecipes {
                 UploadExtent::PowerOfTwo {
                     round: ExtentRound::Up,
                     // GLQuake applies gl_picmip even to non-mipmapped pics.
-                    drop: settings.picmip,
+                    drop: if usage.role == ImageRole::NativeDefault {
+                        0
+                    } else {
+                        settings.picmip
+                    },
                     max_dimension: settings.max_dimension,
                 },
                 ResizeFilter::Nearest,
@@ -520,6 +528,140 @@ impl ImagesState {
             conflicts: Vec::new(),
         })
     }
+    pub fn set_raster_target(
+        &mut self,
+        assets: &Assets,
+        target: Option<IndexedTarget>,
+    ) -> Result<(), ResourceError> {
+        if target.is_some_and(|target| assets.palette(target.palette).is_none()) {
+            return Err(ResourceError::Asset("missing presentation image palette"));
+        }
+        if !self.resolved.is_empty() && target != self.raster_target {
+            return Err(ResourceError::Asset("image target already registered"));
+        }
+        self.raster_target = target;
+        Ok(())
+    }
+    /// Procedural Q3 builtin uses the same retained cache and upload recipe as files.
+    pub fn native_default_image(
+        &mut self,
+        assets: &mut Assets,
+        indexed: Option<IndexedTarget>,
+        existing: Option<ImageId>,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let key = ImageKey {
+            name: assets
+                .intern_name("*default")
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::NativeDefault { indexed },
+        };
+        if let Some(index) = self.find(key) {
+            let resolved = self.resolved[index].1;
+            if existing.is_some_and(|image| image != resolved.id) {
+                return Err(ResourceError::Asset("native default image changed"));
+            }
+            return Ok(resolved);
+        }
+        let usage = ImageUse {
+            role: ImageRole::NativeDefault,
+            allow_picmip: false,
+            ..ImageUse::default()
+        };
+        let id = if let Some(id) = existing {
+            assets
+                .image(id)
+                .ok_or(ResourceError::Asset("missing native default image"))?;
+            id
+        } else {
+            let mut rgba = RgbaImage {
+                width: 16,
+                height: 16,
+                pixels: vec![32; 16 * 16 * 4],
+            };
+            for y in 0..16 {
+                for x in 0..16 {
+                    if x == 0 || y == 0 || x == 15 || y == 15 {
+                        rgba.pixels[(y * 16 + x) * 4..(y * 16 + x + 1) * 4].fill(255);
+                    }
+                }
+            }
+            let id = if let Some(target) = indexed {
+                let palette = assets
+                    .palette(target.palette)
+                    .ok_or(ResourceError::Asset("missing default image palette"))?;
+                let texture = rgba_texture(&rgba, palette, target.transparent_index)?;
+                assets.register_rgba_with_indexed(16, 16, &rgba.pixels, texture)
+            } else {
+                assets.register_image(16, 16, &rgba.pixels)
+            }
+            .map_err(ResourceError::Asset)?;
+            self.prepare(assets, id, usage, None)?;
+            id
+        };
+        Ok(self.remember(key, id, usage))
+    }
+    fn cached_use(&mut self, key: ImageKey, usage: ImageUse) -> Option<ResolvedImage> {
+        let index = self.find(key)?;
+        let first = self.resolved[index].2;
+        let requested = self.recipes.effective_use(usage);
+        if self.recipes.rules == RuleSetId::Quake3
+            && (first.sampler != requested.sampler || first.allow_picmip != requested.allow_picmip)
+            && !self
+                .conflicts
+                .iter()
+                .any(|entry| entry.name == key.name && entry.requested == requested)
+        {
+            self.conflicts.push(ImageConflict {
+                name: key.name,
+                first,
+                requested,
+            });
+        }
+        Some(self.resolved[index].1)
+    }
+    fn prepare(
+        &mut self,
+        assets: &mut Assets,
+        id: ImageId,
+        usage: ImageUse,
+        rgba: Option<&[u8]>,
+    ) -> Result<(), ResourceError> {
+        let params = self.recipes.params(usage)?;
+        match rgba {
+            Some(rgba) => assets.prepare_image_with_rgba(id, rgba, params),
+            None => assets.prepare_image(id, params),
+        }
+        .map_err(ResourceError::Asset)?;
+        if self.recipes.rules == RuleSetId::Quake3 {
+            assets
+                .set_image_native_sampler(id, self.recipes.effective_use(usage).sampler)
+                .map_err(ResourceError::Asset)?;
+        }
+        Ok(())
+    }
+    fn named_range(&self, name: NameId) -> std::ops::Range<usize> {
+        let first = self
+            .resolved
+            .partition_point(|entry| entry.0.name.0 < name.0);
+        let count = self.resolved[first..].partition_point(|entry| entry.0.name == name);
+        first..first + count
+    }
+    fn find(&self, key: ImageKey) -> Option<usize> {
+        self.named_range(key.name)
+            .find(|&index| self.resolved[index].0 == key)
+    }
+    fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
+        let usage = self.recipes.effective_use(usage);
+        let resolved = ResolvedImage {
+            id,
+            sampler: usage.sampler,
+        };
+        let at = self
+            .resolved
+            .partition_point(|entry| entry.0.name.0 <= key.name.0);
+        self.resolved.insert(at, (key, resolved, usage));
+        resolved
+    }
 }
 pub struct Images<'a> {
     pub assets: &'a mut Assets,
@@ -575,14 +717,7 @@ impl<'a> Images<'a> {
         &mut self,
         target: Option<IndexedTarget>,
     ) -> Result<(), ResourceError> {
-        if target.is_some_and(|target| self.assets.palette(target.palette).is_none()) {
-            return Err(ResourceError::Asset("missing presentation image palette"));
-        }
-        if !self.state.resolved.is_empty() && target != self.state.raster_target {
-            return Err(ResourceError::Asset("image target already registered"));
-        }
-        self.state.raster_target = target;
-        Ok(())
+        self.state.set_raster_target(self.assets, target)
     }
     pub fn raster_target(&self) -> Option<IndexedTarget> {
         self.state.raster_target
@@ -1045,32 +1180,43 @@ impl<'a> Images<'a> {
         indexed: Option<IndexedTarget>,
     ) -> Result<ResolvedImage, ResourceError> {
         let rules = self.state.source_rules;
+        let name_id = self
+            .assets
+            .intern_name(name)
+            .map_err(ResourceError::Asset)?;
+        let opaque = indexed.map(|target| IndexedTarget {
+            transparent_index: None,
+            ..target
+        });
+        if self.assets.name(name_id) == Some("*default") {
+            let cached = self.state.named_range(name_id).find_map(|index| {
+                let key = self.state.resolved[index].0;
+                matches!(key.recipe, ImageRecipe::NativeDefault { .. }).then_some(key)
+            });
+            let key = if let Some(key) = cached {
+                Some(key)
+            } else if rules == RuleSetId::Quake3 {
+                self.state.native_default_image(self.assets, opaque, None)?;
+                Some(ImageKey {
+                    name: name_id,
+                    recipe: ImageRecipe::NativeDefault { indexed: opaque },
+                })
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                return self
+                    .state
+                    .cached_use(key, usage)
+                    .ok_or(ResourceError::Asset("missing native default recipe"));
+            }
+        }
         let key = ImageKey {
-            name: self
-                .assets
-                .intern_name(name)
-                .map_err(ResourceError::Asset)?,
+            name: name_id,
             recipe: ImageRecipe::Raster { rules, indexed },
         };
-        if let Some(index) = self.find(key) {
-            let first = self.state.resolved[index].2;
-            let requested = self.state.recipes.effective_use(usage);
-            if self.state.recipes.rules == RuleSetId::Quake3
-                && (first.sampler != requested.sampler
-                    || first.allow_picmip != requested.allow_picmip)
-                && !self
-                    .state
-                    .conflicts
-                    .iter()
-                    .any(|entry| entry.name == key.name && entry.requested == requested)
-            {
-                self.state.conflicts.push(ImageConflict {
-                    name: key.name,
-                    first,
-                    requested,
-                });
-            }
-            return Ok(self.state.resolved[index].1);
+        if let Some(resolved) = self.state.cached_use(key, usage) {
+            return Ok(resolved);
         }
         let canonical = self
             .assets
@@ -1143,41 +1289,12 @@ impl<'a> Images<'a> {
         usage: ImageUse,
         rgba: Option<&[u8]>,
     ) -> Result<(), ResourceError> {
-        let params = self.state.recipes.params(usage)?;
-        match rgba {
-            Some(rgba) => self.assets.prepare_image_with_rgba(id, rgba, params),
-            None => self.assets.prepare_image(id, params),
-        }
-        .map_err(ResourceError::Asset)?;
-        if self.state.recipes.rules == RuleSetId::Quake3 {
-            self.assets
-                .set_image_native_sampler(id, self.state.recipes.effective_use(usage).sampler)
-                .map_err(ResourceError::Asset)?;
-        }
-        Ok(())
+        self.state.prepare(self.assets, id, usage, rgba)
     }
     fn find(&self, key: ImageKey) -> Option<usize> {
-        let at = self
-            .state
-            .resolved
-            .partition_point(|entry| entry.0.name.0 < key.name.0);
-        self.state.resolved[at..]
-            .iter()
-            .take_while(|entry| entry.0.name == key.name)
-            .position(|entry| entry.0 == key)
-            .map(|index| at + index)
+        self.state.find(key)
     }
     fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
-        let usage = self.state.recipes.effective_use(usage);
-        let resolved = ResolvedImage {
-            id,
-            sampler: usage.sampler,
-        };
-        let at = self
-            .state
-            .resolved
-            .partition_point(|entry| entry.0.name.0 <= key.name.0);
-        self.state.resolved.insert(at, (key, resolved, usage));
-        resolved
+        self.state.remember(key, id, usage)
     }
 }

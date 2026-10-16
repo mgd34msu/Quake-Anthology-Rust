@@ -14,7 +14,7 @@ use qa_render::{
     Assets,
     assets::PaletteId,
     material::world_load::{
-        LoadedWorld, SkyEnvironment, WorldLoadOptions, WorldPresentationProfile, load_world,
+        LoadedWorld, SkyEnvironment, WorldLoadOptions, WorldPresentationRequest, load_world,
     },
 };
 use qa_world::collision::{
@@ -267,7 +267,7 @@ impl MapInput {
         assets: &mut Assets,
         geometry: &mut CollisionStore,
         source_palette: Option<PaletteId>,
-        presentations: &[WorldPresentationProfile],
+        presentations: &[WorldPresentationRequest],
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;

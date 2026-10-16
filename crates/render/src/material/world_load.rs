@@ -2,7 +2,8 @@
 use super::{
     load_catalog,
     resources::{
-        ImageRole, ImageSettings, ImageUse, Images, IndexedTarget, ResolvedImage, ResourceError,
+        ImageRole, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResolvedImage,
+        ResourceError,
     },
 };
 use crate::{
@@ -10,8 +11,9 @@ use crate::{
     PerspectiveStep, Refdef,
     assets::{
         CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings,
-        NativeDefaultKind, Sampler, ShaderBinding, ShaderRegistration, Sky, SkyDistance,
-        SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
+        NativeDefaultKind, Sampler, ShaderBinding, ShaderBindingId, ShaderRegistration, Sky,
+        SkyDistance, SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap,
+        upload,
     },
     lightmap::{
         Atlas, AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale,
@@ -168,6 +170,19 @@ impl WorldPresentationProfile {
             image_settings: ImageSettings::native(rules),
             q1_gl_scale: Q1GlScale::OriginalOverbright,
             q2_modulate: 1.0,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct WorldPresentationRequest {
+    pub profile: WorldPresentationProfile,
+    pub native_default: Option<ShaderBindingId>,
+}
+impl From<WorldPresentationProfile> for WorldPresentationRequest {
+    fn from(profile: WorldPresentationProfile) -> Self {
+        Self {
+            profile,
+            native_default: None,
         }
     }
 }
@@ -342,6 +357,7 @@ struct CompiledPresentation {
     surfaces: Vec<SurfaceMaterial>,
     registrations: Vec<ShaderRegistration<PreparedShader>>,
     native_page0: Option<ImageId>,
+    native_default: Option<ShaderBindingId>,
 }
 impl CompiledPresentation {
     fn input(&self) -> WorldPresentationInput<'_> {
@@ -349,6 +365,7 @@ impl CompiledPresentation {
             surfaces: &self.surfaces,
             registrations: &self.registrations,
             native_page0: self.native_page0,
+            native_default: self.native_default,
         }
     }
 }
@@ -388,7 +405,7 @@ fn compile_profile(
     vfs: &Vfs,
     assets: &mut Assets,
     source: &WorldMaterialSource,
-    profile: WorldPresentationProfile,
+    request: WorldPresentationRequest,
     prepared: PreparedPresentation,
     diagnostics: &mut Vec<String>,
 ) -> Result<
@@ -404,7 +421,7 @@ fn compile_profile(
         vfs,
         source,
         assets,
-        profile,
+        request,
         &source.layout.regions,
         &lightmaps.surfaces,
         prepared.conversion,
@@ -415,6 +432,7 @@ fn compile_profile(
             surfaces: bindings.0,
             registrations: bindings.1,
             native_page0: lightmaps.native_page0,
+            native_default: bindings.2,
         },
         sun,
         prepared.defaults,
@@ -425,7 +443,7 @@ fn validate_profiles(
     assets: &Assets,
     geometry_source: RuleSetId,
     source_palette: Option<crate::PaletteId>,
-    profiles: &[WorldPresentationProfile],
+    profiles: &[WorldPresentationRequest],
     options: &WorldLoadOptions,
 ) -> Result<(), WorldMaterialError> {
     if profiles.is_empty() {
@@ -439,7 +457,8 @@ fn validate_profiles(
     }
     if (!matches!(geometry_source, RuleSetId::Quake3) && source_palette.is_none())
         || source_palette.is_some_and(|id| assets.palette(id).is_none())
-        || profiles.iter().any(|profile| {
+        || profiles.iter().any(|request| {
+            let profile = request.profile;
             !profile.q2_modulate.is_finite()
                 || profile
                     .indexed_palette
@@ -460,7 +479,7 @@ pub fn load_world(
     map: &Map<'_>,
     assets: &mut Assets,
     source_palette: Option<crate::PaletteId>,
-    profiles: &[WorldPresentationProfile],
+    profiles: &[WorldPresentationRequest],
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let geometry_source = map.bsp.format.rule_set();
@@ -550,14 +569,25 @@ pub fn load_world(
         layout,
     )?;
     let mut diagnostics = Vec::new();
-    let mut distinct = Vec::<WorldPresentationProfile>::new();
+    let mut distinct = Vec::<WorldPresentationRequest>::new();
     let mut request_indices = Vec::with_capacity(profiles.len());
-    for &profile in profiles {
-        let index = if let Some(index) = distinct.iter().position(|existing| *existing == profile) {
+    for &request in profiles {
+        let index = if let Some(index) = distinct
+            .iter()
+            .position(|existing| existing.profile == request.profile)
+        {
+            if distinct[index].native_default.is_some()
+                && request.native_default.is_some()
+                && distinct[index].native_default != request.native_default
+            {
+                return Err(WorldMaterialError::Boundary("conflicting native defaults"));
+            }
+            distinct[index].native_default =
+                distinct[index].native_default.or(request.native_default);
             index
         } else {
             let index = distinct.len();
-            distinct.push(profile);
+            distinct.push(request);
             index
         };
         request_indices.push(index);
@@ -565,10 +595,10 @@ pub fn load_world(
     let mut variants = Vec::with_capacity(distinct.len());
     let mut defaults = Vec::with_capacity(distinct.len());
     let mut sun = None;
-    for &profile in &distinct {
-        let prepared = prepare_presentation(&geometry, &source, profile)?;
+    for &request in &distinct {
+        let prepared = prepare_presentation(&geometry, &source, request.profile)?;
         let (bindings, registered_sun, presentation) =
-            compile_profile(vfs, assets, &source, profile, prepared, &mut diagnostics)?;
+            compile_profile(vfs, assets, &source, request, prepared, &mut diagnostics)?;
         variants.push(bindings);
         sun = registered_sun.or(sun);
         defaults.push(presentation);
@@ -605,13 +635,13 @@ pub fn load_world(
         .ok_or(WorldMaterialError::Boundary("missing registered world"))?
         .presentations()
         .to_vec();
-    for ((&id, &profile), &defaults) in ids.iter().zip(&distinct).zip(&defaults) {
+    for ((&id, request), &defaults) in ids.iter().zip(&distinct).zip(&defaults) {
         assets
             .register_world_presentation_metadata(
                 world,
                 &[LoadedWorldPresentation {
                     id,
-                    profile,
+                    profile: request.profile,
                     defaults,
                 }],
             )
@@ -624,7 +654,7 @@ pub fn load_world(
         .into_iter()
         .map(|index| LoadedWorldPresentation {
             id: ids[index],
-            profile: distinct[index],
+            profile: distinct[index].profile,
             defaults: defaults[index],
         })
         .collect::<Vec<_>>()
@@ -643,8 +673,9 @@ pub fn append_world_presentation(
     vfs: &Vfs,
     assets: &mut Assets,
     world: WorldId,
-    profile: WorldPresentationProfile,
+    request: WorldPresentationRequest,
 ) -> Result<LoadedWorld, WorldMaterialError> {
+    let profile = request.profile;
     let existing = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing presentation world"))?
@@ -667,7 +698,7 @@ pub fn append_world_presentation(
             assets,
             source.rules,
             source.palette,
-            &[profile],
+            &[request],
             &source.options,
         )?;
         let prepared = prepare_presentation(
@@ -680,7 +711,7 @@ pub fn append_world_presentation(
         )?;
         let mut diagnostics = Vec::new();
         let (bindings, _, defaults) =
-            compile_profile(vfs, assets, source, profile, prepared, &mut diagnostics)?;
+            compile_profile(vfs, assets, source, request, prepared, &mut diagnostics)?;
         let id = assets
             .append_world_presentation(world, bindings.input())
             .map_err(WorldMaterialError::Boundary)?;
@@ -763,7 +794,7 @@ fn compile_presentation(
     vfs: &Vfs,
     source: &WorldMaterialSource,
     assets: &mut Assets,
-    profile: WorldPresentationProfile,
+    request: WorldPresentationRequest,
     regions: &[Option<AtlasRegion>],
     lightmaps: &[Option<ImageId>],
     lightmap_conversion: LightmapConversion,
@@ -773,11 +804,13 @@ fn compile_presentation(
         (
             Vec<SurfaceMaterial>,
             Vec<ShaderRegistration<PreparedShader>>,
+            Option<ShaderBindingId>,
         ),
         Option<qa_core::primitives::Vec3>,
     ),
     WorldMaterialError,
 > {
+    let profile = request.profile;
     let geometry_source = source.rules;
     let palette = source.palette;
     let options = &source.options;
@@ -820,18 +853,34 @@ fn compile_presentation(
         })
         .collect::<Vec<_>>();
     let presentation_rules = profile.rules;
-    let mut images = Images::new(
-        vfs,
-        assets,
+    let mut image_state = ImagesState::new(
         geometry_source,
         presentation_rules,
         profile.image_settings,
         palette.zip(profile.indexed_palette),
     )?;
-    images.set_raster_target(profile.indexed_palette.map(|palette| IndexedTarget {
-        palette,
-        transparent_index: Some(255),
-    }))?;
+    image_state.set_raster_target(
+        assets,
+        profile.indexed_palette.map(|palette| IndexedTarget {
+            palette,
+            transparent_index: Some(255),
+        }),
+    )?;
+    let native_default = if geometry_source == RuleSetId::Quake3 || request.native_default.is_some()
+    {
+        Some(native_default_shader(
+            &mut image_state,
+            assets,
+            profile.indexed_palette.map(|palette| IndexedTarget {
+                palette,
+                transparent_index: None,
+            }),
+            request.native_default,
+        )?)
+    } else {
+        None
+    };
+    let mut images = Images::from_state(vfs, assets, image_state);
     let mut textures = Vec::with_capacity(mips.len());
     let mut layered_skies = Vec::with_capacity(mips.len());
     if matches!(geometry_source, RuleSetId::Quake) {
@@ -1094,9 +1143,15 @@ fn compile_presentation(
         };
         if registration.defaulted.is_some() {
             registrations.push(registration.map_shader(PreparedShader::Binding));
+            let shader = *images
+                .assets
+                .shader_binding(
+                    native_default.ok_or(WorldMaterialError::Boundary("missing native default"))?,
+                )
+                .ok_or(WorldMaterialError::Boundary("missing native default"))?;
             bindings.push(SurfaceMaterial {
+                shader,
                 texture_scale: scale,
-                ..SurfaceMaterial::default()
             });
         } else {
             registrations
@@ -1118,7 +1173,7 @@ fn compile_presentation(
             conflict.requested
         ));
     }
-    Ok(((bindings, registrations), sun))
+    Ok(((bindings, registrations, native_default), sun))
 }
 
 fn source_surface_name<'a>(
@@ -1498,6 +1553,65 @@ fn default_material(
             },
         )
         .map_err(WorldMaterialError::Boundary)
+}
+
+/// One generated native fallback; its draw body is distinct from named defaults and white helpers.
+pub fn native_default_shader(
+    state: &mut ImagesState,
+    assets: &mut Assets,
+    indexed: Option<IndexedTarget>,
+    existing: Option<ShaderBindingId>,
+) -> Result<ShaderBindingId, WorldMaterialError> {
+    let image = existing
+        .map(|id| {
+            let binding = assets
+                .shader_binding(id)
+                .ok_or(WorldMaterialError::Boundary(
+                    "missing native default binding",
+                ))?;
+            let material =
+                assets
+                    .material(binding.material)
+                    .ok_or(WorldMaterialError::Boundary(
+                        "missing native default material",
+                    ))?;
+            if binding.light_source != LightSource::None
+                || assets.name(material.name) != Some("<default>")
+                || material.stages.len() != 1
+            {
+                return Err(WorldMaterialError::Boundary(
+                    "invalid native default binding",
+                ));
+            }
+            match material.stages[0].texture {
+                StageTexture::Image(image) => Ok(image),
+                _ => Err(WorldMaterialError::Boundary("invalid native default image")),
+            }
+        })
+        .transpose()?;
+    let image = state.native_default_image(assets, indexed, image)?;
+    let material = assets
+        .register_material(
+            "<default>",
+            &[Stage {
+                texture: StageTexture::Image(image.id),
+                sampler: image.sampler,
+                rgb_gen: RgbGen::IdentityLighting,
+                alpha_gen: AlphaGen::Identity,
+                ..Stage::default()
+            }],
+            MaterialSettings::default(),
+        )
+        .map_err(WorldMaterialError::Boundary)?;
+    let shader = assets
+        .register_shader_binding(ShaderBinding::material(material, LightSource::None))
+        .map_err(WorldMaterialError::Boundary)?;
+    if existing.is_some_and(|existing| existing != shader) {
+        return Err(WorldMaterialError::Boundary(
+            "native default policy changed",
+        ));
+    }
+    Ok(shader)
 }
 
 /// Resolved lighting resources, independent of the request's scene context.

@@ -17,7 +17,9 @@ use qa_render::material::resources::{
     ImageRegistrationMark, ImageSettings, ImageUse, Images, ImagesState, IndexedTarget,
     ResourceError,
 };
-use qa_render::material::world_load::{NamedShaderLighting, compile_named_shader};
+use qa_render::material::world_load::{
+    NamedShaderLighting, WorldPresentationRequest, compile_named_shader, native_default_shader,
+};
 use qa_render::shader::{AlphaFunc, AlphaGen, Cull, RgbGen, ShaderCatalog, StageBlend};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::geometry::LightSource;
@@ -181,6 +183,7 @@ pub struct ModelBindings<'a> {
     skin: u32,
     policy: ModelMaterialPolicy,
     custom: Option<&'a [SkinMapping]>,
+    default_shader: ShaderBindingId,
 }
 impl Iterator for ModelBindings<'_> {
     type Item = ModelBinding;
@@ -205,7 +208,7 @@ impl Iterator for ModelBindings<'_> {
             binding.shader = custom
                 .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
                 .ok()
-                .map_or(ShaderBindingId(0), |index| {
+                .map_or(self.default_shader, |index| {
                     custom[index].shaders[self.policy.index()]
                 });
         }
@@ -257,6 +260,7 @@ struct RegisteredProfile {
 }
 struct ModelReady {
     surfaces: IndexSpan,
+    default_shader: ShaderBindingId,
     registrations: Box<[ShaderRegistration]>,
 }
 struct RegisteredShader {
@@ -430,6 +434,7 @@ struct ProfileImages {
     // Temporarily taken only while Images borrows the separately owned Assets.
     state: Option<Result<ImagesState, String>>,
     colors: Option<PaletteColors>,
+    native_default: Option<(ShaderBindingId, AssetCounts)>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelColorId(u32);
@@ -468,7 +473,7 @@ impl ModelProfile {
 impl ProfileImages {
     fn new(
         profile: ModelProfile,
-        assets: &Assets,
+        assets: &mut Assets,
     ) -> Result<(Self, Option<qa_render::assets::PreparedPaletteTranslucency>), String> {
         let blend = if let Some((source, target)) = profile
             .source_palette
@@ -485,19 +490,52 @@ impl ProfileImages {
         } else {
             None
         };
-        let state = ImagesState::new(
+        let mut state = ImagesState::new(
             profile.source_rules,
             profile.rules,
             profile.image_settings,
             profile.source_palette.zip(profile.palette),
         )
         .map_err(|error| format!("model images: {error:?}"));
+        let native_default = if profile.source_rules == RuleSetId::Quake3 {
+            match state.as_mut() {
+                Ok(state) => {
+                    let existing = assets.world_presentations().iter().enumerate().find_map(
+                        |(index, presentation)| {
+                            let registered = assets.world_presentation_registration(
+                                WorldPresentationId(index as u32),
+                            )?;
+                            (registered.profile.rules == profile.rules
+                                && registered.profile.indexed_palette == profile.palette
+                                && registered.profile.image_settings == profile.image_settings)
+                                .then(|| presentation.native_default())
+                                .flatten()
+                        },
+                    );
+                    let shader = native_default_shader(
+                        state,
+                        assets,
+                        profile.palette.map(|palette| IndexedTarget {
+                            palette,
+                            transparent_index: None,
+                        }),
+                        existing,
+                    )
+                    .map_err(|error| format!("native default shader: {error:?}"))?;
+                    Some((shader, assets.counts()))
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         Ok((
             Self {
                 profile,
                 model_policy: profile.model_policy(),
                 state: Some(state),
                 colors: PaletteColors::load(profile, assets),
+                native_default,
             },
             blend,
         ))
@@ -1117,7 +1155,7 @@ impl ModelAssets {
             .checked_add(self.catalog.shaders.len())
             .filter(|&count| count <= shader_maximum)
             .ok_or("shader registration capacity")?;
-        let (images, blend) = ProfileImages::new(profile, &self.assets)?;
+        let (images, blend) = ProfileImages::new(profile, &mut self.assets)?;
         if let Some(Err(error)) = &images.state {
             return Err(error.clone());
         }
@@ -1230,7 +1268,7 @@ impl ModelAssets {
             if unique.len() == limits.models {
                 return Err("model registration capacity".to_owned());
             }
-            let (entry, blend) = ProfileImages::new(profile, &assets)?;
+            let (entry, blend) = ProfileImages::new(profile, &mut assets)?;
             if let Some(blend) = blend {
                 assets.install_palette_translucency(blend);
             }
@@ -1579,13 +1617,17 @@ impl ModelAssets {
             return Err("world presentation requires a published resource prefix".to_owned());
         }
         self.validate_world_profile(profile, presentation)?;
+        let native_default = self.catalog.native_default(profile);
         let checkpoint = RegistrationCheckpoint::base(self)?;
         let result = (|| {
             let loaded = qa_render::material::world_load::append_world_presentation(
                 vfs,
                 &mut self.assets,
                 world,
-                presentation,
+                WorldPresentationRequest {
+                    profile: presentation,
+                    native_default,
+                },
             )
             .map_err(|error| format!("world presentation: {error:?}"))?;
             let staged = stage(self.view(), &loaded)?;
@@ -1632,6 +1674,7 @@ impl ModelAssets {
             trace_rules,
         } = registration;
         self.validate_world_profile(profile, presentation)?;
+        let native_default = self.catalog.native_default(profile);
         let checkpoint = RegistrationCheckpoint::capture(
             self,
             [&RendererRequest {
@@ -1655,7 +1698,10 @@ impl ModelAssets {
                 &mut self.assets,
                 geometry,
                 source_palette,
-                &[presentation],
+                &[WorldPresentationRequest {
+                    profile: presentation,
+                    native_default,
+                }],
                 options,
             )?;
             created = Some(loaded.collision);
@@ -2073,6 +2119,9 @@ impl ModelAssets {
                                 &mut temporary,
                                 &registration,
                                 images.model_policy,
+                                images
+                                    .native_default
+                                    .map_or(ShaderBindingId(0), |entry| entry.0),
                                 &mut meshes,
                                 self.catalog.shader_catalog.as_ref(),
                                 &mut self.catalog.capacity,
@@ -2121,6 +2170,9 @@ impl ModelAssets {
                     renderer_sources |= 1 << images.profile.source_rules as u8;
                     RegistrationState::Ready {
                         value: ModelReady {
+                            default_shader: images
+                                .native_default
+                                .map_or(ShaderBindingId(0), |entry| entry.0),
                             surfaces: IndexSpan { first, count },
                             registrations: registrations.into_boxed_slice(),
                         },
@@ -3151,6 +3203,19 @@ impl ModelCatalog {
         self.admitted(required).then_some(registration)
     }
 
+    pub fn native_default(&self, profile: ModelProfile) -> Option<ShaderBindingId> {
+        let (shader, required) = self
+            .profiles
+            .iter()
+            .find(|entry| entry.profile == profile)?
+            .native_default?;
+        self.admitted(Some(required)).then_some(shader)
+    }
+    pub fn renderer_shader(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
+        self.shader_binding(handle, profile)
+            .or_else(|| self.native_default(profile))
+    }
+
     pub fn shader_binding(&self, handle: i32, profile: ModelProfile) -> Option<ShaderBindingId> {
         let entry = self.shader_profile(handle, profile)?;
         let (registration, required_assets) = entry.state.ready()?;
@@ -3296,13 +3361,13 @@ impl ModelCatalog {
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBindings<'_>> {
         self.published_registration(registration)?;
-        let span = self
+        let ready = self
             .registrations
             .get(registration.0 as usize)?
             .state
             .ready()?
-            .0
-            .surfaces;
+            .0;
+        let span = ready.surfaces;
         let custom = match policy
             .custom_skin
             .checked_sub(1)
@@ -3337,6 +3402,7 @@ impl ModelCatalog {
             skin,
             policy,
             custom,
+            default_shader: ready.default_shader,
         })
     }
     /// Cold CLIENT registration reads the same already-loaded file record.
@@ -3488,6 +3554,7 @@ fn register(
     images: &mut Images<'_>,
     registration: &Registration,
     model_policy: ModelPolicy,
+    native_default: ShaderBindingId,
     shared_meshes: &mut [Option<ModelId>],
     shader_catalog: Option<&Result<ShaderCatalog, String>>,
     capacity: &mut ModelCapacity,
@@ -3543,7 +3610,7 @@ fn register(
         let materials = if let Some(materials) = &alias {
             materials.clone()
         } else if mesh.shaders.is_empty() {
-            return Err("MD3 surface default shader is not yet registered".to_owned());
+            vec![[native_default; 4]]
         } else {
             mesh.shaders
                 .iter()
@@ -3564,7 +3631,7 @@ fn register(
                     .map_err(|error| format!("model shader: {error:?}"))?;
                     registrations.push(registration);
                     Ok([if registration.defaulted.is_some() {
-                        ShaderBindingId(0)
+                        native_default
                     } else {
                         registration.shader
                     }; 4])

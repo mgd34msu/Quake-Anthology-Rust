@@ -320,6 +320,7 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
                     surfaces: &[candidate],
                     registrations: &registrations,
                     native_page0: Some(lightmap),
+                    native_default: None,
                 }]
             )
             .is_err()
@@ -340,6 +341,7 @@ fn native_registration_keys_and_styled_requests_share_atomic_canonical_rows() {
                 surfaces: &[candidate],
                 registrations: &registrations[..1],
                 native_page0: Some(lightmap),
+                native_default: None,
             }],
         )
         .unwrap();
@@ -501,6 +503,7 @@ fn world_registration_rejects_native_metadata_that_disagrees_with_its_actual_bod
                             surfaces: &[surface],
                             registrations: &[invalid],
                             native_page0: None,
+                            native_default: None,
                         }]
                     )
                     .is_err()
@@ -517,6 +520,7 @@ fn world_registration_rejects_native_metadata_that_disagrees_with_its_actual_bod
                 surfaces: &[surface],
                 registrations: &[registration.map_shader(|_| PreparedShader::Surface(0))],
                 native_page0: None,
+                native_default: None,
             }],
         )
         .unwrap();

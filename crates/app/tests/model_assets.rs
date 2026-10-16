@@ -80,7 +80,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile).presentation],
+            &[world_registration(profile).presentation.into()],
             Default::default(),
         )
         .unwrap();
@@ -417,7 +417,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             &mut assets,
             &mut geometry,
             Some(palette),
-            &[world_registration(profile).presentation],
+            &[world_registration(profile).presentation.into()],
             Default::default(),
         )
         .unwrap();
@@ -1756,6 +1756,10 @@ fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader()
     let model = owner
         .register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3)
         .unwrap();
+    let cpu = qa_render::cpu::CpuBackend::load_with_assets(8, 8, owner.assets()).unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
     let catalog = owner.catalog();
     let registration = catalog.renderer_registration(model, profile).unwrap();
     for custom_skin in [skin, 1] {
@@ -1770,7 +1774,7 @@ fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader()
                     }
                 )
                 .unwrap()
-                .all(|binding| binding.shader == qa_render::ShaderBindingId(0))
+                .all(|binding| binding.shader == catalog.native_default(profile).unwrap())
         );
     }
 }
@@ -2581,6 +2585,10 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
         owner.register_model(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
         Ok(handle)
     );
+    let cpu = qa_render::cpu::CpuBackend::load_with_assets(8, 8, owner.assets()).unwrap();
+    owner
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
     let catalog = owner.catalog();
     assert_eq!(
         catalog
@@ -2604,7 +2612,7 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
         catalog
             .bindings(registration, 0, Default::default())
             .unwrap()
-            .all(|binding| binding.shader == qa_render::ShaderBindingId(0))
+            .all(|binding| binding.shader == catalog.native_default(profile).unwrap())
     );
     let native = catalog
         .renderer_registrations(

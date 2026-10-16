@@ -104,8 +104,10 @@ fn prepare(
         },
         assets.image(image).unwrap(),
         &prepared,
-        None,
-        None,
+        Shading::Alias {
+            software_alias: None,
+            lighting: None,
+        },
         assets,
     )
     .unwrap()
@@ -227,13 +229,15 @@ fn q2_alias_policy_keeps_native_alpha_cutoffs_map_order_and_depth_writes() {
         presentation,
         assets.image(image).unwrap(),
         &prepared,
-        Some(SoftwareAlias {
-            missing_skin: false,
-            infrared_map: None,
-            fullbright_light: None,
-            alpha_cutoffs: Some([0.33, 0.66]),
-        }),
-        None,
+        Shading::Alias {
+            software_alias: Some(SoftwareAlias {
+                missing_skin: false,
+                infrared_map: None,
+                fullbright_light: None,
+                alpha_cutoffs: Some([0.33, 0.66]),
+            }),
+            lighting: None,
+        },
         &assets,
     )
     .unwrap()
@@ -261,8 +265,10 @@ fn q2_alias_policy_keeps_native_alpha_cutoffs_map_order_and_depth_writes() {
         presentation,
         assets.image(image).unwrap(),
         &prepared,
-        None,
-        None,
+        Shading::Alias {
+            software_alias: None,
+            lighting: None,
+        },
         &assets,
     )
     .unwrap()
@@ -302,17 +308,19 @@ fn q2_alias_fullbright_retains_native_clamps_and_the_supplied_local_direction() 
         },
         assets.image(image).unwrap(),
         &prepared,
-        Some(SoftwareAlias {
-            missing_skin: false,
-            infrared_map: None,
-            fullbright_light: Some([128.0, 64.0]),
-            alpha_cutoffs: None,
-        }),
-        Some(EntityLighting {
-            ambient: [0.0; 3],
-            directed: [0.0; 3],
-            direction,
-        }),
+        Shading::Alias {
+            software_alias: Some(SoftwareAlias {
+                missing_skin: false,
+                infrared_map: None,
+                fullbright_light: Some([128.0, 64.0]),
+                alpha_cutoffs: None,
+            }),
+            lighting: Some(EntityLighting {
+                ambient: [0.0; 3],
+                directed: [0.0; 3],
+                direction,
+            }),
+        },
         &assets,
     )
     .unwrap()
@@ -325,4 +333,113 @@ fn q2_alias_fullbright_retains_native_clamps_and_the_supplied_local_direction() 
     }
     assert_eq!(raster.light(Vec3([1.0, 0.0, 0.0]), [255; 4]), 4032.0);
     assert_eq!(raster.light(Vec3([-1.0, 0.0, 0.0]), [255; 4]), 8128.0);
+}
+
+#[test]
+fn evaluated_world_diffuse_uses_completed_color_without_alias_relighting() {
+    let mut assets = Assets::load().unwrap();
+    assets.register_palette(palette(false)).unwrap();
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load_base(1, 1, &[7], None).unwrap(),
+            PaletteId(0),
+        )
+        .unwrap();
+    let prepared = StageEvaluator::load()
+        .prepare(
+            &Stage {
+                texture: StageTexture::Image(image),
+                rgb_gen: RgbGen::LightingDiffuse,
+                ..Default::default()
+            },
+            Default::default(),
+            DrawInputs {
+                lighting: Some(EntityLighting {
+                    ambient: [64., 128., 192.],
+                    directed: [16.; 3],
+                    direction: Vec3([1., 0., 0.]),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let raster = Raster::prepare(
+        CpuPresentation::Indexed {
+            palette: PaletteId(0),
+            lighting: IndexedLighting::Gray,
+            ambient: 0,
+            fullbright: false,
+        },
+        assets.image(image).unwrap(),
+        &prepared,
+        Shading::Evaluated { mip: 0 },
+        &assets,
+    )
+    .unwrap()
+    .unwrap();
+    let color = [64, 128, 192, 255];
+    assert_eq!(
+        raster.light(Vec3([1., 0., 0.]), color),
+        raster.light(Vec3([-1., 0., 0.]), color)
+    );
+    assert_ne!(
+        raster.light(Vec3::default(), color),
+        raster.light(Vec3::default(), [255; 4])
+    );
+}
+
+#[test]
+fn evaluated_indexed_stages_select_authored_mips_while_alias_keeps_base_level() {
+    let mut assets = Assets::load().unwrap();
+    assets.register_palette(palette(false)).unwrap();
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(8, 8, [&[3; 64], &[7; 16], &[11; 4], &[19; 1]], false).unwrap(),
+            PaletteId(0),
+        )
+        .unwrap();
+    let prepared = StageEvaluator::load()
+        .prepare(
+            &Stage {
+                texture: StageTexture::Image(image),
+                ..Default::default()
+            },
+            Default::default(),
+            DrawInputs::default(),
+        )
+        .unwrap();
+    let presentation = CpuPresentation::Indexed {
+        palette: PaletteId(0),
+        lighting: IndexedLighting::Gray,
+        ambient: 0,
+        fullbright: true,
+    };
+    for (mip, expected) in [(0, 3), (1, 7), (2, 11), (3, 19), (4, 19)] {
+        let raster = Raster::prepare(
+            presentation,
+            assets.image(image).unwrap(),
+            &prepared,
+            Shading::Evaluated { mip },
+            &assets,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            raster.sample([0.; 2], 0., 1., 0, u32::MAX).unwrap().0,
+            expected
+        );
+    }
+    let alias = Raster::prepare(
+        presentation,
+        assets.image(image).unwrap(),
+        &prepared,
+        Shading::Alias {
+            software_alias: None,
+            lighting: None,
+        },
+        &assets,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(alias.sample([0.; 2], 0., 1., 0, u32::MAX).unwrap().0, 3);
 }
