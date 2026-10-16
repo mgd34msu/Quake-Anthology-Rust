@@ -12,7 +12,8 @@ struct Span {
     context: Context,
 }
 struct Wait {
-    remaining: u32,
+    executions: u32,
+    frame: Option<(u64, Context)>,
     context: Context,
 }
 pub struct CommandBuffer {
@@ -20,6 +21,7 @@ pub struct CommandBuffer {
     spans: Vec<Span>,
     bytes: usize,
     wait: Option<Wait>,
+    frame: u64,
 }
 impl Default for CommandBuffer {
     fn default() -> Self {
@@ -33,6 +35,7 @@ impl CommandBuffer {
             spans: Vec::with_capacity(CAPACITY),
             bytes: 0,
             wait: None,
+            frame: 0,
         }
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
@@ -78,10 +81,22 @@ impl CommandBuffer {
         self.insert_bytes(text.as_bytes(), context)
     }
     pub fn insert_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
-        let newline = usize::from(matches!(
-            context.source,
-            RuleSetId::QuakeWorld | RuleSetId::Quake3
-        ));
+        self.insert_text(
+            text,
+            context,
+            matches!(context.source, RuleSetId::QuakeWorld | RuleSetId::Quake3),
+        )
+    }
+    pub fn insert_line_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
+        self.insert_text(text, context, true)
+    }
+    fn insert_text(
+        &mut self,
+        text: &[u8],
+        context: Context,
+        newline: bool,
+    ) -> Result<(), TextError> {
+        let newline = usize::from(newline);
         self.admit(text, newline)?;
         let size = text.len() + newline;
         if size == 0 {
@@ -111,24 +126,55 @@ impl CommandBuffer {
         Ok(())
     }
     pub fn wait(&mut self, frames: u32, context: Context) {
+        if let Some(wait) = &mut self.wait
+            && wait.frame.is_some_and(|(frame, _)| frame == self.frame)
+        {
+            // EXEC_NOW can change native wait counts, but cannot release a
+            // resource-retirement barrier owned by this host frame.
+            wait.executions = frames;
+            wait.context = context;
+            return;
+        }
         self.wait = (frames != 0).then_some(Wait {
-            remaining: frames,
+            executions: frames,
+            frame: None,
             context,
         });
     }
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+    pub fn wait_next_frame(&mut self, context: Context) {
+        let wait = self.wait.get_or_insert(Wait {
+            executions: 0,
+            frame: None,
+            context,
+        });
+        wait.frame = Some((self.frame, context));
+    }
     pub fn wait_context(&self) -> Option<Context> {
-        self.wait.as_ref().map(|wait| wait.context)
+        let wait = self.wait.as_ref()?;
+        wait.frame
+            .filter(|&(frame, _)| frame == self.frame)
+            .map(|(_, context)| context)
+            .or_else(|| (wait.executions != 0).then_some(wait.context))
     }
     pub fn ready(&mut self) -> bool {
         if let Some(wait) = &mut self.wait {
-            wait.remaining -= 1;
-            if wait.remaining == 0 {
-                self.wait = None;
+            if wait.frame.is_some_and(|(frame, _)| frame == self.frame) {
+                return false;
             }
-            false
-        } else {
-            true
+            wait.frame = None;
+            if wait.executions != 0 {
+                wait.executions -= 1;
+                if wait.executions == 0 {
+                    self.wait = None;
+                }
+                return false;
+            }
+            self.wait = None;
         }
+        true
     }
     pub fn is_empty(&self) -> bool {
         self.bytes == 0
@@ -149,8 +195,16 @@ impl CommandBuffer {
         });
     }
     fn discard_contexts(&mut self, mut retired: impl FnMut(Context) -> bool) {
-        if self.wait.as_ref().is_some_and(|wait| retired(wait.context)) {
-            self.wait = None;
+        if let Some(wait) = &mut self.wait {
+            if wait.executions != 0 && retired(wait.context) {
+                wait.executions = 0;
+            }
+            if wait.frame.is_some_and(|(_, context)| retired(context)) {
+                wait.frame = None;
+            }
+            if wait.executions == 0 && wait.frame.is_none() {
+                self.wait = None;
+            }
         }
         let mut read = 0;
         let mut write = 0;

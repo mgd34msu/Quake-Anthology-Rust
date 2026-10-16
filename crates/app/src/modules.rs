@@ -1316,10 +1316,7 @@ impl FrameHost {
         source: &mut impl crate::host::FrameSource,
         timeout: std::time::Duration,
     ) -> Result<(), String> {
-        self.initialize_modules_with_driver(
-            Phase::Client,
-            &mut Driver::new(source.asset_preparer()),
-        );
+        self.initialize_modules_with_driver(Phase::Client, &mut source.driver());
         let started = qa_platform::Stopwatch::start();
         while self.registration_pending(Phase::Client)? && !self.runtime.quit {
             if started.elapsed() >= timeout {

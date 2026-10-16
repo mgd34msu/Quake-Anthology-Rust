@@ -2968,7 +2968,7 @@ fn socket_netquake_host(
     let mut connection = accepted_connection(Protocol::NetQuake15);
     connection.phase = phase;
     let remote = runtime
-        .connect_client(SeatId::new(1).unwrap(), policy, binding, connection)
+        .connect_client(SeatId::new(1).unwrap(), policy, binding, connection, None)
         .unwrap();
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
@@ -3278,6 +3278,7 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
                 policy,
                 NativePlayerBinding::Awaiting,
                 accepted_connection(Protocol::NetQuake15),
+                None
             )
             .is_err()
     );
@@ -3321,6 +3322,7 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
             policy,
             binding,
             accepted_connection(protocol),
+            None,
         );
         assert_eq!(result.is_ok(), allowed);
         assert!(runtime.network.get(ClientId(0), Endpoint::Server).is_none());

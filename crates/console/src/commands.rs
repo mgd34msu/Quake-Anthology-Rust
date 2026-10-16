@@ -68,6 +68,7 @@ pub type CommandFn<H> =
 enum Command<H> {
     Function(CommandFn<H>),
     Button(qa_input::Action),
+    External,
 }
 impl<H> Copy for Command<H> {}
 impl<H> Clone for Command<H> {
@@ -86,6 +87,7 @@ struct Alias {
 pub enum CommandStep {
     Continue,
     Fallback,
+    External(NameId),
     Done,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +104,7 @@ enum CommandMode {
 enum CommandPhase {
     Read,
     AwaitFallback,
+    AwaitExternal(NameId),
     Replied(CommandReply),
     Done,
 }
@@ -134,7 +137,10 @@ impl CommandRun {
     }
     /// Accept exactly one reply to the outstanding fallback request.
     pub fn reply(&mut self, reply: CommandReply) -> bool {
-        if !matches!(self.phase, CommandPhase::AwaitFallback) {
+        if !matches!(
+            self.phase,
+            CommandPhase::AwaitFallback | CommandPhase::AwaitExternal(_)
+        ) {
             return false;
         }
         self.phase = CommandPhase::Replied(reply);
@@ -225,23 +231,31 @@ impl<H: Host> Console<H> {
         }
         for entry in bindings::ACTION_NAMES {
             for name in [entry.press, entry.release] {
-                console.register_entry(name, Command::Button(entry.action));
+                let _ = console.register_entry(name, Command::Button(entry.action));
             }
         }
         Ok(console)
     }
     pub fn register(&mut self, name: &'static str, function: CommandFn<H>) -> bool {
         self.register_entry(name, Command::Function(function))
+            .is_some()
     }
-    fn register_entry(&mut self, name: &'static str, command: Command<H>) -> bool {
+    /// An application-owned continuation still resolves through this table,
+    /// before cvars and aliases, and shares the ordinary command reply boundary.
+    /// Reattaching a host to the same console retains the registered identity.
+    pub fn register_external(&mut self, name: &'static str) -> Option<NameId> {
+        self.register_entry(name, Command::External)
+    }
+    fn register_entry(&mut self, name: &'static str, command: Command<H>) -> Option<NameId> {
         let Ok(exact) = self.cvars.names.intern(name.as_bytes()) else {
-            return false;
+            return None;
         };
         let Some(id) = self.cvars.names.folded(exact) else {
-            return false;
+            return None;
         };
-        if self.command_by_name[id.0 as usize].is_some() {
-            return false;
+        if let Some(previous) = self.command_by_name[id.0 as usize] {
+            return matches!((previous, command), (Command::External, Command::External))
+                .then_some(id);
         }
         let names = &self.cvars.names;
         let at = self.commands.partition_point(|&id| {
@@ -249,11 +263,14 @@ impl<H: Host> Console<H> {
         });
         self.commands.insert(at, exact);
         self.command_by_name[id.0 as usize] = Some(command);
-        true
+        Some(id)
     }
 
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append(text, context)
+    }
+    pub fn begin_frame(&mut self) {
+        self.buffer.begin_frame();
     }
     /// Borrow the existing table and buffer for a module call. No module owns
     /// another console or queues commands outside this buffer.
@@ -412,6 +429,13 @@ impl<H: Host> Console<H> {
                 CommandStep::Fallback => {
                     run.reply(CommandReply::Unhandled);
                 }
+                CommandStep::External(_) => {
+                    host.print(format_args!(
+                        "Command {} is unavailable in this context\n",
+                        parser.arguments().get(0)
+                    ));
+                    run.reply(CommandReply::Handled);
+                }
                 CommandStep::Done => break,
             }
         }
@@ -427,7 +451,7 @@ impl<H: Host> Console<H> {
     ) -> CommandStep {
         if matches!(
             run.phase,
-            CommandPhase::AwaitFallback | CommandPhase::Replied(_)
+            CommandPhase::AwaitFallback | CommandPhase::AwaitExternal(_) | CommandPhase::Replied(_)
         ) && let Some(producer) = run.context.producer
             && !host.command_producer_live(producer)
         {
@@ -437,6 +461,7 @@ impl<H: Host> Console<H> {
         match run.phase {
             CommandPhase::Done => return CommandStep::Done,
             CommandPhase::AwaitFallback => return CommandStep::Fallback,
+            CommandPhase::AwaitExternal(id) => return CommandStep::External(id),
             CommandPhase::Replied(reply) => {
                 if reply == CommandReply::Unhandled {
                     host.print(format_args!(
@@ -542,10 +567,16 @@ impl<H: Host> Console<H> {
             return run.complete_command();
         }
         let id = self.cvars.lookup_name(name);
-        let result = if let Some(command) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
+        let result = if let Some((id, command)) =
+            id.and_then(|id| self.command_by_name[id.0 as usize].map(|command| (id, command)))
+        {
             match command {
                 Command::Function(function) => function(self, host, &args, context),
                 Command::Button(action) => self.button(host, &args, context, action),
+                Command::External => {
+                    run.phase = CommandPhase::AwaitExternal(id);
+                    return CommandStep::External(id);
+                }
             }
         } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
             if args.len() == 1 {

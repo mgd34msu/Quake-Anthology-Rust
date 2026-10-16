@@ -27,6 +27,14 @@ const REPLACEMENT: &[u8] =
     b"alias Collision \"set lifetime_new_alias 1\";Collision;set lifetime_new_tail 1\n";
 
 fn qvm(text: &[u8]) -> ProducerProgram {
+    qvm_console(text, None, 2, 2)
+}
+fn qvm_console(
+    text: &[u8],
+    only_export: Option<u32>,
+    execution: i32,
+    trap_export: u32,
+) -> ProducerProgram {
     use Opcode::*;
     // Export0 is the ordinary quiet frame. Export1 appends, and export2
     // appends before trapping, so failed initialization cannot hide the queue.
@@ -34,9 +42,9 @@ fn qvm(text: &[u8]) -> ProducerProgram {
         (Enter, 64),
         (Local, 72),
         (Load4, 0),
-        (Const, 0),
-        (Eq, 0),
-        (Const, 2),
+        (Const, only_export.unwrap_or(0) as i32),
+        (if only_export.is_some() { Ne } else { Eq }, 0),
+        (Const, execution),
         (Arg, 8),
         (Const, 128),
         (Arg, 12),
@@ -45,7 +53,7 @@ fn qvm(text: &[u8]) -> ProducerProgram {
         (Pop, 0),
         (Local, 72),
         (Load4, 0),
-        (Const, 2),
+        (Const, trap_export as i32),
         (Ne, 0),
         (Const, 1),
         (Const, 0),
@@ -583,6 +591,125 @@ fn qvm_cold_publication_prunes_absent_module_with_live_anchor() {
 #[test]
 fn qvm_transferred_anchor_cannot_apply_its_old_wait() {
     transferred_owner_invalidates_wait_before_healthy_work(qvm);
+}
+
+#[test]
+fn queued_disconnect_runs_client_callback_on_the_active_arena_and_retires_after_its_trap() {
+    use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_network::{commands::packet::Protocol, ingress::ConnectionPhase};
+
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let clients = [SeatId::FIRST, SeatId::new(1).unwrap()].map(|seat| {
+        runtime
+            .connect_local(
+                seat,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy {
+                    client: RuleSetId::Quake3,
+                    input: RuleSetId::QuakeWorld,
+                    movement: RuleSetId::Quake2,
+                    trace: RuleSetId::Quake,
+                },
+                Protocol::Quake3_68,
+                seat.index() as u32,
+            )
+            .unwrap()
+    });
+    // Reuse the existing QVM instruction builder. Only ClientDisconnect emits
+    // EXEC_NOW, then traps after its nested console activation has returned.
+    let mut first = request(
+        &mut runtime,
+        A,
+        None,
+        qvm_console(b"set lifetime_disconnect_callback 1\n", Some(5), 0, 5),
+    );
+    first.entries = (0..=7).collect();
+    first.initialize = vec![Export::words(CallbackId(0), &[])];
+    let Program::Qvm { vm, .. } = &mut first.program else {
+        panic!("QVM fixture")
+    };
+    vm.configure_q3_game(Q3StatLayout::BASE);
+    let peer = request(&mut runtime, B, None, qvm(PEER));
+    let mut host = Box::new(
+        FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![first, peer],
+        )
+        .unwrap(),
+    );
+    host.local_clients[0] = Some(clients[0]);
+    host.local_clients[1] = Some(clients[1]);
+    host.initialize_modules(Phase::Server);
+    assert_eq!(
+        host.connect_module_client(A, clients[0], b"\\name\\disconnect"),
+        Ok(0)
+    );
+    let retired = host.runtime.server.clients[clients[0].0 as usize].entity;
+    let healthy = host.runtime.server.clients[clients[1].0 as usize].entity;
+    let before = host.module_counts(A).unwrap().calls;
+    let traps = host.module_counts(A).unwrap().traps;
+    let peer_before = host.module_counts(B).unwrap().calls;
+    frame_with(
+        &mut host,
+        vec![EventKind::ConsoleLine(
+            "disconnect;set lifetime_disconnect_human 1\n",
+        )],
+    );
+
+    // A recursive driver would find the execution arena already taken and
+    // could not reach this callback or its nested EXEC_NOW command.
+    assert_eq!(text(&host, "lifetime_disconnect_callback"), Some("1"));
+    assert_eq!(host.module_counts(A).unwrap().calls, before + 1);
+    assert_eq!(host.module_counts(A).unwrap().traps, traps + 1);
+    assert_eq!(host.module_state(A), Some(State::Running));
+    assert_eq!(text(&host, "lifetime_disconnect_human"), Some("1"));
+    assert!(host.local_clients[0].is_none());
+    assert!(
+        host.runtime.server.clients[clients[0].0 as usize]
+            .connection
+            .is_none()
+    );
+    assert!(host.runtime.server.entities.resolve(retired).is_none());
+    let replacement = host.runtime.server.clients[clients[0].0 as usize].entity;
+    assert_ne!(replacement, retired);
+    assert_eq!(host.local_clients[1], Some(clients[1]));
+    assert_eq!(
+        host.runtime.server.clients[clients[1].0 as usize].entity,
+        healthy
+    );
+    for endpoint in [
+        qa_core::loopback::Endpoint::Client,
+        qa_core::loopback::Endpoint::Server,
+    ] {
+        assert_eq!(
+            host.runtime
+                .network
+                .get(clients[1], endpoint)
+                .unwrap()
+                .phase,
+            ConnectionPhase::Connected
+        );
+        assert!(host.runtime.network.get(clients[0], endpoint).is_none());
+    }
+
+    human(&mut host, "disconnect\n");
+    run_commands(&mut host);
+    assert_eq!(host.module_counts(A).unwrap().calls, before + 1);
+    assert_eq!(
+        host.runtime.server.clients[clients[0].0 as usize].entity,
+        replacement
+    );
+    command_frame(&mut host);
+    assert_eq!(host.module_counts(A).unwrap().traps, traps + 1);
+    assert!(host.module_counts(B).unwrap().calls > peer_before);
+    assert_eq!(host.module_state(B), Some(State::Running));
 }
 
 /// The caller supplies the existing QC fixture; native custom harnesses reuse

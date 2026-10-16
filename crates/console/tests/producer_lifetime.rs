@@ -148,6 +148,34 @@ fn waits_remain_owned_when_their_command_span_has_been_consumed() {
 }
 
 #[test]
+fn frame_barrier_and_native_wait_retire_only_their_own_producers() {
+    let frame_owner = context(producer(1, 1));
+    let native_owner = context(producer(2, 1));
+    for retire_frame in [false, true] {
+        let mut buffer = CommandBuffer::new();
+        buffer.begin_frame();
+        buffer.wait_next_frame(frame_owner);
+        buffer.wait(2, native_owner);
+        if retire_frame {
+            buffer.discard_producer(frame_owner.producer.unwrap());
+            assert_eq!(buffer.wait_context(), Some(native_owner));
+            assert!(!buffer.ready());
+            assert!(!buffer.ready());
+            assert!(buffer.ready());
+        } else {
+            buffer.discard_producer(native_owner.producer.unwrap());
+            for _ in 0..4 {
+                assert_eq!(buffer.wait_context(), Some(frame_owner));
+                assert!(!buffer.ready());
+            }
+            buffer.begin_frame();
+            assert!(buffer.ready());
+        }
+        assert!(buffer.wait_context().is_none());
+    }
+}
+
+#[test]
 fn key_cancellation_and_producer_retirement_are_independent_and_share_compaction() {
     let a = producer(1, 1);
     let b = producer(2, 1);

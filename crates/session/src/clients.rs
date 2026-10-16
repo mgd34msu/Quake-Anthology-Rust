@@ -294,6 +294,17 @@ impl Server {
         self.connect_with_authority(Connection::Local, ModuleId::default(), None, false)
     }
 
+    pub fn available_client_slot(&self) -> Option<ClientId> {
+        self.clients
+            .iter()
+            .position(|client| {
+                client.connection.is_none()
+                    && client.audio_retirement.is_none()
+                    && self.entities.resolve(client.entity).is_some()
+            })
+            .map(|slot| ClientId(slot as u32))
+    }
+
     fn connect_with_authority(
         &mut self,
         connection: Connection,
@@ -301,11 +312,7 @@ impl Server {
         native: Option<NativeEntity>,
         server_authoritative: bool,
     ) -> Option<ClientId> {
-        let slot = self.clients.iter().position(|client| {
-            client.connection.is_none()
-                && client.audio_retirement.is_none()
-                && self.entities.resolve(client.entity).is_some()
-        })?;
+        let slot = self.available_client_slot()?.0 as usize;
         let output = if connection == Connection::Bot {
             None
         } else {

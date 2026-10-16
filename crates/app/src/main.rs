@@ -31,6 +31,24 @@ fn json(value: &str) -> Result<String, String> {
     serde_json::to_string(value).map_err(|error| format!("JSON report: {error}"))
 }
 
+fn startup_server_client(
+    host: &FrameHost,
+    seat: usize,
+    original: Option<(
+        qa_core::primitives::ClientId,
+        qa_core::primitives::EntityId,
+        RuleSetId,
+    )>,
+) -> Option<qa_core::primitives::ClientId> {
+    let (id, lifetime, _) = original?;
+    let row = host.runtime.server.clients.get(id.0 as usize)?;
+    (host.local_clients[seat] == Some(id)
+        && row.entity == lifetime
+        && row.connection.is_some()
+        && row.server_authoritative())
+    .then_some(id)
+}
+
 fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context::default()).map_err(|e| e.to_string())?;
     let mut vfs = qa_content::vfs::Vfs::default();
@@ -197,7 +215,7 @@ fn run() -> Result<(), String> {
                 );
             }
             "--seat-policy" => {
-                let (seat, policy) = ClientPolicy::parse_seat(
+                let (seat, policy) = qa_app::client_policy::parse_seat(
                     &args
                         .next()
                         .ok_or("--seat-policy needs seat:client:movement:trace[:input]")?,
@@ -607,6 +625,12 @@ fn run() -> Result<(), String> {
         .map(|request| request.context.native_rules)
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    host.local_clients = local_clients;
+    let startup_clients = host.local_clients.map(|id| {
+        let id = id?;
+        let row = &host.runtime.server.clients[id.0 as usize];
+        Some((id, row.entity, row.client_rules))
+    });
     match journal {
         Some(qa_content::journal::Mode::Recording(path)) => host
             .record_journal(&path)
@@ -643,7 +667,9 @@ fn run() -> Result<(), String> {
             spec.rules.name(),
         );
     }
-    host.execute_commands();
+    host.execute_commands_with_driver(&mut qa_app::modules::Driver::with_connector(
+        None, &mut pump,
+    ));
     // Synchronous native precache owns the same assets and metadata that CLIENT
     // will read after startup. Configure every module's independent profile first.
     let mut profiles = [None; 5];
@@ -714,7 +740,8 @@ fn run() -> Result<(), String> {
             .ok_or("missing model loader")?
             .bind_loaded_world(path, world, Some(collision.geometry), bounds)?;
     }
-    let sound_rules = local_clients
+    let sound_rules = host
+        .local_clients
         .iter()
         .flatten()
         .next()
@@ -728,11 +755,10 @@ fn run() -> Result<(), String> {
         host.initialize_modules(qa_app::modules::Phase::Server);
         host.registration_pending(qa_app::modules::Phase::Server)?;
     }
-    for (seat, id) in local_clients
-        .iter()
-        .enumerate()
-        .filter_map(|(seat, id)| id.map(|id| (seat, id)))
-    {
+    for (seat, original) in startup_clients.into_iter().enumerate() {
+        let Some(id) = startup_server_client(&host, seat, original) else {
+            continue;
+        };
         // A sole provider is unambiguous. Combined providers require the
         // connection's explicit module number, independent of map/physics.
         let selected = seat_game_modules[seat].or_else(|| {
@@ -802,11 +828,14 @@ fn run() -> Result<(), String> {
         .client_model_sources()
         .into_iter()
         .filter_map(|(client, source)| {
-            let seat = local_clients.iter().position(|id| *id == Some(client));
+            let seat = host.local_clients.iter().position(|id| *id == Some(client));
             let profile = seat.map_or(profiles[source as usize], |seat| {
                 seat_model_profiles[seat][source as usize]
             })?;
             let world = seat.and_then(|seat| {
+                if startup_server_client(&host, seat, startup_clients[seat]) != Some(client) {
+                    return None;
+                }
                 let loaded = loaded_world.as_ref()?;
                 Some((loaded.world, loaded.presentations.get(seat)?.id))
             });
@@ -822,10 +851,9 @@ fn run() -> Result<(), String> {
         .map_err(|_| "renderer width")?;
     let height = i32::try_from(renderer_context.configuration().display.height)
         .map_err(|_| "renderer height")?;
-    host.local_clients = local_clients;
     if let Some(world) = &loaded_world {
         for (seat, presentation) in world.presentations.iter().enumerate() {
-            if local_clients[seat].is_some() {
+            if startup_server_client(&host, seat, startup_clients[seat]).is_some() {
                 host.local_worlds[seat] = Some((world.world, presentation.id));
                 host.local_presentations[seat] = presentation.defaults;
             }
@@ -906,10 +934,12 @@ fn run() -> Result<(), String> {
         height as u32,
     )?;
     let mut hud_assets = std::array::from_fn(|_| None);
-    for rules in local_clients
+    for rules in host
+        .local_clients
         .iter()
         .flatten()
         .map(|id| host.runtime.server.clients[id.0 as usize].client_rules)
+        .chain(startup_clients.iter().flatten().map(|(_, _, rules)| *rules))
     {
         if hud_assets[rules as usize].is_some() {
             continue;
@@ -981,6 +1011,17 @@ fn run() -> Result<(), String> {
     )
     .map_err(|error| format!("renderer admission: {error:?}"))?;
     host.runtime.scene = Some(scene);
+    // Startup commands can retire a seat before Com_Frame begins. Complete
+    // those real Presentation records before a deferred connect may retry.
+    host.dispatch_output(
+        &mut LiveFrame {
+            pump: &mut pump,
+            window: &mut window,
+            renderer: Some(&mut renderer),
+            audio: Some(&mut audio),
+        },
+        &mut Default::default(),
+    );
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }
@@ -1015,14 +1056,14 @@ fn run() -> Result<(), String> {
             "{{\"event\":\"world_frame_presented\",\"gameplay\":false,\"map\":{},\"renderer\":\"{}\",\"client_connected\":{},\"views\":{},\"visible_surfaces\":{},\"surfaces\":{},\"triangles\":{},\"rejected\":{},\"profile_consumed\":{},\"native_input_policy\":{}}}",
             json(path)?,
             renderer_kind.name(),
-            local_clients[0].is_some(),
+            host.local_clients[0].is_some(),
             renderer.sample.stats.views,
             renderer.sample.visible_surfaces,
             renderer.sample.stats.surfaces,
             renderer.sample.stats.triangles,
             renderer.sample.stats.rejected,
             imported_profile.consumed(),
-            local_clients.iter().any(Option::is_some)
+            host.local_clients.iter().any(Option::is_some)
         );
     }
     println!(
@@ -1142,9 +1183,13 @@ fn run() -> Result<(), String> {
                 ),
             );
         }
-        for (index, id) in local_clients.iter().enumerate() {
+        for (index, id) in host.local_clients.iter().enumerate() {
             let Some(id) = *id else { continue };
-            let authoritative = &host.runtime.server.clients[id.0 as usize].player;
+            let row = &host.runtime.server.clients[id.0 as usize];
+            if !row.server_authoritative() {
+                continue;
+            }
+            let authoritative = &row.player;
             let predicted = &host.runtime.prediction[index].player;
             qa_console::logger::dev_print(
                 &host.console.cvars,

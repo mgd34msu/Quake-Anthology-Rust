@@ -33,6 +33,9 @@ pub trait FrameSource {
     fn asset_preparer(&mut self) -> Option<&mut (dyn crate::renderer::AssetPreparer + '_)> {
         None
     }
+    fn driver(&mut self) -> crate::modules::Driver<'_> {
+        crate::modules::Driver::new(self.asset_preparer())
+    }
 
     /// Starts measurement and samples platform time without collecting events.
     fn begin_frame(&mut self) -> Duration;
@@ -123,6 +126,13 @@ pub struct LiveFrame<'a> {
     pub audio: Option<&'a mut crate::audio::Output>,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn driver(&mut self) -> crate::modules::Driver<'_> {
+        let preparer = self
+            .renderer
+            .as_deref_mut()
+            .map(|renderer| renderer as &mut dyn crate::renderer::AssetPreparer);
+        crate::modules::Driver::with_connector(preparer, self.pump)
+    }
     fn asset_preparer(&mut self) -> Option<&mut (dyn crate::renderer::AssetPreparer + '_)> {
         match self.renderer.as_deref_mut() {
             Some(renderer) => Some(renderer),
@@ -295,6 +305,7 @@ pub struct FrameHost {
     pub close_without_transport: u64,
     pub developer: CvarHandle,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
+    pub(crate) connection_commands: [qa_core::primitives::NameId; 3],
     /// A seat's world/presentation choice is independent of its physics rules.
     pub local_worlds: [Option<(
         qa_render::world::WorldId,
@@ -502,6 +513,12 @@ impl FrameHost {
         console.register("play", crate::audio::play);
         console.register("music", crate::audio::music);
         console.register("cd", crate::audio::cd);
+        let connection_commands =
+            ["connect", "disconnect", "reconnect"].map(|name| console.register_external(name));
+        let [Some(connect), Some(disconnect), Some(reconnect)] = connection_commands else {
+            return Err("connection command registration".into());
+        };
+        let connection_commands = [connect, disconnect, reconnect];
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let music_volume = console
             .cvars
@@ -652,6 +669,7 @@ impl FrameHost {
             close_without_transport: 0,
             developer,
             local_clients: [None; SeatId::COUNT],
+            connection_commands,
             local_worlds: [None; SeatId::COUNT],
             local_presentations: [Default::default(); SeatId::COUNT],
             maxfps,
@@ -693,6 +711,7 @@ impl FrameHost {
     }
 
     pub fn frame(&mut self, source: &mut impl FrameSource, uncapped: bool) -> FrameResult {
+        self.console.begin_frame();
         source.set_socket_submission_enabled(!matches!(
             self.journal,
             Some(qa_content::journal::Mode::Replay(_))
@@ -725,28 +744,18 @@ impl FrameHost {
         // neither the cap wait nor any other frame phase performs intake.
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
-        self.drain_with_driver(
-            &mut result,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
+        self.drain_with_driver(&mut result, &mut source.driver());
         self.retire_closing_clients();
-        self.retire_stale_modules(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.retire_stale_modules(&mut source.driver());
         self.update_console_policy(true);
-        self.execute_commands_with_driver(&mut crate::modules::Driver::new(
-            source.asset_preparer(),
-        ));
+        self.execute_commands_with_driver(&mut source.driver());
         if self.runtime.quit {
             source.request_mouse_capture(false);
-            self.shutdown_modules_with_driver(&mut crate::modules::Driver::new(
-                source.asset_preparer(),
-            ));
+            self.shutdown_modules_with_driver(&mut source.driver());
             self.dispatch_output(source, &mut result);
             return result;
         }
-        self.initialize_modules_with_driver(
-            crate::modules::Phase::Server,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
+        self.initialize_modules_with_driver(crate::modules::Phase::Server, &mut source.driver());
         let server_time = self.time;
         let frame_span = EventTime(server_time.since(self.previous.unwrap_or_default()));
         let simulation = Stopwatch::start();
@@ -761,19 +770,12 @@ impl FrameHost {
                         .build_bot_commands(tick.start, tick.end, |rules| {
                             self.input_handles.policy(&self.console.cvars, rules)
                         });
-                    self.run_pending_commands(
-                        frame_span,
-                        &mut crate::modules::Driver::new(source.asset_preparer()),
-                    );
+                    self.run_pending_commands(frame_span, &mut source.driver());
                 }
                 TickTarget::Provider(_) => {
                     let slot = tick.source_slot - 1;
                     let provider = self.providers[slot];
-                    (provider.frame)(
-                        self,
-                        tick,
-                        &mut crate::modules::Driver::new(source.asset_preparer()),
-                    );
+                    (provider.frame)(self, tick, &mut source.driver());
                     if let (Some(consume), Some(id)) =
                         (provider.output, self.module_outputs[slot].as_mut())
                     {
@@ -793,10 +795,7 @@ impl FrameHost {
                 }
             }
         }
-        self.run_pending_commands(
-            frame_span,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
+        self.run_pending_commands(frame_span, &mut source.driver());
         self.publish_module_client_state();
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         self.publish_module_game_states();
@@ -827,27 +826,20 @@ impl FrameHost {
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
         self.intake(source);
-        self.drain_with_driver(
-            &mut result,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
+        self.drain_with_driver(&mut result, &mut source.driver());
         self.retire_closing_clients();
         self.previous = Some(server_time);
-        self.retire_stale_modules(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.retire_stale_modules(&mut source.driver());
         self.update_console_policy(true);
-        self.execute_commands_with_driver(&mut crate::modules::Driver::new(
-            source.asset_preparer(),
-        ));
+        self.execute_commands_with_driver(&mut source.driver());
         if self.runtime.quit {
             source.request_mouse_capture(false);
-            self.shutdown_modules_with_driver(&mut crate::modules::Driver::new(
-                source.asset_preparer(),
-            ));
+            self.shutdown_modules_with_driver(&mut source.driver());
             self.dispatch_output(source, &mut result);
             return result;
         }
         self.flush_client_connect_requests(source);
-        self.client_configurations(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
         self.flush_nq_signon_replies();
         let client = Stopwatch::start();
@@ -860,7 +852,7 @@ impl FrameHost {
                 })
                 .map(|sample| sample.time)
         });
-        self.advance_client_presentation(&mut crate::modules::Driver::new(source.asset_preparer()));
+        self.advance_client_presentation(&mut source.driver());
         self.flush_closing_client_controls(source);
         self.queue_client_userinfo();
         result.commands = self.client_frame(command_times, source);
@@ -873,13 +865,8 @@ impl FrameHost {
             scene.begin_frame();
             scene.native_owners(native_owners);
         }
-        self.initialize_modules_with_driver(
-            crate::modules::Phase::Client,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
-        self.client_module_frames_with_driver(&mut crate::modules::Driver::new(
-            source.asset_preparer(),
-        ));
+        self.initialize_modules_with_driver(crate::modules::Phase::Client, &mut source.driver());
+        self.client_module_frames_with_driver(&mut source.driver());
         self.publish_client_feedback();
         self.publish_client_loops();
         result.client_ns = client.elapsed().as_nanos() as u64;
@@ -1434,10 +1421,7 @@ impl FrameHost {
                 .is_some_and(|binding| binding.presentation_closed())
                 || !self.runtime.server.clients[slot].is_active();
             if rejected || closed {
-                self.disconnect_client_with_driver(
-                    id,
-                    &mut crate::modules::Driver::new(source.asset_preparer()),
-                );
+                self.disconnect_client_with_driver(id, &mut source.driver());
             }
         }
     }
@@ -1450,7 +1434,7 @@ impl FrameHost {
             |route, bytes| {
                 crate::transport::admit_output(
                     &mut runtime.loopback,
-                    source,
+                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                     qa_core::loopback::Endpoint::Client,
                     route,
                     bytes,
@@ -1729,7 +1713,7 @@ impl FrameHost {
         }
     }
 
-    fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
+    pub fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
         let effect_clients = std::array::from_fn(|seat| {
             let (client, row, _) = self.local_seat(seat)?;
             Some(qa_render::effects::EffectClient {
@@ -1750,10 +1734,7 @@ impl FrameHost {
             &self.client_listeners(),
             self.console.cvars.value(self.volume),
         );
-        let counts = crate::output::retire_resync_clients(
-            self,
-            &mut crate::modules::Driver::new(source.asset_preparer()),
-        );
+        let counts = crate::output::retire_resync_clients(self, &mut source.driver());
         result.output = crate::output::dispatch_frame(
             &mut self.runtime,
             source,
@@ -1888,18 +1869,12 @@ impl FrameHost {
             }
             let Some(connection) = self.runtime.network.get_mut(id, Endpoint::Client) else {
                 if closed && !closing {
-                    self.disconnect_client_with_driver(
-                        id,
-                        &mut crate::modules::Driver::new(source.asset_preparer()),
-                    );
+                    self.disconnect_client_with_driver(id, &mut source.driver());
                 }
                 continue;
             };
             if !connection.phase.is_connected() {
-                self.disconnect_client_with_driver(
-                    id,
-                    &mut crate::modules::Driver::new(source.asset_preparer()),
-                );
+                self.disconnect_client_with_driver(id, &mut source.driver());
                 continue;
             }
             let Some(binding) = self.runtime.snapshots[slot].as_mut() else {
@@ -1922,7 +1897,7 @@ impl FrameHost {
                     |bytes| {
                         crate::transport::admit_output(
                             &mut self.runtime.loopback,
-                            source,
+                            &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                             Endpoint::Client,
                             route,
                             bytes,
@@ -1962,7 +1937,7 @@ impl FrameHost {
                     |bytes| {
                         crate::transport::admit_output(
                             &mut self.runtime.loopback,
-                            source,
+                            &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                             Endpoint::Client,
                             route,
                             bytes,
@@ -1979,10 +1954,7 @@ impl FrameHost {
                         || connection.channel.pending_fragments());
             }
             if complete && closed && !closing {
-                self.disconnect_client_with_driver(
-                    id,
-                    &mut crate::modules::Driver::new(source.asset_preparer()),
-                );
+                self.disconnect_client_with_driver(id, &mut source.driver());
             }
         }
     }

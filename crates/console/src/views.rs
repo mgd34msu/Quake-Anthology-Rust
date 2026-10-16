@@ -18,6 +18,8 @@ pub struct Context {
     pub event_time: Option<qa_core::sys_events::EventTime>,
     pub key_source: Option<qa_core::sys_events::KeySource>,
     pub producer: Option<CommandProducer>,
+    /// Captured role choices for one deferred connection command.
+    pub client_policy: Option<qa_core::primitives::ClientPolicy>,
 }
 impl Default for Context {
     fn default() -> Self {
@@ -30,6 +32,7 @@ impl Default for Context {
             event_time: None,
             key_source: None,
             producer: None,
+            client_policy: None,
         }
     }
 }

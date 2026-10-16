@@ -501,17 +501,29 @@ impl Runtime {
         policy: client_policy::ClientPolicy,
         native_player: snapshots::NativePlayerBinding,
         connection: qa_network::ingress::Connection,
+        lease: Option<qa_platform::UdpLease>,
     ) -> Result<ClientId, String> {
         if connection.channel.endpoint() != qa_core::loopback::Endpoint::Client
             || !matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_))
         {
             return Err("CLIENT requires a socket channel".into());
         }
+        if lease
+            .as_ref()
+            .is_some_and(|lease| lease.socket() != connection.route.socket)
+        {
+            return Err("CLIENT socket lease does not match its route".into());
+        }
         let id = self.reserve_client_seat(seat, policy, qa_core::loopback::Endpoint::Client)?;
         if let Err(error) = self.bind_connection(id, connection, native_player, Some(seat)) {
             self.disconnect_client(id);
             return Err(error);
         }
+        let Some(resources) = self.client_resources[id.0 as usize].as_mut() else {
+            self.disconnect_client(id);
+            return Err("CLIENT requires native resources".into());
+        };
+        resources.udp_lease = lease;
         Ok(id)
     }
 
@@ -894,7 +906,7 @@ impl Runtime {
                 |bytes| {
                     transport::admit_output(
                         &mut self.loopback,
-                        source,
+                        &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                         qa_core::loopback::Endpoint::Client,
                         route,
                         bytes,
@@ -943,7 +955,7 @@ impl Runtime {
             |bytes| {
                 transport::admit_output(
                     &mut self.loopback,
-                    source,
+                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                     qa_core::loopback::Endpoint::Client,
                     route,
                     bytes,
@@ -1082,7 +1094,7 @@ impl Runtime {
             |bytes| {
                 transport::admit_output(
                     &mut self.loopback,
-                    source,
+                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                     qa_core::loopback::Endpoint::Server,
                     route,
                     bytes,

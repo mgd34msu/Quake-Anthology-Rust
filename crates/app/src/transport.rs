@@ -12,7 +12,7 @@ pub(crate) struct Submission {
 
 pub(crate) fn admit_output(
     loopback: &mut qa_core::loopback::Loopback,
-    source: &mut impl crate::host::FrameSource,
+    send: &mut impl FnMut(u16, std::net::SocketAddr, &[u8]) -> bool,
     endpoint: qa_core::loopback::Endpoint,
     route: qa_network::ingress::Route,
     bytes: &[u8],
@@ -21,7 +21,7 @@ pub(crate) fn admit_output(
         qa_core::sys_events::Peer::Loopback(client) => {
             loopback.send(endpoint, client, bytes).is_ok()
         }
-        qa_core::sys_events::Peer::Socket(to) => source.send_packet(route.socket, to, bytes),
+        qa_core::sys_events::Peer::Socket(to) => send(route.socket, to, bytes),
     }
 }
 

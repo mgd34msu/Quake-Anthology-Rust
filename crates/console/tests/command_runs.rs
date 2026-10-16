@@ -93,6 +93,58 @@ fn producer() -> CommandProducer {
 }
 
 #[test]
+fn registered_external_commands_keep_table_precedence_and_one_reply() {
+    let mut console = console();
+    let mut host = Capture::default();
+    single(
+        &mut console,
+        &mut host,
+        b"alias CoNnEcT \"mark alias\"",
+        Context::default(),
+    );
+    let command = console.register_external("connect").unwrap();
+    assert_eq!(console.register_external("CONNECT"), Some(command));
+    assert!(console.register_external("mark").is_none());
+    console
+        .append("CONNECT \"server:26000\"; mark after\n", Context::default())
+        .unwrap();
+    let mut run = CommandRun::drain();
+    let mut scratch = ParsedCommand::default();
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::External(command)
+    );
+    assert_eq!(scratch.arguments().get_bytes(1), b"server:26000");
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::External(command)
+    );
+    assert!(host.marks.is_empty());
+    assert!(run.reply(CommandReply::Handled));
+    assert!(!run.reply(CommandReply::Handled));
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Continue
+    );
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Continue
+    );
+    assert_eq!(labels(&host), [b"after".as_slice()]);
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Done
+    );
+    console.append("cmdlist\n", Context::default()).unwrap();
+    console.execute_frame(&mut host);
+    assert!(
+        host.output
+            .windows(b"connect".len())
+            .any(|text| text == b"connect")
+    );
+}
+
+#[test]
 fn single_dispatches_one_string_without_separating_or_draining_pending_text() {
     let context = Context::default();
     let mut console = console();
@@ -179,6 +231,57 @@ fn single_ignores_pending_capacity_and_does_not_consume_a_wait() {
     assert_eq!(labels(&host).last(), Some(&b"full".as_slice()));
     assert!(!console.idle());
     assert!(host.output.is_empty());
+}
+
+#[test]
+fn frame_wait_survives_nested_runs_and_repeated_drains_until_the_next_frame() {
+    let context = Context::default();
+    let mut console = console();
+    let mut host = Capture::default();
+    console.begin_frame();
+    console.append("mark deferred\n", context).unwrap();
+    console.module_parts().1.wait_next_frame(context);
+    for _ in 0..4 {
+        single(&mut console, &mut host, b"mark immediate", context);
+        console.execute_frame(&mut host);
+        assert_eq!(console.module_parts().1.wait_context(), Some(context));
+    }
+    assert_eq!(labels(&host), [b"immediate".as_slice(); 4]);
+    console.begin_frame();
+    console.execute_frame(&mut host);
+    assert_eq!(labels(&host).last(), Some(&b"deferred".as_slice()));
+    assert!(console.idle());
+}
+
+#[test]
+fn native_wait_updates_cannot_release_a_frame_retirement_barrier() {
+    for count in [0, 1, 2] {
+        let context = Context::default();
+        let mut console = console();
+        let mut host = Capture::default();
+        console.begin_frame();
+        console.append("mark deferred\n", context).unwrap();
+        console.module_parts().1.wait_next_frame(context);
+        single(
+            &mut console,
+            &mut host,
+            format!("wait {count}").as_bytes(),
+            context,
+        );
+        for _ in 0..4 {
+            console.execute_frame(&mut host);
+            assert!(host.marks.is_empty());
+            assert_eq!(console.module_parts().1.wait_context(), Some(context));
+        }
+        console.begin_frame();
+        for _ in 0..count {
+            console.execute_frame(&mut host);
+            assert!(host.marks.is_empty());
+        }
+        console.execute_frame(&mut host);
+        assert_eq!(labels(&host), [b"deferred".as_slice()]);
+        assert!(console.idle());
+    }
 }
 
 #[test]
@@ -403,6 +506,7 @@ fn drain_limits_survive_fallback_suspensions_and_reset_for_the_next_run() {
                 fallbacks += 1;
                 assert!(run.reply(CommandReply::Handled));
             }
+            CommandStep::External(_) => panic!("no external command registered"),
             CommandStep::Done => break,
         }
     }

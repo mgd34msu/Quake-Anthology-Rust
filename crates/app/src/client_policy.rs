@@ -4,56 +4,13 @@ use qa_core::primitives::RuleSetId;
 use qa_session::timing::TickRate;
 use std::num::NonZeroU32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClientPolicy {
-    pub client: RuleSetId,
-    pub input: RuleSetId,
-    pub movement: RuleSetId,
-    pub trace: RuleSetId,
-}
+pub use qa_core::primitives::ClientPolicy;
 
-impl ClientPolicy {
-    /// Startup role choices are explicit and independent for each local seat.
-    pub fn parse_seat(value: &str) -> Result<(qa_core::sys_events::SeatId, Self), &'static str> {
-        crate::options::parse_seat_value(value, Self::parse)
-    }
-    fn parse(value: &str) -> Option<Self> {
-        let mut fields = value.split(':');
-        let client = RuleSetId::parse(fields.next()?)?;
-        let movement = RuleSetId::parse(fields.next()?)?;
-        let trace = RuleSetId::parse(fields.next()?)?;
-        let input = fields
-            .next()
-            .map(RuleSetId::parse)
-            .unwrap_or(Some(client))?;
-        if fields.next().is_some() {
-            return None;
-        }
-        Some(Self {
-            client,
-            input,
-            movement,
-            trace,
-        })
-    }
-
-    pub fn select(
-        explicit_client: Option<RuleSetId>,
-        stock_client: Option<RuleSetId>,
-        explicit_movement: Option<RuleSetId>,
-        explicit_trace: Option<RuleSetId>,
-        explicit_input: Option<RuleSetId>,
-    ) -> Result<Self, &'static str> {
-        let client = explicit_client
-            .or(stock_client)
-            .ok_or("unknown or ambiguous product needs --client-module q1/qw/q2/q2rr/q3")?;
-        Ok(Self {
-            client,
-            input: explicit_input.unwrap_or(client),
-            movement: explicit_movement.unwrap_or(client),
-            trace: explicit_trace.unwrap_or(client),
-        })
-    }
+/// Startup role choices are explicit and independent for each local seat.
+pub fn parse_seat(
+    value: &str,
+) -> Result<(qa_core::sys_events::SeatId, ClientPolicy), &'static str> {
+    crate::options::parse_seat_value(value, ClientPolicy::parse)
 }
 
 pub fn tick_rate(rules: RuleSetId, cvars: &mut Cvars) -> Result<TickRate, &'static str> {

@@ -1415,6 +1415,7 @@ impl Cvars {
                     event_time: None,
                     key_source: None,
                     producer: None,
+                    client_policy: None,
                 };
                 let view = View {
                     handle: self.slot(binding.row as usize, binding.seat),

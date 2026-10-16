@@ -25,6 +25,8 @@ use qa_input::{DispatchCursor, DispatchResume, DispatchStep, InputCapture};
 use qa_session::dispatch::CallOutcome;
 use std::sync::Arc;
 
+mod connection;
+
 pub(super) enum ModuleDispatch {
     Completed(ExecutionResult),
     Guest(GuestStart),
@@ -34,10 +36,23 @@ pub(super) enum ModuleDispatch {
 /// every nested guest and console activation entered through the same driver.
 pub struct Driver<'a> {
     preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>,
+    connector: Option<&'a mut qa_platform::EventPump>,
 }
 impl<'a> Driver<'a> {
     pub fn new(preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>) -> Self {
-        Self { preparer }
+        Self {
+            preparer,
+            connector: None,
+        }
+    }
+    pub fn with_connector(
+        preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>,
+        connector: &'a mut qa_platform::EventPump,
+    ) -> Self {
+        Self {
+            connector: Some(connector),
+            ..Self::new(preparer)
+        }
     }
     pub fn cache_only() -> Self {
         Self::new(None)
@@ -267,6 +282,7 @@ struct ConsoleActivation {
     fallback: Option<FallbackRun>,
     child: Option<ExecutionResult>,
     owner: Option<GuestStart>,
+    connection: Option<connection::Change>,
 }
 impl ConsoleActivation {
     fn new(run: CommandRun) -> Self {
@@ -275,6 +291,7 @@ impl ConsoleActivation {
             fallback: None,
             child: None,
             owner: None,
+            connection: None,
         }
     }
 }
@@ -553,7 +570,7 @@ impl FrameHost {
     pub fn execute_commands(&mut self) {
         self.execute_commands_with_driver(&mut Driver::cache_only());
     }
-    pub(crate) fn execute_commands_with_driver(&mut self, driver: &mut Driver<'_>) {
+    pub fn execute_commands_with_driver(&mut self, driver: &mut Driver<'_>) {
         let _ = drive(
             self,
             Frame::Console(ConsoleActivation::new(CommandRun::drain())),
@@ -613,7 +630,15 @@ fn drive(
                 }
             },
             Frame::Console(console) => {
-                console_step(host, console, &mut arena[index].command, index)
+                let (parents, current) = arena.split_at_mut(index);
+                console_step(
+                    host,
+                    console,
+                    &mut current[0].command,
+                    index,
+                    TraceAccess::parents(parents),
+                    driver,
+                )
             }
         };
         match step {
@@ -1059,7 +1084,27 @@ fn console_step(
     frame: &mut ConsoleActivation,
     scratch: &mut ParsedCommand,
     index: usize,
+    access: TraceAccess<'_>,
+    driver: &mut Driver<'_>,
 ) -> FrameStep {
+    if let Some(change) = frame.connection.as_mut() {
+        return match change.advance(
+            host,
+            &mut frame.child,
+            scratch,
+            frame.owner,
+            frame.run.context(),
+            access,
+            driver,
+        ) {
+            Some(step) => step,
+            None => {
+                frame.connection = None;
+                frame.run.reply(CommandReply::Handled);
+                FrameStep::Continue
+            }
+        };
+    }
     if frame.owner.is_some_and(|owner| !valid(host, owner, true)) {
         return FrameStep::Finished(Err(()));
     }
@@ -1124,6 +1169,14 @@ fn console_step(
         CommandStep::Done => FrameStep::Finished(Ok(None)),
         CommandStep::Fallback => {
             frame.fallback = Some(FallbackRun::new(host, frame.run.context()));
+            FrameStep::Continue
+        }
+        CommandStep::External(command) => {
+            frame.connection =
+                connection::begin(host, command, scratch, frame.run.context(), driver);
+            if frame.connection.is_none() {
+                frame.run.reply(CommandReply::Handled);
+            }
             FrameStep::Continue
         }
     }

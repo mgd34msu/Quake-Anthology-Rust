@@ -27,6 +27,7 @@ pub(crate) fn model_world(
 
 pub struct ClientResources {
     pub state: ResourceState,
+    pub(crate) udp_lease: Option<qa_platform::UdpLease>,
     commands: qa_network::outputs::ConfigCommandReader,
     selected: Box<qa_console::command_text::ParsedCommand>,
     joined: qa_core::text::FixedText<8192>,
@@ -133,6 +134,7 @@ impl ClientResources {
     ) -> Result<Option<Self>, String> {
         let layout = protocol.resource_layout();
         Ok(Some(Self {
+            udp_lease: None,
             commands: qa_network::outputs::ConfigCommandReader::load(),
             selected: Box::default(),
             joined: qa_core::text::FixedText::default(),
@@ -199,6 +201,9 @@ impl ClientResources {
     }
     pub fn nq_signon_stage(&self) -> Option<u8> {
         self.nq_signon.as_ref().map(|signon| signon.stage)
+    }
+    pub fn udp_socket(&self) -> Option<u16> {
+        self.udp_lease.as_ref().map(qa_platform::UdpLease::socket)
     }
     pub(crate) fn begin_nq_signon(&mut self) {
         self.nq_signon = Some(NqSignon::default());

@@ -435,7 +435,7 @@ pub(crate) fn dispatch_frame(
             let (disposition, submitted) = match native::transmit(connection, None, time, |bytes| {
                 crate::transport::admit_output(
                     &mut runtime.loopback,
-                    source,
+                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                     qa_core::loopback::Endpoint::Server,
                     route,
                     bytes,
@@ -687,7 +687,9 @@ pub(crate) fn dispatch_frame(
                                         |bytes| {
                                             crate::transport::admit_output(
                                                 &mut runtime.loopback,
-                                                source,
+                                                &mut |socket, to, bytes| {
+                                                    source.send_packet(socket, to, bytes)
+                                                },
                                                 qa_core::loopback::Endpoint::Server,
                                                 route,
                                                 bytes,
@@ -724,7 +726,9 @@ pub(crate) fn dispatch_frame(
                                     |bytes| {
                                         crate::transport::admit_output(
                                             &mut runtime.loopback,
-                                            source,
+                                            &mut |socket, to, bytes| {
+                                                source.send_packet(socket, to, bytes)
+                                            },
                                             qa_core::loopback::Endpoint::Server,
                                             route,
                                             bytes,
@@ -794,7 +798,9 @@ pub(crate) fn dispatch_frame(
                                         |bytes| {
                                             crate::transport::admit_output(
                                                 &mut runtime.loopback,
-                                                source,
+                                                &mut |socket, to, bytes| {
+                                                    source.send_packet(socket, to, bytes)
+                                                },
                                                 qa_core::loopback::Endpoint::Server,
                                                 route,
                                                 bytes,
@@ -902,7 +908,7 @@ pub(crate) fn dispatch_frame(
                             |bytes| {
                                 crate::transport::admit_output(
                                     &mut runtime.loopback,
-                                    source,
+                                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                                     qa_core::loopback::Endpoint::Server,
                                     route,
                                     bytes,
@@ -961,7 +967,7 @@ pub(crate) fn dispatch_frame(
                 |bytes| {
                     crate::transport::admit_output(
                         &mut runtime.loopback,
-                        source,
+                        &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
                         qa_core::loopback::Endpoint::Server,
                         route,
                         bytes,

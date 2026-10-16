@@ -44,13 +44,13 @@ fn fixed(milliseconds: u32) -> Result<TickRate, String> {
 
 #[test]
 fn startup_seat_policy_preserves_independent_roles_and_rejects_invalid_fields() {
-    let (seat, policy) = ClientPolicy::parse_seat("1:q2:q3:q1").unwrap();
+    let (seat, policy) = qa_app::client_policy::parse_seat("1:q2:q3:q1").unwrap();
     assert_eq!(seat.index(), 1);
     assert_eq!(policy.client, RuleSetId::Quake2);
     assert_eq!(policy.input, RuleSetId::Quake2);
     assert_eq!(policy.movement, RuleSetId::Quake3);
     assert_eq!(policy.trace, RuleSetId::Quake);
-    let (seat, policy) = ClientPolicy::parse_seat("3:q2:q3:q1:qw").unwrap();
+    let (seat, policy) = qa_app::client_policy::parse_seat("3:q2:q3:q1:qw").unwrap();
     assert_eq!(seat.index(), 3);
     assert_eq!(policy.client, RuleSetId::Quake2);
     assert_eq!(policy.input, RuleSetId::QuakeWorld);
@@ -65,7 +65,7 @@ fn startup_seat_policy_preserves_independent_roles_and_rejects_invalid_fields() 
         "1:q1:q1:q1:q3:qw",
         "1:q1:q1:bad",
     ] {
-        assert!(ClientPolicy::parse_seat(value).is_err(), "{value}");
+        assert!(qa_app::client_policy::parse_seat(value).is_err(), "{value}");
     }
 }
 
@@ -117,7 +117,7 @@ fn every_input_role_is_independent_of_client_movement_and_trace() -> Result<(), 
                         (policy.client, policy.input, policy.movement, policy.trace),
                         (client, input, movement, trace)
                     );
-                    let (_, parsed) = ClientPolicy::parse_seat(&format!(
+                    let (_, parsed) = qa_app::client_policy::parse_seat(&format!(
                         "2:{}:{}:{}:{}",
                         client.name(),
                         movement.name(),
