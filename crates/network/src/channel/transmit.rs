@@ -329,13 +329,17 @@ impl Channel {
         protocol: crate::commands::packet::Protocol,
         text: &[u8],
     ) -> Result<NativeReceipt, TransmitError> {
-        if self.endpoint != Endpoint::Client || !self.supports_protocol(protocol) {
-            return Err(TransmitError::PayloadReliability);
+        let result = if self.endpoint != Endpoint::Client || !self.supports_protocol(protocol) {
+            Err(TransmitError::PayloadReliability)
+        } else if protocol == crate::commands::packet::Protocol::Quake3_68 {
+            self.queue_reliable(text)
+        } else {
+            self.queue_client_text(protocol, 4, text)
+        };
+        if result.is_err() {
+            self.counts.client_command_rejected += 1;
         }
-        if protocol == crate::commands::packet::Protocol::Quake3_68 {
-            return self.queue_reliable(text);
-        }
-        self.queue_client_text(protocol, 4, text)
+        result
     }
     /// Q2 full userinfo changes share the connection's ordinary reliable flight.
     pub fn queue_userinfo(

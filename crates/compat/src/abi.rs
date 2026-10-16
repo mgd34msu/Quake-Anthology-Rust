@@ -621,6 +621,9 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[15] = value!(client_command_registration::<false>);
+    t.entries[16] = scalar!(send_client_command);
+    t.entries[72] = value!(client_command_registration::<true>);
     t.entries[18] = scalar!(client_collision_load);
     t.entries[19] = scalar!(client_collision_count);
     t.entries[20] = scalar!(client_collision_inline);
@@ -1557,6 +1560,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                             }
                             HostRequest::TouchTriggers { .. }
                             | HostRequest::ExecuteNow { .. }
+                            | HostRequest::CommandRegistration { .. }
                             | HostRequest::RegisterRenderer(_) => {
                                 return Err(qvm::Trap::Syscall);
                             }
@@ -2621,6 +2625,24 @@ fn command(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
 fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
+    Ok(0)
+}
+fn client_command_registration<const REMOVE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<CallValue, CallError> {
+    let name = c.required_pointer(0)?;
+    c.memory.cstring(name)?;
+    Ok(CallValue::Host(
+        HostRequest::CommandRegistration {
+            name,
+            remove: REMOVE,
+        },
+        ImportContinuation::Return(0),
+    ))
+}
+fn send_client_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let text = c.memory.cstring(c.required_pointer(0)?)?;
+    (ENGINE_CALLS.send_client_command)(c.services, text)?;
     Ok(0)
 }
 fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

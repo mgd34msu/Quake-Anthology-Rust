@@ -104,6 +104,7 @@ pub struct Counts {
     pub fragment_order: u64,
     pub malformed: u64,
     pub control_full: u64,
+    pub client_command_rejected: u64,
     pub dropped: u64,
 }
 

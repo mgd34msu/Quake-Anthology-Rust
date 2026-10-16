@@ -950,6 +950,7 @@ impl Vm {
                         }
                         HostRequest::TouchTriggers { .. }
                         | HostRequest::ExecuteNow { .. }
+                        | HostRequest::CommandRegistration { .. }
                         | HostRequest::RegisterRenderer(_) => {
                             return Err(Error::Service(CallError::Unsupported));
                         }

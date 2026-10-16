@@ -229,6 +229,7 @@ pub enum ClientTermination {
 /// connection for one synchronous module call, without reading SERVER state.
 pub trait ClientConnection {
     fn identity(&self, server: &Server) -> Result<(ClientId, EntityId), CallError>;
+    fn send_command(&mut self, text: &[u8], server: &mut Server) -> Result<bool, CallError>;
     fn command_number(&self, server: &Server) -> Result<u64, CallError>;
     fn usercmd(&mut self, number: i32, server: &Server) -> Result<Option<UserCmd>, CallError>;
     fn select(
@@ -1202,6 +1203,7 @@ pub struct EngineCallTable {
         Option<NativeEntity>,
         &[u8],
     ) -> Result<(), CallError>,
+    pub send_client_command: fn(&mut EngineServices<'_>, &[u8]) -> Result<bool, CallError>,
     pub drop_client_target: fn(
         &mut EngineServices<'_>,
         NativeEntity,
@@ -1510,6 +1512,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         s.publish_server_command(client, module, source, text)
             .map(|_| ())
     },
+    send_client_command: |s, text| s.send_client_command(text),
     drop_client_target: |s, native, time| s.drop_client_target(native, time),
     begin_drop_client: |s, target, reason, time| s.begin_drop_client(target, reason, time),
     finish_drop_client: |s, target, reason| s.finish_drop_client(target, reason),
@@ -2344,6 +2347,12 @@ impl EngineServices<'_> {
         self.commands
             .append_bytes(text, context)
             .map_err(|_| CallError::Text)
+    }
+    pub fn send_client_command(&mut self, text: &[u8]) -> Result<bool, CallError> {
+        self.client_connection
+            .as_deref_mut()
+            .ok_or(CallError::Entity)?
+            .send_command(text, self.server)
     }
     pub fn configstring(
         &mut self,

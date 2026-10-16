@@ -53,6 +53,9 @@ const REFDEF: u32 = 0x4300;
 const SOUND_PATH: u32 = 0x4500;
 const ORIGIN: u32 = 0x4600;
 const AXES: u32 = 0x4640;
+const COMMAND_OWNED: u32 = 0x4680;
+const COMMAND_SHARED: u32 = 0x46a0;
+const CLIENT_TEXT: u32 = 0x46c0;
 const BSS: u32 = 0x7000;
 const GAMESTATE: u32 = 0x8000;
 
@@ -71,6 +74,9 @@ fn data() -> Vec<u8> {
             b"intentional CG_INIT failure\0".as_slice(),
         ),
         (SOUND_PATH, b"sound/restart.wav\0".as_slice()),
+        (COMMAND_OWNED, b"restart_owned\0".as_slice()),
+        (COMMAND_SHARED, b"restart_shared\0".as_slice()),
+        (CLIENT_TEXT, b"-native raw \"quoted\" payload\0".as_slice()),
     ] {
         data[at as usize..at as usize + text.len()].copy_from_slice(text);
     }
@@ -155,6 +161,13 @@ fn qvm_file() -> Vec<u8> {
                 qvm_call(&mut ops, 1, &[ImportArg::Pointer(FAILED_INIT_TEXT)]);
                 ops.push((Pop, 0));
                 ops[healthy].1 = ops.len() as i32;
+                ops.extend([(Const, CLIENT as i32), (Load4, 0), (Const, 22), (Eq, 0)]);
+                let peer = ops.len() - 1;
+                qvm_call(&mut ops, 15, &[ImportArg::Pointer(COMMAND_OWNED)]);
+                ops.push((Pop, 0));
+                ops[peer].1 = ops.len() as i32;
+                qvm_call(&mut ops, 15, &[ImportArg::Pointer(COMMAND_SHARED)]);
+                ops.push((Pop, 0));
                 qvm_call(&mut ops, 50, &[ImportArg::Pointer(GAMESTATE)]);
                 ops.push((Pop, 0));
                 // CG_INIT selects the exact world path in its accepted native
@@ -234,6 +247,14 @@ fn qvm_file() -> Vec<u8> {
                         ImportArg::Integer(0),
                     ],
                 );
+            }
+            4 | 5 | 6 => {
+                let (ordinal, pointer) = match command {
+                    4 => (72, COMMAND_OWNED),
+                    5 => (16, CLIENT_TEXT),
+                    _ => (15, COMMAND_OWNED),
+                };
+                qvm_call(&mut ops, ordinal, &[ImportArg::Pointer(pointer)]);
             }
             7 => ops.extend([(Const, INITIAL as i32), (Load4, 0)]),
             8 => ops.extend([(Const, INLINE as i32), (Load4, 0)]),
@@ -333,7 +354,7 @@ fn native_file() -> Vec<u8> {
     let base = 0x4800;
     let mut code = Vec::new();
     let mut branches = Vec::new();
-    for command in [0u8, 1, 3, 7, 8, 9, 2, 10] {
+    for command in [0u8, 1, 3, 4, 5, 6, 7, 8, 9, 2, 10] {
         code.extend([0x83, 0xff, command, 0x0f, 0x84]);
         branches.push((command, code.len()));
         code.extend([0; 4]);
@@ -358,6 +379,13 @@ fn native_file() -> Vec<u8> {
                 call(&mut code, 1, &[ImportArg::Pointer(FAILED_INIT_TEXT)], base);
                 let relative = code.len() as i32 - healthy as i32 - 4;
                 code[healthy..healthy + 4].copy_from_slice(&relative.to_le_bytes());
+                code.extend([0x83, 0xf9, 22, 0x0f, 0x84]);
+                let peer = code.len();
+                code.extend([0; 4]);
+                call(&mut code, 15, &[ImportArg::Pointer(COMMAND_OWNED)], base);
+                let relative = code.len() as i32 - peer as i32 - 4;
+                code[peer..peer + 4].copy_from_slice(&relative.to_le_bytes());
+                call(&mut code, 15, &[ImportArg::Pointer(COMMAND_SHARED)], base);
                 call(&mut code, 50, &[ImportArg::Pointer(GAMESTATE)], base);
                 rip(&mut code, &[0x8b, 0x05], GAMESTATE + 33 * 4, base);
                 rip(&mut code, &[0x48, 0x8d, 0x15], GAMESTATE + 4096, base);
@@ -430,6 +458,16 @@ fn native_file() -> Vec<u8> {
                     ],
                     base,
                 );
+                code.extend([0x48, 0x83, 0xc4, 8, 0xc3]);
+            }
+            4 | 5 | 6 => {
+                let (ordinal, pointer) = match command {
+                    4 => (72, COMMAND_OWNED),
+                    5 => (16, CLIENT_TEXT),
+                    _ => (15, COMMAND_OWNED),
+                };
+                code.extend([0x48, 0x83, 0xec, 8]);
+                call(&mut code, ordinal, &[ImportArg::Pointer(pointer)], base);
                 code.extend([0x48, 0x83, 0xc4, 8, 0xc3]);
             }
             _ => {
@@ -1086,14 +1124,94 @@ fn verify(module: Vec<u8>) {
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
 }
 
+fn command_listing(host: &mut FrameHost, source: &mut Source) -> [usize; 2] {
+    host.console
+        .scrollback
+        .clear(&mut host.runtime.server.events.texts);
+    host.console
+        .append("cmdlist\n", Context::default())
+        .unwrap();
+    host.execute_commands();
+    source.step(host);
+    let mut counts = [0; 2];
+    for text in host
+        .console
+        .scrollback
+        .chunks(&host.runtime.server.events.texts)
+    {
+        for (count, name) in counts
+            .iter_mut()
+            .zip([b"restart_owned".as_slice(), b"restart_shared"])
+        {
+            *count += usize::from(text == name);
+        }
+    }
+    counts
+}
+fn verify_commands(module: Vec<u8>) {
+    let (_fixture, mut host, mut source, ids, anchors) = setup(module);
+    queue_gamestate(&mut host, ids[0], "a", 11, false);
+    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    until_running(&mut host, &mut source);
+    assert_eq!(command_listing(&mut host, &mut source), [1, 1]);
+    assert_eq!(query(&mut host, ModuleId(1), 4), Ok(0));
+    assert_eq!(command_listing(&mut host, &mut source), [0, 1]);
+    assert_eq!(query(&mut host, ModuleId(1), 6), Ok(0));
+    let queued = host
+        .runtime
+        .network
+        .get(ids[0], Endpoint::Client)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued;
+    assert_eq!(query(&mut host, ModuleId(1), 5), Ok(0));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Client)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .queued,
+        queued + 1
+    );
+
+    source.reject_reset = Some(ids[0]);
+    queue_gamestate(&mut host, ids[0], "c", 33, false);
+    source.step(&mut host);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    // Native completion names stay registered while the same anchor awaits
+    // its replacement image, and peer registrations remain independent.
+    assert_eq!(command_listing(&mut host, &mut source), [1, 1]);
+    source.reject_reset = None;
+    until_running(&mut host, &mut source);
+    assert_eq!(command_listing(&mut host, &mut source), [1, 1]);
+    assert!(host.shutdown_module(ModuleId(1)));
+    assert!(host.runtime.server.entities.resolve(anchors[0]).is_none());
+    assert_eq!(command_listing(&mut host, &mut source), [0, 1]);
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert!(host.runtime.server.entities.resolve(anchors[1]).is_some());
+    assert!(host.shutdown_module(ModuleId(2)));
+    assert_eq!(command_listing(&mut host, &mut source), [0, 0]);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    verify_commands(qvm_file());
+    println!("actual load_q3 QVM client command imports passed");
     verify(qvm_file());
     println!("actual load_q3 QVM same-lifetime restart checks passed");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        verify_commands(native_file());
+        println!("actual load_q3 owned-native client command imports passed");
         verify(native_file());
         println!("actual load_q3 owned-native same-lifetime restart checks passed");
     }

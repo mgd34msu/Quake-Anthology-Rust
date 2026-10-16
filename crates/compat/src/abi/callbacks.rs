@@ -11,6 +11,10 @@ pub struct CallbackRequest {
 #[derive(Clone, Debug)]
 pub enum HostRequest {
     RegisterRenderer(crate::services::RendererRequest),
+    CommandRegistration {
+        name: u64,
+        remove: bool,
+    },
     ExecuteNow {
         context: qa_console::views::Context,
         text: Option<u64>,

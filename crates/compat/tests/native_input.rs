@@ -846,8 +846,11 @@ fn execute_now_yields_checked_raw_pointer_without_touching_the_pending_buffer() 
     }
 }
 
+#[derive(Default)]
 struct CommandWindow {
     selected: qa_console::command_text::ParsedCommand,
+    sent: qa_core::text::FixedText<64>,
+    admit: bool,
 }
 impl qa_compat::services::ClientConnection for CommandWindow {
     fn identity(
@@ -855,6 +858,15 @@ impl qa_compat::services::ClientConnection for CommandWindow {
         _: &qa_session::clients::Server,
     ) -> Result<(qa_core::primitives::ClientId, qa_core::primitives::EntityId), CallError> {
         Err(CallError::Unsupported)
+    }
+    fn send_command(
+        &mut self,
+        text: &[u8],
+        _: &mut qa_session::clients::Server,
+    ) -> Result<bool, CallError> {
+        self.sent.clear();
+        self.sent.append_bytes(text).map_err(|_| CallError::Text)?;
+        Ok(self.admit)
     }
     fn command_number(&self, _: &qa_session::clients::Server) -> Result<u64, CallError> {
         Err(CallError::Unsupported)
@@ -915,9 +927,7 @@ fn caller_arguments_override_retained_client_until_get_server_command_selects_it
     caller
         .parse_engine(b"local \"raw\xff value\" extra", RuleSetId::Quake3)
         .unwrap();
-    let mut window = CommandWindow {
-        selected: Default::default(),
-    };
+    let mut window = CommandWindow::default();
     window
         .selected
         .parse(b"retained old", RuleSetId::Quake3)
@@ -1036,4 +1046,129 @@ fn cgame_console_command_remains_text_only_append_with_native_bytes() {
     assert_eq!(result, Ok(()));
     assert_eq!(line.as_bytes(), b"echo cgame\xff");
     assert!(engine.commands.is_empty());
+}
+
+#[test]
+fn cgame_command_registration_yields_checked_names_and_native_void_continuation() {
+    for (addresses, base) in modes() {
+        let mut fixture = Fixture::new();
+        let mut memory = ModuleMemory::load(base, 8192, &[]).unwrap();
+        text(&mut memory, base + 64, b"Score\xff");
+        memory.write(base + 8191, b"x").unwrap();
+        let arguments = [base + 64];
+        let invalid = [[0], [base + 8191]];
+        let wrapped = [8192];
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut engine = fixture.engine();
+        let mut call = Invocation {
+            services: &mut engine,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            native_pmove: None,
+            native_player: None,
+            context: Fixture::context(SeatId::FIRST),
+            platform_time: EventTime(42),
+            command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::Caller,
+            addresses,
+            arguments: &[],
+        };
+        for (number, expected_remove) in [(15, false), (72, true)] {
+            call.arguments = &arguments;
+            let ImportStep::Host {
+                request: HostRequest::CommandRegistration { name, remove },
+                continuation,
+            } = Q3_CLIENT.invoke(number, &mut call, &mut unknown).unwrap()
+            else {
+                panic!("command registration must yield");
+            };
+            assert_eq!(name, base + 64);
+            assert_eq!(remove, expected_remove);
+            assert_eq!(call.memory.cstring(name).unwrap(), b"Score\xff");
+            assert!(matches!(
+                continuation.resume(&mut call, 999).unwrap(),
+                ImportStep::Return(0)
+            ));
+            for invalid in &invalid {
+                call.arguments = invalid;
+                assert!(matches!(
+                    Q3_CLIENT.invoke(number, &mut call, &mut unknown),
+                    Err(CallError::Memory)
+                ));
+            }
+            if matches!(addresses, Addresses::Qvm { .. }) {
+                call.arguments = &wrapped;
+                assert!(matches!(
+                    Q3_CLIENT.invoke(number, &mut call, &mut unknown).unwrap(),
+                    ImportStep::Host {
+                        request: HostRequest::CommandRegistration { name: 0, .. },
+                        ..
+                    }
+                ));
+            }
+        }
+        assert!(call.services.commands.is_empty());
+        assert_eq!(unknown.calls, 0);
+    }
+}
+
+#[test]
+fn cgame_send_client_command_keeps_raw_text_and_returns_void_on_bounded_rejection() {
+    for (addresses, base) in modes() {
+        let mut fixture = Fixture::new();
+        let mut memory = ModuleMemory::load(base, 8192, &[]).unwrap();
+        let raw = b"  -raw \"quoted\" \xff ";
+        text(&mut memory, base + 64, raw);
+        memory.write(base + 8191, b"x").unwrap();
+        let arguments = [base + 64];
+        let invalid = [[0], [base + 8191]];
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut engine = fixture.engine();
+        let mut window = CommandWindow::default();
+        engine.client_connection = Some(&mut window);
+        let mut call = Invocation {
+            services: &mut engine,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            native_pmove: None,
+            native_player: None,
+            context: Fixture::context(SeatId::FIRST),
+            platform_time: EventTime(42),
+            command: Default::default(),
+            argument_selection: &mut qa_compat::abi::ArgumentSelection::Caller,
+            addresses,
+            arguments: &[],
+        };
+        call.arguments = &arguments;
+        assert!(matches!(
+            Q3_CLIENT.invoke(16, &mut call, &mut unknown).unwrap(),
+            ImportStep::Return(0)
+        ));
+        for invalid in &invalid {
+            call.arguments = invalid;
+            assert!(matches!(
+                Q3_CLIENT.invoke(16, &mut call, &mut unknown),
+                Err(CallError::Memory)
+            ));
+        }
+        assert!(call.services.commands.is_empty());
+        assert_eq!(unknown.calls, 0);
+        drop(call);
+        drop(engine);
+        assert_eq!(window.sent.as_bytes(), raw);
+        assert!(
+            !window.admit,
+            "a full channel retains the native void result"
+        );
+    }
 }

@@ -173,6 +173,11 @@ struct Pending {
 }
 enum Operation {
     RegisterRenderer(Option<qa_compat::services::RendererRequest>),
+    CommandRegistration {
+        name: u64,
+        remove: bool,
+        waiting: bool,
+    },
     Callback(Option<qa_compat::abi::CallbackRequest>),
     Triggers {
         run: contacts::TriggerRun,
@@ -377,6 +382,10 @@ enum OperationStep {
     Abort,
     FailedInput(ModuleId),
     Finished(Result<ModuleResult, ()>),
+    CommandRegistration {
+        name: u64,
+        remove: bool,
+    },
     Console {
         context: ConsoleContext,
         text: Option<u64>,
@@ -385,6 +394,10 @@ enum OperationStep {
 enum FrameStep {
     Continue,
     Guest(Activation),
+    CommandRegistration {
+        name: u64,
+        remove: bool,
+    },
     Console {
         context: ConsoleContext,
         text: Option<u64>,
@@ -683,6 +696,37 @@ fn drive(
                     depth += 1;
                 }
             }
+            FrameStep::CommandRegistration { name, remove } => {
+                let result = if depth == arena.len() {
+                    Err(())
+                } else if let Frame::Guest(guest) = &mut frame {
+                    capture_command(host, guest, Some(name), &mut arena[depth].command).map(|_| {
+                        let producer = qa_core::primitives::CommandProducer {
+                            module: guest.start.module,
+                            anchor: guest.start.anchor,
+                        };
+                        let name = arena[depth].command.raw_bytes();
+                        if remove {
+                            host.console.remove_completion(name, producer);
+                        } else if let Err(error) = host.console.register_completion(name, producer)
+                        {
+                            if let Some(row) = host.module_row_mut(guest.start.module) {
+                                row.counts.rejected += 1;
+                            }
+                            let _ = host.runtime.server.events.console_formatted(format_args!(
+                                "Command registration rejected: {error}\n"
+                            ));
+                        }
+                    })
+                } else {
+                    Err(())
+                };
+                if depth < arena.len() {
+                    arena[depth].command.clear();
+                }
+                frame.child(result.map(|()| None));
+                arena[index].frame = Some(frame);
+            }
             FrameStep::Console { context, text } => {
                 if depth == arena.len() {
                     frame.child(Err(()));
@@ -827,6 +871,9 @@ fn guest_step(
                 FrameStep::Continue
             }
             OperationStep::Finished(result) => FrameStep::Finished(finish(host, frame, result)),
+            OperationStep::CommandRegistration { name, remove } => {
+                FrameStep::CommandRegistration { name, remove }
+            }
             OperationStep::Console { context, text } => FrameStep::Console { context, text },
         };
     }
@@ -835,6 +882,13 @@ fn guest_step(
             let operation = match request {
                 HostRequest::RegisterRenderer(request) => {
                     Ok(Operation::RegisterRenderer(Some(request)))
+                }
+                HostRequest::CommandRegistration { name, remove } => {
+                    Ok(Operation::CommandRegistration {
+                        name,
+                        remove,
+                        waiting: false,
+                    })
                 }
                 HostRequest::Callback(request) => Ok(Operation::Callback(Some(request))),
                 HostRequest::TouchTriggers { mover, time }
@@ -1097,30 +1151,11 @@ fn forward_command(
     if !fallback.current(host, context) {
         return false;
     }
-    let Some((id, _, true)) = fallback.client else {
+    let Some((id, lifetime, true)) = fallback.client else {
         return false;
     };
-    let Some(connection) = host
-        .runtime
-        .network
-        .get_mut(id, qa_core::loopback::Endpoint::Client)
-    else {
-        return false;
-    };
-    if !connection.phase.is_connected() {
-        return false;
-    }
-    let Some(protocol) = connection
-        .commands
-        .as_ref()
-        .map(|commands| commands.protocol)
-    else {
-        return false;
-    };
-    connection
-        .channel
-        .queue_client_command(protocol, text)
-        .is_ok()
+    crate::client_resources::send_client_command(&mut host.runtime, id, lifetime, text)
+        .unwrap_or(false)
 }
 
 fn console_step(
@@ -1318,6 +1353,25 @@ fn operation(
         return OperationStep::Abort;
     };
     match &mut pending.operation {
+        Operation::CommandRegistration {
+            name,
+            remove,
+            waiting,
+        } => {
+            if *waiting {
+                match child.take() {
+                    Some(Ok(_)) => OperationStep::Reply(0),
+                    Some(Err(())) => OperationStep::Abort,
+                    None => OperationStep::Continue,
+                }
+            } else {
+                *waiting = true;
+                OperationStep::CommandRegistration {
+                    name: *name,
+                    remove: *remove,
+                }
+            }
+        }
         Operation::RegisterRenderer(request) => {
             let Some(request) = request.take() else {
                 return OperationStep::Abort;

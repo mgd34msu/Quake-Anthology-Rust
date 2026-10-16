@@ -9,7 +9,7 @@ use crate::{
 use qa_core::sys_events::{EventTime, KeySource, SeatId, key_catchers};
 use qa_core::text::FixedText;
 use qa_core::{
-    names::{NamesError, compare_folded},
+    names::{NameTable, NamesError, compare_folded},
     primitives::NameId,
 };
 use qa_input::{BindError, Input, Target, bindings, keys};
@@ -76,11 +76,138 @@ impl<H> Clone for Command<H> {
         *self
     }
 }
-struct Alias {
+struct CommandSlot<H> {
+    command: Option<Command<H>>,
+    completion: Option<usize>,
+    alias: Option<usize>,
+}
+impl<H> CommandSlot<H> {
+    fn new() -> Self {
+        Self {
+            command: None,
+            completion: None,
+            alias: None,
+        }
+    }
+}
+struct OwnedName<T> {
     name: Option<NameId>,
     producer: Option<CommandProducer>,
-    next_same_name: Option<usize>,
-    text: FixedText<1024>,
+    next: Option<usize>,
+    value: T,
+}
+struct OwnedNameSlot {
+    index: usize,
+    replace: bool,
+}
+struct OwnedNames<T> {
+    rows: Box<[OwnedName<T>]>,
+    len: usize,
+}
+impl<T: Default> OwnedNames<T> {
+    fn load(capacity: usize) -> Self {
+        Self {
+            rows: (0..capacity)
+                .map(|_| OwnedName {
+                    name: None,
+                    producer: None,
+                    next: None,
+                    value: T::default(),
+                })
+                .collect(),
+            len: 0,
+        }
+    }
+    fn index(&self, mut head: Option<usize>, producer: Option<CommandProducer>) -> Option<usize> {
+        while let Some(index) = head {
+            let row = &self.rows[index];
+            if row.producer == producer {
+                return Some(index);
+            }
+            head = row.next;
+        }
+        None
+    }
+    fn prepare(
+        &self,
+        head: Option<usize>,
+        producer: Option<CommandProducer>,
+    ) -> Result<OwnedNameSlot, NamesError> {
+        let previous = self.index(head, producer);
+        let index = previous
+            .or_else(|| {
+                self.rows[..self.len]
+                    .iter()
+                    .position(|row| row.name.is_none())
+            })
+            .unwrap_or(self.len);
+        if index >= self.rows.len() {
+            return Err(NamesError::Capacity);
+        }
+        Ok(OwnedNameSlot {
+            index,
+            replace: previous.is_some(),
+        })
+    }
+    fn set(
+        &mut self,
+        head: &mut Option<usize>,
+        name: NameId,
+        producer: Option<CommandProducer>,
+        value: T,
+        slot: OwnedNameSlot,
+    ) {
+        let row = &mut self.rows[slot.index];
+        let next = if slot.replace { row.next } else { *head };
+        *row = OwnedName {
+            name: Some(name),
+            producer,
+            next,
+            value,
+        };
+        self.len = self.len.max(slot.index + 1);
+        if !slot.replace {
+            *head = Some(slot.index);
+        }
+    }
+    fn remove(&mut self, head: &mut Option<usize>, index: usize) {
+        let next = self.rows[index].next;
+        if *head == Some(index) {
+            *head = next;
+        } else {
+            let mut current = *head;
+            while let Some(previous) = current {
+                if self.rows[previous].next == Some(index) {
+                    self.rows[previous].next = next;
+                    break;
+                }
+                current = self.rows[previous].next;
+            }
+        }
+        self.rows[index] = OwnedName {
+            name: None,
+            producer: None,
+            next: None,
+            value: T::default(),
+        };
+    }
+    fn retain<E>(
+        &mut self,
+        names: &NameTable,
+        entries: &mut [E],
+        head: fn(&mut E) -> &mut Option<usize>,
+        retained: &mut impl FnMut(CommandProducer) -> bool,
+    ) {
+        for index in 0..self.len {
+            if self.rows[index]
+                .producer
+                .is_some_and(|producer| !retained(producer))
+                && let Some(name) = self.rows[index].name.and_then(|name| names.folded(name))
+            {
+                self.remove(head(&mut entries[name.0 as usize]), index);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,10 +292,9 @@ pub struct Console<H> {
     pub scrollback: crate::presentation::Scrollback,
     buffer: CommandBuffer,
     commands: Vec<NameId>,
-    command_by_name: Box<[Option<Command<H>>]>,
-    aliases: Box<[Alias]>,
-    alias_by_name: Box<[Option<usize>]>,
-    alias_count: usize,
+    command_by_name: Box<[CommandSlot<H>]>,
+    completions: OwnedNames<()>,
+    aliases: OwnedNames<FixedText<1024>>,
     parser: Option<Box<ParsedCommand>>,
     joined: FixedText<MAX_TEXT>,
     script: Box<[u8]>,
@@ -183,25 +309,17 @@ impl<H: Host> Console<H> {
         alias_capacity: usize,
     ) -> Result<Self, NamesError> {
         let cvars = Cvars::with_context(context)?;
-        let command_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
-        let alias_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
+        let command_capacity = cvars.names.capacity();
+        let command_by_name = (0..command_capacity).map(|_| CommandSlot::new()).collect();
         let mut console = Self {
             cvars,
             editor: crate::editor::Editor::default(),
             scrollback: crate::presentation::Scrollback::default(),
             command_by_name,
-            alias_by_name,
+            completions: OwnedNames::load(command_capacity),
             buffer: CommandBuffer::new(),
-            commands: Vec::with_capacity(64),
-            aliases: (0..alias_capacity)
-                .map(|_| Alias {
-                    name: None,
-                    producer: None,
-                    next_same_name: None,
-                    text: FixedText::default(),
-                })
-                .collect(),
-            alias_count: 0,
+            commands: Vec::with_capacity(command_capacity),
+            aliases: OwnedNames::load(alias_capacity),
             parser: Some(Box::default()),
             joined: FixedText::default(),
             script: vec![0; 65535].into_boxed_slice(),
@@ -247,23 +365,82 @@ impl<H: Host> Console<H> {
         self.register_entry(name, Command::External)
     }
     fn register_entry(&mut self, name: &'static str, command: Command<H>) -> Option<NameId> {
-        let Ok(exact) = self.cvars.names.intern(name.as_bytes()) else {
-            return None;
-        };
-        let Some(id) = self.cvars.names.folded(exact) else {
-            return None;
-        };
-        if let Some(previous) = self.command_by_name[id.0 as usize] {
+        let exact = self.cvars.names.intern(name.as_bytes()).ok()?;
+        let id = self.cvars.names.folded(exact)?;
+        let slot = &mut self.command_by_name[id.0 as usize];
+        if let Some(previous) = slot.command {
             return matches!((previous, command), (Command::External, Command::External))
                 .then_some(id);
         }
+        if slot.completion.is_some() {
+            return None;
+        }
+        slot.command = Some(command);
+        self.insert_command_name(exact);
+        Some(id)
+    }
+    fn insert_command_name(&mut self, exact: NameId) {
         let names = &self.cvars.names;
+        let name = names.get(exact).unwrap_or_default();
         let at = self.commands.partition_point(|&id| {
-            compare_folded(names.get(id).unwrap_or_default(), name.as_bytes()) == Ordering::Less
+            compare_folded(names.get(id).unwrap_or_default(), name) == Ordering::Less
         });
         self.commands.insert(at, exact);
-        self.command_by_name[id.0 as usize] = Some(command);
-        Some(id)
+    }
+    /// A native null-function command advertises its name without taking
+    /// precedence over cvars, aliases or module fallback.
+    pub fn register_completion(
+        &mut self,
+        name: &[u8],
+        producer: CommandProducer,
+    ) -> Result<(), NamesError> {
+        let previous = self
+            .cvars
+            .names
+            .find_folded(name)
+            .map(|id| &self.command_by_name[id.0 as usize]);
+        if previous.is_some_and(|slot| slot.command.is_some()) {
+            return Ok(());
+        }
+        let head = previous.and_then(|slot| slot.completion);
+        let prepared = self.completions.prepare(head, Some(producer))?;
+        let exact = self.cvars.names.intern(name)?;
+        let id = self.cvars.names.folded(exact).ok_or(NamesError::Capacity)?;
+        self.completions.set(
+            &mut self.command_by_name[id.0 as usize].completion,
+            exact,
+            Some(producer),
+            (),
+            prepared,
+        );
+        if head.is_none() {
+            self.insert_command_name(exact);
+        }
+        Ok(())
+    }
+    /// A module cannot remove an engine command or another live producer's
+    /// registration for the same folded name.
+    pub fn remove_completion(&mut self, name: &[u8], producer: CommandProducer) -> bool {
+        let Some(id) = self.cvars.names.find_folded(name) else {
+            return false;
+        };
+        let slot = &mut self.command_by_name[id.0 as usize];
+        let Some(index) = self.completions.index(slot.completion, Some(producer)) else {
+            return false;
+        };
+        self.completions.remove(&mut slot.completion, index);
+        self.retain_command_names();
+        true
+    }
+    fn retain_command_names(&mut self) {
+        let names = &self.cvars.names;
+        let entries = &self.command_by_name;
+        self.commands.retain(|&id| {
+            names.folded(id).is_some_and(|id| {
+                let slot = &entries[id.0 as usize];
+                slot.command.is_some() || slot.completion.is_some()
+            })
+        });
     }
 
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
@@ -306,52 +483,33 @@ impl<H: Host> Console<H> {
             .retain_producers(&mut retained, time, &mut output);
         let result = output.finish(host);
         self.buffer.retain_producers(&mut retained);
-        for index in 0..self.alias_count {
-            if self.aliases[index]
-                .producer
-                .is_some_and(|producer| !retained(producer))
-            {
-                self.remove_alias(index);
-            }
-        }
+        self.completions.retain(
+            &self.cvars.names,
+            &mut self.command_by_name,
+            |slot| &mut slot.completion,
+            &mut retained,
+        );
+        self.aliases.retain(
+            &self.cvars.names,
+            &mut self.command_by_name,
+            |slot| &mut slot.alias,
+            &mut retained,
+        );
+        self.retain_command_names();
         result
     }
     fn alias_index(&self, name: NameId, producer: Option<CommandProducer>) -> Option<usize> {
-        let mut current = self.alias_by_name[name.0 as usize];
-        while let Some(index) = current {
-            let alias = &self.aliases[index];
-            if alias.producer == producer {
-                return Some(index);
-            }
-            current = alias.next_same_name;
-        }
-        None
+        self.aliases
+            .index(self.command_by_name[name.0 as usize].alias, producer)
     }
     fn remove_alias(&mut self, index: usize) {
-        let Some(name) = self.aliases[index]
+        if let Some(name) = self.aliases.rows[index]
             .name
             .and_then(|name| self.cvars.names.folded(name))
-        else {
-            return;
-        };
-        let head = &mut self.alias_by_name[name.0 as usize];
-        if *head == Some(index) {
-            *head = self.aliases[index].next_same_name;
-        } else {
-            let mut current = *head;
-            while let Some(previous) = current {
-                if self.aliases[previous].next_same_name == Some(index) {
-                    self.aliases[previous].next_same_name = self.aliases[index].next_same_name;
-                    break;
-                }
-                current = self.aliases[previous].next_same_name;
-            }
+        {
+            self.aliases
+                .remove(&mut self.command_by_name[name.0 as usize].alias, index);
         }
-        let alias = &mut self.aliases[index];
-        alias.name = None;
-        alias.producer = None;
-        alias.next_same_name = None;
-        alias.text.clear();
     }
     fn reject_expansion(&mut self, error: TextError, context: Context, host: &mut H) {
         if error == TextError::TooLong
@@ -567,9 +725,11 @@ impl<H: Host> Console<H> {
             return run.complete_command();
         }
         let id = self.cvars.lookup_name(name);
-        let result = if let Some((id, command)) =
-            id.and_then(|id| self.command_by_name[id.0 as usize].map(|command| (id, command)))
-        {
+        let result = if let Some((id, command)) = id.and_then(|id| {
+            self.command_by_name[id.0 as usize]
+                .command
+                .map(|command| (id, command))
+        }) {
             match command {
                 Command::Function(function) => function(self, host, &args, context),
                 Command::Button(action) => self.button(host, &args, context, action),
@@ -599,14 +759,14 @@ impl<H: Host> Console<H> {
             }
         } else if let Some(alias) = id
             .and_then(|id| self.alias_index(id, context.producer))
-            .map(|index| &self.aliases[index])
+            .map(|index| &self.aliases.rows[index])
         {
             run.aliases += 1;
             if run.aliases > 16 {
                 host.print(format_args!("Alias expansion limit\n"));
                 return run.complete_command();
             }
-            let result = self.buffer.insert_bytes(alias.text.as_bytes(), context);
+            let result = self.buffer.insert_bytes(alias.value.as_bytes(), context);
             if let Err(error) = result {
                 self.reject_expansion(error, context, host);
             }
@@ -785,7 +945,7 @@ impl<H: Host> Console<H> {
         context: Context,
     ) -> Result<(), CommandError> {
         if args.len() == 1 {
-            for alias in self.aliases[..self.alias_count]
+            for alias in self.aliases.rows[..self.aliases.len]
                 .iter()
                 .filter(|a| a.name.is_some() && a.producer == context.producer)
             {
@@ -797,7 +957,7 @@ impl<H: Host> Console<H> {
                         .and_then(|bytes| std::str::from_utf8(bytes).ok())
                         .unwrap_or_default()
                 ));
-                host.print_bytes(alias.text.as_bytes());
+                host.print_bytes(alias.value.as_bytes());
             }
             return Ok(());
         }
@@ -813,18 +973,14 @@ impl<H: Host> Console<H> {
         let mut text = FixedText::<1024>::default();
         args.join_bytes(2, &mut text)?;
         text.write_str("\n").map_err(|_| TextError::TooLong)?;
-        let folded = self.cvars.lookup_name(name);
-        let previous = folded.and_then(|id| self.alias_index(id, context.producer));
-        let index = previous
-            .or_else(|| {
-                self.aliases[..self.alias_count]
-                    .iter()
-                    .position(|a| a.name.is_none())
-            })
-            .unwrap_or(self.alias_count);
-        if index == self.aliases.len() {
-            return Err(TextError::TooLong.into());
-        }
+        let head = self
+            .cvars
+            .lookup_name(name)
+            .and_then(|id| self.command_by_name[id.0 as usize].alias);
+        let prepared = self
+            .aliases
+            .prepare(head, context.producer)
+            .map_err(|_| CommandError::Text(TextError::TooLong))?;
         let exact = self
             .cvars
             .names
@@ -836,20 +992,13 @@ impl<H: Host> Console<H> {
             .folded(exact)
             .ok_or(NamesError::Capacity)
             .map_err(CommandError::Names)?;
-        self.alias_count = self.alias_count.max(index + 1);
-        let next_same_name = if previous.is_some() {
-            self.aliases[index].next_same_name
-        } else {
-            self.alias_by_name[folded.0 as usize]
-        };
-        if previous.is_none() {
-            self.alias_by_name[folded.0 as usize] = Some(index);
-        }
-        let alias = &mut self.aliases[index];
-        alias.name = Some(exact);
-        alias.producer = context.producer;
-        alias.next_same_name = next_same_name;
-        alias.text = text;
+        self.aliases.set(
+            &mut self.command_by_name[folded.0 as usize].alias,
+            exact,
+            context.producer,
+            text,
+            prepared,
+        );
         Ok(())
     }
     fn unalias(
@@ -974,14 +1123,8 @@ impl<H: Host> Console<H> {
     }
     fn cmdlist(&mut self, host: &mut H, _: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
         for c in &self.commands {
-            host.print(format_args!(
-                "{}\n",
-                self.cvars
-                    .names
-                    .get(*c)
-                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                    .unwrap_or_default()
-            ));
+            host.print_bytes(self.cvars.names.get(*c).unwrap_or_default());
+            host.print_bytes(b"\n");
         }
         Ok(())
     }

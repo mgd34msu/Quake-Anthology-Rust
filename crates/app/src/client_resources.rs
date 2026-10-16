@@ -430,6 +430,23 @@ pub(crate) fn connection_view<'a>(
         client, lifetime, channel, commands, resources, catalog,
     ))
 }
+pub(crate) fn send_client_command(
+    runtime: &mut crate::Runtime,
+    client: ClientId,
+    lifetime: EntityId,
+    text: &[u8],
+) -> Result<bool, qa_compat::services::CallError> {
+    use qa_compat::services::{CallError, ClientConnection};
+    let mut view = connection_view(
+        client,
+        lifetime,
+        &mut runtime.network,
+        &mut runtime.client_resources,
+        None,
+    )
+    .ok_or(CallError::Entity)?;
+    view.send_command(text, &mut runtime.server)
+}
 impl<'a> ClientConnectionView<'a> {
     pub(crate) fn new(
         client: ClientId,
@@ -547,6 +564,23 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     ) -> Result<(ClientId, EntityId), qa_compat::services::CallError> {
         self.validate(server)?;
         Ok((self.client, self.lifetime))
+    }
+    fn send_command(
+        &mut self,
+        text: &[u8],
+        server: &mut qa_session::clients::Server,
+    ) -> Result<bool, qa_compat::services::CallError> {
+        use qa_compat::services::CallError;
+        use qa_network::channel::TransmitError;
+        self.validate(server)?;
+        match self
+            .channel
+            .queue_client_command(self.commands.protocol, text)
+        {
+            Ok(_) => Ok(true),
+            Err(TransmitError::Full | TransmitError::MessageTooLarge) => Ok(false),
+            Err(_) => Err(CallError::Unsupported),
+        }
     }
     fn command_number(
         &self,
@@ -1685,3 +1719,7 @@ impl ConfigPublication {
         Some(ordinal)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/client_commands.rs"]
+mod client_command_tests;

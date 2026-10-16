@@ -541,3 +541,172 @@ fn parsed_command_engine_entry_reuses_lexical_rules_without_native_argument_limi
         .unwrap();
     assert_eq!(scratch.arguments().get_bytes(1), b"\xff");
 }
+
+#[test]
+fn completion_names_fall_through_and_keep_each_live_producers_registration() {
+    let a = producer();
+    let b = CommandProducer {
+        module: ModuleId(10),
+        ..a
+    };
+    let mut console = console();
+    let mut host = Capture {
+        live: vec![a, b],
+        ..Capture::default()
+    };
+    for owner in [a, a, b] {
+        console.register_completion(b"module_name", owner).unwrap();
+    }
+    console.register_completion(b"fov", a).unwrap();
+    console.register_completion(b"mark", a).unwrap();
+    single(
+        &mut console,
+        &mut host,
+        b"alias module_name \"mark alias\"",
+        Context::default(),
+    );
+    console
+        .append("module_name; fov 117; mark builtin\n", Context::default())
+        .unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(labels(&host), [b"alias".as_slice(), b"builtin"]);
+    assert_eq!(
+        console.cvars.value(console.cvars.find("cg_fov").unwrap()),
+        117.0
+    );
+    assert!(!console.remove_completion(b"mark", a));
+    assert!(console.remove_completion(b"MODULE_NAME", a));
+    assert!(!console.remove_completion(b"module_name", a));
+    host.output.clear();
+    console.append("cmdlist\n", Context::default()).unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(
+        host.output
+            .split(|&b| b == b'\n')
+            .filter(|name| *name == b"module_name")
+            .count(),
+        1
+    );
+
+    console.register_completion(b"only_a", a).unwrap();
+    console.register_completion(b"only_b", b).unwrap();
+    console
+        .retain_producers(&mut host, |owner| owner == b)
+        .unwrap();
+    host.output.clear();
+    console.append("cmdlist\n", Context::default()).unwrap();
+    console.execute_frame(&mut host);
+    let listed: Vec<_> = host.output.split(|&b| b == b'\n').collect();
+    assert!(listed.contains(&b"module_name".as_slice()));
+    assert!(listed.contains(&b"only_b".as_slice()));
+    assert!(!listed.contains(&b"only_a".as_slice()));
+    assert!(console.remove_completion(b"module_name", b));
+    host.output.clear();
+    console
+        .append("cmdlist; module_name\n", Context::default())
+        .unwrap();
+    console.execute_frame(&mut host);
+    assert!(
+        !host
+            .output
+            .split(|&b| b == b'\n')
+            .any(|name| name == b"module_name")
+    );
+    assert_eq!(labels(&host).last(), Some(&b"alias".as_slice()));
+}
+
+#[test]
+fn completion_registration_uses_the_existing_fallback_reply_and_reserved_table() {
+    let mut console = console();
+    let mut host = Capture {
+        live: vec![producer()],
+        ..Capture::default()
+    };
+    for index in 0..96 {
+        console
+            .register_completion(format!("native{index:03}").as_bytes(), producer())
+            .unwrap();
+    }
+    console
+        .register_completion(b"native095", producer())
+        .unwrap();
+    let mut scratch = ParsedCommand::default();
+    scratch.set_raw(b"native095 exact arguments").unwrap();
+    let mut run = CommandRun::single(Context::default());
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Fallback
+    );
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Fallback
+    );
+    assert_eq!(scratch.arguments().get_bytes(1), b"exact");
+    assert!(run.reply(CommandReply::Handled));
+    assert_eq!(
+        console.step(&mut host, &mut run, &mut scratch),
+        CommandStep::Done
+    );
+    assert!(host.output.is_empty());
+}
+
+#[test]
+fn rejected_owned_name_capacity_keeps_replacement_and_bounded_registration() {
+    let mut console = Console::<Capture>::with_alias_capacity(Context::default(), 1).unwrap();
+    let mut host = Capture::default();
+    single(
+        &mut console,
+        &mut host,
+        b"alias first echo",
+        Context::default(),
+    );
+    single(
+        &mut console,
+        &mut host,
+        b"alias rejected echo",
+        Context::default(),
+    );
+    single(
+        &mut console,
+        &mut host,
+        b"alias first changed",
+        Context::default(),
+    );
+    assert!(
+        host.output
+            .windows(b"TooLong".len())
+            .any(|part| part == b"TooLong")
+    );
+
+    let name = b"shared_completion";
+    let capacity = (0..=u16::MAX)
+        .find(|&module| {
+            console
+                .register_completion(
+                    name,
+                    CommandProducer {
+                        module: ModuleId(module),
+                        ..producer()
+                    },
+                )
+                .is_err()
+        })
+        .expect("the load-reserved registration storage is bounded");
+    assert!(capacity > 96);
+    assert!(
+        console
+            .register_completion(b"not_admitted", producer())
+            .is_err()
+    );
+    console.register_completion(name, producer()).unwrap();
+    host.output.clear();
+    console.append("cmdlist\n", Context::default()).unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(
+        host.output
+            .split(|&b| b == b'\n')
+            .filter(|listed| *listed == name)
+            .count(),
+        1
+    );
+}
