@@ -132,8 +132,8 @@ pub trait ModelLookup {
     fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8]) -> Option<i32>;
-    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
-        let _ = name;
+    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
+        let _ = (name, source);
         None
     }
     fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
@@ -2053,7 +2053,7 @@ impl EngineServices<'_> {
             self.model_lookup
                 .and_then(|lookup| match kind {
                     RendererRegistration::Model => lookup.model_handle(name, source),
-                    RendererRegistration::Skin => lookup.skin_handle(name),
+                    RendererRegistration::Skin => lookup.skin_handle(name, source),
                     RendererRegistration::Shader { .. } => lookup.shader_handle(name),
                 })
                 .ok_or(CallError::File)

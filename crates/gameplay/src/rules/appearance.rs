@@ -1,8 +1,54 @@
 //! Source-native appearance decoding, independent of presentation and physics.
 use qa_core::{
     math,
-    primitives::{EntityAppearance, RuleSetId, Vec3},
+    names::compare_folded,
+    primitives::{EntityAppearance, ModelUse, RuleSetId, Vec3},
 };
+
+/// Native model cells can select resources or the configured player binding.
+/// Translucency belongs to a linked cell rather than its resource identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelInput {
+    Resource(u32),
+    LinkedTranslucent(u32),
+    Player,
+}
+
+/// Filename-selected capabilities are cached at registration/configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelFeatures {
+    pub linked_shell: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerModelRules {
+    pub weapon_limit: usize,
+    pub weapon_start: usize,
+    pub require_icon: bool,
+    pub partial_base: bool,
+    pub female_skin_fallback: bool,
+    pub restricted_paths: bool,
+    pub skip_player_model_gap: bool,
+    pub folded_weapon_fallback: bool,
+    weapon_mask: u32,
+}
+impl PlayerModelRules {
+    /// RR reserves the upper bytes for height/team/POI. Classic retains the
+    /// entire shifted weapon value, which the caller checks against its limit.
+    pub fn player_selection(self, skin: i32) -> (usize, usize) {
+        (
+            (skin as u32 & 255) as usize,
+            ((skin >> 8) as u32 & self.weapon_mask) as usize,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelCellPresentation {
+    pub model: ModelInput,
+    pub skin: i32,
+    pub capabilities: AppearanceCapabilities,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppearanceCapabilities {
@@ -37,7 +83,19 @@ pub enum WeaponInterpolation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+enum LinkedModels {
+    Inherited,
+    Opaque,
+    CustomAlpha,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct NativeRules {
+    player_model: Option<u32>,
+    player_models: Option<PlayerModelRules>,
+    secondary_model_alpha: Option<f32>,
+    linked_shell: Option<&'static [u8]>,
+    linked_models: LinkedModels,
     viewer: u32,
     weapon: u32,
     depth: u32,
@@ -73,6 +131,11 @@ struct NativeRules {
     snapshot_event_base: Option<u32>,
 }
 const NEUTRAL: NativeRules = NativeRules {
+    player_model: None,
+    player_models: None,
+    secondary_model_alpha: None,
+    linked_shell: None,
+    linked_models: LinkedModels::Inherited,
     viewer: 0,
     weapon: 0,
     depth: 0,
@@ -110,6 +173,20 @@ const NEUTRAL: NativeRules = NativeRules {
 // Original quake-2/game/q_shared.h render/effects values. Rerelease game.h
 // retains these bits, renames bit6 NO_ORIGIN_LERP and adds OLD_FRAME_LERP.
 const Q2: NativeRules = NativeRules {
+    player_model: Some(255),
+    player_models: Some(PlayerModelRules {
+        weapon_limit: 20,
+        weapon_start: 1,
+        require_icon: true,
+        partial_base: false,
+        female_skin_fallback: false,
+        restricted_paths: false,
+        skip_player_model_gap: false,
+        folded_weapon_fallback: false,
+        weapon_mask: u32::MAX,
+    }),
+    secondary_model_alpha: Some(0.32),
+    linked_models: LinkedModels::Opaque,
     viewer: 2,
     weapon: 4,
     fullbright: 8,
@@ -151,6 +228,20 @@ const RULES: [NativeRules; 5] = [
     },
     Q2,
     NativeRules {
+        player_models: Some(PlayerModelRules {
+            weapon_limit: 256,
+            weapon_start: 2,
+            require_icon: false,
+            partial_base: true,
+            female_skin_fallback: true,
+            restricted_paths: true,
+            skip_player_model_gap: true,
+            folded_weapon_fallback: true,
+            weapon_mask: 255,
+        }),
+        secondary_model_alpha: None,
+        linked_shell: Some(b"models/items/shell/tris.md2"),
+        linked_models: LinkedModels::CustomAlpha,
         old_frame: 1 << 22,
         alias_motion: false,
         beam_integer_half: false,
@@ -182,7 +273,86 @@ pub fn policy(source: RuleSetId) -> AppearancePolicy {
         smooth_clients: false,
     }
 }
+
+/// Resource-list rows have no cell use. Entity and view-weapon publication
+/// select native interpretation explicitly without changing the raw reference.
+pub fn model_input(source: RuleSetId, ordinal: u32, usage: Option<ModelUse>) -> ModelInput {
+    model_input_rules(RULES[source as usize], ordinal, usage)
+}
+
+fn model_input_rules(rules: NativeRules, ordinal: u32, usage: Option<ModelUse>) -> ModelInput {
+    if rules.player_model == Some(ordinal) && matches!(usage, Some(ModelUse::Entity(0 | 1))) {
+        ModelInput::Player
+    } else if rules.secondary_model_alpha.is_some()
+        && usage == Some(ModelUse::Entity(1))
+        && ordinal <= u8::MAX as u32
+        && ordinal & 0x80 != 0
+    {
+        ModelInput::LinkedTranslucent(ordinal & 0x7f)
+    } else {
+        ModelInput::Resource(ordinal)
+    }
+}
+
 impl AppearancePolicy {
+    pub fn player_models(self) -> Option<PlayerModelRules> {
+        self.rules.player_models
+    }
+    pub fn model_features(self, path: &[u8]) -> ModelFeatures {
+        ModelFeatures {
+            linked_shell: self
+                .rules
+                .linked_shell
+                .is_some_and(|name| compare_folded(name, path).is_eq()),
+        }
+    }
+
+    /// Linked model resets happen after the entity's common pose and frame
+    /// have been selected. They affect only this model's draw properties.
+    pub fn model_cell(
+        self,
+        appearance: &EntityAppearance,
+        cell: usize,
+        base: AppearanceCapabilities,
+        features: ModelFeatures,
+    ) -> Option<ModelCellPresentation> {
+        let reference = (*appearance.models.get(cell)?)?;
+        let model = model_input_rules(self.rules, reference.ordinal, Some(ModelUse::Entity(cell)));
+        let mut capabilities = base;
+        let mut skin = if model == ModelInput::Player {
+            0
+        } else {
+            appearance.skin
+        };
+        if cell != 0 && self.rules.linked_models != LinkedModels::Inherited {
+            skin = 0;
+            capabilities.viewer_model = false;
+            capabilities.weapon_model = false;
+            capabilities.depth_hack = false;
+            capabilities.fullbright = false;
+            capabilities.infrared_visible = false;
+            capabilities.alias_motion = false;
+            capabilities.beam_radius = None;
+            capabilities.alpha = match self.rules.linked_models {
+                LinkedModels::CustomAlpha if appearance.alpha != 0.0 => appearance.alpha,
+                _ => 1.0,
+            };
+            capabilities.inline_opacity = (capabilities.alpha != 1.0).then_some(capabilities.alpha);
+            if let ModelInput::LinkedTranslucent(_) = model {
+                capabilities.alpha = self.rules.secondary_model_alpha?;
+                capabilities.inline_opacity = self.rules.inline_translucent_alpha;
+            } else if cell == 1 && features.linked_shell && self.rules.linked_shell.is_some() {
+                capabilities.alpha *= 0.32;
+                capabilities.inline_opacity = Some(capabilities.alpha);
+            }
+        }
+        Some(ModelCellPresentation {
+            model,
+            skin,
+            capabilities,
+        })
+    }
+
     pub fn with_smooth_clients(mut self, enabled: bool) -> Self {
         self.smooth_clients = enabled;
         self

@@ -244,7 +244,10 @@ fn native_skins_resolve_once_for_each_profile_and_preserve_first_mapping() {
             Ok(skin)
         );
         let (assets, catalog) = builder.finish();
-        assert_eq!(catalog.skin_handle(b"models/test.skin"), Some(skin));
+        assert_eq!(
+            catalog.skin_handle(b"models/test.skin", RuleSetId::Quake3),
+            Some(skin)
+        );
         let mut profile_materials = Vec::new();
         for profile in profiles {
             let registration = catalog.renderer_registration(model, profile).unwrap();
@@ -362,6 +365,294 @@ fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader()
                 )
                 .unwrap()
                 .all(|binding| binding.material == qa_render::MaterialId(0))
+        );
+    }
+}
+
+#[test]
+fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
+    for skin_first in [false, true] {
+        let fixture = support::Fixture::models();
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let native = ModelRequest::native("", RuleSetId::Quake2, Some(palette));
+        let mut foreign = native;
+        foreign.rules = RuleSetId::Quake3;
+        foreign.palette = None;
+        foreign.image_settings =
+            qa_render::material::resources::ImageSettings::native(foreign.rules);
+        let profiles = [native.profile(), foreign.profile()];
+        let unavailable = ModelProfile {
+            source_palette: None,
+            palette: None,
+            ..native.profile()
+        };
+        let other_source = ModelProfile {
+            source_rules: RuleSetId::Quake3,
+            ..foreign.profile()
+        };
+        let mut builder = ModelCatalogBuilder::new(
+            assets,
+            profiles.into_iter().chain([unavailable, other_source]),
+            [],
+            Default::default(),
+        )
+        .unwrap();
+        let skin_path = b"models/test/skin1.pcx";
+        let first = skin_first.then(|| {
+            builder
+                .register_skin(&fixture.vfs, skin_path, RuleSetId::Quake3)
+                .unwrap()
+        });
+        let model = builder
+            .register_model(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
+            .unwrap();
+        let skin = first.unwrap_or_else(|| {
+            builder
+                .register_skin(&fixture.vfs, skin_path, RuleSetId::Quake2)
+                .unwrap()
+        });
+        assert!(skin > 0);
+        for source in [RuleSetId::Quake2, RuleSetId::Quake3] {
+            assert_eq!(
+                builder.register_skin(&fixture.vfs, skin_path, source),
+                Ok(skin)
+            );
+        }
+        assert_eq!(
+            builder.register_skin(&fixture.vfs, b"players/missing/skin.pcx", RuleSetId::Quake2),
+            Ok(0)
+        );
+        // Q3 permits a logical skin containing its default shader. That
+        // source's registration must not make native Q2 report success.
+        assert_eq!(
+            builder.register_skin(&fixture.vfs, b"players/missing/skin.pcx", RuleSetId::Quake2),
+            Ok(0)
+        );
+        let missing = builder
+            .skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3)
+            .unwrap();
+        fixture.remove("models/test/skin1.pcx");
+        assert_eq!(
+            builder.register_skin(&fixture.vfs, b"MODELS\\TEST\\SKIN1.PCX", RuleSetId::Quake2),
+            Ok(skin)
+        );
+        let (assets, catalog) = builder.finish();
+        assert_eq!(
+            catalog.skin_handle(skin_path, RuleSetId::Quake2),
+            Some(skin)
+        );
+        assert_eq!(
+            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake2),
+            Some(0)
+        );
+        assert_eq!(
+            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3),
+            Some(missing)
+        );
+        assert!(!catalog.renderer_skin(missing, native.profile()));
+        assert!(catalog.renderer_skin(skin, other_source));
+        assert!(!catalog.renderer_skin(skin, unavailable));
+        assert!(!catalog.renderer_skin(0, native.profile()));
+        for profile in profiles {
+            assert!(catalog.renderer_skin(skin, profile));
+            let registration = catalog.renderer_registration(model, profile).unwrap();
+            let base = catalog
+                .bindings(registration, 0, Default::default())
+                .unwrap()
+                .next()
+                .unwrap();
+            let mut variants = Vec::new();
+            for translucent in [false, true] {
+                for fullbright in [false, true] {
+                    let binding = catalog
+                        .bindings(
+                            registration,
+                            0,
+                            ModelMaterialPolicy {
+                                custom_skin: skin,
+                                translucent,
+                                fullbright,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap()
+                        .next()
+                        .unwrap();
+                    assert_eq!(binding.model, base.model);
+                    assert_ne!(binding.material, base.material);
+                    let material = assets.material(binding.material).unwrap();
+                    assert_eq!(
+                        material.settings.software_alias.is_some(),
+                        profile.rules == RuleSetId::Quake2
+                    );
+                    let stage = &material.stages[0];
+                    assert_eq!(stage.alpha_gen, AlphaGen::Entity);
+                    assert_eq!(
+                        stage.rgb_gen,
+                        if fullbright {
+                            RgbGen::Identity
+                        } else {
+                            RgbGen::LightingDiffuse
+                        }
+                    );
+                    assert_eq!(stage.blend, translucent.then_some(StageBlend::ALPHA));
+                    assert_eq!(stage.depth_write, !translucent);
+                    if profile.rules == RuleSetId::Quake2 {
+                        let StageTexture::Image(image) = stage.texture else {
+                            panic!("bitmap skin image")
+                        };
+                        assert_eq!(
+                            assets
+                                .image(image)
+                                .unwrap()
+                                .indexed
+                                .as_ref()
+                                .unwrap()
+                                .mip(0)
+                                .unwrap()
+                                .indices()[0],
+                            22
+                        );
+                    }
+                    assert!(!variants.contains(&binding.material));
+                    variants.push(binding.material);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn missing_authored_md2_skins_keep_the_mesh_and_allow_custom_skin_override() {
+    for missing in [0, 1] {
+        let present = if missing == 0 {
+            "models/test/skin1.pcx"
+        } else {
+            "models/test/skin0.pcx"
+        };
+        let fixture = support::Fixture::new(&[
+            ("models/test/tris.md2", support::md2()),
+            (present, support::pcx(if missing == 0 { 22 } else { 11 })),
+        ]);
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let profile = native_profile(RuleSetId::Quake2, palette);
+        let mut builder =
+            ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap();
+        let model = builder
+            .register_model(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
+            .unwrap();
+        let custom_path = if missing == 0 {
+            b"models/test/skin1.pcx"
+        } else {
+            b"models/test/skin0.pcx"
+        };
+        let custom_skin = builder
+            .register_skin(&fixture.vfs, custom_path, RuleSetId::Quake2)
+            .unwrap();
+        assert!(model > 0 && custom_skin > 0);
+        let (assets, catalog) = builder.finish();
+        let registration = catalog.renderer_registration(model, profile).unwrap();
+        let material_image = |skin, custom_skin| {
+            let binding = catalog
+                .bindings(
+                    registration,
+                    skin,
+                    ModelMaterialPolicy {
+                        custom_skin,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .next()
+                .unwrap();
+            assert_eq!(assets.model(binding.model).unwrap().frame_count(), 2);
+            let StageTexture::Image(image) =
+                assets.material(binding.material).unwrap().stages[0].texture
+            else {
+                panic!("MD2 skin image")
+            };
+            image
+        };
+        let fallback = material_image(missing, 0);
+        if missing == 1 {
+            // ref_gl first falls back to authored skin zero.
+            assert_eq!(fallback, material_image(0, 0));
+        } else {
+            let image = assets.image(fallback).unwrap();
+            assert_eq!((image.width, image.height), (8, 8));
+            assert_eq!(&image.rgba[(1 * 8 + 2) * 4..][..4], &[255, 0, 0, 255]);
+            assert_eq!(&image.rgba[..4], &[0, 0, 0, 255]);
+            let texture = image.indexed.as_ref().unwrap();
+            assert!(!texture.cutout());
+            for mip in 0..4 {
+                let mip = texture.mip(mip).unwrap();
+                assert_eq!(mip.indices()[0], 255);
+                assert_eq!(mip.indices()[mip.width as usize / 2], 0);
+            }
+        }
+        let custom = material_image(missing, custom_skin);
+        assert_eq!(custom, material_image(1 - missing, 0));
+        if missing == 0 {
+            assert_ne!(custom, fallback);
+        }
+    }
+}
+
+#[test]
+fn native_software_missing_md2_skins_skip_only_the_unskinned_draw() {
+    let fixture = support::Fixture::new(&[
+        (
+            "players/male/tris.md2",
+            support::md2_quad_skin(b"players/male/missing.pcx"),
+        ),
+        ("players/male/grunt.pcx", support::pcx(22)),
+    ]);
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let profile = native_profile(source, palette);
+        let mut builder =
+            ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap();
+        let model = builder
+            .register_model(&fixture.vfs, b"players/male/tris.md2", source)
+            .unwrap();
+        let custom_skin = builder
+            .register_skin(&fixture.vfs, b"players/male/grunt.pcx", source)
+            .unwrap();
+        assert!(model > 0 && custom_skin > 0);
+        let (assets, catalog) = builder.finish();
+        let registration = catalog.renderer_registration(model, profile).unwrap();
+        let binding = |custom_skin| {
+            catalog
+                .bindings(
+                    registration,
+                    0,
+                    ModelMaterialPolicy {
+                        custom_skin,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .next()
+                .unwrap()
+        };
+        let (pixels, stats) = render_indexed(&assets, binding(0), palette);
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.triangles, 0);
+        assert!(
+            pixels
+                .iter()
+                .all(|&pixel| pixel == u32::from_le_bytes([3, 5, 7, 255]))
+        );
+        let (pixels, stats) = render_indexed(&assets, binding(custom_skin), palette);
+        assert_eq!(stats.rejected, 0);
+        assert!(stats.triangles > 0);
+        assert!(
+            pixels
+                .iter()
+                .any(|&pixel| pixel != u32::from_le_bytes([3, 5, 7, 255]))
         );
     }
 }
@@ -1674,6 +1965,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
                 assert_eq!(stage.depth_write, !translucent);
                 let expected = matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
                     .then_some(SoftwareAlias {
+                        missing_skin: false,
                         infrared_map: qa_gameplay::rules::appearance::model_presentation(rules)
                             .infrared_map,
                         fullbright_light: fullbright.then_some([128.0, 64.0]),

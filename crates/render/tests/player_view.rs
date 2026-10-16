@@ -263,6 +263,7 @@ fn infrared_changes_only_eligible_models_with_native_indexed_and_rgb_paths() {
                 MaterialSettings {
                     cull: Cull::None,
                     software_alias: Some(SoftwareAlias {
+                        missing_skin: false,
                         infrared_map: Some(&TEST_MAP),
                         fullbright_light: None,
                         alpha_cutoffs: None,

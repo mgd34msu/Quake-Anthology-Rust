@@ -939,6 +939,13 @@ impl CpuBackend {
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
+        if material
+            .settings
+            .software_alias
+            .is_some_and(|alias| alias.missing_skin)
+        {
+            return;
+        }
         let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;

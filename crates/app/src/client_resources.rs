@@ -595,6 +595,9 @@ impl ResourceState {
         }
         match self.configs.set(index, text) {
             Ok(changed) => {
+                if changed {
+                    self.models.config_received(index);
+                }
                 if changed && let Some(catalog) = catalog {
                     self.rejected +=
                         u64::from(!self.models.config_changed(index, &self.configs, catalog));
@@ -655,26 +658,7 @@ pub struct ModelName {
     pub revision: u64,
     pub source: RuleSetId,
 }
-pub(crate) struct ModelInput {
-    pub ordinal: u32,
-    pub player: bool,
-    pub translucent: bool,
-}
-pub(crate) fn model_input(source: RuleSetId, ordinal: u32, usage: Option<ModelUse>) -> ModelInput {
-    let player = ordinal == 255
-        && matches!(usage, Some(ModelUse::Entity(0 | 1)))
-        && matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease);
-    let translucent = !player
-        && source == RuleSetId::Quake2
-        && usage == Some(ModelUse::Entity(1))
-        && ordinal <= u8::MAX as u32
-        && ordinal & 0x80 != 0;
-    ModelInput {
-        ordinal: if translucent { ordinal & 0x7f } else { ordinal },
-        player,
-        translucent,
-    }
-}
+use qa_gameplay::rules::appearance::{ModelInput, model_input};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelProjection {
     Pending,
@@ -1074,26 +1058,36 @@ impl ConfigPublication {
                 if reference.ordinal >= ConfigLayout::for_rules(source.source).resources[0].count {
                     return Unsupported;
                 }
-                let input = model_input(source.source, reference.ordinal, Some(usage));
-                translucent = input.translucent;
-                if input.player {
-                    return if primary
-                        && matches!(layout.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
-                    {
-                        Ready(255)
-                    } else {
-                        Unsupported
-                    };
-                }
+                let input = match model_input(source.source, reference.ordinal, Some(usage)) {
+                    ModelInput::Player => {
+                        return if primary
+                            && matches!(
+                                layout.rules,
+                                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+                            ) {
+                            Ready(255)
+                        } else {
+                            Unsupported
+                        };
+                    }
+                    ModelInput::Resource(ordinal) => {
+                        translucent = false;
+                        ordinal
+                    }
+                    ModelInput::LinkedTranslucent(ordinal) => {
+                        translucent = true;
+                        ordinal
+                    }
+                };
                 let Some(name) = source.name else {
                     return Unsupported;
                 };
                 if primary
-                    && self.primary_model_fits(input.ordinal)
-                    && cell_fits(input.ordinal, translucent)
-                    && self.models.get(input.ordinal) == Some(name)
+                    && self.primary_model_fits(input)
+                    && cell_fits(input, translucent)
+                    && self.models.get(input) == Some(name)
                 {
-                    input.ordinal
+                    input
                 } else if let Some(ordinal) = self
                     .models
                     .ordinal(name)
@@ -1109,15 +1103,21 @@ impl ConfigPublication {
                 }
             }
             ResourceNamespace::Client(owner) if owner == client => {
-                let input = model_input(layout.rules, reference.ordinal, Some(usage));
-                if input.player {
-                    return Ready(255);
-                }
-                translucent = input.translucent;
-                if self.models.get(input.ordinal).is_none() {
+                let input = match model_input(layout.rules, reference.ordinal, Some(usage)) {
+                    ModelInput::Player => return Ready(255),
+                    ModelInput::Resource(ordinal) => {
+                        translucent = false;
+                        ordinal
+                    }
+                    ModelInput::LinkedTranslucent(ordinal) => {
+                        translucent = true;
+                        ordinal
+                    }
+                };
+                if self.models.get(input).is_none() {
                     return Unsupported;
                 }
-                input.ordinal
+                input
             }
             ResourceNamespace::Client(_) => return Unsupported,
         };

@@ -845,6 +845,7 @@ fn run() -> Result<(), String> {
             Duration::from_secs(10),
         )?;
     }
+    host.register_client_model_assets();
     let (mut assets, models) = host
         .runtime
         .model_loader

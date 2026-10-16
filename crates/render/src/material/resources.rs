@@ -138,6 +138,9 @@ pub struct ImageConflict {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
+    MissingSkin {
+        palette: Option<PaletteId>,
+    },
     Lmp {
         palette: PaletteId,
         transparent_index: Option<u8>,
@@ -549,6 +552,54 @@ impl<'a> Images<'a> {
     }
     pub fn raster_target(&self) -> Option<IndexedTarget> {
         self.state.raster_target
+    }
+    /// Native alias fallback: ref_gl's opaque red dot image and ref_soft's
+    /// 0/255 checker retain independent representations in the same resource.
+    pub fn missing_skin(&mut self, palette: Option<PaletteId>) -> Result<ImageId, ResourceError> {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name("*missing-skin")
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::MissingSkin { palette },
+        };
+        if let Some(index) = self.find(key) {
+            return Ok(self.state.resolved[index].1.id);
+        }
+        // quake-2/ref_gl/gl_rmisc.c R_InitParticleTexture uses this 4x4
+        // portion of dottexture, indexed [x&3][y&3], for r_notexture.
+        const DOT: [[u8; 4]; 4] = [[0, 0, 0, 0], [0, 0, 1, 1], [0, 1, 1, 1], [0, 1, 1, 1]];
+        let mut rgba = [0; 8 * 8 * 4];
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            let (x, y) = (index % 8, index / 8);
+            pixel.copy_from_slice(&[DOT[x & 3][y & 3] * 255, 0, 0, 255]);
+        }
+        let id = if let Some(palette) = palette {
+            // ref_soft/r_main.c R_InitTextures preserves four checker mips.
+            let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| {
+                let width = 16 >> mip;
+                (0..width * width)
+                    .map(|index| {
+                        if (index / width < width / 2) ^ (index % width < width / 2) {
+                            0
+                        } else {
+                            255
+                        }
+                    })
+                    .collect()
+            });
+            let texture = IndexedTexture::load(16, 16, mips.each_ref().map(Vec::as_slice), false)
+                .map_err(ResourceError::Asset)?;
+            self.register_indexed_rgba(8, 8, &rgba, texture, palette)?
+        } else {
+            self.assets
+                .register_image(8, 8, &rgba)
+                .map_err(ResourceError::Asset)?
+        };
+        let usage = ImageUse::default();
+        self.prepare(id, usage, None)?;
+        self.remember(key, id, usage);
+        Ok(id)
     }
     fn remap_texture(
         &mut self,

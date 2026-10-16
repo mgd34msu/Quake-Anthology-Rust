@@ -228,6 +228,7 @@ fn q2_alias_policy_keeps_native_alpha_cutoffs_map_order_and_depth_writes() {
         assets.image(image).unwrap(),
         &prepared,
         Some(SoftwareAlias {
+            missing_skin: false,
             infrared_map: None,
             fullbright_light: None,
             alpha_cutoffs: Some([0.33, 0.66]),
@@ -302,6 +303,7 @@ fn q2_alias_fullbright_retains_native_clamps_and_the_supplied_local_direction() 
         assets.image(image).unwrap(),
         &prepared,
         Some(SoftwareAlias {
+            missing_skin: false,
             infrared_map: None,
             fullbright_light: Some([128.0, 64.0]),
             alpha_cutoffs: None,

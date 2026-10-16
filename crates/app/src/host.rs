@@ -265,6 +265,7 @@ pub struct FrameHost {
     zombie_time: CvarHandle,
     fov: CvarHandle,
     q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
+    pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     software_waterwarp: qa_console::cvars::View,
     userinfo: Box<[ClientUserinfo]>,
     lighting_scales: [CvarHandle; 2],
@@ -486,6 +487,11 @@ impl FrameHost {
             .bind("deathmatch", q2_context)
             .zip(console.cvars.bind("dmflags", q2_context))
             .ok_or("missing Q2 FOV policy cvars")?;
+        let player_model_options = console
+            .cvars
+            .bind("cl_noskins", q2_context)
+            .zip(console.cvars.bind("cl_vwep", q2_context))
+            .ok_or("missing player model cvars")?;
         let software_waterwarp = console
             .cvars
             .bind("sw_waterwarp", q2_context)
@@ -582,6 +588,7 @@ impl FrameHost {
             zombie_time,
             fov,
             q2_fov,
+            player_model_options,
             software_waterwarp,
             userinfo: (0..SeatId::COUNT)
                 .map(|_| ClientUserinfo::default())
@@ -741,6 +748,7 @@ impl FrameHost {
             self.dispatch_output(source, &mut result);
             return result;
         }
+        self.register_client_model_assets();
         let client = Stopwatch::start();
         let command_times = std::array::from_fn(|seat| {
             self.local_clients[seat]

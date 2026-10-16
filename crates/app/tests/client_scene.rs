@@ -58,6 +58,170 @@ fn reference(client: ClientId) -> ModelRef {
 }
 
 #[test]
+fn native_linked_model_cells_keep_their_own_skin_alpha_and_draw_properties() {
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let (_fixture, assets, catalog, profile) = catalog(rules);
+        let protocol = if rules == RuleSetId::Quake2 {
+            Protocol::Quake2_34
+        } else {
+            Protocol::Quake2Repro1038
+        };
+        let layout = ConfigLayout::for_rules(rules);
+        let mut configs =
+            ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
+                .unwrap();
+        // Classic 130 is a translucent reference to2. Rerelease130 is an
+        // ordinary resource; neither source changes the linked skin reset.
+        let linked = if rules == RuleSetId::Quake2 { 2 } else { 130 };
+        for ordinal in [50, linked, 3, 4] {
+            configs
+                .set(
+                    layout.resources[0].get(ordinal).unwrap(),
+                    b"models/test/tris.md2",
+                )
+                .unwrap();
+        }
+        let client = ClientId(0);
+        let namespace = ResourceNamespace::Client(client);
+        let mut bindings = ClientModelBindings::load(client, layout);
+        assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
+        let mut record = EntityRecord {
+            position: Vec3([32., 0., 0.]),
+            appearance: EntityAppearance {
+                source: rules,
+                models: [50, 130, 3, 4].map(|ordinal| ModelRef::native(namespace, ordinal)),
+                frame: 1,
+                skin: 1,
+                alpha: 0.6,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        record.appearance.native.render_flags = 8 | 16 | 32 | 64 | 0x8000;
+        let projection = EntityProjection::load(protocol);
+        let player_projection = PlayerProjection::load(protocol, &[]);
+        let mut classic = [Entity {
+            number: 12,
+            words: [0; states::Q2_ENTITY_WORDS],
+        }];
+        let mut rerelease = [Entity {
+            number: 12,
+            words: [0; states::Q2_RERELEASE_ENTITY_WORDS],
+        }];
+        let words: &mut [u32] = if rules == RuleSetId::Quake2 {
+            &mut classic[0].words
+        } else {
+            &mut rerelease[0].words
+        };
+        assert!(projection.reduce(
+            &record,
+            &Default::default(),
+            words,
+            |reference, _| Some(reference.ordinal),
+            |_| None,
+            |reference| Some(reference.ordinal())
+        ));
+        let mut accepted = EntityRecord::default();
+        assert!(projection.apply(words, &mut accepted, namespace));
+        let classic_player = [0; states::Q2_PLAYER_WORDS];
+        let rerelease_player = [0; states::Q2_REPRO_PLAYER_WORDS];
+        let current = if rules == RuleSetId::Quake2 {
+            ReceivedFrame::Quake2(Frame {
+                sequence: 1,
+                time: ThinkTime::Milliseconds(100),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                qw_dead: 0,
+                areas: &[],
+                player: &classic_player,
+                entities: &classic,
+            })
+        } else {
+            ReceivedFrame::Quake2Repro(Frame {
+                sequence: 1,
+                time: ThinkTime::Milliseconds(100),
+                command: 0,
+                flags: 0,
+                qw_peers: 0,
+                qw_dead: 0,
+                areas: &[],
+                player: &rerelease_player,
+                entities: &rerelease,
+            })
+        };
+        let player = PlayerState::default();
+        let retained = [bindings.capture_static(accepted, &configs, Some(&catalog), None)];
+        let registration = catalog
+            .registration("models/test/tris.md2", profile)
+            .unwrap();
+        for static_record in [false, true] {
+            let input = ClientSceneInput {
+                client,
+                current: (!static_record).then_some(current),
+                previous: None,
+                projection: &projection,
+                appearance: qa_gameplay::rules::appearance::policy(rules),
+                player_projection: &player_projection,
+                bindings: &bindings,
+                models: &catalog,
+                static_entities: if static_record { &retained } else { &[] },
+                player: &player,
+                weapon_view_angles: Vec3::default(),
+                alias_roll: AliasRoll::default(),
+                interpolation: Default::default(),
+                gun_animation: None,
+                gun_previous: None,
+                view_entity: None,
+            };
+            let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+            let mut frame = frontend.begin_frame([0; 4]).unwrap();
+            let counts = input.append(&mut frame, &assets, &Refdef::default(), true, None);
+            assert_eq!(
+                (counts.models, counts.missing_models, counts.rejected),
+                (4, 0, 0),
+                "{rules:?} static={static_record}"
+            );
+            let packet = frame.finish();
+            for slot in 0..4 {
+                let entity = packet.entity(slot);
+                let alpha = if rules == RuleSetId::Quake2 {
+                    [0., 0.32, 1., 1.][slot as usize]
+                } else {
+                    0.6
+                };
+                assert_eq!(entity.alpha, Some(alpha), "{rules:?} slot{slot}");
+                assert_eq!(entity.depth_hack, slot == 0);
+                assert_eq!(entity.infrared_visible, slot == 0);
+                let expected = catalog
+                    .bindings(
+                        registration,
+                        if slot == 0 { 1 } else { 0 },
+                        ModelMaterialPolicy {
+                            translucent: alpha != 1.,
+                            fullbright: slot == 0,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+                    .next()
+                    .unwrap();
+                assert_eq!(
+                    entity.material,
+                    Some(expected.material),
+                    "{rules:?} slot{slot}"
+                );
+                assert_eq!(entity.model, expected.model.into());
+                assert_eq!(
+                    entity.previous_origin.is_some(),
+                    rules == RuleSetId::Quake2 && slot == 0
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
     let fixture = support::Fixture::new(&[
         ("sprites/test.sp2", support::sp2()),

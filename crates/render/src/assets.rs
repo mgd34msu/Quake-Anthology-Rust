@@ -242,6 +242,9 @@ impl Default for CubeSkyParams {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoftwareAlias {
+    /// Native software skips an absent authored alias skin; GL retains its
+    /// skin-zero or missing-image fallback on the same material.
+    pub missing_skin: bool,
     /// Native infrared palette-index substitution, selected by presentation.
     pub infrared_map: Option<&'static [u8; 256]>,
     /// Native fullbright aliases retain their software ambient/shade clamps.

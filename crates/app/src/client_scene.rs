@@ -13,7 +13,8 @@ use qa_core::{
     },
 };
 use qa_gameplay::rules::appearance::{
-    AliasPose, AliasRoll, AppearanceCapabilities, AppearancePolicy, WeaponInterpolation,
+    AliasPose, AliasRoll, AppearanceCapabilities, AppearancePolicy, ModelFeatures, ModelInput,
+    WeaponInterpolation,
 };
 use qa_network::{
     projection::{EntityProjection, EntityRecord, PlayerProjection},
@@ -42,17 +43,23 @@ enum ClientModel {
 }
 
 #[derive(Clone, Copy)]
-enum StaticModel {
+enum ModelCapture {
     Bound(ClientModel),
     Registered {
         handle: i32,
         presentation: Option<WorldPresentationId>,
     },
 }
+#[derive(Clone, Copy)]
+struct CapturedModel {
+    model: ModelCapture,
+    custom_skin: i32,
+    features: ModelFeatures,
+}
 #[derive(Clone, Copy, Default)]
 pub struct StaticEntity {
     pub record: EntityRecord,
-    models: [Option<StaticModel>; 4],
+    models: [Option<CapturedModel>; 4],
 }
 impl std::ops::Deref for StaticEntity {
     type Target = EntityRecord;
@@ -90,6 +97,9 @@ impl Iterator for SceneBindings<'_> {
     }
 }
 
+mod player_models;
+pub(crate) use player_models::PlayerModelOptions;
+
 /// Only derived numeric asset bindings live here. Accepted entity values and
 /// history remain in the connection's existing snapshot ring.
 pub struct ClientModelBindings {
@@ -99,6 +109,8 @@ pub struct ClientModelBindings {
     world: Option<(qa_compat::services::LoadedWorldBinding, WorldPresentationId)>,
     revision: u64,
     registrations: Box<[Option<ClientModel>]>,
+    features: Box<[ModelFeatures]>,
+    players: Option<player_models::PlayerBindings>,
     colors: Option<crate::model_assets::ModelColorId>,
 }
 impl ClientModelBindings {
@@ -111,6 +123,8 @@ impl ClientModelBindings {
             world: None,
             revision: 0,
             registrations: vec![None; range.count as usize].into_boxed_slice(),
+            features: vec![ModelFeatures::default(); range.count as usize].into_boxed_slice(),
+            players: player_models::PlayerBindings::load(layout),
             colors: None,
         }
     }
@@ -121,6 +135,10 @@ impl ClientModelBindings {
         self.profile = None;
         self.world = None;
         self.registrations.fill(None);
+        self.features.fill(ModelFeatures::default());
+        if let Some(players) = &mut self.players {
+            players.clear();
+        }
         self.colors = None;
     }
 
@@ -156,11 +174,20 @@ impl ClientModelBindings {
         models: &ModelCatalog,
     ) -> bool {
         if !self.range.contains(index) {
-            return true;
+            return if self
+                .players
+                .as_ref()
+                .is_some_and(|players| players.contains(index))
+            {
+                self.refresh_player_models(configs, models) == 0
+            } else {
+                true
+            };
         }
         let ordinal = index - self.range.first as usize;
         self.revision = self.revision.wrapping_add(1);
         self.registrations[ordinal] = None;
+        self.features[ordinal] = ModelFeatures::default();
         let Some(row) = configs.config(index) else {
             return false;
         };
@@ -170,6 +197,15 @@ impl ClientModelBindings {
         let Ok(path) = std::str::from_utf8(row.text) else {
             return false;
         };
+        if self.players.is_some() && path.starts_with('#') {
+            return true;
+        }
+        let source = self
+            .players
+            .as_ref()
+            .map_or(RuleSetId::Quake3, |players| players.source());
+        self.features[ordinal] =
+            qa_gameplay::rules::appearance::policy(source).model_features(row.text);
         if path.starts_with('*') {
             let Some((world, presentation)) = self.world else {
                 return false;
@@ -233,9 +269,10 @@ impl ClientModelBindings {
     /// A new accepted gamestate replaces rows without changing the loaded
     /// presentation profile or world binding.
     pub(crate) fn refresh_all(&mut self, configs: &ConfigStrings, models: &ModelCatalog) -> u32 {
-        self.range.range().fold(0, |missing, index| {
+        let missing = self.range.range().fold(0, |missing, index| {
             missing + u32::from(!self.config_changed(index, configs, models))
-        })
+        });
+        missing + self.refresh_player_models(configs, models) as u32
     }
 
     pub fn resolve<'a>(
@@ -308,6 +345,28 @@ impl ClientModelBindings {
             models.renderer_registration(handle, self.profile?)?,
         ))
     }
+    fn binding_features(
+        &self,
+        reference: ModelRef,
+        source: RuleSetId,
+        cell: usize,
+    ) -> ModelFeatures {
+        if reference.namespace != ResourceNamespace::Client(self.client) {
+            return ModelFeatures::default();
+        }
+        match qa_gameplay::rules::appearance::model_input(
+            source,
+            reference.ordinal,
+            Some(qa_core::primitives::ModelUse::Entity(cell)),
+        ) {
+            ModelInput::Resource(ordinal) | ModelInput::LinkedTranslucent(ordinal) => self
+                .features
+                .get(ordinal as usize)
+                .copied()
+                .unwrap_or_default(),
+            ModelInput::Player => ModelFeatures::default(),
+        }
+    }
     pub fn capture_static(
         &self,
         record: EntityRecord,
@@ -320,16 +379,32 @@ impl ClientModelBindings {
             if reference.namespace != ResourceNamespace::Client(self.client) {
                 return None;
             }
-            if let Some(binding) = self
-                .registrations
-                .get(reference.ordinal as usize)
-                .copied()
-                .flatten()
+            let policy = qa_gameplay::rules::appearance::policy(record.appearance.source);
+            let ordinal = match policy
+                .model_cell(
+                    &record.appearance,
+                    slot,
+                    policy.project(&record.appearance),
+                    ModelFeatures::default(),
+                )?
+                .model
             {
-                return Some(StaticModel::Bound(binding));
+                ModelInput::Resource(ordinal) | ModelInput::LinkedTranslucent(ordinal) => ordinal,
+                ModelInput::Player => return self.player_model(record.appearance.skin, slot),
+            };
+            if let Some(binding) = self.registrations.get(ordinal as usize).copied().flatten() {
+                return Some(CapturedModel {
+                    model: ModelCapture::Bound(binding),
+                    custom_skin: 0,
+                    features: self
+                        .features
+                        .get(ordinal as usize)
+                        .copied()
+                        .unwrap_or_default(),
+                });
             }
             let lookup = lookup?;
-            let row = configs.config(self.range.get(reference.ordinal as usize)?)?;
+            let row = configs.config(self.range.get(ordinal as usize)?)?;
             if row.text.is_empty() {
                 return None;
             }
@@ -343,39 +418,55 @@ impl ClientModelBindings {
             } else {
                 (lookup.file_handle(row.text)?, None)
             };
-            Some(StaticModel::Registered {
-                handle,
-                presentation,
+            Some(CapturedModel {
+                model: ModelCapture::Registered {
+                    handle,
+                    presentation,
+                },
+                custom_skin: 0,
+                features: policy.model_features(row.text),
             })
         });
         StaticEntity { record, models }
     }
-    pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
-        for slot in &mut entity.models {
-            if let Some(StaticModel::Registered {
+    fn complete_capture(
+        &self,
+        capture: CapturedModel,
+        models: &ModelCatalog,
+    ) -> Option<CapturedModel> {
+        let model = match capture.model {
+            ModelCapture::Bound(model) => model,
+            ModelCapture::Registered {
                 handle,
                 presentation,
-            }) = *slot
-            {
-                *slot = self
-                    .registered_static(handle, presentation, models)
-                    .map(StaticModel::Bound);
-            }
+            } => self.registered_static(handle, presentation, models)?,
+        };
+        if capture.custom_skin != 0 && !models.renderer_skin(capture.custom_skin, self.profile?) {
+            return None;
+        }
+        Some(CapturedModel {
+            model: ModelCapture::Bound(model),
+            ..capture
+        })
+    }
+    pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
+        for slot in &mut entity.models {
+            *slot = slot.and_then(|capture| self.complete_capture(capture, models));
         }
     }
     fn resolve_static<'a>(
         &self,
-        binding: StaticModel,
+        binding: CapturedModel,
         skin: i32,
         models: &'a ModelCatalog,
-        policy: ModelMaterialPolicy,
+        mut policy: ModelMaterialPolicy,
     ) -> Option<SceneBindings<'a>> {
-        let registration = match binding {
-            StaticModel::Bound(registration) => registration,
-            StaticModel::Registered {
-                handle,
-                presentation,
-            } => self.registered_static(handle, presentation, models)?,
+        if binding.custom_skin != 0 {
+            policy.custom_skin = binding.custom_skin;
+        }
+        let binding = self.complete_capture(binding, models)?;
+        let ModelCapture::Bound(registration) = binding.model else {
+            return None;
         };
         self.resolve_registration(registration, skin, models, policy)
     }
@@ -799,7 +890,7 @@ impl ClientSceneInput<'_> {
     fn append_presented(
         &self,
         pose: PresentedEntity,
-        captured: Option<&[Option<StaticModel>; 4]>,
+        captured: Option<&[Option<CapturedModel>; 4]>,
         number: Option<u32>,
         fraction: f32,
         frame: &mut Frame,
@@ -872,6 +963,26 @@ impl ClientSceneInput<'_> {
             let Some(reference) = *reference else {
                 continue;
             };
+            let features = captured
+                .and_then(|models| models[slot])
+                .map(|model| model.features)
+                .unwrap_or_else(|| {
+                    self.bindings
+                        .binding_features(reference, record.appearance.source, slot)
+                });
+            let Some(cell) =
+                self.appearance
+                    .model_cell(&record.appearance, slot, capabilities, features)
+            else {
+                continue;
+            };
+            let capabilities = cell.capabilities;
+            let normalized = match cell.model {
+                ModelInput::Resource(ordinal) | ModelInput::LinkedTranslucent(ordinal) => {
+                    ModelRef::native(reference.namespace, ordinal)
+                }
+                ModelInput::Player => None,
+            };
             let policy = ModelMaterialPolicy {
                 translucent: capabilities.alpha != 1.0,
                 fullbright: capabilities.fullbright,
@@ -880,16 +991,23 @@ impl ClientSceneInput<'_> {
             };
             let resolved = if let Some(captured) = captured {
                 captured[slot].and_then(|binding| {
-                    self.bindings.resolve_static(
-                        binding,
-                        record.appearance.skin,
-                        self.models,
-                        policy,
-                    )
+                    self.bindings
+                        .resolve_static(binding, cell.skin, self.models, policy)
                 })
             } else {
-                self.bindings
-                    .resolve_scene(reference, record.appearance.skin, self.models, policy)
+                if cell.model == ModelInput::Player {
+                    self.bindings
+                        .player_model(record.appearance.skin, slot)
+                        .and_then(|binding| {
+                            self.bindings
+                                .resolve_static(binding, cell.skin, self.models, policy)
+                        })
+                } else {
+                    normalized.and_then(|reference| {
+                        self.bindings
+                            .resolve_scene(reference, cell.skin, self.models, policy)
+                    })
+                }
             };
             let Some(bindings) = resolved else {
                 counts.missing_models += 1;

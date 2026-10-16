@@ -7,6 +7,48 @@ use qa_core::{
 };
 
 impl FrameHost {
+    pub fn register_client_model_assets(&mut self) {
+        let runtime = &mut self.runtime;
+        for (index, resources) in runtime.client_resources.iter_mut().enumerate() {
+            let Some(resources) = resources else { continue };
+            let source = self
+                .modules
+                .as_ref()
+                .and_then(|modules| modules.row(runtime.server.clients[index].module))
+                .map_or(resources.state.layout.rules, |module| {
+                    module.request.context.native_rules
+                });
+            resources
+                .state
+                .models
+                .player_options(crate::client_scene::PlayerModelOptions {
+                    no_skins: self.console.cvars.integer_in(
+                        self.player_model_options.0.canonical(),
+                        resources.state.layout.rules,
+                    ),
+                    visible_weapons: self.console.cvars.integer_in(
+                        self.player_model_options.1.canonical(),
+                        resources.state.layout.rules,
+                    ) != 0,
+                });
+            let rejected = if let Some(loader) = runtime.model_loader.as_mut() {
+                resources.state.models.register_player_models(
+                    &resources.state.configs,
+                    loader,
+                    &runtime.vfs,
+                    source,
+                )
+            } else if let Some(models) = runtime.models.as_deref() {
+                resources
+                    .state
+                    .models
+                    .refresh_player_models(&resources.state.configs, models)
+            } else {
+                0
+            };
+            resources.state.rejected += u64::from(rejected);
+        }
+    }
     /// Module renderer provenance is independent of the SERVER publisher's
     /// configstring profile. Bind it before CLIENT initialization freezes assets.
     pub fn configure_native_scenes(
@@ -791,15 +833,18 @@ impl super::Modules {
         let row = self.row(module).filter(|row| row.state == State::Running)?;
         let revision = self.storage.config_revision(module).ok()?;
         let source = row.request.context.native_rules;
-        let input = crate::client_resources::model_input(source, ordinal, usage);
-        if input.player {
-            return Some(crate::client_resources::ModelName {
-                name: None,
-                revision,
-                source,
-            });
-        }
-        let name = self.storage.bound_model_name(module, input.ordinal)?;
+        use qa_gameplay::rules::appearance::{ModelInput, model_input};
+        let ordinal = match model_input(source, ordinal, usage) {
+            ModelInput::Player => {
+                return Some(crate::client_resources::ModelName {
+                    name: None,
+                    revision,
+                    source,
+                });
+            }
+            ModelInput::Resource(ordinal) | ModelInput::LinkedTranslucent(ordinal) => ordinal,
+        };
+        let name = self.storage.bound_model_name(module, ordinal)?;
         let text = self.storage.resource_name(name)?;
         if text.starts_with(b"*") && (destination.is_none() || row.geometry != destination) {
             return None;

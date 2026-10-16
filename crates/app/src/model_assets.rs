@@ -8,7 +8,9 @@ use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
 use qa_render::assets::{ImageId, MaterialSettings, SoftwareAlias, Stage, StageTexture};
-use qa_render::material::resources::{ImageSettings, ImageUse, Images, ImagesState, IndexedTarget};
+use qa_render::material::resources::{
+    ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResourceError,
+};
 use qa_render::shader::{
     AlphaFunc, AlphaGen, Cull, DepthFunc, RgbGen, ShaderCatalog, ShaderDef, ShaderStage,
     StageBlend, TexCoordGen, TextureMap,
@@ -184,7 +186,9 @@ impl Iterator for ModelBindings<'_> {
             binding.material = custom
                 .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
                 .ok()
-                .map_or(MaterialId(0), |index| custom[index].material);
+                .map_or(MaterialId(0), |index| {
+                    custom[index].materials[self.policy.index()]
+                });
         }
         Some(binding)
     }
@@ -243,8 +247,20 @@ struct ShaderProfileBinding {
     material: Option<MaterialId>,
 }
 struct RegisteredSkin {
-    ready: bool,
     profiles: Vec<SkinProfile>,
+}
+impl RegisteredSkin {
+    fn source_handle(&self, handle: i32, source: RuleSetId) -> i32 {
+        if self
+            .profiles
+            .iter()
+            .any(|entry| entry.profile.source_rules == source)
+        {
+            handle
+        } else {
+            0
+        }
+    }
 }
 struct SkinProfile {
     profile: ModelProfile,
@@ -253,7 +269,7 @@ struct SkinProfile {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SkinMapping {
     surface: NameId,
-    material: MaterialId,
+    materials: [MaterialId; 4],
 }
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
@@ -352,20 +368,19 @@ impl ModelProfile {
     }
 }
 impl ProfileImages {
-    fn compile(
+    fn with_images<T>(
         &mut self,
         vfs: &Vfs,
         assets: &mut Assets,
-        definition: Result<&ShaderDef, String>,
-    ) -> Result<MaterialId, String> {
+        compile: impl FnOnce(&mut Images<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
         let Some(state) = self.state.take() else {
             return Err("shader image state already borrowed".to_owned());
         };
         match state {
             Ok(state) => {
                 let mut images = Images::from_state(vfs, assets, state);
-                let result =
-                    definition.and_then(|definition| compile_shader(definition, &mut images));
+                let result = compile(&mut images);
                 self.state = Some(Ok(images.into_state()));
                 result
             }
@@ -374,6 +389,16 @@ impl ProfileImages {
                 Err(error)
             }
         }
+    }
+    fn compile(
+        &mut self,
+        vfs: &Vfs,
+        assets: &mut Assets,
+        definition: Result<&ShaderDef, String>,
+    ) -> Result<MaterialId, String> {
+        self.with_images(vfs, assets, |images| {
+            definition.and_then(|definition| compile_shader(definition, images))
+        })
     }
 }
 
@@ -969,6 +994,7 @@ impl ModelCatalogBuilder {
             &self.skin_indices,
             &self.skins,
             path.as_bytes(),
+            source,
         ) {
             return Ok(handle);
         }
@@ -980,14 +1006,9 @@ impl ModelCatalogBuilder {
         let index = self.skins.len() as u32;
         self.skin_indices[group.0 as usize] = Some(index);
         self.skins.push(RegisteredSkin {
-            ready: false,
             profiles: Vec::new(),
         });
-        let profile_count = self
-            .profiles
-            .iter()
-            .filter(|entry| entry.profile.source_rules == source)
-            .count();
+        let profile_count = self.profiles.len();
         let maximum_rows =
             self.limits.skins.saturating_sub(self.capacity.skins) / profile_count.max(1);
         let skin_file = raw.ends_with(b".skin");
@@ -1035,45 +1056,68 @@ impl ModelCatalogBuilder {
             mappings.push((surface, definition));
         }
         let mut profiles = Vec::with_capacity(profile_count);
-        for images in self
-            .profiles
-            .iter_mut()
-            .filter(|entry| entry.profile.source_rules == source)
-        {
+        for images in &mut self.profiles {
+            let alias = !skin_file && images.model_policy.source.indexed_external_pcx;
             let mut compiled = Vec::with_capacity(mappings.len());
             for (surface, definition) in &mappings {
-                let material = match images.compile(
-                    vfs,
-                    &mut self.assets,
-                    definition.as_ref().map_err(Clone::clone),
-                ) {
-                    Ok(material) => material,
+                let result = if alias {
+                    let registration = Registration {
+                        path: path.clone(),
+                        profile: images.profile,
+                        required: false,
+                    };
+                    let model_policy = images.model_policy;
+                    images.with_images(vfs, &mut self.assets, |images| {
+                        let mut materials = alias_materials(
+                            &[Image::External(path.as_bytes())],
+                            images,
+                            &registration,
+                            model_policy,
+                            false,
+                        )?;
+                        materials
+                            .pop()
+                            .ok_or_else(|| "missing skin material".to_owned())
+                    })
+                } else {
+                    images
+                        .compile(
+                            vfs,
+                            &mut self.assets,
+                            definition.as_ref().map_err(Clone::clone),
+                        )
+                        .map(|material| [material; 4])
+                };
+                let materials = match result {
+                    Ok(materials) => materials,
                     Err(error) => {
                         self.diagnostics.push(ModelDiagnostic {
                             name,
                             profile: images.profile,
                             error,
                         });
-                        MaterialId(0)
+                        if alias {
+                            continue;
+                        }
+                        [MaterialId(0); 4]
                     }
                 };
                 compiled.push(SkinMapping {
                     surface: *surface,
-                    material,
+                    materials,
                 });
             }
             compiled.sort_by_key(|entry| entry.surface.0);
             compiled.dedup_by_key(|entry| entry.surface.0);
-            profiles.push(SkinProfile {
-                profile: images.profile,
-                mappings: compiled.into_boxed_slice(),
-            });
+            if !compiled.is_empty() {
+                profiles.push(SkinProfile {
+                    profile: images.profile,
+                    mappings: compiled.into_boxed_slice(),
+                });
+            }
         }
-        self.skins[index as usize] = RegisteredSkin {
-            ready: true,
-            profiles,
-        };
-        Ok(index as i32 + 1)
+        self.skins[index as usize] = RegisteredSkin { profiles };
+        Ok(self.skins[index as usize].source_handle(index as i32 + 1, source))
     }
 
     pub fn finish(self) -> (Assets, ModelCatalog) {
@@ -1129,6 +1173,7 @@ fn skin_handle(
     indices: &[Option<u32>],
     skins: &[RegisteredSkin],
     raw: &[u8],
+    source: RuleSetId,
 ) -> Option<i32> {
     if raw.is_empty() {
         return Some(0);
@@ -1136,11 +1181,8 @@ fn skin_handle(
     let group = names.find_path_bytes(raw)?;
     let group = names.folded(group)?;
     let index = indices.get(group.0 as usize).copied().flatten()?;
-    Some(if skins.get(index as usize)?.ready {
-        index as i32 + 1
-    } else {
-        0
-    })
+    let skin = skins.get(index as usize)?;
+    Some(skin.source_handle(index as i32 + 1, source))
 }
 fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<LoadedWorldBinding> {
     let ModelFile::LoadedWorld {
@@ -1350,8 +1392,8 @@ impl ModelLookup for ModelCatalogBuilder {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
-    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
-        skin_handle(&self.names, &self.skin_indices, &self.skins, name)
+    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
+        skin_handle(&self.names, &self.skin_indices, &self.skins, name, source)
     }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
@@ -1433,8 +1475,8 @@ impl ModelLookup for ModelCatalog {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
         file_lookup(&self.names, &self.files, path)?.bounds()
     }
-    fn skin_handle(&self, name: &[u8]) -> Option<i32> {
-        skin_handle(&self.names, &self.skin_indices, &self.skins, name)
+    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
+        skin_handle(&self.names, &self.skin_indices, &self.skins, name, source)
     }
     fn shader_handle(&self, name: &[u8]) -> Option<i32> {
         shader_handle(&self.names, &self.shader_indices, &self.shaders, name)
@@ -1538,6 +1580,15 @@ impl ModelCatalog {
     ) -> Option<ModelRegistrationId> {
         renderer_file(&self.files, handle, Some(profile.source_rules))?;
         self.registration_name(NameId(u32::try_from(handle).ok()?), profile)
+    }
+    /// A logical skin handle is usable only when its selected presentation
+    /// registered successfully. Other profiles cannot supply a fallback here.
+    pub fn renderer_skin(&self, handle: i32, profile: ModelProfile) -> bool {
+        handle
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.skins.get(index))
+            .is_some_and(|skin| skin.profiles.iter().any(|entry| entry.profile == profile))
     }
     fn registration_name(
         &self,
@@ -1736,6 +1787,7 @@ fn register(
             images,
             registration,
             model_policy,
+            model.format == ModelFormat::Md2,
         )?)
     };
     let mut surfaces = Vec::with_capacity(model.meshes.len());
@@ -1831,7 +1883,8 @@ fn register_sprites(
         if !matches!(sprite.image, Image::External(_)) {
             return Err("SP2 frame requires an external image".to_owned());
         }
-        let image = model_image(sprite.image, images, registration.profile, true, Some(255))?;
+        let image = model_image(sprite.image, images, registration.profile, true, Some(255))
+            .map_err(|error| format!("sprite image: {error:?}"))?;
         let mut variants = [MaterialId(0); 4];
         for material_policy in ModelMaterialPolicy::ALL {
             variants[material_policy.index()] = images.assets.register_material(
@@ -1892,7 +1945,7 @@ fn model_image(
     options: ModelProfile,
     indexed_external_pcx: bool,
     transparent: Option<u8>,
-) -> Result<ImageId, String> {
+) -> Result<ImageId, ResourceError> {
     let usage = ImageUse::default();
     Ok(match image {
         Image::Indexed {
@@ -1900,39 +1953,39 @@ fn model_image(
             height,
             pixels,
         } => {
-            let palette = options
-                .source_palette
-                .ok_or("indexed model requires a source palette")?;
-            let texture = IndexedTexture::load_base(width, height, pixels, transparent)?;
-            let image = images
-                .register_indexed(texture, palette)
-                .map_err(|error| format!("indexed skin: {error:?}"))?;
-            let params = images
-                .upload_params(usage)
-                .map_err(|error| format!("skin upload: {error:?}"))?;
-            images.assets.prepare_image(image, params)?;
+            let palette = options.source_palette.ok_or(ResourceError::Asset(
+                "indexed model requires a source palette",
+            ))?;
+            let texture = IndexedTexture::load_base(width, height, pixels, transparent)
+                .map_err(ResourceError::Asset)?;
+            let image = images.register_indexed(texture, palette)?;
+            let params = images.upload_params(usage)?;
             images
                 .assets
-                .set_image_native_sampler(image, usage.sampler)?;
+                .prepare_image(image, params)
+                .map_err(ResourceError::Asset)?;
+            images
+                .assets
+                .set_image_native_sampler(image, usage.sampler)
+                .map_err(ResourceError::Asset)?;
             image
         }
         Image::External(path) => {
-            let path = std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?;
+            let path = std::str::from_utf8(path)
+                .map_err(|_| ResourceError::Asset("skin path is not UTF-8"))?;
             if indexed_external_pcx
                 && qa_formats::image::ImageFormat::from_path(path.as_bytes())
                     == Some(qa_formats::image::ImageFormat::Pcx)
             {
-                images
-                    .indexed_pcx(
-                        path,
-                        options
-                            .source_palette
-                            .ok_or("PCX skin requires a source palette")?,
-                        transparent,
-                        None,
-                        usage,
-                    )
-                    .map_err(|error| format!("skin {path}: {error:?}"))?
+                images.indexed_pcx(
+                    path,
+                    options
+                        .source_palette
+                        .ok_or(ResourceError::Asset("PCX skin requires a source palette"))?,
+                    transparent,
+                    None,
+                    usage,
+                )?
             } else {
                 images
                     .raster(
@@ -1942,8 +1995,7 @@ fn model_image(
                             palette,
                             transparent_index: Some(255),
                         }),
-                    )
-                    .map_err(|error| format!("skin {path}: {error:?}"))?
+                    )?
                     .id
             }
         }
@@ -1955,17 +2007,33 @@ fn alias_materials(
     images: &mut Images<'_>,
     registration: &Registration,
     model_policy: ModelPolicy,
+    allow_missing: bool,
 ) -> Result<Vec<[MaterialId; 4]>, String> {
     let options = registration.profile;
     let mut materials = Vec::with_capacity(skins.len());
+    let mut default_image = None;
     for (index, skin) in skins.iter().enumerate() {
-        let image = model_image(
+        let result = model_image(
             *skin,
             images,
             options,
             model_policy.source.indexed_external_pcx,
             None,
-        )?;
+        );
+        let missing_skin = matches!(&result, Err(ResourceError::Missing(_)));
+        let image = match result {
+            Ok(image) => image,
+            Err(ResourceError::Missing(_)) if allow_missing => match default_image {
+                Some(image) => image,
+                None => images
+                    .missing_skin(options.source_palette.or(options.palette))
+                    .map_err(|error| format!("missing skin image: {error:?}"))?,
+            },
+            Err(error) => return Err(format!("skin: {error:?}")),
+        };
+        if index == 0 {
+            default_image = Some(image);
+        }
         let mut variants = [MaterialId(0); 4];
         for policy in ModelMaterialPolicy::ALL {
             variants[policy.index()] = images.assets.register_material(
@@ -1986,6 +2054,7 @@ fn alias_materials(
                     sort: if policy.translucent { 6.0 } else { 3.0 },
                     software_alias: model_policy.presentation.software_alias.then_some(
                         SoftwareAlias {
+                            missing_skin,
                             infrared_map: model_policy.presentation.infrared_map,
                             fullbright_light: policy
                                 .fullbright
