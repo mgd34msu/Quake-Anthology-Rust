@@ -43,6 +43,7 @@ impl FrameHost {
     ) {
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {
+            published |= self.prepare_received_hud(ClientId(index as u32), &mut preparer);
             if !self.prepare_received_world(ClientId(index as u32), &mut preparer) {
                 continue;
             }
@@ -99,6 +100,122 @@ impl FrameHost {
         if published {
             self.refresh_model_consumers();
         }
+    }
+
+    fn prepare_received_hud(
+        &mut self,
+        client: ClientId,
+        preparer: &mut Option<&mut dyn crate::renderer::AssetPreparer>,
+    ) -> bool {
+        let slot = client.0 as usize;
+        let Some(resources) = self.runtime.client_resources[slot].as_ref() else {
+            return false;
+        };
+        if !resources.state.hud_pending() {
+            return false;
+        }
+        let Some(binding) = self.runtime.snapshots[slot].as_ref() else {
+            return false;
+        };
+        let Some(seat) = binding.seat() else {
+            return false;
+        };
+        let Some((bound, row, _)) = self.local_seat(seat.index()) else {
+            return false;
+        };
+        let lifetime = row.entity;
+        let output = binding.output;
+        let rules = row.client_rules;
+        if bound != client
+            || row.connection != Some(qa_session::clients::Connection::Local)
+            || row.output != Some(output)
+            || self.runtime.server.entities.resolve(lifetime).is_none()
+        {
+            return false;
+        }
+        let Some(scene) = self.runtime.scene.as_mut() else {
+            return false;
+        };
+        if scene.has_hud(rules) {
+            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                resources.state.take_hud_attempt();
+            }
+            return false;
+        }
+        if resources.state.presentation_reset_pending()
+            || !scene.asset_stage_ready()
+            || self
+                .runtime
+                .model_assets
+                .as_ref()
+                .is_none_or(|owner| owner.initial_registration())
+        {
+            return false;
+        }
+        let Some(preparer) = preparer.as_deref_mut() else {
+            return false;
+        };
+        let Some([width, height]) = preparer.target_size() else {
+            return false;
+        };
+        if width == 0 || height == 0 {
+            return false;
+        }
+        let before = self
+            .runtime
+            .model_assets
+            .as_ref()
+            .map(|owner| owner.assets().counts());
+        let result = (|| {
+            let resources = self.runtime.client_resources[slot]
+                .as_mut()
+                .ok_or("missing CLIENT resources")?;
+            let epoch = resources.state.models.revision();
+            resources.state.take_hud_attempt();
+            let settings = crate::render_settings::image_settings(&self.console.cvars, rules)?;
+            let owner = self
+                .runtime
+                .model_assets
+                .as_mut()
+                .ok_or("missing model assets")?;
+            let reuse_font = scene.hud_font(rules);
+            let (append, _) = owner.prepare_hud(
+                &self.runtime.vfs,
+                rules,
+                settings,
+                width,
+                reuse_font,
+                |_, candidate| scene.stage_hud(candidate),
+                |assets, append| {
+                    if self.runtime.server.clients.get(slot).is_none_or(|row| {
+                        row.entity != lifetime
+                            || row.output != Some(output)
+                            || row.client_rules != rules
+                    }) || resources.state.models.revision() != epoch
+                    {
+                        return Err("CLIENT HUD admission lifetime changed".to_owned());
+                    }
+                    preparer.prepare_assets(assets, Some(append.limits()))
+                },
+            )?;
+            append.commit();
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = result {
+            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                resources.state.rejected += 1;
+            }
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("CLIENT {} HUD: {error}\n", client.0));
+        }
+        self.runtime
+            .model_assets
+            .as_ref()
+            .map(|owner| owner.assets().counts())
+            != before
     }
 
     fn prepare_received_world(
@@ -202,7 +319,7 @@ impl FrameHost {
             .runtime
             .scene
             .as_mut()
-            .is_none_or(|scene| !scene.world_stage_ready())
+            .is_none_or(|scene| !scene.asset_stage_ready())
         {
             return false;
         }

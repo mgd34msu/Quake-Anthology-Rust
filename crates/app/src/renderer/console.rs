@@ -8,7 +8,7 @@ use qa_render::{
     assets::{AlphaTest, DepthFunc, Filter, MaterialSettings, Sampler, Stage, StageTexture, Wrap},
     material::{
         self,
-        resources::{ImageSettings, ImageUse, Images, PaletteSource, load_palette},
+        resources::{ImageSettings, ImageUse, Images},
         world_load::compile_definition,
     },
     shader::{AlphaGen, Cull, RgbGen, StageBlend},
@@ -43,7 +43,7 @@ impl ConsoleAssets {
         vfs: &Vfs,
         assets: &mut Assets,
         rules: RuleSetId,
-        palette: Option<PaletteId>,
+        palettes: &mut crate::render_settings::PaletteRegistrations,
         settings: ImageSettings,
         width: u32,
         height: u32,
@@ -72,11 +72,12 @@ impl ConsoleAssets {
             },
         )
         .map_err(str::to_owned)?;
+        let palette = crate::render_settings::palette(vfs, assets, rules, palettes);
         let mut console = Self {
             rules,
             font: None,
             background: None,
-            palette,
+            palette: palette.as_ref().ok().copied().flatten(),
             layout,
             height,
             glyph_height,
@@ -87,18 +88,10 @@ impl ConsoleAssets {
             q3,
             legacy_gl_alpha: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
         };
-        if !q3 && console.palette.is_none() {
-            let source = PaletteSource::native(rules).ok_or("missing console palette policy")?;
-            match load_palette(vfs, assets, source) {
-                Ok(palette) => console.palette = Some(palette),
-                Err(error) => {
-                    qa_console::logger::console(format_args!(
-                        "console palette unavailable: {error:?}\n"
-                    ));
-                    console.report();
-                    return Ok(console);
-                }
-            }
+        if let Err(error) = palette {
+            qa_console::logger::console(format_args!("console palette unavailable: {error}\n"));
+            console.report();
+            return Ok(console);
         }
         let mut images = Images::new(vfs, assets, rules, rules, settings, None)
             .map_err(|error| format!("console images: {error:?}"))?;
@@ -187,6 +180,9 @@ impl ConsoleAssets {
     }
     pub fn command_capacity(&self) -> usize {
         (self.layout.rows() + 1) * self.layout.columns() + 3
+    }
+    pub fn font_for(&self, rules: RuleSetId) -> Option<FontAssets> {
+        (self.rules == rules).then(|| self.font_assets())
     }
     pub fn font_assets(&self) -> FontAssets {
         FontAssets {
@@ -337,14 +333,12 @@ impl FontAssets {
         vfs: &Vfs,
         assets: &mut Assets,
         rules: RuleSetId,
-        mut palette: Option<PaletteId>,
+        palettes: &mut crate::render_settings::PaletteRegistrations,
         settings: ImageSettings,
     ) -> Result<Self, String> {
-        if palette.is_none()
-            && let Some(source) = PaletteSource::native(rules)
-        {
-            palette = load_palette(vfs, assets, source).ok();
-        }
+        let palette = crate::render_settings::palette(vfs, assets, rules, palettes)
+            .ok()
+            .flatten();
         let mut images = Images::new(vfs, assets, rules, rules, settings, None)
             .map_err(|error| format!("HUD images: {error:?}"))?;
         let mut font = None;

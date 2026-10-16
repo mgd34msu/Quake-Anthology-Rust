@@ -314,6 +314,8 @@ pub struct SceneComposer {
     kind: Kind,
     beam: qa_render::MaterialId,
     beam_alpha: qa_render::MaterialId,
+    console: Option<console::ConsoleAssets>,
+    hud: [Option<hud::HudAssets>; 5],
 }
 
 /// Cold staging retains the existing scene owner until backend preparation
@@ -344,6 +346,38 @@ impl SceneWorldAppend<'_> {
             SceneWorldAction::Presentations { target, candidate } => *target = candidate,
         }
     }
+}
+
+/// A cold HUD candidate occupies the existing role slot only on commit.
+pub struct SceneHudAppend<'a> {
+    frontend: qa_render::scene::FrontEndCapacity<'a>,
+    target: &'a mut Option<hud::HudAssets>,
+    candidate: hud::HudAssets,
+}
+impl SceneHudAppend<'_> {
+    pub fn limits(&self) -> Limits {
+        self.frontend.limits()
+    }
+    pub fn commit(self) {
+        self.frontend.commit();
+        *self.target = Some(self.candidate);
+    }
+}
+fn hud_command_capacity() -> Result<usize, String> {
+    hud::HudAssets::command_capacity()
+        .checked_mul(SeatId::COUNT)
+        .ok_or_else(|| "HUD scene capacity".to_owned())
+}
+fn scene_ui_limits(mut limits: Limits, commands: usize) -> Result<Limits, String> {
+    limits.commands = limits
+        .commands
+        .checked_add(commands)
+        .ok_or("UI command capacity")?;
+    limits.vertices = limits
+        .vertices
+        .checked_add(commands.checked_mul(6).ok_or("UI vertex capacity")?)
+        .ok_or("UI vertex capacity")?;
+    Ok(limits)
 }
 
 fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, String> {
@@ -385,8 +419,63 @@ impl SceneComposer {
         world_presentation(&self.scenes, world, profile, selected)
     }
 
-    pub(crate) fn world_stage_ready(&mut self) -> bool {
+    pub fn asset_stage_ready(&mut self) -> bool {
         self.frame.is_none() && self.frontend.stage_capacity(self.frontend.limits()).is_ok()
+    }
+
+    pub fn has_hud(&self, rules: qa_core::primitives::RuleSetId) -> bool {
+        self.hud[rules as usize].is_some()
+    }
+    pub fn hud_font(&self, rules: qa_core::primitives::RuleSetId) -> Option<console::FontAssets> {
+        self.console.as_ref()?.font_for(rules)
+    }
+    pub fn append_hud(
+        &mut self,
+        frame: &mut qa_render::scene::Frame,
+        assets: &Assets,
+        view: hud::HudView<'_>,
+        refdef: Refdef,
+    ) -> hud::HudStats {
+        match self.hud[view.rules as usize].as_mut() {
+            Some(hud) => hud.append(frame, assets, view, refdef),
+            None => hud::HudStats {
+                missing_font: u32::from(view.show_text),
+                ..Default::default()
+            },
+        }
+    }
+    pub fn append_console(
+        &mut self,
+        frame: &mut qa_render::scene::Frame,
+        assets: &Assets,
+        view: qa_console::presentation::ConsoleView<'_>,
+        width: u32,
+        height: u32,
+        software: bool,
+    ) -> console::ConsoleStats {
+        self.console
+            .as_mut()
+            .map_or_else(Default::default, |console| {
+                console.append(frame, assets, view, width, height, software)
+            })
+    }
+
+    pub fn stage_hud(&mut self, candidate: hud::HudAssets) -> Result<SceneHudAppend<'_>, String> {
+        if self.frame.is_some() {
+            return Err("scene frame is active".to_owned());
+        }
+        let limits = if self.console.is_some() || self.hud.iter().any(Option::is_some) {
+            self.frontend.limits()
+        } else {
+            scene_ui_limits(self.frontend.limits(), hud_command_capacity()?)?
+        };
+        let frontend = self.frontend.stage_capacity(limits)?;
+        let target = &mut self.hud[candidate.rules() as usize];
+        Ok(SceneHudAppend {
+            frontend,
+            target,
+            candidate,
+        })
     }
 
     pub fn load(
@@ -445,6 +534,8 @@ impl SceneComposer {
                 kind: Kind::Cpu,
                 beam,
                 beam_alpha,
+                console: None,
+                hud: std::array::from_fn(|_| None),
             },
             limits,
         ))
@@ -566,16 +657,20 @@ pub struct Renderer {
     height: u32,
     recorded_rendered_frames: u64,
     draw_failed: bool,
-    console: console::ConsoleAssets,
-    hud: [Option<hud::HudAssets>; 5],
     lightstyles: [hud::LightStyles; SeatId::COUNT],
 }
 /// A short cold borrow; implementations prepare the complete resource prefix.
 /// Success retains every existing resource and admits all supplied additions.
 pub trait AssetPreparer {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        None
+    }
     fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String>;
 }
 impl AssetPreparer for Renderer {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        Some([self.width, self.height])
+    }
     fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String> {
         match &mut self.backend {
             Backend::Cpu { backend, .. } => {
@@ -618,32 +713,15 @@ impl Renderer {
             .capacity()
             .checked_mul(SeatId::COUNT)
             .ok_or("particle scene capacity")?;
-        let hud_capacity = hud
-            .iter()
-            .flatten()
-            .map(hud::HudAssets::command_capacity)
-            .max()
-            .unwrap_or(0)
-            .checked_mul(SeatId::COUNT)
-            .ok_or("HUD scene capacity")?;
-        limits.commands = limits
-            .commands
-            .checked_add(console.command_capacity())
-            .and_then(|count| count.checked_add(hud_capacity))
-            .ok_or("console scene capacity")?;
-        limits.vertices = limits
-            .vertices
-            .checked_add(
-                console
-                    .command_capacity()
-                    .checked_add(hud_capacity)
-                    .ok_or("HUD vertex capacity")?
-                    .checked_mul(6)
-                    .ok_or("console vertex capacity")?,
-            )
-            .ok_or("console vertex capacity")?;
+        let ui_commands = console
+            .command_capacity()
+            .checked_add(hud_command_capacity()?)
+            .ok_or("UI scene capacity")?;
+        limits = scene_ui_limits(limits, ui_commands)?;
         let (mut scene, limits) = SceneComposer::load(limits, assets, worlds)?;
         scene.kind = kind;
+        scene.console = Some(console);
+        scene.hud = hud;
         let backend = match context {
             Context::Cpu(_) => {
                 let physical_cores = qa_platform::physical_core_count();
@@ -694,8 +772,6 @@ impl Renderer {
                 height,
                 recorded_rendered_frames: 0,
                 draw_failed: false,
-                console,
-                hud,
                 lightstyles: std::array::from_fn(|_| Default::default()),
             },
             scene,
@@ -905,15 +981,11 @@ impl Renderer {
                     rejected += 1;
                 }
                 if let Some(hud) = hud[seat] {
-                    if let Some(assets) = self.hud[hud.rules as usize].as_mut() {
-                        self.sample.hud += assets.append(frame, resources.assets, hud, refdef);
-                    } else if hud.show_text {
-                        self.sample.hud.missing_font += 1;
-                    }
+                    self.sample.hud += composition.append_hud(frame, resources.assets, hud, refdef);
                 }
             }
         });
-        self.sample.console = self.console.append(
+        self.sample.console = composition.append_console(
             &mut frame,
             resources.assets,
             console,

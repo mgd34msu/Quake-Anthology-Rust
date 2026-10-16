@@ -1272,6 +1272,61 @@ impl ModelAssets {
         }
     }
 
+    /// Register one CLIENT HUD through the same palette/resource owner. The
+    /// frontend owns the returned candidate only after backend admission.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_hud<T>(
+        &mut self,
+        vfs: &Vfs,
+        rules: RuleSetId,
+        settings: ImageSettings,
+        width: u32,
+        reuse_font: Option<crate::renderer::console::FontAssets>,
+        stage: impl FnOnce(ModelView<'_>, crate::renderer::hud::HudAssets) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<(T, AssetCounts), String> {
+        if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("HUD registration requires a published resource prefix".to_owned());
+        }
+        let checkpoint = RegistrationCheckpoint::base(self)?;
+        let result = (|| {
+            let font = match reuse_font {
+                Some(font) => font,
+                None => crate::renderer::console::FontAssets::load(
+                    vfs,
+                    &mut self.assets,
+                    rules,
+                    &mut self.palettes,
+                    settings,
+                )?,
+            };
+            let candidate = crate::renderer::hud::HudAssets::load(
+                vfs,
+                &mut self.assets,
+                rules,
+                font,
+                settings,
+                width,
+            )?;
+            let staged = stage(self.view(), candidate)?;
+            let counts = self.assets.counts();
+            self.validate_admission(counts)
+                .map_err(|error| format!("HUD publication: {error:?}"))?;
+            prepare(&self.assets, &staged)?;
+            self.apply_admission(counts);
+            Ok((staged, counts))
+        })();
+        match result {
+            Ok(ready) => Ok(ready),
+            Err(error) => {
+                checkpoint
+                    .rollback(self, RegistrationRollback::Retry)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
     fn validate_world_profile(
         &self,
         profile: ModelProfile,

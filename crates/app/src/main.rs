@@ -940,7 +940,7 @@ fn run() -> Result<(), String> {
         &host.runtime.vfs,
         assets,
         console_rules,
-        palettes.get(console_rules),
+        palettes,
         qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
         width as u32,
         height as u32,
@@ -963,7 +963,7 @@ fn run() -> Result<(), String> {
                 &host.runtime.vfs,
                 assets,
                 rules,
-                palettes.get(rules),
+                palettes,
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
             )?
         };

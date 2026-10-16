@@ -153,6 +153,9 @@ impl HudAssets {
         hud.pictures = pictures::Pictures::load(vfs, assets, rules, font, settings)?;
         Ok(hud)
     }
+    pub fn rules(&self) -> RuleSetId {
+        self.rules
+    }
     pub fn register_picture(
         &mut self,
         assets: &mut Assets,
@@ -161,7 +164,7 @@ impl HudAssets {
     ) -> Result<(), String> {
         self.pictures.register(assets, path, material)
     }
-    pub fn command_capacity(&self) -> usize {
+    pub const fn command_capacity() -> usize {
         MAX_GLYPHS + 1
     }
     pub fn append(

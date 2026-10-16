@@ -20,6 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[path = "console_presentation/late_hud.rs"]
+mod late_hud;
+
 #[test]
 fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     let Some(root) = std::env::var_os("QA_Q2_RERELEASE_ROOT") else {
@@ -30,11 +33,12 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     assert!(vfs.open(b"pics/conchars.png").is_some());
     assert!(vfs.open(b"pics/conchars.pcx").is_none());
     let mut assets = Assets::load().unwrap();
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     let font = qa_app::renderer::console::FontAssets::load(
         &vfs,
         &mut assets,
         RuleSetId::Quake2Rerelease,
-        None,
+        &mut palettes,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
     )
     .unwrap();
@@ -179,11 +183,14 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
         root.native(rules);
         let mut assets = Assets::load().unwrap();
         let palette = (rules != RuleSetId::Quake3).then(|| palette(&mut assets));
+        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+            palette, palette, palette, palette, None,
+        ]);
         let mut console = ConsoleAssets::load(
             &root.vfs(),
             &mut assets,
             rules,
-            palette,
+            &mut palettes,
             ImageSettings::native(rules),
             160,
             120,
@@ -259,15 +266,22 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
         let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
+        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+            Some(palette),
+            Some(palette),
+            Some(palette),
+            Some(palette),
+            None,
+        ]);
         let settings = ImageSettings::native(rules);
         let console =
-            ConsoleAssets::load(&vfs, &mut assets, rules, Some(palette), settings, 160, 120)
+            ConsoleAssets::load(&vfs, &mut assets, rules, &mut palettes, settings, 160, 120)
                 .unwrap();
         let hud = qa_app::renderer::console::FontAssets::load(
             &vfs,
             &mut assets,
             rules,
-            Some(palette),
+            &mut palettes,
             settings,
         )
         .unwrap();
@@ -336,11 +350,12 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
 #[test]
 fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
     let mut assets = Assets::load().unwrap();
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
     let mut console = ConsoleAssets::load(
         &Vfs::default(),
         &mut assets,
         RuleSetId::Quake3,
-        None,
+        &mut palettes,
         ImageSettings::native(RuleSetId::Quake3),
         160,
         120,
@@ -396,11 +411,18 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
         root.native(rules);
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
+        let mut palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
+            Some(palette),
+            Some(palette),
+            Some(palette),
+            Some(palette),
+            None,
+        ]);
         let mut console = ConsoleAssets::load(
             &root.vfs(),
             &mut assets,
             rules,
-            Some(palette),
+            &mut palettes,
             ImageSettings::native(rules),
             160,
             120,

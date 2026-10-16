@@ -113,6 +113,7 @@ pub struct ResourceState {
     pub rejected: u64,
     server_info: Option<ReceivedServerInfo>,
     presentation_reset: PresentationReset,
+    hud_pending: bool,
     client_capacity: u32,
     sounds: qa_audio::SoundBindings,
     sound_dirty: qa_core::bits::BitSet,
@@ -151,6 +152,7 @@ impl ClientResources {
                 rejected: 0,
                 server_info: None,
                 presentation_reset: PresentationReset::Complete(None),
+                hud_pending: true,
                 client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
@@ -316,6 +318,7 @@ impl ClientResources {
         self.selected.clear();
         self.joined.clear();
         self.state.server_info = None;
+        self.state.hud_pending = true;
         self.nq_signon = None;
         self.state.models.reset_received(world);
         self.state.sounds.clear();
@@ -677,6 +680,14 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub(crate) fn hud_pending(&self) -> bool {
+        self.hud_pending
+    }
+
+    pub(crate) fn take_hud_attempt(&mut self) {
+        self.hud_pending = false;
+    }
+
     pub(crate) fn request_presentation_reset(&mut self, lifetime: EntityId) {
         self.presentation_reset = PresentationReset::Required(lifetime);
     }

@@ -3129,6 +3129,297 @@ fn install_received_world_owner(
     backend
 }
 
+struct HudPreparer {
+    backend: asset_frames::Source,
+    reject: bool,
+}
+impl qa_app::renderer::AssetPreparer for HudPreparer {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        Some(self.backend.cpu.dimensions())
+    }
+    fn prepare_assets(
+        &mut self,
+        assets: &qa_render::Assets,
+        scene: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
+        if self.reject {
+            self.backend.attempts += 1;
+            let mut scene = scene.unwrap();
+            scene.surfaces = 0;
+            self.backend
+                .cpu
+                .prepare_assets(assets, Some(scene))
+                .map_err(str::to_owned)
+        } else {
+            qa_app::renderer::AssetPreparer::prepare_assets(&mut self.backend, assets, scene)
+        }
+    }
+}
+
+#[test]
+fn queued_native_client_loads_its_late_hud_role_and_draws_through_the_shared_frontend() {
+    let fixture = assets_support::Fixture::new(&[(
+        "gfx/2d/bigchars.tga",
+        assets_support::tga(128, 128, &vec![[255; 4]; 128 * 128]),
+    )]);
+    let (mut host, local, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+    let mut backend = install_received_world_owner(&mut host, &[local, remote]);
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    host.runtime.server.clients[remote.0 as usize].client_rules = RuleSetId::Quake3;
+    let old_server = host.runtime.collision.as_ref().unwrap().geometry;
+    let old_local = host.local_worlds[0];
+    assert!(
+        !host
+            .runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .has_hud(RuleSetId::Quake3)
+    );
+    let mut payload = nq_server_info(b"late HUD", &[b"maps/ready.bsp"], &[]);
+    payload.extend([5, 6, 0, 25, 1]);
+    payload.extend(nq_admission_snapshot(&[]));
+    let mut print = [0; 64];
+    let length = qa_network::outputs::print(
+        Protocol::NetQuake15,
+        PrintKind::Chat,
+        3,
+        b"A\n",
+        None,
+        &mut print,
+    )
+    .unwrap();
+    payload.extend_from_slice(&print[..length]);
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(None);
+    // A cache-only backend without a drawable target must not consume the
+    // pending HUD request either.
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.attempts, 0);
+    let mut backend = HudPreparer {
+        backend,
+        reject: false,
+    };
+    let scene = host.runtime.scene.as_mut().unwrap();
+    assert!(scene.begin_frame());
+    let pending = scene.finish_frame().unwrap();
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.backend.attempts, 0);
+    assert!(
+        host.runtime
+            .scene
+            .as_mut()
+            .unwrap()
+            .recycle(pending)
+            .is_ok()
+    );
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(backend.backend.attempts > 0);
+    assert!(
+        host.runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .has_hud(RuleSetId::Quake3)
+    );
+    assert_eq!(
+        host.runtime.collision.as_ref().unwrap().geometry,
+        old_server
+    );
+    assert_eq!(host.local_worlds[0], old_local);
+    assert_eq!(
+        host.runtime.client_resources[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .layout
+            .rules,
+        RuleSetId::Quake
+    );
+    assert_eq!(
+        backend.backend.cpu.admitted_assets(),
+        Some(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .counts()
+        )
+    );
+
+    // Run the ordinary frame to resolve the accepted native clock and deliver
+    // the queued chat. Drawing uses the same method as Renderer::frame.
+    let mut source = Source {
+        time: EventTime::from_milliseconds(100),
+        ..Default::default()
+    };
+    host.frame(&mut source, true);
+    let mut scene = host.runtime.scene.take().unwrap();
+    let hud = host.client_hud_inputs()[1].unwrap();
+    assert_eq!(hud.rules, RuleSetId::Quake3);
+    let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    let [width, height] = backend.backend.cpu.dimensions();
+    let drawn = scene.append_hud(
+        &mut frame,
+        assets,
+        hud,
+        qa_render::Refdef {
+            viewport: qa_render::Viewport {
+                width,
+                height,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert!(drawn.glyphs > 0, "{drawn:?}");
+    assert_eq!(
+        (drawn.missing_font, drawn.non_native_font, drawn.rejected),
+        (0, 0, 0)
+    );
+    let packet = frame.finish();
+    assert_eq!(backend.backend.cpu.render(&packet, assets).rejected, 0);
+    assert!(
+        backend
+            .backend
+            .cpu
+            .pixels()
+            .contains(&u32::from_le_bytes([255; 4]))
+    );
+    host.runtime.scene = Some(scene);
+    fixture.remove("gfx/2d/bigchars.tga");
+    let attempts = backend.backend.attempts;
+    host.runtime.vfs.take_lookup_count();
+    for _ in 0..3 {
+        host.register_client_model_assets(Some(&mut backend));
+    }
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.backend.attempts, attempts);
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.register_client_model_assets(Some(&mut backend));
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.backend.attempts, attempts);
+}
+
+#[test]
+fn queued_client_hud_backend_failure_waits_for_a_new_header_before_retrying() {
+    let fixture = assets_support::Fixture::new(&[(
+        "gfx/2d/bigchars.tga",
+        assets_support::tga(128, 128, &vec![[255; 4]; 128 * 128]),
+    )]);
+    let (mut host, local, remote, mut server) =
+        socket_netquake_host(NativePlayerBinding::Awaiting, ConnectionPhase::Connected);
+    let mut backend = HudPreparer {
+        backend: install_received_world_owner(&mut host, &[local, remote]),
+        reject: true,
+    };
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    host.runtime.server.clients[remote.0 as usize].client_rules = RuleSetId::Quake3;
+    let retained = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    let lifetime = host.runtime.server.clients[local.0 as usize].entity;
+    let old_server = host.runtime.collision.as_ref().unwrap().geometry;
+    let mut payload = nq_server_info(b"HUD retry", &[b"maps/ready.bsp"], &[]);
+    payload.extend([5, 6, 0, 25, 1]);
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.runtime.vfs.take_lookup_count();
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    let attempts = backend.backend.attempts;
+    assert!(attempts > 0);
+    assert!(
+        !host
+            .runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .has_hud(RuleSetId::Quake3)
+    );
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        retained
+    );
+    assert_eq!(backend.backend.cpu.admitted_assets(), Some(retained));
+    assert!(
+        !host.runtime.snapshots[remote.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    for _ in 0..3 {
+        host.register_client_model_assets(Some(&mut backend));
+    }
+    assert_eq!(host.runtime.vfs.take_lookup_count(), 0);
+    assert_eq!(backend.backend.attempts, attempts);
+    assert_eq!(
+        host.runtime.server.clients[local.0 as usize].entity,
+        lifetime
+    );
+    assert_eq!(
+        host.runtime.collision.as_ref().unwrap().geometry,
+        old_server
+    );
+    backend.reject = false;
+    queue_accepted_netquake(&mut host, remote, &mut server, &payload);
+    host.drain(&mut Default::default());
+    dispatch_nq_startup_reset(&mut host);
+    host.register_client_model_assets(Some(&mut backend));
+    assert!(host.runtime.vfs.take_lookup_count() > 0);
+    assert!(backend.backend.attempts > attempts);
+    assert!(
+        host.runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .has_hud(RuleSetId::Quake3)
+    );
+    assert_eq!(
+        backend.backend.cpu.admitted_assets(),
+        Some(
+            host.runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .counts()
+        )
+    );
+}
+
 #[test]
 fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_changing_server() {
     use qa_compat::services::ModelLookup;

@@ -503,7 +503,7 @@ pub(super) fn ownership() {
         &host.runtime.vfs,
         &mut assets,
         RuleSetId::Quake3,
-        None,
+        &mut qa_app::render_settings::PaletteRegistrations::default(),
         ImageSettings::native(RuleSetId::Quake3),
         320,
         200,
