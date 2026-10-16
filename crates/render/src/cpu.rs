@@ -4,7 +4,8 @@
 //! Entity/poly meshes use the shared stage evaluator and a 1/Z buffer.
 use crate::BackendStats;
 use crate::assets::{
-    Assets, DepthFunc, Filter, Image, Material, Sampler, TextureIntensity, Vertex, Wrap,
+    AssetAdmission, AssetCounts, Assets, DepthFunc, Filter, Image, Material, Sampler,
+    TextureIntensity, Vertex, Wrap,
 };
 use crate::shader::{Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
@@ -42,6 +43,8 @@ pub struct CpuBackend {
     warp_rows: Box<[usize]>,
     warp_dimensions: Option<(u32, u32)>,
     world: Option<world::WorldRaster>,
+    limits: CpuLimits,
+    admission: Option<AssetAdmission>,
     evaluator: StageEvaluator,
     presentation: CpuPresentation,
     time_ms: i64,
@@ -449,13 +452,15 @@ impl CpuBackend {
             warp_rows: vec![0; height as usize + 6].into_boxed_slice(),
             warp_dimensions: None,
             world: None,
+            limits: CpuLimits::default(),
+            admission: None,
             evaluator: StageEvaluator::load(),
             presentation: CpuPresentation::Rgb,
             time_ms: 0,
         })
     }
 
-    /// Assets are frozen before this load-sized world scratch is allocated.
+    /// Prepare the initial asset prefix and its load-sized world scratch.
     pub fn load_with_assets(
         width: u32,
         height: u32,
@@ -470,14 +475,35 @@ impl CpuBackend {
         limits: CpuLimits,
     ) -> Result<Self, &'static str> {
         let mut backend = Self::load(width, height)?;
-        backend.world = Some(world::WorldRaster::load(
-            width,
-            height,
+        backend.limits = limits;
+        backend.prepare_assets(assets)?;
+        Ok(backend)
+    }
+
+    /// Cold preparation requires all prior scoped jobs to have completed.
+    /// Failed candidates leave the admitted raster and framebuffer untouched.
+    pub fn prepare_assets(&mut self, assets: &Assets) -> Result<(), &'static str> {
+        let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
+            return Ok(());
+        };
+        let mut limits = self.limits;
+        if let Some(world) = &self.world {
+            limits.bands = world.config().bands;
+            limits.auto_bands = false;
+        }
+        let world = world::WorldRaster::load(
+            self.frame.width,
+            self.frame.height,
             assets,
             limits,
-            &backend.evaluator,
-        )?);
-        Ok(backend)
+            &self.evaluator,
+        )?;
+        self.world = Some(world);
+        self.admission = Some(admission);
+        Ok(())
+    }
+    pub fn admitted_assets(&self) -> Option<AssetCounts> {
+        self.admission.as_ref().map(AssetAdmission::counts)
     }
     pub fn world_stats(&self) -> WorldStats {
         self.world

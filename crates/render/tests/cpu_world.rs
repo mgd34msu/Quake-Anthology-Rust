@@ -2618,3 +2618,272 @@ fn indexed_cached_world_water_warp_uses_scoped_stride_in_each_raster_band() {
         }
     }
 }
+
+#[test]
+fn cold_asset_preparation_preserves_old_ids_limits_and_unchanged_residency() {
+    use qa_render::cpu::RasterBands;
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets, false);
+    let old_image = texture(&mut assets, palette, 7, false);
+    let old_material = material(&mut assets, old_image, false);
+    let old_world = world(
+        &mut assets,
+        2.,
+        old_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        &assets,
+        CpuLimits {
+            cache_bytes: 4096,
+            max_spans: 17,
+            bands: RasterBands::Two,
+            scene: Limits {
+                surfaces: 16,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let old_packet = packet(&mut frontend, &[(old_world, 0)], view(palette), &assets);
+    assert_eq!(cpu.render(&old_packet, &assets).rejected, 0);
+    let old_pixels = cpu.pixels().to_vec();
+    let old_depth = cpu.inverse_depth().to_vec();
+    let old_stats = cpu.world_stats();
+    let config = cpu.raster_config();
+    assert!(old_stats.cache.fills > 0);
+    assert_eq!(config.bands, RasterBands::Two);
+    assert_eq!(config.total_cache_budget_bytes, 4096);
+    assert_eq!(config.per_band_cache_bytes, 2048);
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.world_stats(), old_stats);
+    assert_eq!(cpu.raster_config(), config);
+    assert_eq!(cpu.pixels(), old_pixels);
+    assert_eq!(cpu.inverse_depth(), old_depth);
+
+    let new_image = assets.register_image(1, 1, &[20, 90, 40, 255]).unwrap();
+    let new_material = material(&mut assets, new_image, false);
+    let vertices =
+        [[2., 2., 2.], [2., -2., 2.], [2., -2., -2.], [2., 2., -2.]].map(|position| Vertex {
+            position: Vec3(position),
+            ..Default::default()
+        });
+    let new_model = assets
+        .register_model(&vertices, &[0, 1, 2, 0, 2, 3], new_material)
+        .unwrap();
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
+    assert_eq!(cpu.dimensions(), [8, 8]);
+    assert_eq!(cpu.pixels(), old_pixels);
+    assert_eq!(cpu.inverse_depth(), old_depth);
+    let prepared = cpu.raster_config();
+    assert_eq!(prepared.bands, config.bands);
+    assert_eq!(
+        prepared.total_cache_budget_bytes,
+        config.total_cache_budget_bytes
+    );
+    assert_eq!(prepared.per_band_cache_bytes, config.per_band_cache_bytes);
+    assert_eq!(
+        prepared.material_capacity_bytes,
+        config.material_capacity_bytes
+    );
+    assert_eq!(
+        prepared.view_effect_capacity_bytes,
+        config.view_effect_capacity_bytes
+    );
+    assert_eq!(cpu.render(&old_packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), old_pixels);
+    assert!(frontend.recycle(old_packet).is_ok());
+
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.add_entity(qa_render::SceneEntity {
+        model: new_model.into(),
+        ..Default::default()
+    }));
+    assert!(frame.render_scene(
+        Refdef {
+            cpu_presentation: CpuPresentation::Rgb,
+            ..view(palette)
+        },
+        &[],
+        &assets
+    ));
+    let new_packet = frame.finish();
+    let stats = cpu.render(&new_packet, &assets);
+    assert_eq!(stats.rejected, 0);
+    assert_eq!(stats.triangles, 2);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([20, 90, 40, 255]))
+    );
+}
+
+#[test]
+fn cold_asset_preparation_adds_cloud_scratch_without_reselecting_automatic_bands() {
+    use qa_render::cpu::RasterBands;
+    let mut assets = Assets::load().unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        3,
+        &assets,
+        CpuLimits {
+            cache_bytes: 1024,
+            max_spans: 17,
+            bands: RasterBands::Eight,
+            auto_bands: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let original = cpu.raster_config();
+    assert_eq!(original.bands, RasterBands::Two);
+    let image = assets.register_image(1, 1, &[25, 36, 47, 255]).unwrap();
+    let sky = cloud_material(&mut assets, &[cloud_stage(image)]);
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.admitted_assets(), Some(assets.counts()));
+    let prepared = cpu.raster_config();
+    assert_eq!(prepared.bands, original.bands);
+    assert_eq!(
+        prepared.total_cache_budget_bytes,
+        original.total_cache_budget_bytes
+    );
+    assert_eq!(prepared.per_band_cache_bytes, original.per_band_cache_bytes);
+    assert!(prepared.preparation_capacity_bytes > original.preparation_capacity_bytes);
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+    let vertices =
+        [[2., 2., 2.], [2., -2., 2.], [2., -2., -2.], [2., 2., -2.]].map(|position| Vertex {
+            position: Vec3(position),
+            ..Default::default()
+        });
+    assert!(frame.add_poly(sky, &vertices));
+    assert!(frame.render_scene(
+        Refdef {
+            viewport: Viewport {
+                width: 8,
+                height: 3,
+                ..Default::default()
+            },
+            fov: [90.; 2],
+            ..Default::default()
+        },
+        &[],
+        &assets
+    ));
+    let packet = frame.finish();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.world_stats().sky_spans > 0);
+    assert!(cpu.world_stats().sky_pixels > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([25, 36, 47, 255]))
+    );
+    let stats = cpu.world_stats();
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.world_stats(), stats);
+    assert_eq!(cpu.raster_config(), prepared);
+}
+
+#[test]
+fn rejected_cold_cloud_candidate_preserves_admission_pixels_cache_and_settings() {
+    use qa_render::cpu::RasterBands;
+    let mut assets = Assets::load().unwrap();
+    let palette = palette(&mut assets, false);
+    let image = texture(&mut assets, palette, 7, false);
+    let material = material(&mut assets, image, false);
+    let world = world(
+        &mut assets,
+        2.,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        &assets,
+        CpuLimits {
+            cache_bytes: 4096,
+            max_spans: 17,
+            bands: RasterBands::Two,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(&mut frontend, &[(world, 0)], view(palette), &assets);
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    let pixels = cpu.pixels().to_vec();
+    let depth = cpu.inverse_depth().to_vec();
+    let stats = cpu.world_stats();
+    let config = cpu.raster_config();
+    let admitted = cpu.admitted_assets();
+    // Zero cloud height is accepted material metadata, but cannot generate
+    // the scripted cloud grid required by this CPU raster candidate.
+    assets
+        .register_material(
+            "zero-height cold cloud",
+            &[cloud_stage(image)],
+            MaterialSettings {
+                sky: Some(qa_render::assets::Sky::Cube {
+                    outer_box: None,
+                    inner_box: None,
+                    clouds: qa_render::sky::CloudSphere::native(0.),
+                    rotation: None,
+                    params: Default::default(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_ne!(admitted, Some(assets.counts()));
+    for _ in 0..2 {
+        assert!(cpu.prepare_assets(&assets).is_err());
+        assert_eq!(cpu.admitted_assets(), admitted);
+        assert_eq!(cpu.pixels(), pixels);
+        assert_eq!(cpu.inverse_depth(), depth);
+        assert_eq!(cpu.world_stats(), stats);
+        assert_eq!(cpu.raster_config(), config);
+    }
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert_eq!(cpu.pixels(), pixels);
+    assert!(cpu.world_stats().cache.hits > 0);
+}
+
+#[test]
+fn changed_image_admission_rejects_without_poisoning_the_prior_cpu_prefix() {
+    let mut assets = Assets::load().unwrap();
+    let image = assets.register_image(1, 1, &[20, 90, 40, 255]).unwrap();
+    let sampler = Sampler {
+        filter: Filter::Nearest,
+        ..Default::default()
+    };
+    assets.set_image_native_sampler(image, sampler).unwrap();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let admission = cpu.admitted_assets();
+    let config = cpu.raster_config();
+    assets
+        .set_image_native_sampler(
+            image,
+            Sampler {
+                filter: Filter::Linear,
+                ..sampler
+            },
+        )
+        .unwrap();
+    assert!(cpu.prepare_assets(&assets).is_err());
+    assert_eq!(cpu.admitted_assets(), admission);
+    assert_eq!(cpu.raster_config(), config);
+    assets.set_image_native_sampler(image, sampler).unwrap();
+    cpu.prepare_assets(&assets).unwrap();
+    assert_eq!(cpu.admitted_assets(), admission);
+    assert_eq!(cpu.raster_config(), config);
+}

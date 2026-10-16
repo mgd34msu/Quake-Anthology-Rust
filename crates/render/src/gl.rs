@@ -3,8 +3,8 @@
 //! Projection and stage order follow qsrc Q3 tr_main.c and tr_backend.c.
 use crate::BackendStats;
 use crate::assets::{
-    AlphaTest, Assets, CubeSkyParams, Cull, DepthFunc, Filter, MaterialId, MaterialSettings,
-    Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
+    AlphaTest, AssetAdmission, AssetCounts, Assets, CubeSkyParams, Cull, DepthFunc, Filter,
+    MaterialId, MaterialSettings, Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
     BlendPhase, Command, CommandList, Draw2d, DrawItem, DrawKind, Refdef, SceneEntity,
@@ -22,6 +22,8 @@ use std::ptr::{self, NonNull};
 
 mod composite;
 use composite::MaterialTargets;
+mod preparation;
+use preparation::{PreparedAssets, StaticObjects, UploadBindings};
 
 type Sync = *mut c_void;
 
@@ -352,7 +354,7 @@ struct TextureParams {
 #[derive(Default)]
 struct State {
     vao: u32,
-    texture: u32,
+    texture: Option<u32>,
     blend: Option<Option<StageBlend>>,
     depth: Option<bool>,
     depth_write: Option<bool>,
@@ -365,11 +367,11 @@ struct State {
 }
 impl State {
     fn bind_texture(&mut self, gl: &Gl, texture: u32) {
-        if self.texture != texture {
+        if self.texture != Some(texture) {
             // SAFETY: The backend owns the current GL context and loaded entry
             // points; numeric texture handles belong to its cold registration.
             unsafe { (gl.bind_texture)(TEXTURE_2D, texture) };
-            self.texture = texture;
+            self.texture = Some(texture);
         }
     }
 }
@@ -505,6 +507,7 @@ pub struct GlBackend {
     textures: Box<[u32]>,
     texture_params: Box<[TextureParams]>,
     lightmap_updates: crate::lightmap::AtlasUpdates,
+    admission: Option<AssetAdmission>,
     samplers: [u32; 8],
     table_buffer: u32,
     table_texture: u32,
@@ -520,7 +523,7 @@ impl GlBackend {
     /// # Safety
     /// `context` must contain this current context's GL entry points. Keep that
     /// context current on this thread until this backend has been dropped.
-    /// Assets must remain frozen after load; later registrations need a reload.
+    /// Call prepare_assets after appending assets, before submitting their IDs.
     pub unsafe fn load(
         context: GlContext,
         assets: &Assets,
@@ -545,6 +548,7 @@ impl GlBackend {
         if configuration.display.width != width || configuration.display.height != height {
             return Err("GL context render-target size changed during registration".into());
         }
+        let lightmap_updates = crate::lightmap::AtlasUpdates::load(assets)?;
         let program = unsafe { compile_program(&gl)? };
         // This backend owns the context. Unclipped and 2D stages publish a
         // positive constant distance, so the plane needs no frame-time toggle.
@@ -590,19 +594,21 @@ impl GlBackend {
             meshes: Box::new([]),
             textures: Box::new([]),
             texture_params: Box::new([]),
-            lightmap_updates: crate::lightmap::AtlasUpdates::load(assets)?,
+            lightmap_updates,
+            admission: None,
             samplers: [0; 8],
             table_buffer: 0,
             table_texture: 0,
             evaluator: StageEvaluator::load(),
             sky_clouds: Box::new([]),
-            skies: SkyBatches::new(assets.materials().len()),
+            skies: SkyBatches::new(0),
             dynamic: Dynamic::default(),
             state: State::default(),
             _context_thread: PhantomData,
         };
         unsafe {
-            backend.load_static(assets)?;
+            backend.prepare_assets(assets)?;
+            backend.load_device_assets();
             backend.material_targets.load(
                 &backend.gl,
                 width,
@@ -660,135 +666,37 @@ impl GlBackend {
         (error != 0).then_some(error)
     }
 
-    unsafe fn load_static(&mut self, assets: &Assets) -> Result<(), String> {
-        self.sky_clouds = assets
-            .materials()
-            .iter()
-            .map(|material| {
-                let cloud = match material.settings.sky {
-                    Some(Sky::Cube { clouds, .. })
-                        if clouds.valid() && !material.stages.is_empty() =>
-                    {
-                        Some(CloudGrid::generate(clouds).map_err(|error| {
-                            format!(
-                                "{}: {error}",
-                                assets.name(material.name).unwrap_or("<unknown material>")
-                            )
-                        })?)
-                    }
-                    _ => None,
-                };
-                Ok(cloud)
-            })
-            .collect::<Result<Vec<_>, String>>()?
-            .into_boxed_slice();
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mut meshes = Vec::with_capacity(assets.models().len());
-        for model in assets.models() {
-            let base_vertex = i32::try_from(vertices.len()).map_err(|_| "GL vertex table full")?;
-            let count =
-                i32::try_from(model.indices.len()).map_err(|_| "GL mesh index table full")?;
-            let first_index = indices.len();
-            vertices.extend_from_slice(&model.vertices);
-            indices.extend_from_slice(&model.indices);
-            meshes.push(Mesh {
-                first_index,
-                count,
-                base_vertex,
-            });
-        }
-        let vertex_bytes = vertices
-            .len()
-            .checked_mul(size_of::<Vertex>())
-            .filter(|&n| n <= isize::MAX as usize)
-            .ok_or("GL static vertex size overflow")?;
-        let index_bytes = indices
-            .len()
-            .checked_mul(size_of::<u32>())
-            .filter(|&n| n <= isize::MAX as usize)
-            .ok_or("GL static index size overflow")?;
-        self.meshes = meshes.into_boxed_slice();
-        self.textures = vec![0; assets.images().len()].into_boxed_slice();
-        self.texture_params = assets
-            .images()
-            .iter()
-            .map(|image| TextureParams {
-                inverse_intensity: image.prepared.as_ref().map_or(1.0, |p| p.inverse_intensity),
-                sampler: image.native_sampler,
-            })
-            .collect();
-        let texture_count =
-            i32::try_from(self.textures.len()).map_err(|_| "GL texture table full")?;
+    /// The current numeric asset prefix, committed after every upload succeeds.
+    pub fn admitted_assets(&self) -> Option<AssetCounts> {
+        self.admission.as_ref().map(AssetAdmission::counts)
+    }
+
+    /// Cold append admission. Rejected uploads retain the complete old prefix.
+    pub fn prepare_assets(&mut self, assets: &Assets) -> Result<(), String> {
+        let Some(admission) = AssetAdmission::prepare(self.admission.as_ref(), assets)? else {
+            return Ok(());
+        };
+        self.state.vao = 0;
+        self.state.texture = None;
+        let _bindings = UploadBindings::new(&self.gl);
+        let mut prepared =
+            PreparedAssets::prepare(&self.gl, assets, &self.textures, &self.texture_params)?;
+        std::mem::swap(&mut self.static_vao, &mut prepared.objects.static_vao);
+        std::mem::swap(&mut self.model_vao, &mut prepared.objects.model_vao);
+        std::mem::swap(&mut self.static_buffers, &mut prepared.objects.buffers);
+        std::mem::swap(&mut self.meshes, &mut prepared.meshes);
+        std::mem::swap(&mut self.textures, &mut prepared.textures);
+        std::mem::swap(&mut self.texture_params, &mut prepared.texture_params);
+        std::mem::swap(&mut self.sky_clouds, &mut prepared.sky_clouds);
+        std::mem::swap(&mut self.skies, &mut prepared.skies);
+        prepared.retain_textures();
+        self.admission = Some(admission);
+        Ok(())
+    }
+
+    unsafe fn load_device_assets(&mut self) {
         let gl = &self.gl;
         unsafe {
-            (gl.gen_vertex_arrays)(1, &mut self.static_vao);
-            (gl.gen_buffers)(2, self.static_buffers.as_mut_ptr());
-            (gl.bind_vertex_array)(self.static_vao);
-            (gl.bind_buffer)(ARRAY_BUFFER, self.static_buffers[0]);
-            (gl.buffer_data)(
-                ARRAY_BUFFER,
-                vertex_bytes as isize,
-                vertices.as_ptr().cast(),
-                0x88e4,
-            );
-            vertex_layout(gl, 0, None);
-            (gl.bind_buffer)(ELEMENT_ARRAY_BUFFER, self.static_buffers[1]);
-            (gl.buffer_data)(
-                ELEMENT_ARRAY_BUFFER,
-                index_bytes as isize,
-                indices.as_ptr().cast(),
-                0x88e4,
-            );
-            // The model VAO selects frame offsets in these same static buffers.
-            // Worlds retain the base layout and dynamic submissions their ring.
-            (gl.gen_vertex_arrays)(1, &mut self.model_vao);
-            (gl.bind_vertex_array)(self.model_vao);
-            vertex_layout(gl, 0, Some(0));
-            (gl.bind_buffer)(ELEMENT_ARRAY_BUFFER, self.static_buffers[1]);
-            (gl.gen_textures)(texture_count, self.textures.as_mut_ptr());
-            (gl.pixel_store)(0x0cf5, 1);
-            for (image, &texture) in assets.images().iter().zip(self.textures.iter()) {
-                (gl.bind_texture)(TEXTURE_2D, texture);
-                if let Some(prepared) = &image.prepared {
-                    for (level, pixels) in prepared.levels.iter().enumerate() {
-                        (gl.texture_image)(
-                            TEXTURE_2D,
-                            level as i32,
-                            0x8058,
-                            pixels.width as i32,
-                            pixels.height as i32,
-                            0,
-                            RGBA,
-                            UNSIGNED_BYTE,
-                            pixels.rgba.as_ptr().cast(),
-                        );
-                    }
-                    (gl.texture_parameter)(
-                        TEXTURE_2D,
-                        0x813d,
-                        prepared.levels.len().saturating_sub(1) as i32,
-                    );
-                } else {
-                    (gl.texture_image)(
-                        TEXTURE_2D,
-                        0,
-                        0x8058,
-                        image.width as i32,
-                        image.height as i32,
-                        0,
-                        RGBA,
-                        UNSIGNED_BYTE,
-                        image.rgba.as_ptr().cast(),
-                    );
-                    (gl.generate_mipmap)(TEXTURE_2D);
-                }
-                (gl.texture_parameter)(TEXTURE_2D, 0x2801, 0x2701); // linear, nearest mip
-                (gl.texture_parameter)(TEXTURE_2D, 0x2800, 0x2601);
-                (gl.texture_parameter)(TEXTURE_2D, 0x2802, 0x2901);
-                (gl.texture_parameter)(TEXTURE_2D, 0x2803, 0x2901);
-            }
-            (gl.bind_texture)(TEXTURE_2D, 0);
             (gl.gen_buffers)(1, &mut self.table_buffer);
             (gl.bind_buffer)(0x8c2a, self.table_buffer);
             let tables = self.evaluator.gpu_tables();
@@ -816,7 +724,6 @@ impl GlBackend {
                 (gl.sampler_parameter)(sampler, 0x2803, wrap);
             }
         }
-        Ok(())
     }
 
     /// Consumes the same sealed packet as the software backend. This does not
@@ -920,7 +827,7 @@ impl GlBackend {
                             }
                             self.state = State {
                                 vao: u32::MAX,
-                                texture: u32::MAX,
+                                texture: None,
                                 sampler: u32::MAX,
                                 ..State::default()
                             };
@@ -1457,7 +1364,7 @@ impl GlBackend {
                 .offsets()
                 .map(|offset| (mesh.base_vertex as usize + offset) * size_of::<Vertex>());
             // SAFETY: registration bounds both frame spans and their indices;
-            // load_static bounds the complete owned static byte allocation.
+            // prepare_assets bounds the complete owned static byte allocation.
             unsafe {
                 (self.gl.bind_buffer)(ARRAY_BUFFER, self.static_buffers[0]);
                 vertex_layout(&self.gl, current, Some(previous));
@@ -2137,6 +2044,12 @@ impl GlBackend {
 impl Drop for GlBackend {
     fn drop(&mut self) {
         self.material_targets.delete(&self.gl);
+        StaticObjects {
+            static_vao: self.static_vao,
+            model_vao: self.model_vao,
+            buffers: self.static_buffers,
+        }
+        .delete(&self.gl);
         unsafe {
             for &fence in &self.dynamic.fences {
                 if !fence.is_null() {
@@ -2147,10 +2060,7 @@ impl Drop for GlBackend {
                 (self.gl.bind_buffer)(ARRAY_BUFFER, self.dynamic.buffer);
                 (self.gl.unmap_buffer)(ARRAY_BUFFER);
             }
-            (self.gl.delete_buffers)(2, self.static_buffers.as_ptr());
             (self.gl.delete_buffers)(1, &self.dynamic.buffer);
-            (self.gl.delete_vertex_arrays)(1, &self.static_vao);
-            (self.gl.delete_vertex_arrays)(1, &self.model_vao);
             (self.gl.delete_vertex_arrays)(1, &self.dynamic.vao);
             (self.gl.delete_textures)(self.textures.len() as i32, self.textures.as_ptr());
             (self.gl.delete_buffers)(1, &self.table_buffer);

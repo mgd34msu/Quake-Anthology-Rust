@@ -436,6 +436,48 @@ pub struct Renderer {
     lightstyles: [hud::LightStyles; SeatId::COUNT],
 }
 impl Renderer {
+    /// Admit a cold registration before the suspended module receives its
+    /// handle. The caller must have completed all scoped raster jobs.
+    pub fn prepare_assets(
+        &mut self,
+        resources: crate::model_assets::ModelView<'_>,
+        profile: crate::model_assets::ModelProfile,
+        kind: qa_compat::services::RendererRegistration,
+        handle: i32,
+    ) -> Result<(), String> {
+        use qa_compat::services::RendererRegistration;
+        let valid = handle > 0
+            && match kind {
+                RendererRegistration::Model => {
+                    resources.catalog.renderer_inline(handle).is_some()
+                        || resources
+                            .catalog
+                            .renderer_registration(handle, profile)
+                            .is_some()
+                }
+                RendererRegistration::Skin => resources.catalog.renderer_skin(handle, profile),
+                RendererRegistration::Shader { .. } => {
+                    resources.catalog.shader_binding(handle, profile).is_some()
+                }
+            };
+        if !valid {
+            return Err("renderer registration has no binding for its presentation".to_owned());
+        }
+        match &mut self.backend {
+            Backend::Cpu { backend, .. } => backend
+                .prepare_assets(resources.assets)
+                .map_err(str::to_owned),
+            Backend::Gl(backend) => backend.prepare_assets(resources.assets),
+        }
+    }
+
+    pub fn admitted_assets(&self) -> Option<qa_render::assets::AssetCounts> {
+        match &self.backend {
+            Backend::Cpu { backend, .. } => backend.admitted_assets(),
+            Backend::Gl(backend) => backend.admitted_assets(),
+        }
+    }
+
     /// Backend resources borrow the one owner during registration and drawing.
     pub fn load(
         context: Context,

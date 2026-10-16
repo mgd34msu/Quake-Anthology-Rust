@@ -1,5 +1,8 @@
 //! Registration is a load operation. Frames use numeric handles only.
+mod admission;
 pub mod upload;
+pub(crate) use admission::AssetAdmission;
+pub use admission::AssetCounts;
 
 use crate::scene::Span;
 pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
