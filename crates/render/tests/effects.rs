@@ -379,7 +379,10 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     let old_material = register_point_shader(&mut assets, "particles/retained").unwrap();
     let new_material = register_point_shader(&mut assets, "particles/late").unwrap();
     let old = binding(old_palette, old_material);
-    let new = binding(new_palette, new_material);
+    let new = ParticleBinding {
+        presentation: ParticlePresentation::Card,
+        ..binding(new_palette, new_material)
+    };
     let make = || {
         let mut owner = Effects::load(catalog(), 2, 3, &[None, None, Some(old)]).unwrap();
         owner.synchronize(&[Some(EffectClient {
@@ -420,6 +423,9 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     for invalid in [EffectId(0), EffectId(3), EffectId(u32::MAX)] {
         assert!(!effects.bind_missing(invalid, new));
     }
+    // Existing live point bindings must adopt the new target; cards retain
+    // their world-size presentation. Simulation, timestamps and RNG stay put.
+    effects.resize_target(1280, 720);
     assert_eq!(snapshot(&effects), before);
     assert_eq!(effects.stats, stats);
     assert_eq!(effects.random_word(), control.random_word());
@@ -458,6 +464,11 @@ fn late_binding_fills_only_the_requested_slot_and_preserves_live_simulation() {
     assert_eq!(
         (particles[1].palette, particles[1].shader),
         (old_palette, old_material.into())
+    );
+    assert_eq!(particles[0].presentation, ParticlePresentation::Card);
+    assert_eq!(
+        particles[1].presentation,
+        ParticlePresentation::Square { pixel_aspect: 0.75 }
     );
 }
 

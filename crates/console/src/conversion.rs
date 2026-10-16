@@ -16,6 +16,7 @@ pub enum Error {
     TextTooLong,
     PolicyRequired,
     VideoPolicyRequired,
+    InvalidVideoMode,
     InvalidBitWord,
 }
 fn number_text(value: f64) -> Result<FixedText<64>, Error> {
@@ -43,7 +44,7 @@ impl Text<'_> {
             Self::Number(n) => n.as_str().to_owned(),
         }
     }
-    fn numeric(n: f64) -> Result<Self, Error> {
+    pub(crate) fn numeric(n: f64) -> Result<Self, Error> {
         Ok(Self::Number(number_text(n)?))
     }
 }
@@ -56,6 +57,7 @@ pub struct Input<'a, 'o> {
     pub current: &'a str,
     pub detail: Option<&'a str>,
     pub operand: &'o dyn Fn(u16) -> &'a str,
+    pub video: Option<&'o crate::video::VideoPolicy>,
 }
 pub struct Change {
     pub row: u16,
@@ -79,7 +81,7 @@ impl<'a> Output<'a> {
         text.push_str(self.text.as_str());
         text
     }
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         Self {
             text: Text::Borrowed(text),
             prefix: None,
@@ -89,7 +91,7 @@ impl<'a> Output<'a> {
             change_count: 0,
         }
     }
-    fn change(&mut self, row: u16, value: f64) -> Result<(), Error> {
+    pub(crate) fn change(&mut self, row: u16, value: f64) -> Result<(), Error> {
         let target = self
             .changes
             .get_mut(self.change_count)
@@ -248,8 +250,10 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
             value = truth(!in_.value.is_empty() && in_.value != "0");
         }
         Operation::ClearColor => return Ok(Text::Borrowed(in_.value)),
-        Operation::Fullscreen if value == 0.0 => value = 0.0,
-        Operation::Fullscreen | Operation::VideoMode => return Err(Error::VideoPolicyRequired),
+        Operation::Fullscreen if value == 0.0 && in_.video.is_none() => value = 0.0,
+        Operation::Fullscreen | Operation::VideoMode => {
+            return in_.video.ok_or(Error::VideoPolicyRequired)?.read(&in_);
+        }
         Operation::None => match c.kind {
             ConversionKind::Composite if !c.operands.is_empty() => {
                 let mut bits = 0u32;
@@ -423,8 +427,10 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
                 }
             }
         }
-        Operation::Fullscreen if value == 0.0 => value = 0.0,
-        Operation::Fullscreen | Operation::VideoMode => return Err(Error::VideoPolicyRequired),
+        Operation::Fullscreen if value == 0.0 && in_.video.is_none() => value = 0.0,
+        Operation::Fullscreen | Operation::VideoMode => {
+            return in_.video.ok_or(Error::VideoPolicyRequired)?.write(&in_);
+        }
         _ => match c.kind {
             ConversionKind::Composite if !c.operands.is_empty() => {
                 if !value.is_finite() || value < f64::from(i32::MIN) || value > f64::from(u32::MAX)

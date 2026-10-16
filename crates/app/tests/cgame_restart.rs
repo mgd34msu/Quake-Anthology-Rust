@@ -798,8 +798,11 @@ impl FrameSource for Source {
         if self.video_reject || matches!(policy.kind, Some(qa_app::renderer::Kind::Gl)) {
             return Err("headless candidate preparation rejected".into());
         }
+        let mut configuration = self.video_configuration.as_ref().clone();
+        configuration.display.width = policy.window.width;
+        configuration.display.height = policy.window.height;
         qa_app::renderer::PreparedVideo::cpu(
-            Arc::clone(&self.video_configuration),
+            Arc::new(configuration),
             assets,
             limits,
             policy.cpu_bands,
@@ -1092,6 +1095,28 @@ fn setup_renderers_with_images(
     let bands = host.console.cvars.find("r_cpuBands").unwrap();
     host.console.cvars.set_text(bands, "1").unwrap();
     host.console.cvars.set_latch_active(bands, true);
+    let display = qa_core::presentation::DisplayMode {
+        width: 64,
+        height: 48,
+        frequency: 60,
+        color_bits: 32,
+    };
+    host.console.cvars.set_video_policy(
+        Arc::new(qa_core::presentation::VideoCapabilities {
+            desktop: display,
+            fullscreen: Box::default(),
+        }),
+        display,
+    );
+    for (name, value) in [
+        ("r_mode", "-1"),
+        ("r_customwidth", "64"),
+        ("r_customheight", "48"),
+        ("r_fullscreen", "0"),
+    ] {
+        let handle = host.console.cvars.find(name).unwrap();
+        host.console.cvars.set_text(handle, value).unwrap();
+    }
     host.local_clients[0] = Some(ids[0]);
     host.local_clients[1] = Some(ids[1]);
     if let Some(console) = console {
@@ -2603,11 +2628,18 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         ..Context::default()
     };
     let picmip = host.console.cvars.bind("r_picmip", context).unwrap();
+    let width = host.console.cvars.bind("r_customwidth", context).unwrap();
+    let height = host.console.cvars.bind("r_customheight", context).unwrap();
+    let old_limits = host.runtime.scene.as_ref().unwrap().limits();
+    assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
     let markers = renderer_markers(&host);
     let resets = source.reset_receipts;
     source.video_reject = true;
     host.console
-        .append("r_picmip 2\nvid_restart cpu\n", context)
+        .append(
+            "r_customwidth 96\nr_customheight 80\nr_picmip 2\nvid_restart cpu\n",
+            context,
+        )
         .unwrap();
     host.execute_commands_with_driver(&mut source.driver());
     assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
@@ -2622,6 +2654,23 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     );
     source.step(&mut host);
     assert_eq!((source.video_prepares, source.video_publishes), (1, 0));
+    assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
+    assert_eq!(host.console.cvars.read(width).unwrap().as_str(), "64");
+    assert_eq!(host.console.cvars.read(height).unwrap().as_str(), "48");
+    assert_eq!(
+        host.console.cvars.latched(width).unwrap().unwrap().as_str(),
+        "96"
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(height)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "80"
+    );
+    assert_eq!(host.runtime.scene.as_ref().unwrap().limits(), old_limits);
     assert_eq!(renderer_markers(&host), markers);
     assert_eq!(source.reset_receipts, resets);
     assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
@@ -2669,6 +2718,23 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (2, 0));
+    assert_eq!(source.backend.cpu.dimensions(), [64, 48]);
+    assert_eq!(host.console.cvars.read(width).unwrap().as_str(), "64");
+    assert_eq!(host.console.cvars.read(height).unwrap().as_str(), "48");
+    assert_eq!(
+        host.console.cvars.latched(width).unwrap().unwrap().as_str(),
+        "96"
+    );
+    assert_eq!(
+        host.console
+            .cvars
+            .latched(height)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "80"
+    );
+    assert_eq!(host.runtime.scene.as_ref().unwrap().limits(), old_limits);
     assert_eq!(&renderer_markers(&host)[markers.len()..], b"uuccUUCC");
     assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "1");
     assert_eq!(
@@ -2739,6 +2805,20 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         source.backend.cpu.pixels()[32]
     );
 
+    assert!(source.views.iter().any(|(view, _, _)| *view
+        == qa_render::Viewport {
+            x: 2,
+            y: 2,
+            width: 28,
+            height: 44
+        }));
+    assert!(source.views.iter().any(|(view, _, _)| *view
+        == qa_render::Viewport {
+            x: 34,
+            y: 2,
+            width: 28,
+            height: 44
+        }));
     source.video_publish_reject = false;
     let retry_markers = renderer_markers(&host).len();
     host.console.append("vid_restart cpu\n", context).unwrap();
@@ -2746,6 +2826,21 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     until_running(&mut host, &mut source);
     assert_eq!((source.video_prepares, source.video_publishes), (3, 1));
+    assert_eq!(source.backend.cpu.dimensions(), [96, 80]);
+    assert_eq!(
+        [
+            source.video_configuration.display.width,
+            source.video_configuration.display.height
+        ],
+        [96, 80]
+    );
+    assert_eq!(host.console.cvars.read(width).unwrap().as_str(), "96");
+    assert_eq!(host.console.cvars.read(height).unwrap().as_str(), "80");
+    assert!(host.console.cvars.latched(width).unwrap().is_none());
+    assert!(host.console.cvars.latched(height).unwrap().is_none());
+    let limits = host.runtime.scene.as_ref().unwrap().limits();
+    assert!(limits.commands > old_limits.commands);
+    assert!(limits.vertices > old_limits.vertices);
     assert_eq!(&renderer_markers(&host)[retry_markers..], b"uuccUUCC");
     assert_eq!(host.console.cvars.read(picmip).unwrap().as_str(), "2");
     assert!(host.console.cvars.latched(picmip).unwrap().is_none());
@@ -2885,8 +2980,22 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     assert_ne!(source.backend.cpu.pixels()[0], 0);
     assert_eq!(
         source.backend.cpu.pixels()[0],
-        source.backend.cpu.pixels()[32]
+        source.backend.cpu.pixels()[48]
     );
+    assert!(source.views.iter().any(|(view, _, _)| *view
+        == qa_render::Viewport {
+            x: 2,
+            y: 2,
+            width: 28,
+            height: 44
+        }));
+    assert!(source.views.iter().any(|(view, _, _)| *view
+        == qa_render::Viewport {
+            x: 50,
+            y: 2,
+            width: 28,
+            height: 44
+        }));
     paint(&host, &mut source);
     for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_counts(module).unwrap().traps, 0);

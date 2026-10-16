@@ -6,7 +6,10 @@ use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
     services::CallError,
 };
-use qa_core::{primitives::ModuleId, sys_events::SeatId};
+use qa_core::{
+    primitives::{ClientId, ModuleId},
+    sys_events::SeatId,
+};
 use qa_render::shader::reference::{ShaderContextId, ShaderRef, ShaderView};
 use qa_render::{
     Vertex, Viewport,
@@ -101,11 +104,33 @@ impl SceneRole {
     pub(crate) fn stage_video_selection(
         &self,
         refresh: &crate::model_assets::ImageRefresh,
+        width: u32,
+        height: u32,
+        seats: &[Option<ClientId>; SeatId::COUNT],
     ) -> SceneVideoSelection {
         let mut selection = SceneVideoSelection {
             target: self.target,
         };
         if let Some(target) = &mut selection.target {
+            target.viewport = target
+                .seat
+                .filter(|seat| seats[seat.index()].is_some())
+                .map_or(
+                    Viewport {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    },
+                    |seat| {
+                        super::viewport(
+                            width,
+                            height,
+                            seats[..seat.index()].iter().flatten().count(),
+                            seats.iter().flatten().count(),
+                        )
+                    },
+                );
             target.profile = refresh.profile(target.profile);
             if let Some((world, previous)) = target.world
                 && let Some(next) = refresh.presentation(world, previous)

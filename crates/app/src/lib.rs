@@ -17,6 +17,7 @@ pub mod renderer;
 pub mod snapshots;
 pub mod startup;
 mod transport;
+pub mod window_settings;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;

@@ -164,6 +164,7 @@ pub struct Cvars {
     native_heads: Box<[Option<u32>]>,
     runtime_policy: RuntimePolicy,
     cheats_handle: CvarHandle,
+    video_policy: Option<crate::video::VideoPolicy>,
 }
 
 impl Cvars {
@@ -298,8 +299,12 @@ impl Cvars {
                         } else {
                             row.rule_conversion
                         } as usize];
-                        (conversion.detail || conversion.operation == Operation::MusicMute)
-                            .then(Box::default)
+                        (conversion.detail
+                            || matches!(
+                                conversion.operation,
+                                Operation::MusicMute | Operation::VideoMode | Operation::Fullscreen
+                            ))
+                        .then(Box::default)
                     })
                 })
                 .collect(),
@@ -312,6 +317,7 @@ impl Cvars {
             dirty_projections: StampSet::new(BINDINGS.len()),
             runtime_policy: RuntimePolicy::default(),
             cheats_handle,
+            video_policy: None,
         };
         for (i, binding) in BINDINGS.iter().enumerate() {
             let handle = registry.slot(binding.row as usize, binding.seat);
@@ -735,12 +741,184 @@ impl Cvars {
             |binding| binding.name,
         )
     }
+    fn dependency_rows(&self, view: View) -> impl Iterator<Item = u16> + '_ {
+        let conversion = self.conversion(view);
+        OPERANDS[conversion.operands.clone()]
+            .iter()
+            .map(|operand| operand.row)
+            .chain(
+                self.video_policy
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(move |policy| {
+                        policy.dependencies(conversion.operation).iter().copied()
+                    }),
+            )
+    }
+
+    pub fn set_video_policy(
+        &mut self,
+        capabilities: std::sync::Arc<qa_core::presentation::VideoCapabilities>,
+        windowed: qa_core::presentation::DisplayMode,
+    ) -> Result<(), conversion::Error> {
+        let policy = crate::video::VideoPolicy::load(capabilities, windowed)?;
+        for (index, binding) in BINDINGS.iter().enumerate() {
+            for &conversion in &binding.conversions {
+                for &row in policy.dependencies(CONVERSIONS[conversion as usize].operation) {
+                    let handle = self.slot(row as usize, 0);
+                    let dependents = &mut self.dependents[handle.0 as usize];
+                    if !dependents.contains(&(index as u16)) {
+                        dependents.push(index as u16);
+                    }
+                }
+            }
+        }
+        self.video_policy = Some(policy);
+        self.resolve_defaults();
+        self.refresh_numbers();
+        self.refresh_projections();
+        Ok(())
+    }
+    pub fn window_views(&self, gl: bool) -> Result<Vec<View>, conversion::Error> {
+        self.video_policy
+            .as_ref()
+            .ok_or(conversion::Error::VideoPolicyRequired)?;
+        let color = gl
+            || matches!(
+                self.window_request(true, false)?.mode,
+                qa_core::presentation::WindowMode::Exclusive { .. }
+            );
+        crate::video::WINDOW_CVARS
+            .iter()
+            .filter(|&&name| color || name != crate::video::WINDOW_CVARS[5])
+            .chain(crate::video::GL_CVARS.iter().filter(|_| gl))
+            .map(|name| {
+                self.bind(
+                    name,
+                    Context {
+                        role: Role::Engine,
+                        ..self.context
+                    },
+                )
+                .ok_or(conversion::Error::VideoPolicyRequired)
+            })
+            .collect()
+    }
+    pub fn window_request(
+        &self,
+        pending: bool,
+        gl: bool,
+    ) -> Result<qa_core::presentation::WindowRequest, conversion::Error> {
+        let policy = self
+            .video_policy
+            .as_ref()
+            .ok_or(conversion::Error::VideoPolicyRequired)?;
+        let source = self.context.source;
+        let value = |row| {
+            let handle = self.slot(row as usize, 0);
+            if pending {
+                self.pending_text(handle, source)
+            } else {
+                self.effective(handle, source)
+            }
+        };
+        let rr = self
+            .bind(
+                "vid_fullscreen",
+                Context {
+                    source: RuleSetId::Quake2Rerelease,
+                    role: Role::Engine,
+                    ..self.context
+                },
+            )
+            .ok_or(conversion::Error::VideoPolicyRequired)?;
+        let detail = if pending {
+            self.pending_detail(rr)
+        } else {
+            self.detail(rr)
+        };
+        let mode = self.slot(policy.rows[0] as usize, 0);
+        let mode_pending = pending
+            && self
+                .pending
+                .iter()
+                .any(|entry| entry.handles().any(|handle| handle == mode));
+        let baseline = policy.windowed();
+        let default_window = !self.is_explicit(mode)
+            && !mode_pending
+            && (!self.native_default_available(mode, source)
+                || matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld)
+                    && integer(value(policy.rows[0])) == -1);
+        let mut width = FixedText::<64>::default();
+        let mut height = FixedText::<64>::default();
+        if default_window {
+            write!(width, "{}", baseline.width).map_err(|_| conversion::Error::TextTooLong)?;
+            write!(height, "{}", baseline.height).map_err(|_| conversion::Error::TextTooLong)?;
+        }
+        policy.request(
+            &|row| {
+                if default_window {
+                    if row == policy.rows[0] {
+                        return "-1";
+                    }
+                    if row == policy.rows[1] {
+                        return width.as_str();
+                    }
+                    if row == policy.rows[2] {
+                        return height.as_str();
+                    }
+                }
+                value(row)
+            },
+            detail,
+            gl,
+        )
+    }
+    fn pending_text(&self, handle: CvarHandle, source: RuleSetId) -> &str {
+        self.pending
+            .iter()
+            .flat_map(|pending| {
+                pending
+                    .first
+                    .iter()
+                    .map(|(h, text)| (*h, text.as_str()))
+                    .chain(
+                        pending
+                            .changes
+                            .iter()
+                            .flatten()
+                            .map(|(h, text)| (*h, text.as_str())),
+                    )
+            })
+            .find_map(|(h, text)| (h == handle).then_some(text))
+            .unwrap_or_else(|| self.effective(handle, source))
+    }
+    fn pending_detail(&self, view: View) -> Option<&str> {
+        self.pending
+            .iter()
+            .filter_map(|pending| pending.detail.as_ref())
+            .find(|detail| {
+                detail.view.binding == view.binding
+                    && detail.view.context.source == view.context.source
+            })
+            .map(|detail| detail.text.as_str())
+            .or_else(|| {
+                let replaced = self.pending.iter().any(|pending| {
+                    pending.handles().any(|handle| {
+                        handle == view.handle
+                            || self
+                                .dependency_rows(view)
+                                .any(|row| self.slot(row as usize, 0) == handle)
+                    })
+                });
+                (!replaced).then(|| self.detail(view)).flatten()
+            })
+    }
     /// Converted state can also depend on other canonical rows (colour, dmflags).
     pub fn view_generation(&self, view: View) -> u64 {
-        OPERANDS[self.conversion(view).operands.clone()]
-            .iter()
-            .fold(self.generation(view.handle), |generation, operand| {
-                generation.max(self.generation(self.slot(operand.row as usize, 0)))
+        self.dependency_rows(view)
+            .fold(self.generation(view.handle), |generation, row| {
+                generation.max(self.generation(self.slot(row as usize, 0)))
             })
     }
     /// Native cvar layouts also expose a pending latch, without marking the
@@ -750,10 +928,9 @@ impl Cvars {
             let value = &self.values[handle.0 as usize];
             value.revision.max(value.pending_revision)
         };
-        OPERANDS[self.conversion(view).operands.clone()]
-            .iter()
-            .fold(generation(view.handle), |revision, operand| {
-                revision.max(generation(self.slot(operand.row as usize, 0)))
+        self.dependency_rows(view)
+            .fold(generation(view.handle), |revision, row| {
+                revision.max(generation(self.slot(row as usize, 0)))
             })
     }
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -838,48 +1015,22 @@ impl Cvars {
             current: text,
             detail,
             operand: operands,
+            video: self.video_policy.as_ref(),
         })
     }
     pub fn latched(&self, view: View) -> Result<Option<Text<'_>>, conversion::Error> {
-        let dependencies = &OPERANDS[self.conversion(view).operands.clone()];
         if !self.pending.iter().any(|pending| {
             pending.handles().any(|handle| {
                 handle == view.handle
-                    || dependencies
-                        .iter()
-                        .any(|o| self.slot(o.row as usize, 0) == handle)
+                    || self
+                        .dependency_rows(view)
+                        .any(|row| self.slot(row as usize, 0) == handle)
             })
         }) {
             return Ok(None);
         }
-        let text_for = |handle| {
-            self.pending
-                .iter()
-                .flat_map(|pending| {
-                    pending
-                        .first
-                        .iter()
-                        .map(|(h, text)| (*h, text.as_str()))
-                        .chain(
-                            pending
-                                .changes
-                                .iter()
-                                .flatten()
-                                .map(|(h, text)| (*h, text.as_str())),
-                        )
-                })
-                .find_map(|(h, text)| (h == handle).then_some(text))
-                .unwrap_or_else(|| self.effective(handle, view.context.source))
-        };
-        let detail = self
-            .pending
-            .iter()
-            .filter_map(|pending| pending.detail.as_ref())
-            .find(|d| {
-                d.view.binding == view.binding && d.view.context.source == view.context.source
-            })
-            .map(|d| d.text.as_str())
-            .or_else(|| self.detail(view));
+        let text_for = |handle| self.pending_text(handle, view.context.source);
+        let detail = self.pending_detail(view);
         self.project(view, text_for(view.handle), detail, &|row| {
             text_for(self.slot(row as usize, 0))
         })
@@ -1036,13 +1187,69 @@ impl Cvars {
         text: &str,
         enforce: bool,
     ) -> Result<(PendingWrite, bool), WriteError> {
+        let (mut changes, mut pending) = self.prepare_write_value(view, text, enforce, None)?;
+        if let Some(policy) = &self.video_policy
+            && view.handle == self.slot(policy.rows[6] as usize, 0)
+            && let Some(selector) = self.bind(
+                "vid_fullscreen",
+                Context {
+                    source: RuleSetId::Quake2Rerelease,
+                    role: Role::Engine,
+                    ..view.context
+                },
+            )
+            && let Some(index) = self.pending_detail(selector)
+        {
+            let (projection, projected_pending) =
+                self.prepare_write_value(selector, index, enforce, Some((policy.rows[6], text)))?;
+            for (handle, value) in projection
+                .first
+                .iter()
+                .map(|(handle, value)| (*handle, value.as_str()))
+                .chain(
+                    projection
+                        .changes
+                        .iter()
+                        .flatten()
+                        .map(|(handle, value)| (*handle, value.as_str())),
+                )
+            {
+                let slot = changes
+                    .changes
+                    .iter_mut()
+                    .find(|slot| slot.is_none())
+                    .ok_or(WriteError::Capacity)?;
+                let mut text = FixedText::default();
+                text.set(value)
+                    .map_err(|_| conversion::Error::TextTooLong)?;
+                *slot = Some((handle, text));
+            }
+            changes.detail = projection.detail;
+            pending |= projected_pending;
+        }
+        Ok((changes, pending))
+    }
+    fn prepare_write_value(
+        &self,
+        view: View,
+        text: &str,
+        enforce: bool,
+        operand_override: Option<(u16, &str)>,
+    ) -> Result<(PendingWrite, bool), WriteError> {
         if enforce {
             self.check_write(view, text)?;
         }
         let binding = BINDINGS.get(view.binding as usize);
         let current = self.effective(view.handle, view.context.source);
         let detail = self.detail(view);
-        let operands = |row| self.effective(self.slot(row as usize, 0), view.context.source);
+        let operands = |row| {
+            operand_override
+                .filter(|(overridden, _)| *overridden == row)
+                .map_or_else(
+                    || self.effective(self.slot(row as usize, 0), view.context.source),
+                    |(_, value)| value,
+                )
+        };
         let c = if self.reads_stored(view).unwrap_or(true) {
             &CONVERSIONS[0]
         } else {
@@ -1057,6 +1264,7 @@ impl Cvars {
             current,
             detail,
             operand: &operands,
+            video: self.video_policy.as_ref(),
         })?;
         let detail = if out.detail {
             let mut value = FixedText::default();
@@ -1166,8 +1374,8 @@ impl Cvars {
         let mut revisions = [(CvarHandle(0), 0); 33];
         revisions[0] = (view.handle, self.values[view.handle.0 as usize].revision);
         let mut count = 1;
-        for operand in &OPERANDS[self.conversion(view).operands.clone()] {
-            let handle = self.slot(operand.row as usize, 0);
+        for row in self.dependency_rows(view) {
+            let handle = self.slot(row as usize, 0);
             revisions[count] = (handle, self.values[handle.0 as usize].revision);
             count += 1;
         }
@@ -1512,6 +1720,7 @@ impl Cvars {
                         current: clause.value,
                         detail: None,
                         operand: &operands,
+                        video: self.video_policy.as_ref(),
                     });
                     if let Ok(out) = out {
                         let mut pending: [Option<(usize, String)>; 32] =
@@ -1584,6 +1793,7 @@ impl Cvars {
                 current,
                 detail: None,
                 operand: &operands,
+                video: self.video_policy.as_ref(),
             }) else {
                 continue;
             };

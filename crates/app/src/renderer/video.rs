@@ -121,13 +121,26 @@ pub(crate) fn prepare_live_video(
             .as_deref()
             .ok_or("missing active renderer")?;
         let kind = policy.kind.unwrap_or(renderer.kind);
-        let window = kind.open(renderer.width as i32, renderer.height as i32)?;
+        let window = kind.open(policy.window)?;
         let context = Context::load(kind, &window)?;
         PreparedVideo::load(Some(window), context, assets, limits, policy.cpu_bands)
     })();
-    if !source.window.ensure_gl_current() {
-        drop(result);
-        return Err("active renderer context could not be restored".into());
+    if let Err(restore) = source.window.restore_video_state() {
+        let preparation = match result {
+            Ok(candidate) => {
+                drop(candidate);
+                None
+            }
+            Err(error) => Some(error),
+        };
+        let mut error = preparation.map_or_else(
+            || format!("active renderer state could not be restored: {restore}"),
+            |error| format!("{error}; active renderer state could not be restored: {restore}"),
+        );
+        if let Err(retry) = source.window.restore_video_state() {
+            error.push_str(&format!("; restoration after candidate cleanup: {retry}"));
+        }
+        return Err(error);
     }
     result
 }
@@ -137,11 +150,7 @@ pub(crate) fn discard_live_video(
     candidate: PreparedVideo,
 ) -> Result<(), String> {
     drop(candidate);
-    if source.window.ensure_gl_current() {
-        Ok(())
-    } else {
-        Err("active renderer context could not be restored".into())
-    }
+    source.window.restore_video_state()
 }
 
 pub(crate) fn publish_live_video(
@@ -160,9 +169,7 @@ pub(crate) fn publish_live_video(
         if candidate.backend.is_none() {
             return Err("replacement renderer was consumed".into());
         }
-        if !window.ensure_gl_current() {
-            return Err("replacement renderer context is unavailable".into());
-        }
+        window.restore_video_state()?;
         let backend = candidate
             .backend
             .take()
@@ -174,6 +181,12 @@ pub(crate) fn publish_live_video(
         renderer.kind = candidate.kind;
         renderer.width = candidate.configuration.display.width;
         renderer.height = candidate.configuration.display.height;
+        renderer.particle_presentation = renderer
+            .particle_presentation
+            .for_target(renderer.width, renderer.height);
+        renderer
+            .effects
+            .resize_target(renderer.width, renderer.height);
         renderer.sample = Default::default();
         renderer.draw_failed = false;
         // The old context is retired immediately, so it reclaims GPU objects.
@@ -183,8 +196,11 @@ pub(crate) fn publish_live_video(
         Ok(Arc::clone(&candidate.configuration))
     })();
     drop(candidate);
-    if result.is_err() && !source.window.ensure_gl_current() {
-        return Err("active renderer context could not be restored".into());
+    match result {
+        Ok(configuration) => Ok(configuration),
+        Err(error) => match source.window.restore_video_state() {
+            Ok(()) => Err(error),
+            Err(restore) => Err(format!("{error}; active renderer restoration: {restore}")),
+        },
     }
-    result
 }

@@ -1,6 +1,7 @@
 //! Cold presentation settings from the one cvar table, selected per world.
 use qa_console::{
     cvars::{Cvars, View},
+    pending::PendingSettings,
     views::{Context, RuleSetId},
 };
 use qa_content::vfs::Vfs;
@@ -101,54 +102,41 @@ const IMAGE_CVARS: [&str; 7] = [
 /// the one cvar table until the replacement resources are ready to publish.
 pub(crate) struct ImageSettingsPlan {
     settings: [Option<ImageSettings>; 5],
-    views: Vec<(View, u64)>,
+    pending: PendingSettings,
 }
 impl ImageSettingsPlan {
     pub(crate) fn prepare(
         vars: &Cvars,
         sources: impl IntoIterator<Item = RuleSetId>,
     ) -> Result<Self, &'static str> {
-        let mut plan = Self {
-            settings: [None; 5],
-            views: Vec::new(),
-        };
+        let mut settings = [None; 5];
+        let mut views = Vec::new();
         for source in sources {
-            if plan.settings[source as usize].is_some() {
+            if settings[source as usize].is_some() {
                 continue;
             }
-            plan.settings[source as usize] = Some(read_image_settings(vars, source, true)?);
+            settings[source as usize] = Some(read_image_settings(vars, source, true)?);
             for name in IMAGE_CVARS {
                 let view = image_view(vars, source, name)?;
-                plan.views.push((view, vars.view_update_generation(view)));
+                views.push(view);
             }
         }
-        Ok(plan)
+        Ok(Self {
+            settings,
+            pending: PendingSettings::capture(vars, views),
+        })
     }
     pub(crate) fn selections(&self) -> [Option<ImageSettings>; 5] {
         self.settings
     }
     pub(crate) fn validate(&self, vars: &Cvars) -> Result<(), &'static str> {
-        if self
-            .views
-            .iter()
-            .any(|&(view, generation)| vars.view_update_generation(view) != generation)
-        {
+        if !self.pending.unchanged(vars) {
             return Err("image settings changed during restart");
         }
         Ok(())
     }
     pub(crate) fn apply(&self, vars: &mut Cvars) -> Result<(), qa_console::cvars::WriteError> {
-        for (index, &(view, _)) in self.views.iter().enumerate() {
-            if self.views[..index]
-                .iter()
-                .any(|&(previous, _)| previous.canonical() == view.canonical())
-            {
-                continue;
-            }
-            vars.apply_latch(view)?;
-            vars.set_latch_active(view.canonical(), true);
-        }
-        Ok(())
+        self.pending.apply(vars)
     }
 }
 fn image_view(vars: &Cvars, source: RuleSetId, name: &str) -> Result<View, &'static str> {

@@ -106,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current: &current,
                     detail,
                     operand: &operand,
+                    video: None,
                 }),
             )?;
             let out = conversion::write(Input {
@@ -117,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 current: &current,
                 detail,
                 operand: &operand,
+                video: None,
             });
             output.write_all(&[u8::from(out.is_ok())])?;
             if let Ok(out) = out {

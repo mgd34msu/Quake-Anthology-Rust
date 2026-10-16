@@ -41,7 +41,10 @@ impl FrameHost {
     pub(crate) fn stage_video_image_roles(
         &self,
         refresh: &ImageRefresh,
+        width: u32,
+        height: u32,
     ) -> Result<VideoImageRoles, String> {
+        let seats = std::array::from_fn(|seat| self.local_seat(seat).map(|(client, _, _)| client));
         let mut rows = Vec::new();
         if let Some(modules) = &self.modules {
             for row in modules.rows.iter().flatten() {
@@ -54,7 +57,8 @@ impl FrameHost {
                 rows.push((
                     row.request.context.module,
                     row.request.anchor,
-                    row.scene_role.stage_video_selection(refresh),
+                    row.scene_role
+                        .stage_video_selection(refresh, width, height, &seats),
                 ));
             }
         }

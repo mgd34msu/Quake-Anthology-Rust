@@ -892,8 +892,11 @@ impl qa_app::host::FrameSource for VideoSource {
         assets: &Assets,
         limits: Limits,
     ) -> Result<qa_app::renderer::PreparedVideo, String> {
+        let mut configuration = self.configuration.as_ref().clone();
+        configuration.display.width = policy.window.width;
+        configuration.display.height = policy.window.height;
         qa_app::renderer::PreparedVideo::cpu(
-            std::sync::Arc::clone(&self.configuration),
+            std::sync::Arc::new(configuration),
             assets,
             limits,
             policy.cpu_bands,
@@ -1018,6 +1021,28 @@ fn image_restart_remaps_captured_players_and_statics_without_following_rewritten
     };
     let band = host.console.cvars.find("r_cpuBands").unwrap();
     host.console.cvars.set_text(band, "1").unwrap();
+    let display = qa_core::presentation::DisplayMode {
+        width: 64,
+        height: 48,
+        frequency: 60,
+        color_bits: 32,
+    };
+    host.console.cvars.set_video_policy(
+        std::sync::Arc::new(qa_core::presentation::VideoCapabilities {
+            desktop: display,
+            fullscreen: Box::default(),
+        }),
+        display,
+    );
+    for (name, value) in [
+        ("r_mode", "-1"),
+        ("r_customwidth", "64"),
+        ("r_customheight", "48"),
+        ("r_fullscreen", "0"),
+    ] {
+        let handle = host.console.cvars.find(name).unwrap();
+        host.console.cvars.set_text(handle, value).unwrap();
+    }
     let configuration = std::sync::Arc::new(qa_core::presentation::RendererConfiguration {
         display: qa_core::presentation::DisplayConfiguration {
             width: 64,

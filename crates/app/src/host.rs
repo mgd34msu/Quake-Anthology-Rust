@@ -671,18 +671,19 @@ impl FrameHost {
                 .kind
                 .or_else(|| source.video_kind())
                 .ok_or("missing active video backend")?;
-            let (cpu_bands, band_generation) = if matches!(kind, crate::renderer::Kind::Cpu) {
+            let window_plan =
+                crate::window_settings::WindowSettingsPlan::prepare(&self.console.cvars, kind)?;
+            let (cpu_bands, band_settings) = if matches!(kind, crate::renderer::Kind::Cpu) {
                 (
                     crate::renderer::pending_cpu_band_setting(
                         &self.console.cvars,
                         self.cpu_band_view,
                         self.cpu_band_override,
                     )?,
-                    Some(
-                        self.console
-                            .cvars
-                            .view_update_generation(self.cpu_band_view),
-                    ),
+                    Some(qa_console::pending::PendingSettings::capture(
+                        &self.console.cvars,
+                        [self.cpu_band_view],
+                    )),
                 )
             } else {
                 (None, None)
@@ -692,6 +693,7 @@ impl FrameHost {
                     crate::renderer::VideoPolicy {
                         kind: Some(kind),
                         cpu_bands,
+                        window: window_plan.request(),
                     },
                     owner.assets(),
                     limits,
@@ -701,37 +703,45 @@ impl FrameHost {
                         candidate,
                         serial,
                         kind,
-                        band_generation,
+                        band_settings,
+                        window_plan,
                         image_plan,
                         profiles,
                         presentations,
                     )
                 })
         })();
-        let (candidate, serial, kind, band_generation, image_plan, profiles, presentations) =
-            match candidate {
-                Ok(candidate) => candidate,
-                Err(error) => {
-                    let _ = self
-                        .runtime
-                        .server
-                        .events
-                        .console_formatted(format_args!("Video restart rejected: {error}\n"));
-                    return;
-                }
-            };
+        let (
+            candidate,
+            serial,
+            kind,
+            band_settings,
+            window_plan,
+            image_plan,
+            profiles,
+            presentations,
+        ) = match candidate {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("Video restart rejected: {error}\n"));
+                return;
+            }
+        };
         self.video_active = true;
         let mut candidate = Some(candidate);
         let stopped = self
             .restart_client_modules(crate::modules::RendererRestart::Video, &mut source.driver());
         let published = stopped.and_then(|()| {
             image_plan.validate(&self.console.cvars)?;
-            if band_generation.is_some_and(|generation| {
-                self.console
-                    .cvars
-                    .view_update_generation(self.cpu_band_view)
-                    != generation
-            }) {
+            window_plan.validate(&self.console.cvars)?;
+            if band_settings
+                .as_ref()
+                .is_some_and(|pending| !pending.unchanged(&self.console.cvars))
+            {
                 return Err("CPU band setting changed during restart".into());
             }
             // The sole asset owner is moved only across this cold, callback-free
@@ -793,7 +803,7 @@ impl FrameHost {
                         ));
                     }
                 }
-                let roles = self.stage_video_image_roles(&refresh)?;
+                let roles = self.stage_video_image_roles(&refresh, width, height)?;
                 let scene = self
                     .runtime
                     .scene
@@ -826,6 +836,7 @@ impl FrameHost {
                     .renderer_contexts
                     .stage_graphics(staged.graphic_registrations())?;
                 image_plan.validate(&self.console.cvars)?;
+                window_plan.validate(&self.console.cvars)?;
                 let configuration = source.publish_video(
                     candidate
                         .take()
@@ -877,6 +888,12 @@ impl FrameHost {
             Ok(configuration) => {
                 self.runtime.renderer_configuration = Some(configuration);
                 self.video_serial = serial;
+                if let Err(error) = window_plan.apply(&mut self.console.cvars) {
+                    let _ =
+                        self.runtime.server.events.console_formatted(format_args!(
+                            "Window latch publication: {error:?}\n"
+                        ));
+                }
                 if let Err(error) = image_plan.apply(&mut self.console.cvars) {
                     let _ =
                         self.runtime.server.events.console_formatted(format_args!(
@@ -885,14 +902,13 @@ impl FrameHost {
                 }
                 match kind {
                     crate::renderer::Kind::Cpu => {
-                        if let Err(error) = self.console.cvars.apply_latch(self.cpu_band_view) {
+                        if let Some(pending) = &band_settings
+                            && let Err(error) = pending.apply(&mut self.console.cvars)
+                        {
                             let _ = self.runtime.server.events.console_formatted(format_args!(
                                 "CPU band latch publication: {error:?}\n"
                             ));
                         }
-                        self.console
-                            .cvars
-                            .set_latch_active(self.cpu_band_view.canonical(), true);
                     }
                     crate::renderer::Kind::Gl => {
                         self.console

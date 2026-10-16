@@ -192,11 +192,8 @@ impl Kind {
             Self::Gl => "gl",
         }
     }
-    pub fn open(self, width: i32, height: i32) -> Result<Window, String> {
-        match self {
-            Self::Cpu => Window::open(width, height),
-            Self::Gl => Window::open_gl(width, height),
-        }
+    pub fn open(self, request: qa_core::presentation::WindowRequest) -> Result<Window, String> {
+        Window::open_request(request, matches!(self, Self::Gl))
     }
 }
 
@@ -204,6 +201,7 @@ impl Kind {
 pub struct VideoPolicy {
     pub kind: Option<Kind>,
     pub cpu_bands: Option<RasterBands>,
+    pub window: qa_core::presentation::WindowRequest,
 }
 
 /// Cold context and capability owner; it becomes the only live backend after
@@ -423,6 +421,7 @@ pub struct SceneComposer {
     beam_alpha: qa_render::ShaderBindingId,
     console: Option<console::ConsoleAssets>,
     hud: [Option<hud::HudAssets>; 5],
+    ui_commands: usize,
 }
 
 /// Cold staging retains the existing scene owner until backend preparation
@@ -449,6 +448,8 @@ pub struct SceneHudAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
     target: &'a mut Option<hud::HudAssets>,
     candidate: hud::HudAssets,
+    ui_commands: &'a mut usize,
+    reserved_ui_commands: usize,
 }
 impl SceneHudAppend<'_> {
     pub fn limits(&self) -> Limits {
@@ -457,6 +458,7 @@ impl SceneHudAppend<'_> {
     pub fn commit(self) {
         self.frontend.commit();
         *self.target = Some(self.candidate);
+        *self.ui_commands = self.reserved_ui_commands;
     }
 }
 
@@ -472,6 +474,8 @@ pub(crate) struct SceneVideoAppend<'a> {
     console: &'a mut Option<console::ConsoleAssets>,
     hud: &'a mut [Option<hud::HudAssets>; 5],
     graphics: VideoGraphics,
+    ui_commands: &'a mut usize,
+    reserved_ui_commands: usize,
 }
 impl SceneVideoAppend<'_> {
     pub(crate) fn limits(&self) -> Limits {
@@ -487,6 +491,7 @@ impl SceneVideoAppend<'_> {
         *self.kind = kind;
         *self.console = self.graphics.console;
         *self.hud = self.graphics.hud;
+        *self.ui_commands = self.reserved_ui_commands;
     }
 }
 
@@ -529,16 +534,38 @@ fn hud_command_capacity() -> Result<usize, String> {
         .checked_mul(SeatId::COUNT)
         .ok_or_else(|| "HUD scene capacity".to_owned())
 }
-fn scene_ui_limits(mut limits: Limits, commands: usize) -> Result<Limits, String> {
+fn ui_command_capacity(
+    console: Option<&console::ConsoleAssets>,
+    hud: bool,
+) -> Result<usize, String> {
+    if console.is_none() && !hud {
+        return Ok(0);
+    }
+    console
+        .map_or(0, console::ConsoleAssets::command_capacity)
+        .checked_add(hud_command_capacity()?)
+        .ok_or_else(|| "UI scene capacity".to_owned())
+}
+
+fn scene_ui_limits(
+    mut limits: Limits,
+    old: usize,
+    required: usize,
+) -> Result<(Limits, usize), String> {
+    // Frontend arenas keep their high-water capacity across smaller windows.
+    // Replace the recorded reservation so repeated resizes cannot add it twice.
+    let commands = old.max(required);
     limits.commands = limits
         .commands
-        .checked_add(commands)
+        .checked_sub(old)
+        .and_then(|base| base.checked_add(commands))
         .ok_or("UI command capacity")?;
     limits.vertices = limits
         .vertices
-        .checked_add(commands.checked_mul(6).ok_or("UI vertex capacity")?)
+        .checked_sub(old.checked_mul(6).ok_or("UI vertex capacity")?)
+        .and_then(|base| base.checked_add(commands.checked_mul(6)?))
         .ok_or("UI vertex capacity")?;
-    Ok(limits)
+    Ok((limits, commands))
 }
 
 fn scene_surface_limits(mut limits: Limits, surfaces: usize) -> Result<Limits, String> {
@@ -672,17 +699,19 @@ impl SceneComposer {
         if self.frame.is_some() {
             return Err("scene frame is active".to_owned());
         }
-        let limits = if self.console.is_some() || self.hud.iter().any(Option::is_some) {
-            self.frontend.limits()
-        } else {
-            scene_ui_limits(self.frontend.limits(), hud_command_capacity()?)?
-        };
+        let (limits, reserved_ui_commands) = scene_ui_limits(
+            self.frontend.limits(),
+            self.ui_commands,
+            ui_command_capacity(self.console.as_ref(), true)?,
+        )?;
         let frontend = self.frontend.stage_capacity(limits)?;
         let target = &mut self.hud[candidate.rules() as usize];
         Ok(SceneHudAppend {
             frontend,
             target,
             candidate,
+            ui_commands: &mut self.ui_commands,
+            reserved_ui_commands,
         })
     }
 
@@ -757,15 +786,17 @@ impl SceneComposer {
                 .iter()
                 .zip(&graphics.hud)
                 .any(|(old, new)| old.is_some() != new.is_some())
-            || self
-                .console
-                .as_ref()
-                .zip(graphics.console.as_ref())
-                .is_some_and(|(old, new)| old.command_capacity() != new.command_capacity())
         {
             return Err("video graphics changed scene layout".to_owned());
         }
-        let mut limits = self.frontend.limits();
+        let (mut limits, reserved_ui_commands) = scene_ui_limits(
+            self.frontend.limits(),
+            self.ui_commands,
+            ui_command_capacity(
+                graphics.console.as_ref(),
+                graphics.hud.iter().any(Option::is_some),
+            )?,
+        )?;
         for &(world, previous, next) in &refresh.worlds {
             if !self.has_world(world) {
                 return Err("video world has no scene scratch".to_owned());
@@ -785,6 +816,8 @@ impl SceneComposer {
             console: &mut self.console,
             hud: &mut self.hud,
             graphics,
+            ui_commands: &mut self.ui_commands,
+            reserved_ui_commands,
         })
     }
 
@@ -845,6 +878,7 @@ impl SceneComposer {
                 beam_alpha,
                 console: None,
                 hud: std::array::from_fn(|_| None),
+                ui_commands: 0,
             },
             limits,
         ))
@@ -984,7 +1018,7 @@ impl Renderer {
         bands: Option<RasterBands>,
         console: console::ConsoleAssets,
         hud: [Option<hud::HudAssets>; 5],
-        effects: qa_render::effects::Effects,
+        mut effects: qa_render::effects::Effects,
     ) -> Result<(Self, SceneComposer), String> {
         let kind = match &context {
             Context::Cpu(_) => Kind::Cpu,
@@ -1001,23 +1035,21 @@ impl Renderer {
             .capacity()
             .checked_mul(SeatId::COUNT)
             .ok_or("particle scene capacity")?;
-        let ui_commands = console
-            .command_capacity()
-            .checked_add(hud_command_capacity()?)
-            .ok_or("UI scene capacity")?;
-        limits = scene_ui_limits(limits, ui_commands)?;
+        let (limits, ui_commands) =
+            scene_ui_limits(limits, 0, ui_command_capacity(Some(&console), true)?)?;
         let (mut scene, limits) = SceneComposer::load(limits, assets, worlds)?;
         scene.kind = kind;
         scene.console = Some(console);
         scene.hud = hud;
+        scene.ui_commands = ui_commands;
         let backend = Backend::load(context, width, height, assets, limits, bands)?;
+        effects.resize_target(width, height);
         Ok((
             Self {
                 effects,
                 particle_shader,
-                particle_presentation: qa_render::scene::ParticlePresentation::Square {
-                    pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
-                },
+                particle_presentation: qa_render::scene::ParticlePresentation::default()
+                    .for_target(width, height),
                 effect_clients: [None; SeatId::COUNT],
                 effect_time: qa_core::sys_events::EventTime::default(),
                 effect_gravity: 800.0,

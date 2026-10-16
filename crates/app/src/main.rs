@@ -54,8 +54,8 @@ fn run() -> Result<(), String> {
     let mut vfs = qa_content::vfs::Vfs::default();
     let mut device_assignments = Vec::new();
     let mut frames: Option<u32> = None;
-    let mut width = 640i32;
-    let mut height = 400i32;
+    let mut width: Option<i32> = None;
+    let mut height: Option<i32> = None;
     let mut warmup = 0u32;
     let mut timings = false;
     let mut uncapped = false;
@@ -341,23 +341,25 @@ fn run() -> Result<(), String> {
                 frames = (count != 0).then_some(count);
             }
             "--width" => {
-                width = args
-                    .next()
-                    .ok_or("--width needs a number")?
-                    .parse()
-                    .map_err(|_| "invalid width")?
+                width = Some(
+                    args.next()
+                        .ok_or("--width needs a number")?
+                        .parse()
+                        .map_err(|_| "invalid width")?,
+                )
             }
             "--height" => {
-                height = args
-                    .next()
-                    .ok_or("--height needs a number")?
-                    .parse()
-                    .map_err(|_| "invalid height")?
+                height = Some(
+                    args.next()
+                        .ok_or("--height needs a number")?
+                        .parse()
+                        .map_err(|_| "invalid height")?,
+                )
             }
             _ => return Err(format!("unknown option: {arg}")),
         }
     }
-    if width <= 0 || height <= 0 {
+    if width.is_some_and(|value| value <= 0) || height.is_some_and(|value| value <= 0) {
         return Err("dimensions must be positive".into());
     }
     if timings && frames.is_none() {
@@ -432,6 +434,17 @@ fn run() -> Result<(), String> {
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
     let mut native_entity_source = None;
+    console
+        .cvars
+        .set_video_policy(
+            std::sync::Arc::new(qa_platform::Window::query_video_capabilities()?),
+            qa_core::presentation::DisplayMode {
+                width: 640,
+                height: 400,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("video capabilities: {error:?}"))?;
     let mut imported_profile = qa_app::profile::Import::default();
     if let Some((input, policy)) = &staged_map {
         if !console_source_explicit {
@@ -856,7 +869,9 @@ fn run() -> Result<(), String> {
         })
         .collect();
     qa_app::audio::load_registered_sounds(&mut host, &precache_sounds, sound_rules)?;
-    let mut window = renderer_kind.open(width, height)?;
+    let window_settings =
+        qa_app::window_settings::startup(&mut host.console.cvars, renderer_kind, width, height)?;
+    let mut window = renderer_kind.open(window_settings.request())?;
     let renderer_context = qa_app::renderer::Context::load(renderer_kind, &window)?;
     host.runtime.renderer_configuration =
         Some(std::sync::Arc::clone(renderer_context.configuration()));
@@ -996,6 +1011,10 @@ fn run() -> Result<(), String> {
     )
     .map_err(|error| format!("renderer admission: {error:?}"))?;
     host.runtime.scene = Some(scene);
+    window_settings.validate(&host.console.cvars)?;
+    window_settings
+        .apply(&mut host.console.cvars)
+        .map_err(|error| format!("window latch publication: {error:?}"))?;
     // Startup commands can retire a seat before Com_Frame begins. Complete
     // those real Presentation records before a deferred connect may retry.
     host.dispatch_output(

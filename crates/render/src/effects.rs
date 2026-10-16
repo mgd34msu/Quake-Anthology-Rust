@@ -328,6 +328,12 @@ impl Effects {
         slot.get_or_insert(binding);
         true
     }
+    /// Retain recipe and simulation ownership while updating native point shape.
+    pub fn resize_target(&mut self, width: u32, height: u32) {
+        for binding in self.bindings.iter_mut().flatten() {
+            binding.presentation = binding.presentation.for_target(width, height);
+        }
+    }
     /// Caller supplies actual connected canonical lifetimes, not seat ordinals.
     pub fn synchronize(&mut self, connected: &[Option<EffectClient>]) {
         self.seen.begin();

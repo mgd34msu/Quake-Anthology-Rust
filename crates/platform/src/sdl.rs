@@ -1,5 +1,8 @@
 //! SDL3 ABI definitions follow SDL 3.4 headers, never SDL2 byte offsets.
 use crate::clock::Clock;
+use qa_core::presentation::{
+    DisplayMode, GlContextRequest, VideoCapabilities, WindowMode, WindowRequest,
+};
 use qa_core::sys_events::{
     DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SysEvent, SysEventQueue,
 };
@@ -123,15 +126,23 @@ union SdlEvent {
 const SUBSYSTEMS: u32 = 0x20 | 0x2000; // VIDEO | GAMEPAD
 const WINDOW_OPENGL: u64 = 0x2;
 const WINDOW_INPUT_FOCUS: u64 = 0x200;
+const WINDOW_MINIMIZED: u64 = 0x40;
 const PIXELFORMAT_ABGR8888: u32 = 0x16762004;
 const TEXTUREACCESS_STREAMING: c_int = 1;
 const GL_DOUBLEBUFFER: c_int = 5;
+const GL_BUFFER_SIZE: c_int = 4;
+const GL_RED_SIZE: c_int = 0;
+const GL_GREEN_SIZE: c_int = 1;
+const GL_BLUE_SIZE: c_int = 2;
+const GL_ALPHA_SIZE: c_int = 3;
 const GL_DEPTH_SIZE: c_int = 6;
+const GL_STENCIL_SIZE: c_int = 7;
+const GL_STEREO: c_int = 12;
 const GL_CONTEXT_MAJOR_VERSION: c_int = 17;
 const GL_CONTEXT_MINOR_VERSION: c_int = 18;
 const GL_CONTEXT_PROFILE_MASK: c_int = 20;
 const GL_CONTEXT_PROFILE_CORE: c_int = 1;
-const MAX_WINDOW_DIMENSION: i32 = 8192;
+const GL_SHARE_WITH_CURRENT_CONTEXT: c_int = 22;
 
 // SDL_stdinc.h defines a nullable void (*)(void), not a data pointer.
 type SdlFunctionPointer = Option<unsafe extern "C" fn()>;
@@ -164,6 +175,233 @@ struct SdlDisplayMode {
     internal: *mut c_void,
 }
 
+struct DisplayModes {
+    modes: NonNull<*mut SdlDisplayMode>,
+    count: usize,
+}
+impl DisplayModes {
+    fn load(display: u32) -> Result<Self, String> {
+        let mut count = 0;
+        // SAFETY: SDL video is initialized on this thread by the caller. SDL
+        // returns one allocation containing its counted display-mode pointers.
+        let modes = NonNull::new(unsafe { SDL_GetFullscreenDisplayModes(display, &mut count) })
+            .ok_or_else(error)?;
+        let Ok(count) = usize::try_from(count) else {
+            unsafe { SDL_free(modes.as_ptr().cast()) };
+            return Err("invalid SDL display-mode count".to_owned());
+        };
+        Ok(Self { modes, count })
+    }
+    fn iter(&self) -> impl Iterator<Item = (usize, &SdlDisplayMode)> {
+        // SAFETY: SDL returned exactly count pointers in this live allocation.
+        unsafe { std::slice::from_raw_parts(self.modes.as_ptr(), self.count) }
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &mode)| unsafe { mode.as_ref() }.map(|mode| (index, mode)))
+    }
+}
+impl Drop for DisplayModes {
+    fn drop(&mut self) {
+        // SAFETY: this owner frees only SDL's original mode-list allocation.
+        unsafe { SDL_free(self.modes.as_ptr().cast()) };
+    }
+}
+
+fn display_mode(mode: &SdlDisplayMode) -> Result<DisplayMode, String> {
+    // SDL_GetWindowSizeInPixels rounds the density-scaled extent upward.
+    let width = (mode.width as f32 * mode.pixel_density).ceil();
+    let height = (mode.height as f32 * mode.pixel_density).ceil();
+    if mode.width <= 0
+        || mode.height <= 0
+        || !mode.pixel_density.is_finite()
+        || mode.pixel_density <= 0.0
+        || !(1.0..i32::MAX as f32).contains(&width)
+        || !(1.0..i32::MAX as f32).contains(&height)
+        || !mode.refresh_rate.is_finite()
+        || mode.refresh_rate < 0.0
+        || mode.refresh_rate >= i32::MAX as f32
+        || mode.format >> 28 != 1
+    {
+        return Err("invalid SDL display mode".to_owned());
+    }
+    // SDL_BYTESPERPIXEL for an ordinary packed format is its low byte. Native
+    // mode depths count the whole pixel, while GL reports RGB channel precision.
+    let color_bits = (mode.format & 255) * 8;
+    if color_bits == 0 {
+        return Err("invalid SDL display pixel format".to_owned());
+    }
+    Ok(DisplayMode {
+        width: width as u32,
+        height: height as u32,
+        frequency: mode.refresh_rate as i32,
+        color_bits,
+    })
+}
+
+fn video_capabilities_for(display: u32) -> Result<VideoCapabilities, String> {
+    if display == 0 {
+        return Err(error());
+    }
+    // SAFETY: SDL owns the desktop record while video remains initialized.
+    let desktop = unsafe { SDL_GetDesktopDisplayMode(display).as_ref() }.ok_or_else(error)?;
+    let desktop = display_mode(desktop)?;
+    let modes = DisplayModes::load(display)?;
+    let fullscreen = modes
+        .iter()
+        .map(|(_, mode)| display_mode(mode))
+        .collect::<Result<Box<[_]>, _>>()?;
+    Ok(VideoCapabilities {
+        desktop,
+        fullscreen,
+    })
+}
+
+fn exclusive_mode(
+    modes: impl Iterator<Item = (usize, DisplayMode)>,
+    width: u32,
+    height: u32,
+    frequency: i32,
+    color_bits: u32,
+    desktop: DisplayMode,
+) -> Option<usize> {
+    let frequency = if frequency == 0 {
+        desktop.frequency
+    } else {
+        frequency
+    };
+    modes
+        .filter(|(_, mode)| {
+            mode.width == width
+                && mode.height == height
+                && (color_bits == 0 || mode.color_bits == color_bits)
+        })
+        .min_by_key(|(_, mode)| {
+            (
+                u8::from(color_bits == 0 && mode.color_bits != desktop.color_bits),
+                i64::from(mode.frequency).abs_diff(i64::from(frequency)),
+            )
+        })
+        .map(|(index, _)| index)
+}
+
+fn gl_attributes(request: GlContextRequest) -> Result<[Option<(c_int, c_int)>; 13], String> {
+    let bits = c_int::try_from(request.color_bits).map_err(|_| "invalid GL color precision")?;
+    let depth = c_int::try_from(request.depth_bits).map_err(|_| "invalid GL depth precision")?;
+    let stencil =
+        c_int::try_from(request.stencil_bits).map_err(|_| "invalid GL stencil precision")?;
+    let (red, green, blue, alpha) = match bits {
+        0 => (8, 8, 8, 8),
+        16 => (5, 6, 5, 0),
+        32 => (8, 8, 8, 8),
+        _ => (bits / 3, bits - 2 * (bits / 3), bits / 3, 0),
+    };
+    Ok([
+        Some((GL_CONTEXT_MAJOR_VERSION, 4)),
+        Some((GL_CONTEXT_MINOR_VERSION, 4)),
+        Some((GL_CONTEXT_PROFILE_MASK, GL_CONTEXT_PROFILE_CORE)),
+        Some((GL_DOUBLEBUFFER, 1)),
+        (bits != 0).then_some((GL_BUFFER_SIZE, bits)),
+        (bits != 0).then_some((GL_RED_SIZE, red)),
+        (bits != 0).then_some((GL_GREEN_SIZE, green)),
+        (bits != 0).then_some((GL_BLUE_SIZE, blue)),
+        (bits != 0).then_some((GL_ALPHA_SIZE, alpha)),
+        (depth != 0).then_some((GL_DEPTH_SIZE, depth)),
+        Some((GL_STENCIL_SIZE, stencil)),
+        Some((GL_STEREO, c_int::from(request.stereo))),
+        Some((GL_SHARE_WITH_CURRENT_CONTEXT, 0)),
+    ])
+}
+
+fn configure_swap_interval(
+    interval: i32,
+    mut set: impl FnMut(i32) -> bool,
+    mut get: impl FnMut(&mut i32) -> bool,
+) -> bool {
+    set(interval);
+    let mut actual = 0;
+    get(&mut actual) && actual == interval
+}
+
+fn window_dimensions(request: WindowRequest, gl: bool) -> Result<(i32, i32), String> {
+    request.validate(gl).map_err(str::to_owned)?;
+    Ok((request.width as i32, request.height as i32))
+}
+
+fn configure_window(window: NonNull<c_void>, request: WindowRequest) -> Result<(), String> {
+    // SAFETY: the sole window constructor owns this live SDL window and an
+    // initialized video reference on the main thread for this entire scope.
+    unsafe {
+        let expected = match request.mode {
+            WindowMode::Windowed => {
+                if !SDL_SetWindowFullscreen(window.as_ptr(), false) {
+                    return Err(error());
+                }
+                None
+            }
+            WindowMode::Desktop => {
+                if !SDL_SetWindowFullscreenMode(window.as_ptr(), std::ptr::null())
+                    || !SDL_SetWindowFullscreen(window.as_ptr(), true)
+                {
+                    return Err(error());
+                }
+                None
+            }
+            WindowMode::Exclusive {
+                frequency,
+                color_bits,
+            } => {
+                let display = SDL_GetDisplayForWindow(window.as_ptr());
+                let desktop = SDL_GetDesktopDisplayMode(display)
+                    .as_ref()
+                    .ok_or_else(error)?;
+                let desktop = display_mode(desktop)?;
+                let modes = DisplayModes::load(display)?;
+                let choices = modes
+                    .iter()
+                    .map(|(index, mode)| display_mode(mode).map(|mode| (index, mode)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let selected = exclusive_mode(
+                    choices.into_iter(),
+                    request.width,
+                    request.height,
+                    frequency,
+                    color_bits,
+                    desktop,
+                )
+                .ok_or("requested fullscreen display mode is unavailable")?;
+                let mode = modes
+                    .iter()
+                    .find_map(|(index, mode)| (index == selected).then_some(mode))
+                    .ok_or("fullscreen display mode disappeared")?;
+                if !SDL_SetWindowFullscreenMode(window.as_ptr(), mode)
+                    || !SDL_SetWindowFullscreen(window.as_ptr(), true)
+                {
+                    return Err(error());
+                }
+                Some(display_mode(mode)?)
+            }
+        };
+        if !SDL_SyncWindow(window.as_ptr()) {
+            return Err(error());
+        }
+        let fullscreen = SDL_GetWindowFlags(window.as_ptr()) & 1 != 0;
+        if fullscreen != !matches!(request.mode, WindowMode::Windowed) {
+            return Err("window system declined fullscreen state".to_owned());
+        }
+        if let Some(expected) = expected {
+            let display = SDL_GetDisplayForWindow(window.as_ptr());
+            let actual = SDL_GetCurrentDisplayMode(display)
+                .as_ref()
+                .ok_or_else(error)?;
+            let actual = display_mode(actual)?;
+            if actual != expected {
+                return Err("window system declined fullscreen display mode".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[link(name = "SDL3")]
 unsafe extern "C" {
     fn SDL_InitSubSystem(flags: u32) -> bool;
@@ -176,7 +414,14 @@ unsafe extern "C" {
     fn SDL_GetWindowFlags(window: *mut c_void) -> u64;
     fn SDL_GetWindowSizeInPixels(window: *mut c_void, w: *mut c_int, h: *mut c_int) -> bool;
     fn SDL_GetDisplayForWindow(window: *mut c_void) -> u32;
+    fn SDL_GetPrimaryDisplay() -> u32;
+    fn SDL_GetDesktopDisplayMode(display: u32) -> *const SdlDisplayMode;
+    fn SDL_GetFullscreenDisplayModes(display: u32, count: *mut c_int) -> *mut *mut SdlDisplayMode;
     fn SDL_GetCurrentDisplayMode(display: u32) -> *const SdlDisplayMode;
+    fn SDL_SetWindowFullscreenMode(window: *mut c_void, mode: *const SdlDisplayMode) -> bool;
+    fn SDL_SetWindowFullscreen(window: *mut c_void, fullscreen: bool) -> bool;
+    fn SDL_RestoreWindow(window: *mut c_void) -> bool;
+    fn SDL_RaiseWindow(window: *mut c_void) -> bool;
     fn SDL_SetWindowRelativeMouseMode(window: *mut c_void, enabled: bool) -> bool;
     fn SDL_GetWindowRelativeMouseMode(window: *mut c_void) -> bool;
     fn SDL_DestroyWindow(window: *mut c_void);
@@ -209,6 +454,7 @@ unsafe extern "C" {
         destination: *const SdlFRect,
     ) -> bool;
     fn SDL_GL_SetAttribute(attribute: c_int, value: c_int) -> bool;
+    fn SDL_GL_ResetAttributes();
     fn SDL_GL_GetAttribute(attribute: c_int, value: *mut c_int) -> bool;
     fn SDL_GL_CreateContext(window: *mut c_void) -> *mut c_void;
     fn SDL_GL_DestroyContext(context: *mut c_void) -> bool;
@@ -280,7 +526,7 @@ impl Presentation {
             })
         }
     }
-    fn gl(window: NonNull<c_void>) -> Result<Self, String> {
+    fn gl(window: NonNull<c_void>, request: GlContextRequest) -> Result<Self, String> {
         unsafe {
             let context = NonNull::new(SDL_GL_CreateContext(window.as_ptr())).ok_or_else(error)?;
             let result = (|| {
@@ -297,16 +543,19 @@ impl Presentation {
                 if (major, minor) < (4, 4) || profile & GL_CONTEXT_PROFILE_CORE == 0 {
                     return Err("OpenGL 4.4 core context required".into());
                 }
-                let mut interval = -1;
                 // Xvfb GLX has no swap-control extension: setting zero returns
                 // unsupported, but SDL's GLX getter reports its zero interval.
                 // Accept the requested state only after a successful query.
-                SDL_GL_SetSwapInterval(0);
-                if !SDL_GL_GetSwapInterval(&mut interval) {
-                    return Err(error());
-                }
-                if interval != 0 {
-                    return Err("OpenGL swap interval must be zero".into());
+                if !configure_swap_interval(
+                    request.swap_interval,
+                    |interval| SDL_GL_SetSwapInterval(interval),
+                    |interval| SDL_GL_GetSwapInterval(interval),
+                ) {
+                    return Err(format!(
+                        "OpenGL swap interval {} is unavailable: {}",
+                        request.swap_interval,
+                        error()
+                    ));
                 }
                 Ok(())
             })();
@@ -560,11 +809,66 @@ impl SdlInput {
 
 pub struct Window {
     window: NonNull<c_void>,
+    request: WindowRequest,
     presentation: Presentation,
     gamepads: [Option<(u32, NonNull<c_void>)>; 16],
     input: SdlInput,
 }
 impl Window {
+    /// Capture the primary display before importing profile aliases. This cold
+    /// query owns only a temporary SDL video reference and creates no window.
+    pub fn query_video_capabilities() -> Result<VideoCapabilities, String> {
+        // SAFETY: this API runs on the SDL main thread before window creation.
+        unsafe {
+            if !SDL_InitSubSystem(0x20) {
+                return Err(error());
+            }
+            let result = video_capabilities_for(SDL_GetPrimaryDisplay());
+            SDL_QuitSubSystem(0x20);
+            result
+        }
+    }
+
+    pub fn video_capabilities(&self) -> Result<VideoCapabilities, String> {
+        // SAFETY: this window retains an initialized SDL video reference.
+        video_capabilities_for(unsafe { SDL_GetDisplayForWindow(self.window.as_ptr()) })
+    }
+
+    pub fn request(&self) -> WindowRequest {
+        self.request
+    }
+
+    /// Restore the owned mode/focus after another cold candidate used the display.
+    /// This synchronizes window state but performs no physical event intake.
+    pub fn restore_video_state(&self) -> Result<(), String> {
+        // SDL minimizes an existing exclusive owner when another one takes its
+        // display. Restore and raise it before reapplying the requested mode.
+        // SAFETY: the retained window and SDL reference belong to this thread.
+        let window_error = unsafe {
+            let mut failure = if SDL_GetWindowFlags(self.window.as_ptr()) & WINDOW_MINIMIZED != 0
+                && !SDL_RestoreWindow(self.window.as_ptr())
+            {
+                Some(error())
+            } else {
+                None
+            };
+            if !SDL_RaiseWindow(self.window.as_ptr()) && failure.is_none() {
+                failure = Some(error());
+            }
+            failure
+        };
+        let configured = configure_window(self.window, self.request);
+        // Even a denied mode/focus request must not leave the other backend's
+        // context current when control returns to the retained renderer.
+        if !self.ensure_gl_current() {
+            return Err("renderer context could not be restored".to_owned());
+        }
+        match window_error {
+            Some(error) => Err(error),
+            None => configured,
+        }
+    }
+
     #[cfg(feature = "proof")]
     pub fn inject_key(&mut self, name: &str, down: bool) -> Result<(), String> {
         let name = std::ffi::CString::new(name).map_err(|_| "invalid key name")?;
@@ -680,32 +984,29 @@ impl Window {
     /// Opens the SDL software presenter with a fixed streaming framebuffer.
     /// SDL window operations must remain on the main thread that creates it.
     pub fn open(width: i32, height: i32) -> Result<Self, String> {
-        Self::open_backend(width, height, false)
+        Self::open_dimensions(width, height, false)
     }
     /// Opens a double-buffered OpenGL 4.4 core context with vsync disabled.
     /// The context is current on return. Window is not Send or Sync; GL draws,
     /// procedure resolution and presentation stay on its creating main thread.
     pub fn open_gl(width: i32, height: i32) -> Result<Self, String> {
-        Self::open_backend(width, height, true)
+        Self::open_dimensions(width, height, true)
     }
-    fn open_backend(width: i32, height: i32, gl: bool) -> Result<Self, String> {
-        if !(1..=MAX_WINDOW_DIMENSION).contains(&width)
-            || !(1..=MAX_WINDOW_DIMENSION).contains(&height)
-        {
-            return Err("window dimensions must be between 1 and 8192".into());
-        }
+    fn open_dimensions(width: i32, height: i32, gl: bool) -> Result<Self, String> {
+        let width = u32::try_from(width).map_err(|_| "invalid window width")?;
+        let height = u32::try_from(height).map_err(|_| "invalid window height")?;
+        Self::open_request(WindowRequest::windowed(width, height), gl)
+    }
+    pub fn open_request(request: WindowRequest, gl: bool) -> Result<Self, String> {
+        let (width, height) = window_dimensions(request, gl)?;
+        let attributes = gl.then(|| gl_attributes(request.gl)).transpose()?;
         unsafe {
             if !SDL_InitSubSystem(SUBSYSTEMS) {
                 return Err(error());
             }
-            if gl {
-                for (attribute, value) in [
-                    (GL_CONTEXT_MAJOR_VERSION, 4),
-                    (GL_CONTEXT_MINOR_VERSION, 4),
-                    (GL_CONTEXT_PROFILE_MASK, GL_CONTEXT_PROFILE_CORE),
-                    (GL_DOUBLEBUFFER, 1),
-                    (GL_DEPTH_SIZE, 24),
-                ] {
+            if let Some(attributes) = attributes {
+                SDL_GL_ResetAttributes();
+                for (attribute, value) in attributes.into_iter().flatten() {
                     if !SDL_GL_SetAttribute(attribute, value) {
                         let message = error();
                         SDL_QuitSubSystem(SUBSYSTEMS);
@@ -725,14 +1026,13 @@ impl Window {
             };
             // SDL3 window state is asynchronous on Wayland. Complete creation
             // before reporting window_ready or selecting input/capture targets.
-            if !SDL_SyncWindow(window.as_ptr()) {
-                let message = error();
+            if let Err(message) = configure_window(window, request) {
                 SDL_DestroyWindow(window.as_ptr());
                 SDL_QuitSubSystem(SUBSYSTEMS);
                 return Err(message);
             }
             let presentation = match if gl {
-                Presentation::gl(window)
+                Presentation::gl(window, request.gl)
             } else {
                 Presentation::software(window, width, height)
             } {
@@ -746,6 +1046,7 @@ impl Window {
             SDL_StartTextInput(window.as_ptr());
             let mut opened = Self {
                 window,
+                request,
                 presentation,
                 gamepads: [None; 16],
                 input: SdlInput::new(
@@ -968,6 +1269,10 @@ impl Drop for Window {
 #[cfg(test)]
 #[path = "../tests/sdl/events.rs"]
 mod input_tests;
+
+#[cfg(test)]
+#[path = "../tests/sdl/video.rs"]
+mod video_tests;
 
 #[cfg(all(test, target_pointer_width = "64"))]
 mod abi_tests {

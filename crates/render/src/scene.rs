@@ -520,6 +520,16 @@ pub enum ParticlePresentation {
     /// A material-backed, camera-facing square with the requested world size.
     Card,
 }
+impl ParticlePresentation {
+    pub fn for_target(self, width: u32, height: u32) -> Self {
+        match self {
+            Self::Square { .. } => Self::Square {
+                pixel_aspect: (height as f32 / width as f32) * (320.0 / 240.0),
+            },
+            Self::Card => Self::Card,
+        }
+    }
+}
 impl Default for ParticlePresentation {
     fn default() -> Self {
         Self::Square { pixel_aspect: 1.0 }

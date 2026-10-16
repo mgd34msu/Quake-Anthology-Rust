@@ -11,6 +11,8 @@ pub mod input_settings;
 pub mod logger;
 pub mod movement;
 pub mod numbers;
+pub mod pending;
 pub mod presentation;
 pub mod text;
+pub mod video;
 pub mod views;
