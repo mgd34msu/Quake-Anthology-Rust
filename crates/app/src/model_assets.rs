@@ -24,6 +24,10 @@ use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::WorldId;
 use qa_render::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 
+#[cfg(test)]
+#[path = "../tests/unit/renderer_registrations.rs"]
+mod registration_tests;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest<'a> {
     pub path: &'a str,
@@ -611,12 +615,12 @@ struct RegistrationCheckpoint {
     diagnostics: usize,
     worlds: usize,
     inline_count: usize,
-    file: Option<ModelCheckpoint>,
-    shader_index: Option<(NameId, Option<u32>)>,
-    shader: Option<ShaderCheckpoint>,
-    skin: Option<SkinCheckpoint>,
-    skin_index: Option<(NameId, Option<u32>)>,
-    inline: Option<(usize, Option<NameId>)>,
+    files: Vec<ModelCheckpoint>,
+    shader_indices: Vec<(NameId, Option<u32>)>,
+    shaders_before: Vec<ShaderCheckpoint>,
+    skins_before: Vec<SkinCheckpoint>,
+    skin_indices: Vec<(NameId, Option<u32>)>,
+    inline_before: Vec<(usize, Option<NameId>)>,
     images: Vec<Option<ImageRegistrationMark>>,
 }
 struct ShaderCheckpoint {
@@ -703,19 +707,31 @@ impl RegistrationCheckpoint {
             diagnostics: catalog.diagnostics.len(),
             worlds: catalog.worlds.len(),
             inline_count: catalog.inline.len(),
-            file: None,
-            shader_index: None,
-            shader: None,
-            skin: None,
-            skin_index: None,
-            inline: None,
+            files: Vec::new(),
+            shader_indices: Vec::new(),
+            shaders_before: Vec::new(),
+            skins_before: Vec::new(),
+            skin_indices: Vec::new(),
+            inline_before: Vec::new(),
             images,
         })
     }
-    fn capture(
+    fn capture<const N: usize>(
+        owner: &ModelAssets,
+        requests: [&RendererRequest<impl AsRef<[u8]>>; N],
+    ) -> Result<Self, String> {
+        let mut checkpoint = Self::base(owner)?;
+        for request in requests {
+            checkpoint.capture_target(owner, request)?;
+        }
+        Ok(checkpoint)
+    }
+
+    fn capture_target(
+        &mut self,
         owner: &ModelAssets,
         request: &RendererRequest<impl AsRef<[u8]>>,
-    ) -> Result<Self, String> {
+    ) -> Result<(), String> {
         let catalog = &owner.catalog;
         let mut file_name = None;
         let mut shader_index = None;
@@ -751,10 +767,20 @@ impl RegistrationCheckpoint {
                 shader_index = find_shader_index(&catalog.names, &catalog.shader_indices, raw);
             }
         }
-        let shader = shader_index.and_then(|(_, index)| {
-            let index = index? as usize;
+        if let Some((group, index)) = shader_index
+            && !self.shader_indices.iter().any(|&(saved, _)| saved == group)
+        {
+            self.shader_indices.push((group, index));
+        }
+        if let Some((_, Some(index))) = shader_index
+            && !self
+                .shaders_before
+                .iter()
+                .any(|saved| saved.index == index as usize)
+        {
+            let index = index as usize;
             let shader = &catalog.shaders[index];
-            Some(ShaderCheckpoint {
+            self.shaders_before.push(ShaderCheckpoint {
                 index,
                 requests: shader.requests.clone(),
                 bindings: shader
@@ -767,11 +793,21 @@ impl RegistrationCheckpoint {
                             && matches!(binding.state, RegistrationState::Unattempted)
                     })
                     .collect(),
-            })
-        });
-        let skin = skin_index.and_then(|(_, index)| {
-            let index = index? as usize;
-            Some(SkinCheckpoint {
+            });
+        }
+        if let Some((group, index)) = skin_index
+            && !self.skin_indices.iter().any(|&(saved, _)| saved == group)
+        {
+            self.skin_indices.push((group, index));
+        }
+        if let Some((_, Some(index))) = skin_index
+            && !self
+                .skins_before
+                .iter()
+                .any(|saved| saved.index == index as usize)
+        {
+            let index = index as usize;
+            self.skins_before.push(SkinCheckpoint {
                 index,
                 unattempted: catalog.skins[index]
                     .profiles
@@ -781,12 +817,13 @@ impl RegistrationCheckpoint {
                         matches!(profile.state, RegistrationState::Unattempted).then_some(index)
                     })
                     .collect(),
-            })
-        });
-        let mut checkpoint = Self::base(owner)?;
-        checkpoint.file = file_name.map(|name| {
+            });
+        }
+        if let Some(name) = file_name
+            && !self.files.iter().any(|saved| saved.name == name)
+        {
             let profiles = catalog.models[name.0 as usize].clone();
-            ModelCheckpoint {
+            self.files.push(ModelCheckpoint {
                 name,
                 file: catalog.files[name.0 as usize].clone(),
                 unattempted: profiles
@@ -800,14 +837,14 @@ impl RegistrationCheckpoint {
                     })
                     .collect(),
                 profiles,
-            }
-        });
-        checkpoint.shader_index = shader_index;
-        checkpoint.shader = shader;
-        checkpoint.skin = skin;
-        checkpoint.skin_index = skin_index;
-        checkpoint.inline = inline;
-        Ok(checkpoint)
+            });
+        }
+        if let Some((slot, handle)) = inline
+            && !self.inline_before.iter().any(|&(saved, _)| saved == slot)
+        {
+            self.inline_before.push((slot, handle));
+        }
+        Ok(())
     }
 
     fn rollback(self, owner: &mut ModelAssets, mode: RegistrationRollback) -> Result<(), String> {
@@ -837,10 +874,10 @@ impl RegistrationCheckpoint {
                 catalog.shader_indices[index] = None;
                 catalog.skin_indices[index] = None;
             }
-            if let Some((group, index)) = self.shader_index {
+            for (group, index) in self.shader_indices {
                 catalog.shader_indices[group.0 as usize] = index;
             }
-            if let Some((group, index)) = self.skin_index {
+            for (group, index) in self.skin_indices {
                 catalog.skin_indices[group.0 as usize] = index;
             }
         } else {
@@ -860,18 +897,18 @@ impl RegistrationCheckpoint {
                 }
             }
         }
-        if let Some(file) = self.file.as_ref() {
+        for file in &self.files {
             for &index in &file.unattempted {
                 catalog.registrations[index].state.rollback(mode);
             }
         }
-        if let Some(shader) = self.shader {
+        for shader in self.shaders_before {
             catalog.shaders[shader.index].requests = shader.requests;
             for index in shader.bindings {
                 catalog.shader_bindings[index].state.rollback(mode);
             }
         }
-        if let Some(skin) = self.skin {
+        for skin in self.skins_before {
             for index in skin.unattempted {
                 catalog.skins[skin.index].profiles[index]
                     .state
@@ -879,17 +916,17 @@ impl RegistrationCheckpoint {
             }
         }
         if matches!(mode, RegistrationRollback::Source) {
-            if let Some(file) = self.file.as_ref()
-                && matches!(catalog.files[file.name.0 as usize], ModelFile::Failed(_))
-                && matches!(file.file, ModelFile::Ready { renderer_sources, .. } if renderer_sources != 0)
-            {
-                catalog.files[file.name.0 as usize] = file.file.clone();
+            for file in &self.files {
+                if matches!(catalog.files[file.name.0 as usize], ModelFile::Failed(_))
+                    && matches!(file.file, ModelFile::Ready { renderer_sources, .. } if renderer_sources != 0)
+                {
+                    catalog.files[file.name.0 as usize] = file.file.clone();
+                }
             }
             for index in self
-                .file
-                .as_ref()
+                .files
+                .iter()
                 .map(|file| file.name.0 as usize)
-                .into_iter()
                 .chain(self.names..catalog.names.len())
             {
                 let sources = catalog.models[index]
@@ -916,11 +953,13 @@ impl RegistrationCheckpoint {
                     }
                 }
             }
-        } else if let Some(file) = self.file {
-            catalog.files[file.name.0 as usize] = file.file;
-            catalog.models[file.name.0 as usize] = file.profiles;
+        } else {
+            for file in self.files {
+                catalog.files[file.name.0 as usize] = file.file;
+                catalog.models[file.name.0 as usize] = file.profiles;
+            }
         }
-        if let Some((slot, handle)) = self.inline {
+        for (slot, handle) in self.inline_before {
             catalog.inline[slot].handle = handle;
         }
         catalog.capacity = ModelCapacity {
@@ -1245,51 +1284,84 @@ impl ModelAssets {
         profile: ModelProfile,
         prepare: impl FnOnce(&Assets) -> Result<(), String>,
     ) -> Result<(i32, AssetCounts), String> {
+        self.prepare_registrations(vfs, [request], profile, prepare)
+            .map(|([handle], counts)| (handle, counts))
+    }
+
+    fn prepare_registrations<const N: usize>(
+        &mut self,
+        vfs: &Vfs,
+        requests: [&RendererRequest<impl AsRef<[u8]>>; N],
+        profile: ModelProfile,
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<([i32; N], AssetCounts), String> {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("late registration requires a published resource prefix".to_owned());
         }
-        if request.name.as_ref().is_empty() {
-            return Err("renderer registration name length".to_owned());
-        }
-        if profile.source_rules != request.source
-            || !self
-                .catalog
-                .profiles
-                .iter()
-                .any(|entry| entry.profile == profile)
+        if !self
+            .catalog
+            .profiles
+            .iter()
+            .any(|entry| entry.profile == profile)
         {
             return Err("renderer registration source/profile mismatch".to_owned());
         }
-        if let Some(handle) = self.catalog.registration_cached(
-            request.kind,
-            request.name.as_ref(),
-            profile,
-            request.world,
-        ) {
-            return Ok((handle, self.assets.counts()));
+        for request in requests {
+            if request.name.as_ref().is_empty() {
+                return Err("renderer registration name length".to_owned());
+            }
+            if profile.source_rules != request.source {
+                return Err("renderer registration source/profile mismatch".to_owned());
+            }
         }
-        let checkpoint = RegistrationCheckpoint::capture(self, request)?;
+        let cached = requests.map(|request| {
+            self.catalog.registration_cached(
+                request.kind,
+                request.name.as_ref(),
+                profile,
+                request.world,
+            )
+        });
+        let mut handles = [0; N];
+        for (handle, cached) in handles.iter_mut().zip(cached) {
+            if let Some(cached) = cached {
+                *handle = cached;
+            }
+        }
+        if cached.iter().all(Option::is_some) {
+            return Ok((handles, self.assets.counts()));
+        }
+        if cached.contains(&Some(0)) {
+            return Err("renderer registration unavailable for invoking profile".to_owned());
+        }
+        let checkpoint = RegistrationCheckpoint::capture(self, requests)?;
         let mut rollback = RegistrationRollback::Source;
         let result = (|| {
-            let raw = request.name.as_ref();
-            let handle = match request.kind {
-                RendererRegistration::Model if raw.starts_with(b"*") => request
-                    .world
-                    .zip(qa_core::text::inline_model_index(raw))
-                    .ok_or(CallError::File)
-                    .and_then(|(world, index)| self.register_inline(world, index)),
-                RendererRegistration::Model => self.register_model(vfs, raw, request.source),
-                RendererRegistration::Skin => self.register_skin(vfs, raw, request.source),
-                RendererRegistration::Shader { mipmaps } => {
-                    self.register_shader(vfs, raw, request.source, mipmaps)
+            for (index, request) in requests.into_iter().enumerate() {
+                if cached[index].is_some() {
+                    continue;
                 }
-            }
-            .map_err(|error| format!("renderer registration: {error:?}"))?;
-            if !self
-                .catalog
-                .renderer_candidate(request.kind, handle, profile)
-            {
-                return Err("renderer registration unavailable for invoking profile".to_owned());
+                let raw = request.name.as_ref();
+                let handle = match request.kind {
+                    RendererRegistration::Model if raw.starts_with(b"*") => request
+                        .world
+                        .zip(qa_core::text::inline_model_index(raw))
+                        .ok_or(CallError::File)
+                        .and_then(|(world, index)| self.register_inline(world, index)),
+                    RendererRegistration::Model => self.register_model(vfs, raw, request.source),
+                    RendererRegistration::Skin => self.register_skin(vfs, raw, request.source),
+                    RendererRegistration::Shader { mipmaps } => {
+                        self.register_shader(vfs, raw, request.source, mipmaps)
+                    }
+                }
+                .map_err(|error| format!("renderer registration: {error:?}"))?;
+                if !self
+                    .catalog
+                    .renderer_candidate(request.kind, handle, profile)
+                {
+                    return Err("renderer registration unavailable for invoking profile".to_owned());
+                }
+                handles[index] = handle;
             }
             let counts = self.assets.counts();
             rollback = RegistrationRollback::Retry;
@@ -1299,7 +1371,7 @@ impl ModelAssets {
             // The backend has committed this prefix. All owner checks already
             // passed, so publication cannot fail or discard accepted resources.
             self.apply_admission(counts);
-            Ok((handle, counts))
+            Ok((handles, counts))
         })();
         match result {
             Ok(ready) => Ok(ready),
@@ -1463,12 +1535,12 @@ impl ModelAssets {
         self.validate_world_profile(profile, presentation)?;
         let checkpoint = RegistrationCheckpoint::capture(
             self,
-            &RendererRequest {
+            [&RendererRequest {
                 name: input.virtual_path.as_bytes(),
                 source: profile.source_rules,
                 kind: RendererRegistration::Model,
                 world: None,
-            },
+            }],
         )?;
         let hulls = input.native_source.lineage() == qa_formats::entities::EntitySyntax::Quake;
         let mut created = None;
