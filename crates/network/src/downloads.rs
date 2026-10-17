@@ -218,7 +218,7 @@ pub(crate) fn read_block<'a>(
 /// Original Q3 base and Team Arena pak0..pak8 cannot be autodownloaded.
 /// The result names the native product for its rejection message.
 pub fn q3_stock_package(name: &[u8]) -> Option<&'static str> {
-    let mut normalized = [0; 64];
+    let mut normalized = [0; REQUEST_NAME_BYTES];
     if name.len() > normalized.len() {
         return None;
     }
@@ -244,17 +244,29 @@ pub fn q3_stock_package(name: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Native MAX_QPATH storage includes its terminating byte.
+pub const REQUEST_NAME_BYTES: usize = 64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathRole {
     Request,
     Destination,
 }
 
-/// Native requests include a directory. A local alias can instead name a file
-/// directly in the explicitly selected writable root; both retain native limits.
+impl PathRole {
+    pub const fn maximum_bytes(self) -> usize {
+        match self {
+            Self::Request => REQUEST_NAME_BYTES - 1,
+            Self::Destination => qa_core::names::MAX_PATH_BYTES,
+        }
+    }
+}
+
+/// Remote native requests retain MAX_QPATH and include a directory. Local
+/// aliases instead follow VFS capacity and may name a file directly in the root.
 pub fn validate_path(name: &[u8], role: PathRole) -> Result<(), Error> {
     if name.is_empty()
-        || name.len() >= 64
+        || name.len() > role.maximum_bytes()
         || role == PathRole::Request && !name.contains(&b'/')
         || name.windows(2).any(|pair| pair == b"..")
         || name

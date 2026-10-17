@@ -547,7 +547,17 @@ fn download_destinations_allow_root_files_without_relaxing_request_or_containmen
         Ok(())
     );
     assert_eq!(
-        downloads::validate_path(&[b'a'; 64], PathRole::Destination),
+        downloads::validate_path(
+            &[b'a'; qa_core::names::MAX_PATH_BYTES],
+            PathRole::Destination
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        downloads::validate_path(
+            &[b'a'; qa_core::names::MAX_PATH_BYTES + 1],
+            PathRole::Destination
+        ),
         Err(Error::Path)
     );
 }

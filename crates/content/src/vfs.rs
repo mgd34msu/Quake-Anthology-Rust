@@ -1,4 +1,7 @@
-use qa_core::{names::NameTable, primitives::IndexSpan};
+use qa_core::{
+    names::{MAX_PATH_BYTES, NameTable},
+    primitives::IndexSpan,
+};
 use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -193,13 +196,13 @@ pub struct Vfs {
 }
 
 pub fn normalize(path: &[u8]) -> Result<Vec<u8>, VfsError> {
-    let mut bytes = [0; 4096];
+    let mut bytes = [0; MAX_PATH_BYTES];
     let length = normalize_into(path, &mut bytes)?;
     Ok(bytes[..length].to_vec())
 }
 
-fn normalize_into(path: &[u8], normalized: &mut [u8; 4096]) -> Result<usize, VfsError> {
-    if path.is_empty() || path.len() > 4096 || path.iter().any(|&c| c == 0 || c == b':') {
+fn normalize_into(path: &[u8], normalized: &mut [u8; MAX_PATH_BYTES]) -> Result<usize, VfsError> {
+    if path.is_empty() || path.len() > MAX_PATH_BYTES || path.iter().any(|&c| c == 0 || c == b':') {
         return Err(VfsError::Path);
     }
     let mut starts = [0usize; 2048];
@@ -588,7 +591,7 @@ impl Vfs {
 
     fn find_candidates(&self, path: &[u8]) -> Option<&[u32]> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
-        let mut normalized = [0; 4096];
+        let mut normalized = [0; MAX_PATH_BYTES];
         let length = normalize_into(path, &mut normalized).ok()?;
         let id = self.names.as_ref()?.find(&normalized[..length])?;
         self.listing

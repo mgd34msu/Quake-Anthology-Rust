@@ -1,6 +1,9 @@
 use crate::primitives::NameId;
 use std::cmp::Ordering;
 
+/// Maximum virtual file path data, independent of native protocol name fields.
+pub const MAX_PATH_BYTES: usize = 4096;
+
 fn fold(byte: u8) -> u8 {
     byte.to_ascii_lowercase()
 }

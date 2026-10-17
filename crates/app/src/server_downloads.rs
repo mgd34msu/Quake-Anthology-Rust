@@ -178,7 +178,7 @@ pub(crate) struct ServerDownload {
     permissions: Option<Permissions>,
     reader: ArchiveReader,
     numbered: Numbered,
-    name: FixedText<64>,
+    name: FixedText<{ downloads::REQUEST_NAME_BYTES }>,
     failure: Failure,
     retire_before: u64,
 }
@@ -230,7 +230,7 @@ impl ServerDownload {
         if downloads::validate_path(raw, downloads::PathRole::Request).is_err() {
             return;
         }
-        let mut name = [0; 64];
+        let mut name = [0; downloads::REQUEST_NAME_BYTES];
         for (to, from) in name.iter_mut().zip(raw) {
             *to = path_byte(*from);
         }

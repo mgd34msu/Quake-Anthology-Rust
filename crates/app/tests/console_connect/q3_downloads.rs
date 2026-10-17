@@ -481,10 +481,15 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     }
     collect(&mut server, &mut native, 20);
     assert_eq!(native.count(b"download baseq3/custom.pk3"), 0);
+    let destination = format!(
+        "downloads/{0}/{0}/{0}/custom.12345678.pk3",
+        "local".repeat(30)
+    );
+    assert!(destination.len() > 320);
     command(
         &mut host,
         &mut source,
-        "download baseq3/custom.pk3 custom.pk3\n",
+        &format!("download baseq3/custom.pk3 {destination}\n"),
         30,
     );
     collect(&mut server, &mut native, 30);
@@ -514,9 +519,18 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     });
     frame(&mut host, &mut source, 40);
     collect(&mut server, &mut native, 40);
+    command(&mut host, &mut source, "downloadstatus\n", 45);
+    assert!(
+        host.console
+            .scrollback
+            .chunks(&host.runtime.server.events.texts)
+            .any(|text| text
+                .windows(destination.len())
+                .any(|part| part == destination.as_bytes()))
+    );
     command(&mut host, &mut source, "stopdownload\n", 50);
     collect(&mut server, &mut native, 50);
-    assert!(bytes(&host, b"custom.pk3").is_none());
+    assert!(bytes(&host, destination.as_bytes()).is_none());
     assert!(bytes(&host, b"baseq3/custom.pk3").is_none());
     command(&mut host, &mut source, "retrydownload\n", 60);
     collect(&mut server, &mut native, 60);
@@ -549,7 +563,7 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     collect(&mut server, &mut native, 70);
     frame(&mut host, &mut source, 75);
     collect(&mut server, &mut native, 75);
-    assert_eq!(bytes(&host, b"custom.pk3"), Some(package.clone()));
+    assert_eq!(bytes(&host, destination.as_bytes()), Some(package.clone()));
     assert_eq!(
         bytes(&host, b"models/aliased.bin"),
         Some(b"retained package member".to_vec())
@@ -567,10 +581,10 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     command(
         &mut host,
         &mut source,
-        "download baseq3/other.pk3 custom.pk3\n",
+        &format!("download baseq3/other.pk3 {destination}\n"),
         80,
     );
     collect(&mut server, &mut native, 80);
     assert_eq!(native.count(b"download baseq3/other.pk3"), 0);
-    assert_eq!(bytes(&host, b"custom.pk3"), Some(package));
+    assert_eq!(bytes(&host, destination.as_bytes()), Some(package));
 }

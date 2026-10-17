@@ -3,7 +3,7 @@ use qa_content::vfs::{MountId, Vfs};
 use qa_core::{sys_events::SeatId, text::FixedText};
 use qa_network::{channel::TransmitError, downloads::Chunk};
 use qa_platform::files::StagedFile;
-use std::fmt::Write;
+use std::{fmt::Write, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadConfig {
@@ -15,13 +15,16 @@ pub(crate) struct DownloadConfig {
 
 #[derive(Clone)]
 struct Request {
-    remote: FixedText<64>,
-    local: FixedText<64>,
+    remote: FixedText<{ qa_network::downloads::REQUEST_NAME_BYTES }>,
+    local: Arc<FixedText<{ qa_core::names::MAX_PATH_BYTES + 1 }>>,
     mount: MountId,
     purpose: Purpose,
 }
 impl Request {
-    fn name(raw: &[u8], role: qa_network::downloads::PathRole) -> Result<FixedText<64>, String> {
+    fn name<const N: usize>(
+        raw: &[u8],
+        role: qa_network::downloads::PathRole,
+    ) -> Result<FixedText<N>, String> {
         qa_network::downloads::validate_path(raw, role)
             .map_err(|_| "invalid native download path")?;
         let raw = std::str::from_utf8(raw).map_err(|_| "download path is not UTF-8")?;
@@ -258,7 +261,7 @@ impl ClientResources {
         &mut self,
         vfs: &Vfs,
         mut models: Option<&mut crate::model_assets::ModelAssets>,
-    ) -> Result<Option<FixedText<64>>, String> {
+    ) -> Result<Option<FixedText<{ qa_network::downloads::REQUEST_NAME_BYTES }>>, String> {
         use super::startup::{Q2FileCursor, ResourceKind};
         loop {
             let mut name = FixedText::<64>::default();
@@ -612,11 +615,14 @@ impl ClientDownload {
         if self.pending().is_some() {
             return Err("download acknowledgement is still pending".into());
         }
-        let remote = Request::name(remote, qa_network::downloads::PathRole::Request)?;
-        let local = match local {
-            Some(local) => Request::name(local, qa_network::downloads::PathRole::Destination)?,
-            None => remote.clone(),
-        };
+        let remote = Request::name::<{ qa_network::downloads::REQUEST_NAME_BYTES }>(
+            remote,
+            qa_network::downloads::PathRole::Request,
+        )?;
+        let local = Arc::new(Request::name::<{ qa_core::names::MAX_PATH_BYTES + 1 }>(
+            local.unwrap_or_else(|| remote.as_bytes()),
+            qa_network::downloads::PathRole::Destination,
+        )?);
         if vfs.open(local.as_bytes()).is_some() {
             return Err("download file is already available in mounted content".into());
         }
@@ -779,7 +785,12 @@ impl ClientDownload {
         enabled: bool,
         vfs: &Vfs,
         cvars: &qa_console::cvars::Cvars,
-        mut paths: impl FnMut(usize) -> Option<(FixedText<64>, Option<FixedText<64>>)>,
+        mut paths: impl FnMut(
+            usize,
+        ) -> Option<(
+            FixedText<{ qa_network::downloads::REQUEST_NAME_BYTES }>,
+            Option<FixedText<{ qa_network::downloads::REQUEST_NAME_BYTES }>>,
+        )>,
     ) -> Result<(), String> {
         let Some(pass) = &mut self.skin_pass else {
             return Ok(());
@@ -1340,7 +1351,7 @@ impl crate::host::FrameHost {
                 )?;
             }
             1 => {
-                let mut text = FixedText::<320>::default();
+                let mut text = FixedText::<{ qa_console::text::MAX_TEXT }>::default();
                 downloads
                     .status(&mut text)
                     .map_err(|_| "download status capacity")?;
