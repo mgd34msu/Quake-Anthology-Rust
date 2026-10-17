@@ -1681,7 +1681,14 @@ fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> Geomet
     let profile = ModelRequest::native("", RuleSetId::QuakeWorld, None).profile();
     let mut owner = ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
     owner
-        .bind_loaded_world("maps/ready.bsp", world, Some(geometry), bounds, None)
+        .bind_loaded_world(
+            &host.runtime.vfs,
+            "maps/ready.bsp",
+            world,
+            Some(geometry),
+            bounds,
+            None,
+        )
         .unwrap();
     host.runtime.model_assets = Some(owner);
     for (seat, &client) in clients.iter().enumerate() {
@@ -3235,6 +3242,7 @@ fn install_received_world_owner(
         .unwrap();
     owner
         .bind_loaded_world(
+            &host.runtime.vfs,
             "maps/ready.bsp",
             world,
             Some(geometry),

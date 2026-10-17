@@ -55,12 +55,14 @@ impl<T> Selections<T> {
 pub(super) struct ScopedBindings<K> {
     scopes: Selections<OrdinalBindings<K>>,
     names: usize,
+    capacity: usize,
 }
 impl<K: BindingId> ScopedBindings<K> {
-    pub(super) fn load(names: usize) -> Self {
+    pub(super) fn load(names: usize, capacity: usize) -> Self {
         Self {
             scopes: Selections::new(),
             names,
+            capacity,
         }
     }
     pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<K> {
@@ -71,9 +73,9 @@ impl<K: BindingId> ScopedBindings<K> {
             return Err(());
         }
         let names = self.names;
-        let id = self
-            .scopes
-            .intern(view, names, || OrdinalBindings::load(names, 0, 0, true))?;
+        let id = self.scopes.intern(view, self.capacity, || {
+            OrdinalBindings::load(names, 0, 0, true)
+        })?;
         self.scopes
             .get_mut(id)
             .set(name.0, Some(value))

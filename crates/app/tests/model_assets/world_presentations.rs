@@ -113,6 +113,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         .unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             &first.virtual_path,
             world,
             Some(collision),
@@ -122,6 +123,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         .unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             &second.virtual_path,
             other_world,
             Some(second.collision),

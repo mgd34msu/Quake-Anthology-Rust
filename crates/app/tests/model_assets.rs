@@ -117,6 +117,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         .unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             &first.virtual_path,
             first_world,
             Some(first.collision),
@@ -466,6 +467,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         .unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             &old.virtual_path,
             old_world,
             Some(old.collision),
@@ -5420,6 +5422,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     let mut owner = ModelAssets::new(assets, [], [first, second], ModelLimits::default()).unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             "MAPS\\START.BSP",
             first,
             Some(geometry),
@@ -5429,6 +5432,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         .unwrap();
     owner
         .bind_loaded_world(
+            &fixture.vfs,
             "maps/absent.bsp",
             second,
             Some(geometry),
@@ -5438,9 +5442,25 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         .unwrap();
     assert!(
         owner
-            .bind_loaded_world("maps/start.bsp", first, None, native_bounds, None)
+            .bind_loaded_world(
+                &fixture.vfs,
+                "maps/start.bsp",
+                first,
+                None,
+                native_bounds,
+                None
+            )
             .is_err()
     );
+    let foreign = qa_content::vfs::Vfs::default();
+    for path in ["maps/start.bsp", "maps/foreign.bsp"] {
+        assert!(
+            owner
+                .bind_loaded_world(&foreign, path, first, Some(geometry), native_bounds, None)
+                .is_err()
+        );
+    }
+    assert!(owner.catalog().loaded_world(b"maps/foreign.bsp").is_none());
     assert_eq!(
         owner.catalog().loaded_world(b"maps/start.bsp"),
         Some(qa_compat::services::LoadedWorldBinding {
@@ -5611,6 +5631,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
 
 #[test]
 fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows() {
+    let vfs = qa_content::vfs::Vfs::default();
     let mut assets = Assets::load().unwrap();
     let first = world(&mut assets, 0.0);
     let second = world(&mut assets, 100.0);
@@ -5630,22 +5651,30 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
     .unwrap();
     assert!(
         owner
-            .bind_loaded_world("", first, None, bounds, None)
+            .bind_loaded_world(&vfs, "", first, None, bounds, None)
             .is_err()
     );
     assert!(
         owner
-            .bind_loaded_world("*1", first, None, bounds, None)
-            .is_err()
-    );
-    assert!(
-        owner
-            .bind_loaded_world("maps/start.bsp", WorldId(u32::MAX), None, bounds, None)
+            .bind_loaded_world(&vfs, "*1", first, None, bounds, None)
             .is_err()
     );
     assert!(
         owner
             .bind_loaded_world(
+                &vfs,
+                "maps/start.bsp",
+                WorldId(u32::MAX),
+                None,
+                bounds,
+                None
+            )
+            .is_err()
+    );
+    assert!(
+        owner
+            .bind_loaded_world(
+                &vfs,
                 "maps/start.bsp",
                 first,
                 None,
@@ -5658,19 +5687,20 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
             .is_err()
     );
     owner
-        .bind_loaded_world("maps/start.bsp", first, None, bounds, None)
+        .bind_loaded_world(&vfs, "maps/start.bsp", first, None, bounds, None)
         .unwrap();
     owner
-        .bind_loaded_world("MAPS\\START.BSP", first, None, bounds, None)
+        .bind_loaded_world(&vfs, "MAPS\\START.BSP", first, None, bounds, None)
         .unwrap();
     assert!(
         owner
-            .bind_loaded_world("maps/start.bsp", second, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/start.bsp", second, None, bounds, None)
             .is_err()
     );
     assert!(
         owner
             .bind_loaded_world(
+                &vfs,
                 "maps/start.bsp",
                 first,
                 None,
@@ -5684,7 +5714,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
     );
     assert!(
         owner
-            .bind_loaded_world("maps/overflow.bsp", first, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/overflow.bsp", first, None, bounds, None)
             .is_err()
     );
     assert_eq!(
@@ -5709,6 +5739,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
 
 #[test]
 fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
+    let vfs = qa_content::vfs::Vfs::default();
     let bounds = Bounds {
         mins: Vec3([-1.0; 3]),
         maxs: Vec3([2.0; 3]),
@@ -5728,7 +5759,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
         let mut owner = ModelAssets::new(assets, [], [id], limits).unwrap();
         assert!(
             owner
-                .bind_loaded_world("maps/start.bsp", id, None, bounds, None)
+                .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
                 .is_err()
         );
         assert_eq!(
@@ -5744,7 +5775,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
     let mut owner = ModelAssets::new(assets, [], [], ModelLimits::default()).unwrap();
     assert!(
         owner
-            .bind_loaded_world("maps/start.bsp", id, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
             .is_err()
     );
     assert_eq!(
@@ -5773,11 +5804,25 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     };
     assert!(
         owner
-            .bind_loaded_world("MODELS\\TEST\\TRIS.MD2", id, None, native_bounds, None)
+            .bind_loaded_world(
+                &fixture.vfs,
+                "MODELS\\TEST\\TRIS.MD2",
+                id,
+                None,
+                native_bounds,
+                None
+            )
             .is_err()
     );
     owner
-        .bind_loaded_world("maps/start.bsp", id, None, native_bounds, None)
+        .bind_loaded_world(
+            &fixture.vfs,
+            "maps/start.bsp",
+            id,
+            None,
+            native_bounds,
+            None,
+        )
         .unwrap();
     fixture.remove("models/test/tris.md2");
     owner

@@ -1312,6 +1312,7 @@ fn selected_md5_source_keeps_animation_and_scale_companions_together() {
     let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
     let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
     let mut ids = Vec::new();
+    let mut handles = Vec::new();
     for (mount, expected_animation, expected_scale, max_y) in [
         (low_mount, ANIMATION, b"origin 2".as_slice(), 5.0),
         (
@@ -1339,7 +1340,75 @@ fn selected_md5_source_keeps_animation_and_scale_companions_together() {
         assert_eq!(skeletal._scale_bytes.as_deref(), Some(expected_scale));
         assert_eq!(metadata.bounds.maxs.0[1], max_y);
         assert_eq!(skeletal.skeleton.frame_count(), 2);
+        let name = owner.catalog.sources.name(source).unwrap();
+        let file = owner
+            .catalog
+            .files
+            .admit(Some((name, view.clone())))
+            .unwrap();
+        owner.catalog.files[file] = ModelFile::Ready {
+            lods: ModelLods {
+                slots: [
+                    ModelLodSlot::Source(source),
+                    ModelLodSlot::Missing,
+                    ModelLodSlot::Missing,
+                ],
+                native_count: 1,
+                supports_lods: false,
+            },
+            renderer_sources: 1 << RuleSetId::Quake3 as u8,
+        };
+        assert_eq!(
+            file_lookup(
+                &owner.catalog.names,
+                &owner.catalog.files,
+                b"models/paired.md5mesh",
+                Some(&view)
+            )
+            .unwrap()
+            .bounds(&owner.catalog.sources)
+            .unwrap()
+            .maxs
+            .0[1],
+            max_y
+        );
+        assert_eq!(
+            owner
+                .catalog
+                .files
+                .admit(Some((name, view.clone())))
+                .unwrap(),
+            file
+        );
+        handles.push((view, file, max_y));
         ids.push(source);
     }
     assert_ne!(ids[0], ids[1]);
+    assert_ne!(handles[0].1, handles[1].1);
+    for (view, file, max_y) in &handles {
+        let name = owner.catalog.sources.name(ids[0]).unwrap();
+        assert_eq!(owner.catalog.files.find(view, name), Some(*file));
+        assert_eq!(
+            owner.catalog.files[*file]
+                .bounds(&owner.catalog.sources)
+                .unwrap()
+                .maxs
+                .0[1],
+            *max_y
+        );
+    }
+    let name = owner.catalog.sources.name(ids[0]).unwrap();
+    assert_eq!(
+        owner.catalog.files.find(&files.vfs.default_view(), name),
+        None
+    );
+    for (_, file, _) in &handles {
+        owner.catalog.files[*file] =
+            ModelFile::Failed(FileError::file("source unavailable".to_owned()));
+    }
+    assert!(owner.retry_published_file(b"models/paired.md5mesh"));
+    for (_, file, _) in &handles {
+        assert!(matches!(owner.catalog.files[*file], ModelFile::Empty));
+    }
+    assert!(!owner.retry_published_file(b"models/paired.md5mesh"));
 }

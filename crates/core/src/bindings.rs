@@ -1,10 +1,15 @@
 //! Load-sized ordinal bindings with a cached numeric inverse.
-use crate::primitives::{NameId, SoundId};
+use crate::primitives::{ModelFileId, NameId, SoundId};
 
 pub trait BindingId: Copy + Eq {
     fn index(self) -> usize;
 }
 impl BindingId for NameId {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+impl BindingId for ModelFileId {
     fn index(self) -> usize {
         self.0 as usize
     }

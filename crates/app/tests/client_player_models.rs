@@ -103,6 +103,7 @@ fn loading_with_connection(
         ModelAssets::new(assets, [profile], [loaded.render.world], Default::default()).unwrap();
     builder
         .bind_loaded_world(
+            &runtime.vfs,
             "maps/player.bsp",
             loaded.render.world,
             Some(loaded.collision),

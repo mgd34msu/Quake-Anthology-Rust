@@ -668,6 +668,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         .as_mut()
         .unwrap()
         .bind_loaded_world(
+            &host.runtime.vfs,
             "maps/probe.bsp",
             world,
             None,
@@ -2084,7 +2085,14 @@ pub(super) fn inline_entities(native: bool) {
     let meshes = assets.models().len();
     let mut builder = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
     builder
-        .bind_loaded_world("maps/probe.bsp", world, None, bounds, None)
+        .bind_loaded_world(
+            &host.runtime.vfs,
+            "maps/probe.bsp",
+            world,
+            None,
+            bounds,
+            None,
+        )
         .unwrap();
     host.runtime.model_assets = Some(builder);
     host.local_clients[0] = Some(ids[0]);

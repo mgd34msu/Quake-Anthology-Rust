@@ -320,6 +320,7 @@ fn loading_model(
     let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
     owner
         .bind_loaded_world(
+            &runtime.vfs,
             "maps/player.bsp",
             world,
             Some(loaded.collision),

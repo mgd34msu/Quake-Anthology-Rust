@@ -8,6 +8,7 @@ struct Record {
 pub(super) struct ModelFiles {
     records: Vec<Record>,
     names: qa_core::bindings::OrdinalBindings<NameId>,
+    selected: super::scopes::ScopedBindings<ModelFileId>,
 }
 impl ModelFiles {
     pub(super) fn load(names: usize, inline: usize) -> Result<Self, String> {
@@ -21,14 +22,15 @@ impl ModelFiles {
                 state: ModelFile::Empty,
                 profiles: Vec::new(),
             }],
-            names: qa_core::bindings::OrdinalBindings::load(capacity, names, 0, false),
+            names: qa_core::bindings::OrdinalBindings::load(capacity, 0, 0, false),
+            selected: super::scopes::ScopedBindings::load(names, capacity),
         })
     }
     pub(super) fn len(&self) -> usize {
         self.records.len()
     }
-    pub(super) fn find(&self, name: NameId) -> Option<ModelFileId> {
-        self.names.ordinal(name).map(ModelFileId)
+    pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<ModelFileId> {
+        self.selected.find(view, name)
     }
     pub(super) fn name(&self, id: ModelFileId) -> Option<NameId> {
         self.names.get(id.0)
@@ -62,8 +64,24 @@ impl ModelFiles {
     pub(super) fn iter(&self) -> impl Iterator<Item = &ModelFile> {
         self.records.iter().map(|record| &record.state)
     }
-    pub(super) fn admit(&mut self, name: Option<NameId>) -> Result<ModelFileId, CallError> {
-        if let Some(id) = name.and_then(|name| self.find(name)) {
+    pub(super) fn named_mut(
+        &mut self,
+        name: NameId,
+    ) -> impl Iterator<Item = (&mut ModelFile, &[usize])> {
+        let names = &self.names;
+        self.records
+            .iter_mut()
+            .enumerate()
+            .filter_map(move |(index, record)| {
+                (names.get(index as u32) == Some(name))
+                    .then_some((&mut record.state, record.profiles.as_slice()))
+            })
+    }
+    pub(super) fn admit(
+        &mut self,
+        key: Option<(NameId, SearchView)>,
+    ) -> Result<ModelFileId, CallError> {
+        if let Some(id) = key.as_ref().and_then(|(name, view)| self.find(view, *name)) {
             return Ok(id);
         }
         if self.records.len() >= self.names.capacity() {
@@ -73,6 +91,12 @@ impl ModelFiles {
         self.records
             .try_reserve(1)
             .map_err(|_| CallError::Capacity)?;
+        let name = key.as_ref().map(|(name, _)| *name);
+        if let Some((name, view)) = key {
+            self.selected
+                .bind(view, name, id)
+                .map_err(|_| CallError::Capacity)?;
+        }
         self.names
             .set(id.0, name)
             .map_err(|_| CallError::Capacity)?;

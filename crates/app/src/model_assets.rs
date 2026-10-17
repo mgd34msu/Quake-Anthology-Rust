@@ -1361,6 +1361,7 @@ pub struct ModelCatalog {
     reader: ArchiveReader,
     names: NameTable,
     files: ModelFiles,
+    registration_vfs: Option<SearchView>,
     sources: ModelSources,
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
@@ -1388,7 +1389,6 @@ pub struct ModelAssets {
     catalog: ModelCatalog,
     palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
-    registration_vfs: Option<SearchView>,
     image_transaction_active: Option<ImageRefreshMode>,
     replacement_load: [bool; 2],
 }
@@ -2450,12 +2450,12 @@ impl ModelAssets {
             return false;
         };
         let mut changed = false;
-        if let Some(file) = self.catalog.files.find(name) {
-            if matches!(self.catalog.files[file], ModelFile::Failed(_)) {
-                self.catalog.files[file] = ModelFile::Empty;
+        for (file, rows) in self.catalog.files.named_mut(name) {
+            if matches!(file, ModelFile::Failed(_)) {
+                *file = ModelFile::Empty;
                 changed = true;
             }
-            for &index in self.catalog.files.rows(file) {
+            for &index in rows {
                 let state = &mut self.catalog.registrations[index].state;
                 if matches!(state, RegistrationState::Failed(_)) {
                     *state = RegistrationState::Unattempted;
@@ -3151,13 +3151,13 @@ impl ModelAssets {
             assets,
             palettes: Default::default(),
             initial_registration: true,
-            registration_vfs: None,
             image_transaction_active: None,
             replacement_load: [true; 2],
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
                 files,
+                registration_vfs: None,
                 sources,
                 shader_indices: vec![None],
                 shaders: Vec::new(),
@@ -3920,6 +3920,7 @@ impl ModelAssets {
             )?;
             self.catalog.capacity.inline_bindings = self.catalog.inline.len();
             self.bind_loaded_world(
+                vfs,
                 &loaded.virtual_path,
                 loaded.render.world,
                 Some(loaded.collision),
@@ -4013,30 +4014,38 @@ impl ModelAssets {
     }
 
     fn bind_registration_vfs(&mut self, vfs: &Vfs) -> Result<(), CallError> {
-        if let Some(view) = &self.registration_vfs {
+        if let Some(view) = &self.catalog.registration_vfs {
             if !vfs.accepts_search(view) {
                 return Err(CallError::File);
             }
         } else {
-            self.registration_vfs = Some(vfs.default_view());
+            self.catalog.registration_vfs = Some(vfs.default_view());
         }
         Ok(())
     }
 
     fn admit_file(&mut self, path: &[u8]) -> Result<ModelFileId, CallError> {
         let name = self.admit_name(path)?;
-        self.catalog.files.admit(Some(name))
+        let view = self
+            .catalog
+            .registration_vfs
+            .clone()
+            .ok_or(CallError::File)?;
+        self.catalog.files.admit(Some((name, view)))
     }
     /// Admit the already-loaded world as native model metadata. Its surface
     /// binding and collision bounds do not create a mesh or decode another file.
     pub fn bind_loaded_world(
         &mut self,
+        vfs: &Vfs,
         path: &str,
         world: WorldId,
         collision: Option<qa_core::primitives::GeometryId>,
         native_bounds: Bounds,
         native_checksums: Option<qa_formats::bsp::NativeMapChecksums>,
     ) -> Result<(), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if path.is_empty() || path.starts_with('*') {
             return Err("loaded world filename".to_owned());
         }
@@ -6747,10 +6756,15 @@ fn skin_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<
     catalog.skin_source_handle(handle, source, RegistrationVariant::Retained)
 }
 
-fn loaded_world(names: &NameTable, files: &ModelFiles, name: &[u8]) -> Option<LoadedWorldBinding> {
+fn loaded_world(
+    names: &NameTable,
+    files: &ModelFiles,
+    name: &[u8],
+    search: Option<&SearchView>,
+) -> Option<LoadedWorldBinding> {
     let ModelFile::LoadedWorld {
         binding, collision, ..
-    } = file_lookup(names, files, name)?
+    } = file_lookup(names, files, name, search)?
     else {
         return None;
     };
@@ -6759,18 +6773,24 @@ fn loaded_world(names: &NameTable, files: &ModelFiles, name: &[u8]) -> Option<Lo
         collision: *collision,
     })
 }
-fn file_lookup<'a>(names: &NameTable, files: &'a ModelFiles, path: &[u8]) -> Option<&'a ModelFile> {
+fn file_lookup<'a>(
+    names: &NameTable,
+    files: &'a ModelFiles,
+    path: &[u8],
+    search: Option<&SearchView>,
+) -> Option<&'a ModelFile> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    files.get(files.find(name)?)
+    files.get(files.find(search?, name)?)
 }
 fn model_handle(
     names: &NameTable,
     files: &ModelFiles,
     path: &[u8],
     source: Option<RuleSetId>,
+    search: Option<&SearchView>,
 ) -> Option<i32> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    let file = files.find(name)?;
+    let file = files.find(search?, name)?;
     let handle = i32::try_from(file.0).ok()?;
     renderer_file(files, handle, source)?;
     Some(handle)
@@ -6856,8 +6876,13 @@ impl ModelLoader for ModelAssets {
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);
         }
-        if let Some(bounds) = file_lookup(&self.catalog.names, &self.catalog.files, path.as_bytes())
-            .and_then(|file| file.bounds(&self.catalog.sources))
+        if let Some(bounds) = file_lookup(
+            &self.catalog.names,
+            &self.catalog.files,
+            path.as_bytes(),
+            self.catalog.registration_vfs.as_ref(),
+        )
+        .and_then(|file| file.bounds(&self.catalog.sources))
         {
             return Ok(bounds);
         }
@@ -6900,7 +6925,13 @@ impl ModelLoader for ModelAssets {
 }
 impl ModelLookup for ModelCatalog {
     fn file_handle(&self, path: &[u8]) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, None)
+        model_handle(
+            &self.names,
+            &self.files,
+            path,
+            None,
+            self.registration_vfs.as_ref(),
+        )
     }
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
         inline_handle(&self.worlds, &self.inline, world, index)
@@ -6909,7 +6940,12 @@ impl ModelLookup for ModelCatalog {
         model_tags(&self.files, &self.sources, handle).is_some()
     }
     fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
-        loaded_world(&self.names, &self.files, name)
+        loaded_world(
+            &self.names,
+            &self.files,
+            name,
+            self.registration_vfs.as_ref(),
+        )
     }
     fn lerp_tag(
         &self,
@@ -6932,7 +6968,13 @@ impl ModelLookup for ModelCatalog {
         )
     }
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        file_lookup(&self.names, &self.files, path)?.bounds(&self.sources)
+        file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            self.registration_vfs.as_ref(),
+        )?
+        .bounds(&self.sources)
     }
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
         skin_handle(self, name, source)
@@ -6941,7 +6983,13 @@ impl ModelLookup for ModelCatalog {
         shader_handle(self, name, source)
     }
     fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
-        model_handle(&self.names, &self.files, path, Some(source))
+        model_handle(
+            &self.names,
+            &self.files,
+            path,
+            Some(source),
+            self.registration_vfs.as_ref(),
+        )
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
         model_bounds(&self.files, &self.sources, handle)
@@ -6952,7 +7000,12 @@ impl ModelCatalog {
         &self,
         path: &[u8],
     ) -> Option<qa_formats::bsp::NativeMapChecksums> {
-        match file_lookup(&self.names, &self.files, path)? {
+        match file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            self.registration_vfs.as_ref(),
+        )? {
             ModelFile::LoadedWorld {
                 native_checksums, ..
             } => *native_checksums,
@@ -7391,7 +7444,12 @@ impl ModelCatalog {
         self.names.get(self.shaders.get(index)?.name)
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
-        match file_lookup(&self.names, &self.files, path)? {
+        match file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            self.registration_vfs.as_ref(),
+        )? {
             ModelFile::Ready { lods, .. } => self.sources.get(lods.source(0)?)?.metadata(),
             ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
         }
@@ -7571,7 +7629,10 @@ impl ModelCatalog {
             .map(|index| ModelRegistrationId(index as u32))
     }
     fn file_id(&self, path: &[u8]) -> Option<ModelFileId> {
-        self.files.find(self.names.find_path_bytes(path)?)
+        self.files.find(
+            self.registration_vfs.as_ref()?,
+            self.names.find_path_bytes(path)?,
+        )
     }
     fn file_name(&self, file: ModelFileId) -> Option<&str> {
         self.name(self.files.name(file)?)
@@ -7738,7 +7799,12 @@ impl ModelCatalog {
         &self,
         path: &[u8],
     ) -> Option<(InlineBinding, Option<qa_core::primitives::GeometryId>)> {
-        match file_lookup(&self.names, &self.files, path)? {
+        match file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            self.registration_vfs.as_ref(),
+        )? {
             ModelFile::LoadedWorld {
                 binding, collision, ..
             } => Some((*binding, *collision)),

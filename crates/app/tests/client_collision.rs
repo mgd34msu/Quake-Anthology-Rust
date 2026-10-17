@@ -40,6 +40,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new(protocol: Protocol, client: ClientId) -> Self {
+        let vfs = qa_content::vfs::Vfs::default();
         let mut store = CollisionStore::new();
         let bounds = Bounds {
             mins: Vec3([-8.; 3]),
@@ -99,6 +100,7 @@ impl Fixture {
             ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
         builder
             .bind_loaded_world(
+                &vfs,
                 "maps/test.bsp",
                 world,
                 Some(geometry),

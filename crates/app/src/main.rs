@@ -826,6 +826,7 @@ fn run() -> Result<(), String> {
             .as_mut()
             .ok_or("missing model loader")?
             .bind_loaded_world(
+                &host.runtime.vfs,
                 path,
                 world,
                 Some(collision.geometry),

@@ -20,7 +20,7 @@ impl ModelSources {
         Self {
             records: Vec::new(),
             names: qa_core::bindings::OrdinalBindings::load(capacity, 0, 0, true),
-            selected: super::scopes::ScopedBindings::load(capacity),
+            selected: super::scopes::ScopedBindings::load(capacity, capacity),
         }
     }
     pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<ModelSourceId> {
@@ -50,12 +50,12 @@ impl ModelSources {
         self.records
             .try_reserve(1)
             .map_err(|_| FileError::capacity("model source slots"))?;
-        self.names
-            .set(source.0, Some(name))
-            .map_err(|_| FileError::capacity("model source name binding"))?;
         self.selected
             .bind(view, name, source)
             .map_err(|_| FileError::capacity("model source selection"))?;
+        self.names
+            .set(source.0, Some(name))
+            .map_err(|_| FileError::capacity("model source name binding"))?;
         self.records.push(ModelSourceFile::Empty);
         Ok(source)
     }

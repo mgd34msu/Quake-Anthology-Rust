@@ -199,6 +199,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     .unwrap();
     builder
         .bind_loaded_world(
+            &host.runtime.vfs,
             "maps/prediction.bsp",
             world,
             Some(geometry),

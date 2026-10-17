@@ -435,11 +435,18 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
     for (name, world, geometry) in [("maps/q2.bsp", a, q2), ("maps/q3.bsp", b, q3)] {
         let bounds = host.runtime.geometry.model_bounds(geometry, 0).unwrap();
         catalog
-            .bind_loaded_world(name, world, Some(geometry), bounds, None)
+            .bind_loaded_world(&host.runtime.vfs, name, world, Some(geometry), bounds, None)
             .unwrap();
     }
     catalog
-        .bind_loaded_world("maps/render-only.bsp", a, None, Bounds::default(), None)
+        .bind_loaded_world(
+            &host.runtime.vfs,
+            "maps/render-only.bsp",
+            a,
+            None,
+            Bounds::default(),
+            None,
+        )
         .unwrap();
     host.runtime.model_assets = Some(catalog);
     for (seat, &client) in ids.iter().enumerate() {
