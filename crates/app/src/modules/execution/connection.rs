@@ -75,7 +75,7 @@ pub(super) fn begin(
                 });
             if native {
                 if let Some(resources) = host.runtime.client_resources[id.0 as usize].as_mut() {
-                    resources.begin_nq_signon();
+                    resources.begin_startup(qa_network::commands::packet::Protocol::NetQuake15);
                 }
             } else {
                 report(

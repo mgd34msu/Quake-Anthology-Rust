@@ -23,6 +23,7 @@ struct Request {
 enum Purpose {
     Manual,
     Skin,
+    Startup,
 }
 
 struct SkinPass {
@@ -30,6 +31,7 @@ struct SkinPass {
     cursor: usize,
     attempted: qa_core::bits::BitSet,
     paused: bool,
+    complete: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +146,7 @@ impl ClientDownload {
                     protocol.resource_layout().players.count as usize * 2,
                 ),
                 paused: false,
+                complete: false,
             }),
         }
     }
@@ -155,6 +158,7 @@ impl ClientDownload {
             pass.cursor = 0;
             pass.attempted.clear();
             pass.paused = false;
+            pass.complete = false;
         }
     }
 
@@ -330,6 +334,10 @@ impl ClientDownload {
             pass.stamp = Some(stamp);
             pass.cursor = 0;
             pass.attempted.clear();
+            pass.complete = false;
+        }
+        if !enabled {
+            pass.complete = true;
         }
         if explicit_request
             && matches!(
@@ -349,7 +357,7 @@ impl ClientDownload {
                 Transfer::Idle
                     | Transfer::Finished { .. }
                     | Transfer::Failed(Request {
-                        purpose: Purpose::Skin,
+                        purpose: Purpose::Skin | Purpose::Startup,
                         ..
                     })
             )
@@ -403,7 +411,28 @@ impl ClientDownload {
                 Err(error) => rejected = Some(error),
             }
         }
+        if let Some(pass) = &mut self.skin_pass {
+            pass.complete = true;
+        }
         rejected.map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn skins_done(&self) -> bool {
+        self.skin_pass
+            .as_ref()
+            .is_none_or(|pass| pass.complete && !pass.paused)
+            && self.resource_idle()
+    }
+    fn resource_idle(&self) -> bool {
+        matches!(
+            self.transfer,
+            Transfer::Idle
+                | Transfer::Finished { .. }
+                | Transfer::Failed(Request {
+                    purpose: Purpose::Skin | Purpose::Startup,
+                    ..
+                })
+        )
     }
 
     fn pending(&self) -> Option<FixedText<80>> {
@@ -785,12 +814,126 @@ impl crate::host::FrameHost {
         }
     }
 
+    pub(crate) fn advance_startup_files(&mut self) {
+        use super::startup::ResourceKind;
+        for index in 0..self.runtime.client_resources.len() {
+            loop {
+                let Some(resources) = self.runtime.client_resources[index].as_ref() else {
+                    break;
+                };
+                let Some((kind, ordinal, end)) = resources.startup.file_cursor() else {
+                    break;
+                };
+                if resources
+                    .downloads
+                    .as_ref()
+                    .is_some_and(|downloads| !downloads.resource_idle())
+                {
+                    break;
+                }
+                if ordinal > end {
+                    if let Some(resources) = self.runtime.client_resources[index].as_mut() {
+                        resources.startup.files_complete();
+                        if kind == ResourceKind::Sound
+                            && let Some(assets) = self.runtime.sound_assets.as_deref_mut()
+                        {
+                            resources.prepare_sounds(assets, &self.runtime.vfs);
+                        }
+                    }
+                    break;
+                }
+                let mut name = FixedText::<64>::default();
+                let path = kind
+                    .range(resources.state.layout)
+                    .get(ordinal as usize)
+                    .and_then(|row| resources.state.configs.config(row))
+                    .map(|row| row.text);
+                let path = match path {
+                    Some(path) if kind == ResourceKind::Sound => {
+                        qa_audio::sound_path(path, qa_core::primitives::RuleSetId::QuakeWorld)
+                            .map_err(|_| "invalid QW sound path")
+                            .and_then(|path| match path {
+                                Some(path) => name
+                                    .set(path.as_str())
+                                    .map_err(|_| "QW resource path capacity"),
+                                None => Ok(()),
+                            })
+                    }
+                    Some(path) if path.starts_with(b"*") => Ok(()),
+                    Some(path) => name
+                        .set_bytes(path)
+                        .map_err(|_| "QW resource path capacity"),
+                    None => Err("QW resource list row missing"),
+                };
+                if let Some(resources) = self.runtime.client_resources[index].as_mut() {
+                    resources.startup.advance_file();
+                }
+                if let Err(error) = path {
+                    self.reject_client_startup(ClientId(index as u32), format_args!("{error}"));
+                    break;
+                }
+                if name.as_bytes().is_empty() || self.runtime.vfs.open(name.as_bytes()).is_some() {
+                    continue;
+                }
+                if self.runtime.client_resources[index]
+                    .as_ref()
+                    .is_some_and(|resources| resources.downloads.is_none())
+                {
+                    if let Some(config) = self.download_defaults {
+                        if let Err(error) = self.configure_client_downloads(
+                            ClientId(index as u32),
+                            config.game,
+                            config.skins,
+                            config.maximum_bytes,
+                            config.buffer_bytes,
+                        ) {
+                            self.reject_client_startup(
+                                ClientId(index as u32),
+                                format_args!("{error}"),
+                            );
+                            break;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                let result = self.runtime.client_resources[index]
+                    .as_mut()
+                    .and_then(|resources| resources.downloads.as_mut())
+                    .map(|downloads| {
+                        downloads.start(
+                            name.as_bytes(),
+                            &self.runtime.vfs,
+                            &self.console.cvars,
+                            Purpose::Startup,
+                        )
+                    });
+                match result {
+                    Some(Ok(())) => break,
+                    Some(Err(error)) => {
+                        let _ = self
+                            .runtime
+                            .server
+                            .events
+                            .console_formatted(format_args!("QW resource download: {error}\n"));
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
     pub(crate) fn advance_qw_skin_downloads(&mut self) {
         for index in 0..self.runtime.client_resources.len() {
             let Some(binding) = self.runtime.snapshots[index].as_ref() else {
                 continue;
             };
-            if binding.protocol != Protocol::QuakeWorld28 || binding.presentation_closed() {
+            if binding.protocol != Protocol::QuakeWorld28
+                || binding.presentation_closed()
+                || self.runtime.client_resources[index]
+                    .as_ref()
+                    .is_some_and(|resources| !resources.startup.allow_skins())
+            {
                 continue;
             }
             let Some(seat) = binding.seat() else {
@@ -880,6 +1023,7 @@ impl crate::host::FrameHost {
                 Ok(()) => {
                     if request.name.as_bytes().starts_with(b"skins/") {
                         self.player_skin_views.request_refresh();
+                        resources.startup.invalidate_skins();
                     }
                     let _ = self.runtime.server.events.console_formatted(format_args!(
                         "Downloaded {} ({} bytes).\n",

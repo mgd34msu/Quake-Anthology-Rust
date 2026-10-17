@@ -1663,7 +1663,7 @@ fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> Geomet
     let profile = ModelRequest::native("", RuleSetId::QuakeWorld, None).profile();
     let mut owner = ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
     owner
-        .bind_loaded_world("maps/ready.bsp", world, Some(geometry), bounds)
+        .bind_loaded_world("maps/ready.bsp", world, Some(geometry), bounds, None)
         .unwrap();
     host.runtime.model_assets = Some(owner);
     for (seat, &client) in clients.iter().enumerate() {
@@ -3253,6 +3253,7 @@ fn install_received_world_owner(
             world,
             Some(geometry),
             host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
+            None,
         )
         .unwrap();
     let backend = asset_frames::Source::load(owner.assets());
@@ -5112,6 +5113,7 @@ fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
             .all(Option::is_none)
     );
     let mut bytes = [0; 128];
+    let received_first = host.runtime.server.events.sequence_range().end;
     let length = qa_network::outputs::print(
         Protocol::NetQuake15,
         PrintKind::Center,
@@ -5134,6 +5136,7 @@ fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
                 remote,
             );
     }
+    let received_end = host.runtime.server.events.sequence_range().end;
     dispatch(&mut host);
     let remote_text = host.runtime.server.clients[remote.0 as usize]
         .hud
@@ -5161,7 +5164,17 @@ fn accepted_client_hud_receives_only_its_wire_prints_and_client_publications() {
             .item_counts[1],
         7
     );
-    assert!(host.runtime.server.events.is_empty());
+    for sequence in received_first..received_end {
+        for consumer in std::iter::once(host.runtime.server.presentation).chain(
+            host.runtime
+                .server
+                .clients
+                .iter()
+                .filter_map(|client| client.output),
+        ) {
+            assert!(!host.runtime.server.events.retained_for(consumer, sequence));
+        }
+    }
 }
 
 fn connect_frame(

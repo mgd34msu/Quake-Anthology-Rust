@@ -13,6 +13,8 @@ use qa_network::commands::packet::Protocol;
 mod animation;
 pub use animation::ModelSynchronization;
 pub(crate) mod downloads;
+pub(crate) mod startup;
+use startup::ClientStartup;
 
 pub(crate) fn model_world(
     connection: Option<qa_session::clients::Connection>,
@@ -37,61 +39,9 @@ pub struct ClientResources {
     selected: Box<qa_console::command_text::ParsedCommand>,
     joined: qa_core::text::FixedText<8192>,
     pub unsupported_commands: u64,
-    nq_signon: Option<NqSignon>,
+    pub(crate) startup: ClientStartup,
     nq_spawn_parameters: qa_core::text::FixedText<{ qa_network::message::LEGACY_STRING_BYTES }>,
 }
-#[derive(Clone, Copy)]
-pub(crate) enum NqReply {
-    Prespawn,
-    Name,
-    Color,
-    Spawn,
-    Begin,
-}
-#[derive(Default)]
-struct NqSignon {
-    stage: u8,
-    observed: u8,
-    stage2_step: u8,
-    resources_admitted: bool,
-}
-impl NqSignon {
-    fn receive(&mut self, stage: u8) -> bool {
-        if stage <= self.stage || stage > 4 {
-            return false;
-        }
-        self.stage = stage;
-        if stage < 4 {
-            self.observed |= 1 << stage;
-        }
-        true
-    }
-    fn next(&self) -> Option<NqReply> {
-        if self.observed & 2 != 0 {
-            Some(NqReply::Prespawn)
-        } else if self.observed & 4 != 0 {
-            match self.stage2_step {
-                0 => Some(NqReply::Name),
-                1 => Some(NqReply::Color),
-                _ => Some(NqReply::Spawn),
-            }
-        } else if self.observed & 8 != 0 {
-            Some(NqReply::Begin)
-        } else {
-            None
-        }
-    }
-    fn queued(&mut self, reply: NqReply) {
-        match reply {
-            NqReply::Prespawn => self.observed &= !2,
-            NqReply::Name => self.stage2_step = 1,
-            NqReply::Color => self.stage2_step = 2,
-            NqReply::Spawn => self.observed &= !4,
-            NqReply::Begin => self.observed &= !8,
-        }
-    }
-}
-
 /// Native server header retained independently of camera and physical identity.
 #[derive(Clone, Debug)]
 pub struct ReceivedServerInfo {
@@ -216,7 +166,7 @@ impl ClientResources {
             selected: Box::default(),
             joined: qa_core::text::FixedText::default(),
             unsupported_commands: 0,
-            nq_signon: None,
+            startup: ClientStartup::default(),
             nq_spawn_parameters: Default::default(),
             state: ResourceState {
                 configs: ConfigStrings::load(
@@ -281,56 +231,67 @@ impl ClientResources {
             .set_bytes(parameters)
             .map_err(|_| "spawn parameter capacity")
     }
+    pub fn received_game_directory(&self) -> Option<&[u8]> {
+        self.startup.game_directory()
+    }
+    pub fn received_server_info(&self) -> Option<&[u8]> {
+        self.startup.server_info()
+    }
     pub fn nq_signon_stage(&self) -> Option<u8> {
-        self.nq_signon.as_ref().map(|signon| signon.stage)
+        self.startup.nq_stage()
     }
     pub fn udp_socket(&self) -> Option<u16> {
         self.udp_lease.as_ref().map(qa_platform::UdpLease::socket)
     }
-    pub(crate) fn begin_nq_signon(&mut self) {
-        self.nq_signon = Some(NqSignon::default());
+    pub(crate) fn begin_startup(&mut self, protocol: Protocol) {
+        if protocol == Protocol::NetQuake15 {
+            self.startup.begin_nq();
+        }
     }
     pub(crate) fn nq_assignment_max_clients(&self) -> Option<u8> {
-        (self.nq_signon.as_ref()?.stage == 0)
-            .then_some(self.state.server_info.as_ref()?.max_clients)
+        (self.startup.nq_stage()? == 0).then_some(self.state.server_info.as_ref()?.max_clients)
     }
-    pub(crate) fn awaiting_nq_signon(&self) -> bool {
-        self.nq_signon
-            .as_ref()
-            .is_some_and(|signon| signon.stage < 4 || !signon.resources_admitted)
-    }
-    pub(crate) fn nq_resources_needed(&self) -> bool {
-        self.nq_signon
-            .as_ref()
-            .is_some_and(|signon| !signon.resources_admitted)
-    }
-    pub(crate) fn nq_resources_admitted(&mut self) {
-        if let Some(signon) = &mut self.nq_signon {
-            signon.resources_admitted = true;
-        }
-    }
-
-    pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
-        self.nq_signon
-            .get_or_insert_with(NqSignon::default)
-            .receive(stage)
-    }
-    pub(crate) fn receive_nq_entity(&mut self) {
-        if let Some(signon) = &mut self.nq_signon
-            && signon.stage == 3
-        {
-            signon.stage = 4;
-        }
-    }
-    pub(crate) fn nq_reply(&self) -> Option<NqReply> {
-        self.nq_signon.as_ref()?.next()
+    pub(crate) fn awaiting_startup(&self) -> bool {
+        self.startup.waiting()
     }
     pub(crate) fn nq_spawn_parameters(&self) -> &[u8] {
         self.nq_spawn_parameters.as_bytes()
     }
-    pub(crate) fn nq_reply_queued(&mut self, reply: NqReply) {
-        if let Some(signon) = &mut self.nq_signon {
-            signon.queued(reply);
+    pub(crate) fn apply_qw_server_data(
+        &mut self,
+        data: &qa_network::commands::startup::QwServerData<'_>,
+    ) -> Result<(), &'static str> {
+        self.reset_received(None);
+        self.startup.begin_qw(data)?;
+        let mut level_name = qa_core::text::FixedText::default();
+        level_name
+            .set_bytes(data.level_name)
+            .map_err(|_| "QW level name capacity")?;
+        self.state.server_info = Some(ReceivedServerInfo {
+            max_clients: Protocol::QuakeWorld28.resource_layout().players.count as u8,
+            game_type: 0,
+            level_name,
+        });
+        Ok(())
+    }
+    pub(crate) fn receive_stufftext(&mut self, text: &[u8]) -> Result<bool, &'static str> {
+        let mut skins = false;
+        for line in text.split(|&byte| byte == b'\n') {
+            self.selected
+                .parse(line, RuleSetId::QuakeWorld)
+                .map_err(|_| "QW server command syntax")?;
+            skins |= self.startup.stufftext(self.selected.arguments())?;
+        }
+        Ok(skins)
+    }
+
+    pub(crate) fn prepare_sounds(
+        &mut self,
+        assets: &mut crate::audio::SoundAssets,
+        vfs: &qa_content::vfs::Vfs,
+    ) {
+        if self.startup.allow_sounds() {
+            self.state.prepare_sounds(assets, vfs);
         }
     }
 
@@ -372,7 +333,7 @@ impl ClientResources {
         let mut level_name = qa_core::text::FixedText::default();
         // The checked native string policy admits at most this buffer's size.
         let _ = level_name.set_bytes(info.level_name);
-        self.begin_nq_signon();
+        self.startup.begin_nq();
         self.state.server_info = Some(ReceivedServerInfo {
             max_clients: info.max_clients,
             game_type: info.game_type,
@@ -399,7 +360,7 @@ impl ClientResources {
         self.state.server_info = None;
         self.state.hud_pending = true;
         self.state.world_readiness = WorldReadiness::Unmanaged;
-        self.nq_signon = None;
+        self.startup = ClientStartup::default();
         self.state.models.reset_received(world);
         self.state.animation.clear();
         self.state.sounds.clear();

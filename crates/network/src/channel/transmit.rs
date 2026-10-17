@@ -259,10 +259,12 @@ impl Transmit {
 }
 
 impl Channel {
-    /// Replace an NQ CLIENT's unsubmitted command text without rewinding the
+    /// Replace native startup's unsubmitted command text without rewinding the
     /// native reliable flight already accepted by its transport.
     pub(crate) fn reset_client_startup(&mut self) {
-        if self.endpoint != Endpoint::Client || !self.policy.datagram {
+        if self.endpoint != Endpoint::Client
+            || !self.policy.datagram && self.policy != super::QUAKEWORLD
+        {
             return;
         }
         let tx = &mut self.transmit;
@@ -270,6 +272,11 @@ impl Channel {
             .truncate(if tx.started { tx.flight_records } else { 0 });
         tx.pending = None;
         if !tx.started {
+            // Selecting an unsent sequenced flight already changed its local
+            // reliable bit. Cancellation must restore the last submitted bit.
+            if self.policy.toggle_ack && tx.flight_records != 0 {
+                tx.state.reliable_sequence ^= true;
+            }
             tx.flight_records = 0;
             tx.flight_length = 0;
             tx.flight_offset = 0;

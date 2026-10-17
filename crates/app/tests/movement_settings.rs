@@ -203,6 +203,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
             world,
             Some(geometry),
             host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
+            None,
         )
         .unwrap();
     builder.end_initial_registration();

@@ -14,6 +14,23 @@ pub struct ConfigString<'a> {
     pub text: &'a [u8],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceListProgress {
+    pub range: qa_core::primitives::IndexSpan,
+    /// Preceding resource ordinal carried by this chunk's header.
+    pub first: u32,
+    /// Last resource ordinal accepted from this chunk, or first if empty.
+    pub end: u32,
+    /// Native zero terminates the list; nonzero requests its next chunk.
+    pub next: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfigRead {
+    pub length: usize,
+    pub progress: Option<ResourceListProgress>,
+}
+
 pub fn configstring(
     protocol: Protocol,
     index: u32,
@@ -103,23 +120,35 @@ pub fn read_configstrings<'a>(
     protocol: Protocol,
     bytes: &'a [u8],
     mut consume: impl FnMut(ConfigString<'a>),
-) -> Result<usize, Error> {
+) -> Result<ConfigRead, Error> {
     if protocol != Protocol::QuakeWorld28 || !matches!(bytes.first(), Some(45 | 46)) {
         let (row, length) = read_configstring(protocol, bytes)?;
         consume(row);
-        return Ok(length);
+        return Ok(ConfigRead {
+            length,
+            progress: None,
+        });
     }
     let header = bytes.get(..2).ok_or(Error::Truncated)?;
     let range = ConfigLayout::QUAKEWORLD.resources[usize::from(header[0] == 46)];
-    let mut ordinal = u32::from(header[1]);
+    let first = u32::from(header[1]);
+    let mut ordinal = first;
     let mut reader = Reader::new(&bytes[2..], Encoding::Bytes);
     loop {
         let text = read_text(protocol, &mut reader)?;
         if text.is_empty() {
             // Original CL_Parse{Model,Sound}list reads the continuation byte
             // after the empty terminator, even on the final zero continuation.
-            reader.read_bits(8).map_err(string_error)?;
-            return Ok(reader.byte_position() + 2);
+            let next = reader.read_bits(8).map_err(string_error)?;
+            return Ok(ConfigRead {
+                length: reader.byte_position() + 2,
+                progress: Some(ResourceListProgress {
+                    range,
+                    first,
+                    end: ordinal,
+                    next,
+                }),
+            });
         }
         ordinal += 1;
         let index = range.get(ordinal as usize).ok_or(Error::Unsupported)? as u32;

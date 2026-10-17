@@ -672,6 +672,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
                 mins: Vec3([-1.; 3]),
                 maxs: Vec3([1.; 3]),
             },
+            None,
         )
         .unwrap();
     host.local_worlds.fill(Some((world, presentation)));
@@ -2071,7 +2072,7 @@ pub(super) fn inline_entities(native: bool) {
     let meshes = assets.models().len();
     let mut builder = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
     builder
-        .bind_loaded_world("maps/probe.bsp", world, None, bounds)
+        .bind_loaded_world("maps/probe.bsp", world, None, bounds, None)
         .unwrap();
     host.runtime.model_assets = Some(builder);
     host.local_clients[0] = Some(ids[0]);

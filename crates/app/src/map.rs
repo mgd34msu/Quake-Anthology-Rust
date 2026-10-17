@@ -36,6 +36,7 @@ pub struct SpawnAnchor {
 }
 
 pub struct LoadedMap {
+    pub native_checksum: Option<u32>,
     pub collision: GeometryId,
     pub portals: Option<qa_world::portals::AreaPortals>,
     pub collision_bounds: Bounds,
@@ -181,6 +182,7 @@ pub struct MapInput {
     pub virtual_path: String,
     profile_product: ProfileProduct,
     entity_source: NativeEntityText,
+    native_checksum: Option<u32>,
 }
 
 enum ProfileProduct {
@@ -199,6 +201,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         .map_err(|error| format!("map {path}: {error}"))?;
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
+    let native_checksum = bsp.quakeworld_checksum2();
     let entity_source = NativeEntityText {
         syntax: source.lineage(),
         bytes: bsp.bytes(Lump::Entities).into(),
@@ -236,6 +239,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         virtual_path: path,
         profile_product,
         entity_source,
+        native_checksum,
     })
 }
 
@@ -293,6 +297,7 @@ impl MapInput {
             }
         };
         Ok(LoadedMap {
+            native_checksum: self.native_checksum,
             collision,
             portals,
             collision_bounds,

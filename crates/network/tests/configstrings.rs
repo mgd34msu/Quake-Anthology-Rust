@@ -4,6 +4,8 @@ use qa_network::{
     commands::packet::Protocol,
     outputs::{self, ConfigCommandReader, ConfigCommandStep, Error},
 };
+#[path = "configstrings/qw_startup.rs"]
+mod qw_startup;
 mod support;
 
 fn config_step<'a>(
@@ -194,7 +196,8 @@ fn generated_config_rows_map_signed_terminators_and_leave_following_services_rea
             outputs::read_configstrings(protocol, &bytes[..n], |row| {
                 rows.push((row.index, row.text.to_vec()));
             })
-            .unwrap(),
+            .unwrap()
+            .length,
             used
         );
         assert_eq!(
@@ -245,7 +248,7 @@ fn config_rows_use_native_signed_and_unsigned_string_boundaries_in_service_strea
     let mut rows = Vec::new();
     let used =
         outputs::read_configstrings(Protocol::QuakeWorld28, bytes, |row| rows.push(row)).unwrap();
-    assert_eq!(used, bytes.len() - 1);
+    assert_eq!(used.length, bytes.len() - 1);
     assert_eq!(
         rows,
         [
@@ -284,7 +287,7 @@ fn qw_single_rows_match_native_list_and_lightstyle_bytes() {
         let mut rows = Vec::new();
         let consumed =
             outputs::read_configstrings(protocol, expected, |row| rows.push(row)).unwrap();
-        assert_eq!(consumed, expected.len());
+        assert_eq!(consumed.length, expected.len());
         assert_eq!(rows, [outputs::ConfigString { index, text }]);
         for cut in 0..expected.len() {
             assert!(outputs::read_configstrings(protocol, &expected[..cut], |_| {}).is_err());
@@ -323,7 +326,16 @@ fn qw_retail_multirow_chunks_borrow_prefix_rows_and_consume_continuations() {
     let bytes = b"\x2e\x05a.wav\0b\x80.wav\0\0\x07\x01";
     let mut rows = Vec::new();
     let used = outputs::read_configstrings(protocol, bytes, |row| rows.push(row)).unwrap();
-    assert_eq!(used, bytes.len() - 1);
+    assert_eq!(used.length, bytes.len() - 1);
+    assert_eq!(
+        used.progress,
+        Some(outputs::ResourceListProgress {
+            range: protocol.resource_layout().resources[1],
+            first: 5,
+            end: 7,
+            next: 7,
+        })
+    );
     assert_eq!(
         rows,
         [
@@ -353,7 +365,9 @@ fn qw_retail_multirow_chunks_borrow_prefix_rows_and_consume_continuations() {
         Err(Error::Unsupported)
     );
     assert_eq!(
-        outputs::read_configstrings(protocol, b"\x2e\xff\0\0", |_| {}).unwrap(),
+        outputs::read_configstrings(protocol, b"\x2e\xff\0\0", |_| {})
+            .unwrap()
+            .length,
         4
     );
 }

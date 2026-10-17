@@ -324,6 +324,7 @@ fn loading_model(
             world,
             Some(loaded.collision),
             loaded.collision_bounds,
+            None,
         )
         .unwrap();
     for path in [b"progs/player.mdl".as_slice(), b"progs/ordinary.mdl"] {

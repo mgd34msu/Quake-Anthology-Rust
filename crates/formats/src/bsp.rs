@@ -241,6 +241,21 @@ impl<'a> Bsp<'a> {
     pub fn lump(&self, index: usize) -> Option<&'a [u8]> {
         self.layout.get(index).map(|_| self.lumps[index])
     }
+    /// Original QW prespawn checksum. This is a wire check, not a resource key.
+    pub fn quakeworld_checksum2(&self) -> Option<u32> {
+        if self.format != BspFormat::Quake {
+            return None;
+        }
+        Some(
+            self.layout
+                .iter()
+                .enumerate()
+                .filter(|(_, (kind, _))| !matches!(kind, Entities | Visibility | Nodes | Leaves))
+                .fold(0, |checksum, (index, _)| {
+                    checksum ^ qa_core::checksum::block_checksum(self.lumps[index])
+                }),
+        )
+    }
     pub fn record_count(&self, index: usize) -> Option<usize> {
         self.layout.get(index).and_then(|_| {
             (self.strides[index] != 0).then(|| self.lumps[index].len() / self.strides[index])

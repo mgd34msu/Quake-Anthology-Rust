@@ -103,6 +103,7 @@ impl Fixture {
                 world,
                 Some(geometry),
                 store.model_bounds(geometry, 0).unwrap(),
+                None,
             )
             .unwrap();
         builder.end_initial_registration();

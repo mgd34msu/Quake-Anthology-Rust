@@ -140,6 +140,50 @@ const VERSIONS: &[u32] = &[
 ];
 
 #[test]
+fn quakeworld_wire_checksum_excludes_rebuilt_visibility_and_entity_data() {
+    use qa_formats::bsp::Bsp;
+    let original = fixture(29);
+    let expected = Bsp::parse(&original)
+        .unwrap()
+        .quakeworld_checksum2()
+        .unwrap();
+    // QW Mod_LoadBrushModel excludes entities, visibility, nodes and leaves.
+    for lump in [0, 4, 5, 10] {
+        let mut bytes = original.clone();
+        let row = 4 + lump * 8;
+        let offset = u32::from_le_bytes(bytes[row..row + 4].try_into().unwrap()) as usize;
+        let length = u32::from_le_bytes(bytes[row + 4..row + 8].try_into().unwrap());
+        if length == 0 {
+            let offset = bytes.len() as i32;
+            put(&mut bytes, row, offset);
+            put(&mut bytes, row + 4, 1);
+            bytes.push(1);
+        } else {
+            bytes[offset] ^= 1;
+        }
+        assert_eq!(
+            Bsp::parse(&bytes).unwrap().quakeworld_checksum2(),
+            Some(expected)
+        );
+    }
+    let mut geometry = original;
+    let plane = u32::from_le_bytes(geometry[12..16].try_into().unwrap()) as usize;
+    geometry[plane + 12] ^= 1;
+    assert_ne!(
+        Bsp::parse(&geometry).unwrap().quakeworld_checksum2(),
+        Some(expected)
+    );
+    for &version in &VERSIONS[1..] {
+        assert_eq!(
+            Bsp::parse(&fixture(version))
+                .unwrap()
+                .quakeworld_checksum2(),
+            None
+        );
+    }
+}
+
+#[test]
 fn native_layouts_convert_into_the_same_flat_tree_and_core_plane() {
     for &version in VERSIONS {
         let bytes = fixture(version);

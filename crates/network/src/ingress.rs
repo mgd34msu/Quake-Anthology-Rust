@@ -126,6 +126,12 @@ pub enum Incoming<'a> {
     },
     Gamestate(crate::channel::commands::Q3GameState<'a>),
     ServerInfo(crate::commands::startup::NqServerInfo<'a>),
+    QwServerData(crate::commands::startup::QwServerData<'a>),
+    /// Borrowed server text; execution policy belongs to the CLIENT consumer.
+    StuffText(&'a [u8]),
+    ResourceList(crate::outputs::ResourceListProgress),
+    MaxSpeed(f32),
+    EntityGravity(f32),
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     /// A native sequenced ACK maps to the newest submitted common command.
     /// It is not an output-record ACK or a server execution-time assertion.

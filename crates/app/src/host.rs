@@ -1679,7 +1679,7 @@ impl FrameHost {
         }
         self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
-        self.flush_nq_signon_replies();
+        self.flush_startup_replies();
         let client = Stopwatch::start();
         let command_times = std::array::from_fn(|seat| {
             self.local_clients[seat]
@@ -2271,7 +2271,11 @@ impl FrameHost {
                 }))
     }
 
-    pub(crate) fn reject_nq_signon(&mut self, client: ClientId, reason: std::fmt::Arguments<'_>) {
+    pub(crate) fn reject_client_startup(
+        &mut self,
+        client: ClientId,
+        reason: std::fmt::Arguments<'_>,
+    ) {
         if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
             resources.state.rejected += 1;
         }
@@ -2279,13 +2283,13 @@ impl FrameHost {
             .runtime
             .server
             .events
-            .console_formatted(format_args!("NetQuake signon: {reason}\n"));
+            .console_formatted(format_args!("Native CLIENT startup: {reason}\n"));
         self.received_client_disconnect(client);
     }
 
-    fn flush_nq_signon_replies(&mut self) {
+    fn flush_startup_replies(&mut self) {
         for slot in 0..self.runtime.client_resources.len() {
-            self.flush_nq_signon_reply(ClientId(slot as u32));
+            self.flush_startup_reply(ClientId(slot as u32));
         }
     }
 
@@ -2344,21 +2348,29 @@ impl FrameHost {
         self.retire_unconnected_clients(source);
     }
 
-    fn flush_nq_signon_reply(&mut self, client: ClientId) {
-        use crate::client_resources::NqReply;
+    fn flush_startup_reply(&mut self, client: ClientId) {
+        use crate::client_resources::startup::{ResourceKind, StartupReply};
         use qa_network::{channel::TransmitError, commands::packet::Protocol};
         use std::fmt::Write;
         let slot = client.0 as usize;
-        let Some(seat) = self
+        let Some(binding) = self
             .runtime
             .snapshots
             .get(slot)
             .and_then(Option::as_ref)
-            .filter(|binding| binding.protocol == Protocol::NetQuake15)
-            .and_then(crate::snapshots::SnapshotBinding::seat)
+            .filter(|binding| {
+                matches!(
+                    binding.protocol,
+                    Protocol::NetQuake15 | Protocol::QuakeWorld28
+                )
+            })
         else {
             return;
         };
+        let Some(seat) = binding.seat() else {
+            return;
+        };
+        let protocol = binding.protocol;
         if self
             .runtime
             .network
@@ -2376,10 +2388,17 @@ impl FrameHost {
         let Some(resources) = self.runtime.client_resources[slot].as_ref() else {
             return;
         };
-        if resources.nq_resources_needed() {
-            if resources.state.presentation_reset_pending()
-                || self.local_worlds[seat.index()].is_none()
-            {
+        if resources.startup.resources_needed() {
+            if resources.state.presentation_reset_pending() {
+                return;
+            }
+            if self.local_worlds[seat.index()].is_none() {
+                if protocol == Protocol::QuakeWorld28 && !resources.state.world_managed() {
+                    self.reject_client_startup(
+                        client,
+                        format_args!("required world model unavailable"),
+                    );
+                }
                 return;
             }
             match resources
@@ -2389,7 +2408,7 @@ impl FrameHost {
             {
                 crate::client_scene::RequiredModels::Waiting => return,
                 crate::client_scene::RequiredModels::Missing(ordinal) => {
-                    self.reject_nq_signon(
+                    self.reject_client_startup(
                         client,
                         format_args!("required model {ordinal} unavailable"),
                     );
@@ -2397,29 +2416,47 @@ impl FrameHost {
                 }
                 crate::client_scene::RequiredModels::Ready => {}
             }
-            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
-                resources.nq_resources_admitted();
+            let checksum = resources.state.layout.resources[0]
+                .get(1)
+                .and_then(|row| resources.state.configs.config(row))
+                .and_then(|row| {
+                    self.runtime
+                        .model_assets
+                        .as_ref()?
+                        .catalog()
+                        .world_native_checksum(row.text)
+                });
+            if let Some(resources) = self.runtime.client_resources[slot].as_mut()
+                && let Err(error) = resources.startup.resources_admitted(checksum)
+            {
+                self.reject_client_startup(client, format_args!("{error}"));
+                return;
             }
         }
         loop {
             let Some(resources) = self.runtime.client_resources[slot].as_ref() else {
                 return;
             };
-            let Some(reply) = resources.nq_reply() else {
+            let skins_done = !self.player_skin_views.refresh_pending()
+                && resources
+                    .downloads
+                    .as_ref()
+                    .is_none_or(|downloads| downloads.skins_done());
+            let Some(reply) = resources.startup.reply(skins_done) else {
                 return;
             };
             let mut text =
                 qa_core::text::FixedText::<{ qa_network::message::LEGACY_STRING_BYTES }>::default();
             let (name, color) = self.nq_identity[seat.index()];
             let formatted = match reply {
-                NqReply::Prespawn => text.set("prespawn"),
-                NqReply::Name => self
+                StartupReply::Prespawn => text.set("prespawn"),
+                StartupReply::Name => self
                     .console
                     .cvars
                     .read(name)
                     .map_err(|_| std::fmt::Error)
-                    .and_then(|name| write!(text, "name \"{}\"\n", name.as_str())),
-                NqReply::Color => self
+                    .and_then(|name| writeln!(text, "name \"{}\"", name.as_str())),
+                StartupReply::Color => self
                     .console
                     .cvars
                     .numeric(color)
@@ -2428,18 +2465,45 @@ impl FrameHost {
                         let color = color as i32;
                         writeln!(text, "color {} {}", color >> 4, color & 15)
                     }),
-                NqReply::Spawn => text
+                StartupReply::Spawn => text
                     .set("spawn ")
                     .and_then(|()| text.append_bytes(resources.nq_spawn_parameters())),
-                NqReply::Begin => text.set("begin"),
+                StartupReply::Begin => text.set("begin"),
+                StartupReply::List {
+                    kind,
+                    server,
+                    start,
+                } => write!(
+                    text,
+                    "{} {server} {start}",
+                    if kind == ResourceKind::Sound {
+                        "soundlist"
+                    } else {
+                        "modellist"
+                    }
+                ),
+                StartupReply::QwPrespawn {
+                    server,
+                    buffer,
+                    checksum: Some(checksum),
+                } => write!(text, "prespawn {server} {buffer} {}", checksum as i32),
+                StartupReply::QwPrespawn {
+                    server,
+                    buffer,
+                    checksum: None,
+                } => write!(text, "prespawn {server} {buffer}"),
+                StartupReply::QwSpawn { server, start } => write!(text, "spawn {server} {start}"),
+                StartupReply::QwBegin { server } => write!(text, "begin {server}"),
+                StartupReply::New => text.set("new"),
             };
             if formatted.is_err()
                 || text.as_bytes().iter().any(|&byte| byte == 0 || byte == 255)
-                || Protocol::NetQuake15
-                    .client_string_policy()
-                    .truncates(text.as_bytes())
+                || protocol.client_string_policy().truncates(text.as_bytes())
             {
-                self.reject_nq_signon(client, format_args!("reply exceeds native string policy"));
+                self.reject_client_startup(
+                    client,
+                    format_args!("reply exceeds native string policy"),
+                );
                 return;
             }
             let Some(connection) = self
@@ -2451,16 +2515,16 @@ impl FrameHost {
             };
             match connection
                 .channel
-                .queue_client_command(Protocol::NetQuake15, text.as_bytes())
+                .queue_client_command(protocol, text.as_bytes())
             {
                 Ok(_) => {
                     if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
-                        resources.nq_reply_queued(reply);
+                        resources.startup.queued(reply);
                     }
                 }
                 Err(TransmitError::Full) => return,
                 Err(error) => {
-                    self.reject_nq_signon(client, format_args!("{error}"));
+                    self.reject_client_startup(client, format_args!("{error}"));
                     return;
                 }
             }
@@ -2918,6 +2982,9 @@ impl FrameHost {
                         return std::ops::ControlFlow::Continue(());
                     }
                     if let Incoming::Snapshot(frame) = incoming {
+                        if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                            if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref() { resources.startup.receive_entity(binding.protocol); }
+                        }
                         self.runtime.synchronize_client_collision(id, frame);
                     }
                     let server = &self.runtime.server;
@@ -2937,10 +3004,58 @@ impl FrameHost {
                             && !self.runtime.snapshots[id.0 as usize].as_mut()
                                 .is_some_and(|binding| binding.assign_nq_player(*entity, max_clients))
                         {
-                            self.reject_nq_signon(id, format_args!("invalid initial player edict {entity}"));
+                            self.reject_client_startup(id, format_args!("invalid initial player edict {entity}"));
                             return std::ops::ControlFlow::Break(());
                         }
                         match incoming {
+                            Incoming::MaxSpeed(value) => {
+                                self.runtime.prediction[seat.index()].player.movement.tuning.max_speed = Some(qa_core::primitives::MovementMagnitude::Base(value));
+                            }
+                            Incoming::EntityGravity(value) => {
+                                self.runtime.prediction[seat.index()].player.movement.tuning.gravity_multiplier = value;
+                            }
+                            Incoming::QwServerData(data) => {
+                                signon_client = Some(id);
+                                self.local_worlds[seat.index()] = None;
+                                self.reset_received_client(id, seat);
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .ok_or("missing QW CLIENT resource owner")
+                                    .and_then(|resources| resources.apply_qw_server_data(&data));
+                                let assigned = self.runtime.snapshots[id.0 as usize].as_mut()
+                                    .is_some_and(|binding| binding.receive_qw_server_data(&data));
+                                if let Err(error) = result {
+                                    self.reject_client_startup(id, format_args!("{error}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                if !assigned {
+                                    self.reject_client_startup(id, format_args!("invalid QW native player assignment"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                let player = &mut self.runtime.prediction[seat.index()].player;
+                                player.movement.tuning = data.tuning;
+                                player.movement.mode = if data.spectator { qa_core::primitives::MovementMode::Spectator } else { qa_core::primitives::MovementMode::Walk };
+                            }
+                            Incoming::ResourceList(progress) => {
+                                signon_client = Some(id);
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .ok_or("missing QW CLIENT resource owner")
+                                    .and_then(|resources| resources.startup.resource_list(progress, resources.state.layout));
+                                if let Err(error) = result {
+                                    self.reject_client_startup(id, format_args!("{error}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                            }
+                            Incoming::StuffText(text) => {
+                                signon_client = Some(id);
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .ok_or("missing QW CLIENT resource owner")
+                                    .and_then(|resources| resources.receive_stufftext(text));
+                                match result {
+                                    Ok(true) => self.player_skin_views.request_refresh(),
+                                    Ok(false) => {},
+                                    Err(error) => { let _ = self.runtime.server.events.console_formatted(format_args!("QW server command rejected: {error}\n")); }
+                                }
+                            }
                             Incoming::Download(chunk) => {
                                 let result = self.runtime.client_resources[id.0 as usize].as_mut()
                                     .and_then(|resources| resources.downloads.as_mut())
@@ -2963,13 +3078,13 @@ impl FrameHost {
                             }
                             Incoming::SignonStage { stage } => {
                                 if awaiting_player {
-                                    self.reject_nq_signon(id, format_args!("player assignment missing before native stage {stage}"));
+                                    self.reject_client_startup(id, format_args!("player assignment missing before native stage {stage}"));
                                     return std::ops::ControlFlow::Break(());
                                 }
                                 let accepted = self.runtime.client_resources[id.0 as usize].as_mut()
-                                    .is_some_and(|resources| resources.receive_nq_stage(stage));
+                                    .is_some_and(|resources| resources.startup.receive_nq_stage(stage));
                                 if !accepted {
-                                    self.reject_nq_signon(id, format_args!("non-increasing native stage {stage}"));
+                                    self.reject_client_startup(id, format_args!("non-increasing native stage {stage}"));
                                     return std::ops::ControlFlow::Break(());
                                 }
                                 signon_client = Some(id);
@@ -2977,7 +3092,7 @@ impl FrameHost {
                             Incoming::NqEntityUpdate { number, model } => {
                                 let policy = self.runtime.snapshots[id.0 as usize].as_ref().and_then(|binding| binding.appearance_policy());
                                 if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
-                                    resources.receive_nq_entity();
+                                    resources.startup.receive_entity(qa_network::commands::packet::Protocol::NetQuake15);
                                     if let Some(policy) = policy {
                                         resources.state.observe_models(u32::from(number), [model, None, None, None], policy, self.runtime.model_assets.as_ref().map(|owner| owner.catalog()));
                                     }
@@ -3067,7 +3182,7 @@ impl FrameHost {
                                         self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
                                     ) && music;
                                     if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
-                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                        resources.prepare_sounds(assets, &self.runtime.vfs);
                                     }
                                 }
                                 if music_changed {
@@ -3102,7 +3217,7 @@ impl FrameHost {
                                         self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
                                     );
                                     if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
-                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                        resources.prepare_sounds(assets, &self.runtime.vfs);
                                     }
                                 }
                                 if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_mut() {
@@ -3120,7 +3235,7 @@ impl FrameHost {
                                         self.runtime.sound_assets.as_deref().map(crate::audio::SoundAssets::bank),
                                     );
                                     if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
-                                        resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                                        resources.prepare_sounds(assets, &self.runtime.vfs);
                                     }
                                 }
                                 if let Some(binding) =
@@ -3293,7 +3408,7 @@ impl FrameHost {
         self.runtime.network = network;
         self.flush_client_downloads();
         if let Some(id) = signon_client {
-            self.flush_nq_signon_reply(id);
+            self.flush_startup_reply(id);
         }
         if let Some(id) = completed_close {
             self.close_acknowledged += 1;
@@ -3476,7 +3591,7 @@ impl FrameHost {
                     .is_none_or(|connection| !connection.phase.is_connected())
                     || self.runtime.client_resources[id.0 as usize]
                         .as_ref()
-                        .is_some_and(|resources| resources.awaiting_nq_signon())
+                        .is_some_and(|resources| resources.awaiting_startup())
                     || !self.runtime.server.clients[id.0 as usize].is_active()
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
@@ -3524,7 +3639,7 @@ impl FrameHost {
                     .send_client_command(*id, &commands[seat], self.time, source);
                 if self.runtime.client_resources[id.0 as usize]
                     .as_ref()
-                    .is_some_and(|resources| resources.awaiting_nq_signon())
+                    .is_some_and(|resources| resources.awaiting_startup())
                     || self.runtime.snapshots[id.0 as usize]
                         .as_ref()
                         .is_some_and(|binding| binding.native_client().is_none())

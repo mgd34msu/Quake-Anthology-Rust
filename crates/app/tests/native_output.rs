@@ -523,7 +523,7 @@ fn qw_cancelled_reply_rebuilds_its_retained_event_after_a_new_queued_move() {
     // record remains retained. A replacement empty reply cannot retire it.
     source.now = EventTime::from_milliseconds(25);
     queue_move(&mut host, &mut peer, Protocol::QuakeWorld28, source.now);
-    publish(
+    let healthy_sequence = publish(
         &mut host.runtime,
         false,
         NativeTarget::Client(healthy),
@@ -561,7 +561,17 @@ fn qw_cancelled_reply_rebuilds_its_retained_event_after_a_new_queued_move() {
     assert_eq!(source.packets.len(), 1);
     assert_eq!(source.packets[0].0, 2000);
     assert_eq!(receive(&mut peer, &source.packets[0].1), b"\x1arebuilt\0");
-    assert!(host.runtime.server.events.is_empty());
+    assert!(!host.runtime.server.events.retained_for(owner, sequence));
+    let healthy_owner = host.runtime.server.clients[healthy.0 as usize]
+        .output
+        .unwrap();
+    assert!(
+        !host
+            .runtime
+            .server
+            .events
+            .retained_for(healthy_owner, healthy_sequence)
+    );
     assert!(
         host.runtime
             .network
@@ -602,7 +612,7 @@ fn overlarge_common_print_is_a_counted_terminal_drop_without_blocking_a_healthy_
             .events
             .print_bytes(Some(target), PrintKind::Console, &text)
             .unwrap();
-        publish(
+        let healthy_sequence = publish(
             &mut runtime,
             false,
             NativeTarget::Client(healthy),
@@ -620,7 +630,16 @@ fn overlarge_common_print_is_a_counted_terminal_drop_without_blocking_a_healthy_
         assert_eq!(first.output.native_unsupported, 1, "{protocol:?}");
         assert_eq!(first.output.native_disconnected, 0);
         assert!(!host.runtime.server.events.retained_for(owner, sequence));
-        assert!(host.runtime.server.events.is_empty());
+        let healthy_owner = host.runtime.server.clients[healthy.0 as usize]
+            .output
+            .unwrap();
+        assert!(
+            !host
+                .runtime
+                .server
+                .events
+                .retained_for(healthy_owner, healthy_sequence)
+        );
         assert_eq!(source.packets.len(), 1);
         assert_eq!(source.packets[0].0, 2001);
         let mut peer =
@@ -1411,7 +1430,8 @@ fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retiremen
                         registered[index] = true;
                     }
                 })
-                .unwrap();
+                .unwrap()
+                .length;
             remaining = &remaining[length..];
         }
     }

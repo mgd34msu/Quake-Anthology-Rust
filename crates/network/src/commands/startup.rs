@@ -159,3 +159,57 @@ impl<'a> NqServerInfo<'a> {
         Ok(())
     }
 }
+
+/// Protocol 28 startup fields borrow this packet; role selection stays with app.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QwServerData<'a> {
+    pub server_count: i32,
+    pub game_directory: &'a [u8],
+    pub player_slot: u8,
+    pub spectator: bool,
+    pub level_name: &'a [u8],
+    pub tuning: qa_core::primitives::MovementTuning,
+}
+impl<'a> QwServerData<'a> {
+    pub(crate) fn read(reader: &mut Reader<'a>) -> Result<Self, packet::Error> {
+        use qa_core::primitives::{MovementMagnitude, MovementTuning};
+        let protocol = Protocol::QuakeWorld28;
+        if reader.read_bits(32)? != protocol.number() {
+            return Err(packet::Error::Context);
+        }
+        let server_count = reader.read_signed(32)?;
+        let game_directory = reader.read_string(protocol.string_policy())?;
+        if game_directory.len() >= 128 {
+            return Err(packet::Error::Count);
+        }
+        let raw_slot = reader.read_bits(8)? as u8;
+        let player_slot = raw_slot & 127;
+        if u32::from(player_slot) >= protocol.resource_layout().players.count {
+            return Err(packet::Error::Count);
+        }
+        let level_name = reader.read_string(protocol.string_policy())?;
+        let mut number = || reader.read_bits(32).map(f32::from_bits);
+        // CL_ParseServerData reads these ten single-precision values in order.
+        let tuning = MovementTuning {
+            gravity: Some(MovementMagnitude::Base(number()?)),
+            stop_speed: Some(number()?),
+            max_speed: Some(MovementMagnitude::Base(number()?)),
+            spectator_max_speed: Some(number()?),
+            accelerate: Some(number()?),
+            air_accelerate: Some(number()?),
+            water_accelerate: Some(number()?),
+            friction: Some(number()?),
+            water_friction: Some(number()?),
+            gravity_multiplier: number()?,
+            ..Default::default()
+        };
+        Ok(Self {
+            server_count,
+            game_directory,
+            player_slot,
+            spectator: raw_slot & 128 != 0,
+            level_name,
+            tuning,
+        })
+    }
+}

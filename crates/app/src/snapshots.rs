@@ -102,6 +102,7 @@ pub struct SnapshotBinding {
     presentation_closed: bool,
     pub(crate) close_control_pending: bool,
     native_client: NativePlayerBinding,
+    spectator: bool,
     view_entity_override: Option<u16>,
     projection: PlayerProjection,
     player_stats: Q3StatLayout,
@@ -197,14 +198,34 @@ impl SnapshotBinding {
         {
             return false;
         }
-        self.native_client = NativePlayerBinding::Assigned(u32::from(entity) - 1);
+        self.assign_native_player(u32::from(entity) - 1)
+    }
+    fn assign_native_player(&mut self, number: u32) -> bool {
+        if number >= qa_network::snapshots::snapshot_limits(self.protocol).client_capacity {
+            return false;
+        }
+        self.native_client = NativePlayerBinding::Assigned(number);
         true
+    }
+    pub fn spectator(&self) -> bool {
+        self.spectator
+    }
+    pub(crate) fn receive_qw_server_data(
+        &mut self,
+        data: &qa_network::commands::startup::QwServerData<'_>,
+    ) -> bool {
+        if self.protocol != Protocol::QuakeWorld28 {
+            return false;
+        }
+        self.reset_received();
+        self.spectator = data.spectator;
+        self.assign_native_player(u32::from(data.player_slot))
     }
     pub(crate) fn receive_gamestate(
         &mut self,
         gamestate: &qa_network::channel::commands::Q3GameState<'_>,
     ) {
-        self.native_client = NativePlayerBinding::Assigned(gamestate.client_num);
+        let _ = self.assign_native_player(gamestate.client_num);
         self.reset_received();
     }
     pub(crate) fn receive_server_info(&mut self) {
@@ -600,6 +621,7 @@ impl SnapshotBinding {
             presentation_closed: false,
             close_control_pending: false,
             native_client,
+            spectator: false,
             view_entity_override: None,
             projection: PlayerProjection::load_values(
                 protocol,

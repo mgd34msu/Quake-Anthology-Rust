@@ -475,6 +475,7 @@ fn run() -> Result<(), String> {
     let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
+    let mut native_map_checksum = None;
     let mut native_entity_source = None;
     console
         .cvars
@@ -652,6 +653,7 @@ fn run() -> Result<(), String> {
             );
             *slot = Some(client);
         }
+        native_map_checksum = loaded.native_checksum;
         map_path = Some(loaded.virtual_path);
         loaded_world = Some(loaded.render);
     }
@@ -823,7 +825,13 @@ fn run() -> Result<(), String> {
             .model_assets
             .as_mut()
             .ok_or("missing model loader")?
-            .bind_loaded_world(path, world, Some(collision.geometry), bounds)?;
+            .bind_loaded_world(
+                path,
+                world,
+                Some(collision.geometry),
+                bounds,
+                native_map_checksum,
+            )?;
     }
     let sound_rules = host
         .local_clients

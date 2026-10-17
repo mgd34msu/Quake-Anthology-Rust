@@ -1038,6 +1038,7 @@ enum ModelFile {
         binding: InlineBinding,
         bounds: Bounds,
         collision: Option<qa_core::primitives::GeometryId>,
+        native_checksum: Option<u32>,
     },
     Failed(FileError),
 }
@@ -3692,6 +3693,7 @@ impl ModelAssets {
                 loaded.render.world,
                 Some(loaded.collision),
                 loaded.collision_bounds,
+                loaded.native_checksum,
             )?;
             let staged = stage(self.view(), geometry, &loaded)?;
             let counts = self.assets.counts();
@@ -3790,6 +3792,7 @@ impl ModelAssets {
         world: WorldId,
         collision: Option<qa_core::primitives::GeometryId>,
         native_bounds: Bounds,
+        native_checksum: Option<u32>,
     ) -> Result<(), String> {
         if path.is_empty() || path.starts_with('*') {
             return Err("loaded world filename".to_owned());
@@ -3809,9 +3812,11 @@ impl ModelAssets {
                     binding: existing,
                     bounds,
                     collision: existing_collision,
+                    native_checksum: existing_checksum,
                 }) if *existing == binding
                     && *bounds == native_bounds
-                    && *existing_collision == collision =>
+                    && *existing_collision == collision
+                    && *existing_checksum == native_checksum =>
                 {
                     Ok(())
                 }
@@ -3822,6 +3827,7 @@ impl ModelAssets {
             binding,
             bounds: native_bounds,
             collision,
+            native_checksum,
         };
         Ok(())
     }
@@ -5351,6 +5357,7 @@ impl ModelAssets {
             binding,
             bounds,
             collision: None,
+            native_checksum: None,
         };
         self.catalog.inline[slot].handle = Some(handle);
         Ok(native)
@@ -6614,6 +6621,15 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
+    pub fn world_native_checksum(&self, path: &[u8]) -> Option<u32> {
+        match file_lookup(&self.names, &self.files, path)? {
+            ModelFile::LoadedWorld {
+                native_checksum, ..
+            } => *native_checksum,
+            _ => None,
+        }
+    }
+
     pub fn max_choice_nodes(&self) -> usize {
         self.capacity.model_choices
     }

@@ -107,6 +107,7 @@ fn loading_with_connection(
             loaded.render.world,
             Some(loaded.collision),
             loaded.collision_bounds,
+            None,
         )
         .unwrap();
     runtime.model_assets = Some(builder);

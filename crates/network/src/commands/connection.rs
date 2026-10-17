@@ -73,6 +73,12 @@ fn recover<C: Copy>(
         ControlFlow::Continue(accepted)
     }
 }
+fn reset_history_storage(history: &mut Option<CommandHistory>, keep_number: bool) {
+    if let Some(history) = history {
+        history.reset(if keep_number { history.number() } else { 0 });
+    }
+}
+
 impl Commands {
     pub fn load(protocol: Protocol, maximum_message: usize) -> Self {
         Self {
@@ -116,9 +122,7 @@ impl Commands {
             .append(command))
     }
     pub fn reset_history(&mut self, keep_number: bool) {
-        if let Some(history) = &mut self.history {
-            history.reset(if keep_number { history.number() } else { 0 });
-        }
+        reset_history_storage(&mut self.history, keep_number);
     }
     /// Native payload delta request. QW SERVER retains clc_delta's low byte;
     /// Q2 SERVER retains clc_move's frame, and CLIENT clears invalid frames.
@@ -630,6 +634,23 @@ impl Commands {
                         at += 1 + reader.byte_position();
                         consume(Incoming::ServerInfo(info));
                     }
+                    (Protocol::QuakeWorld28, 11) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let data = super::startup::QwServerData::read(&mut reader)?;
+                        at += 1 + reader.byte_position();
+                        channel.reset_qw_startup()?;
+                        reset_history_storage(&mut self.history, true);
+                        self.delta_request = None;
+                        snapshot = None;
+                        players.fill(None);
+                        consume(Incoming::QwServerData(data));
+                    }
+                    (Protocol::QuakeWorld28, 9) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let text = reader.read_string(self.protocol.string_policy())?;
+                        at += 1 + reader.byte_position();
+                        consume(Incoming::StuffText(text));
+                    }
                     (Protocol::NetQuake15, 15) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let storage = channel.nq_state_mut().ok_or(packet::Error::Context)?;
@@ -682,6 +703,16 @@ impl Commands {
                         consume(Incoming::NqEntityUpdate {
                             number: update.number,
                             model: record.appearance.models[0],
+                        });
+                    }
+                    (Protocol::QuakeWorld28, opcode @ (49 | 50)) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let value = f32::from_bits(reader.read_bits(32)?);
+                        at += 1 + reader.byte_position();
+                        consume(if opcode == 49 {
+                            Incoming::MaxSpeed(value)
+                        } else {
+                            Incoming::EntityGravity(value)
                         });
                     }
                     (Protocol::QuakeWorld28, 42) => {
@@ -793,7 +824,7 @@ impl Commands {
                         let models = (self.protocol == Protocol::QuakeWorld28 && scratch[at] == 45)
                             .then(|| self.protocol.resource_layout().resources[0]);
                         let mut model_result = Ok(());
-                        let count = crate::outputs::read_configstrings(
+                        let read = crate::outputs::read_configstrings(
                             self.protocol,
                             &scratch[at..],
                             |config| {
@@ -808,7 +839,10 @@ impl Commands {
                         )
                         .map_err(|_| packet::Error::Opcode)?;
                         model_result?;
-                        at += count;
+                        at += read.length;
+                        if let Some(progress) = read.progress {
+                            consume(Incoming::ResourceList(progress));
+                        }
                     }
                     // Signon, temp entities, inventory and
                     // stuffed commands require their own service bindings later.

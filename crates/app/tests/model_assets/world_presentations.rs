@@ -117,6 +117,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             world,
             Some(collision),
             first.collision_bounds,
+            None,
         )
         .unwrap();
     owner
@@ -125,6 +126,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             other_world,
             Some(second.collision),
             second.collision_bounds,
+            None,
         )
         .unwrap();
     let inline = owner.register_inline(world, 1).unwrap();

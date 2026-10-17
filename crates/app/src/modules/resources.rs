@@ -175,7 +175,12 @@ impl FrameHost {
         self.runtime.vfs = vfs;
         self.runtime.model_assets = Some(owner);
         match result {
-            Ok(()) => self.player_skin_views.commit_refresh(request),
+            Ok(()) => {
+                self.player_skin_views.commit_refresh(request);
+                for resources in self.runtime.client_resources.iter_mut().flatten() {
+                    resources.startup.skins_prepared();
+                }
+            }
             Err(error) => {
                 let _ = self
                     .runtime
@@ -203,6 +208,7 @@ impl FrameHost {
         };
         if resource_settings_ready {
             self.finish_client_downloads();
+            self.advance_startup_files();
             if let Some(preparer) = preparer.as_mut() {
                 self.refresh_player_skins(&mut **preparer);
             }
@@ -210,6 +216,12 @@ impl FrameHost {
         }
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {
+            if self.runtime.client_resources[index]
+                .as_ref()
+                .is_some_and(|resources| !resources.startup.allow_models())
+            {
+                continue;
+            }
             published |= self.prepare_received_hud(ClientId(index as u32), &mut preparer);
             if !self.prepare_received_world(ClientId(index as u32), &mut preparer) {
                 continue;
@@ -780,8 +792,12 @@ impl FrameHost {
             }
             Err(error) => {
                 self.set_renderer_fullscreen_ui(previous_ui_fullscreen);
-                if protocol == qa_network::commands::packet::Protocol::NetQuake15 {
-                    self.reject_nq_signon(client, format_args!("{error}"));
+                if matches!(
+                    protocol,
+                    qa_network::commands::packet::Protocol::NetQuake15
+                        | qa_network::commands::packet::Protocol::QuakeWorld28
+                ) {
+                    self.reject_client_startup(client, format_args!("{error}"));
                 } else {
                     if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
                         resources.state.rejected += 1;

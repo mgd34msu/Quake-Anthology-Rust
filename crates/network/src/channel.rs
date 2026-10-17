@@ -449,6 +449,23 @@ impl Channel {
             _ => Err(crate::commands::packet::Error::Context),
         }
     }
+    /// A fully validated protocol28 serverdata replaces map decoder state,
+    /// while the same netchan retains its sequence and reliable ACK ownership.
+    pub(crate) fn reset_qw_startup(&mut self) -> Result<(), crate::commands::packet::Error> {
+        let Some(crate::snapshots::Storage::QuakeWorld {
+            ring,
+            player_commands,
+            player_model,
+        }) = self.snapshots.as_mut()
+        else {
+            return Err(crate::commands::packet::Error::Context);
+        };
+        ring.reset_gamestate();
+        player_commands.fill([crate::commands::packet::ZERO_QW; crate::states::QW_PLAYER_SLOTS]);
+        *player_model = 0;
+        self.reset_client_startup();
+        Ok(())
+    }
     pub(crate) fn qw_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::QwRing> {
         match self.snapshots.as_mut()? {
             crate::snapshots::Storage::QuakeWorld { ring, .. } => Some(ring),

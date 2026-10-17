@@ -837,7 +837,11 @@ impl Runtime {
         match native_player.number() {
             Some(number) if number < limits.client_capacity => {}
             None if endpoint == Endpoint::Client
-                && protocol == qa_network::commands::packet::Protocol::NetQuake15
+                && matches!(
+                    protocol,
+                    qa_network::commands::packet::Protocol::NetQuake15
+                        | qa_network::commands::packet::Protocol::QuakeWorld28
+                )
                 && matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_)) => {}
             _ => {
                 return Err(
@@ -870,7 +874,7 @@ impl Runtime {
             .map_err(|error| format!("native channel {error:?}"))?;
         if let Some((binding, mut resources, collision)) = prepared {
             if connecting && let Some(resources) = resources.as_mut() {
-                resources.begin_nq_signon();
+                resources.begin_startup(protocol);
             }
             self.snapshots[slot] = Some(binding);
             self.client_resources[slot] = resources;
@@ -904,7 +908,7 @@ impl Runtime {
             .client_resources
             .get(id.0 as usize)
             .and_then(Option::as_ref)
-            .is_some_and(|resources| resources.awaiting_nq_signon())
+            .is_some_and(|resources| resources.awaiting_startup())
             || self
                 .snapshots
                 .get(id.0 as usize)

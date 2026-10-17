@@ -1228,7 +1228,7 @@ impl FrameHost {
         }
         if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
             for resources in self.runtime.client_resources.iter_mut().flatten() {
-                resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                resources.prepare_sounds(assets, &self.runtime.vfs);
             }
         }
         self.publish_module_signon();
@@ -2268,7 +2268,7 @@ impl FrameHost {
                 self.runtime.client_resources[index].as_mut(),
                 self.runtime.sound_assets.as_deref_mut(),
             ) {
-                resources.state.prepare_sounds(assets, &self.runtime.vfs);
+                resources.prepare_sounds(assets, &self.runtime.vfs);
             }
             if let Some(termination) = disconnected {
                 self.finish_client_termination(id, termination, driver);
