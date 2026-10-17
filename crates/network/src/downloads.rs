@@ -244,11 +244,18 @@ pub fn q3_stock_package(name: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// Native downloads name a bounded relative content path, never an OS path.
-pub fn validate_path(name: &[u8]) -> Result<(), Error> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathRole {
+    Request,
+    Destination,
+}
+
+/// Native requests include a directory. A local alias can instead name a file
+/// directly in the explicitly selected writable root; both retain native limits.
+pub fn validate_path(name: &[u8], role: PathRole) -> Result<(), Error> {
     if name.is_empty()
         || name.len() >= 64
-        || !name.contains(&b'/')
+        || role == PathRole::Request && !name.contains(&b'/')
         || name.windows(2).any(|pair| pair == b"..")
         || name
             .iter()

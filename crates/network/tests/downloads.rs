@@ -233,7 +233,10 @@ fn shared_download_paths_and_categories_keep_native_content_boundaries() {
         b"models/a+b_1-2.md2",
         b"maps/name.bsp",
     ] {
-        assert_eq!(downloads::validate_path(name), Ok(()));
+        assert_eq!(
+            downloads::validate_path(name, downloads::PathRole::Request),
+            Ok(())
+        );
     }
     for name in [
         b"/maps/a".as_slice(),
@@ -248,12 +251,21 @@ fn shared_download_paths_and_categories_keep_native_content_boundaries() {
         b"a",
         b".maps/a",
     ] {
-        assert_eq!(downloads::validate_path(name), Err(Error::Path));
+        assert_eq!(
+            downloads::validate_path(name, downloads::PathRole::Request),
+            Err(Error::Path)
+        );
     }
     let mut longest = [b'a'; 64];
     longest[4] = b'/';
-    assert_eq!(downloads::validate_path(&longest[..63]), Ok(()));
-    assert_eq!(downloads::validate_path(&longest), Err(Error::Path));
+    assert_eq!(
+        downloads::validate_path(&longest[..63], downloads::PathRole::Request),
+        Ok(())
+    );
+    assert_eq!(
+        downloads::validate_path(&longest, downloads::PathRole::Request),
+        Err(Error::Path)
+    );
     for protocol in SEQUENTIAL {
         assert_eq!(downloads::category(protocol, b"maps/a.pk3"), Package);
         assert_eq!(downloads::content_category(protocol, b"maps/a.pk3"), Map);
@@ -497,4 +509,45 @@ fn q3_original_stock_packages_are_never_distributable() {
     ] {
         assert_eq!(downloads::q3_stock_package(name), None);
     }
+}
+
+#[test]
+fn download_destinations_allow_root_files_without_relaxing_request_or_containment_rules() {
+    use downloads::PathRole;
+    assert_eq!(
+        downloads::validate_path(b"custom.pk3", PathRole::Request),
+        Err(Error::Path)
+    );
+    for path in [
+        b"custom.pk3".as_slice(),
+        b"maps/renamed.bsp",
+        b"skins/renamed.pcx",
+    ] {
+        assert_eq!(
+            downloads::validate_path(path, PathRole::Destination),
+            Ok(())
+        );
+    }
+    for path in [
+        b"../custom.pk3".as_slice(),
+        b"/custom.pk3",
+        b"maps//a",
+        b"maps/./a",
+        b"a\\b",
+        b"a:b",
+        b"a\0b",
+        b".hidden",
+    ] {
+        for role in [PathRole::Request, PathRole::Destination] {
+            assert_eq!(downloads::validate_path(path, role), Err(Error::Path));
+        }
+    }
+    assert_eq!(
+        downloads::validate_path(&[b'a'; 63], PathRole::Destination),
+        Ok(())
+    );
+    assert_eq!(
+        downloads::validate_path(&[b'a'; 64], PathRole::Destination),
+        Err(Error::Path)
+    );
 }

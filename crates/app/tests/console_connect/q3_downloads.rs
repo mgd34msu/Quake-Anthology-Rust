@@ -447,3 +447,130 @@ fn q3_unsolicited_and_rejected_downloads_stay_scoped_to_the_receiving_client() {
             .is_connected()
     );
 }
+
+#[test]
+fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publication() {
+    let mut files = support::Fixture::new(&[]);
+    let mut host = host(1);
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let mount = host.runtime.vfs.mounts().next().unwrap().id;
+    let mut source = source();
+    let mut server = EventPump::new();
+    let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
+    let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
+    let local = peer(&datagrams(&mut server)[0]);
+    let mut native = accept(
+        &mut host,
+        &mut source,
+        SeatId::FIRST,
+        &mut server,
+        socket,
+        local,
+        0,
+    );
+    host.configure_client_downloads(client, mount, mount, 8192, 128)
+        .unwrap();
+    setting(&mut host, "cl_allowDownload", "1");
+    for destination in ["../custom.pk3", "/custom.pk3", "maps//custom.pk3"] {
+        command(
+            &mut host,
+            &mut source,
+            &format!("download baseq3/custom.pk3 \"{destination}\"\n"),
+            20,
+        );
+    }
+    collect(&mut server, &mut native, 20);
+    assert_eq!(native.count(b"download baseq3/custom.pk3"), 0);
+    command(
+        &mut host,
+        &mut source,
+        "download baseq3/custom.pk3 custom.pk3\n",
+        30,
+    );
+    collect(&mut server, &mut native, 30);
+    assert_eq!(native.count(b"download baseq3/custom.pk3"), 1);
+    let progress = host
+        .console
+        .cvars
+        .bind("cl_downloadName", context())
+        .unwrap();
+    assert_eq!(
+        host.console.cvars.read(progress).unwrap().as_str(),
+        "baseq3/custom.pk3"
+    );
+    let package = zip::stored_zip(&[(b"models/aliased.bin", b"retained package member")]);
+    send(&mut server, socket, local, &mut native, 40, |writer, _| {
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 0,
+                total: Some(package.len() as u32),
+                bytes: &package[..8],
+            },
+            writer,
+        )
+        .unwrap();
+        Ok(())
+    });
+    frame(&mut host, &mut source, 40);
+    collect(&mut server, &mut native, 40);
+    command(&mut host, &mut source, "stopdownload\n", 50);
+    collect(&mut server, &mut native, 50);
+    assert!(bytes(&host, b"custom.pk3").is_none());
+    assert!(bytes(&host, b"baseq3/custom.pk3").is_none());
+    command(&mut host, &mut source, "retrydownload\n", 60);
+    collect(&mut server, &mut native, 60);
+    assert_eq!(native.count(b"download baseq3/custom.pk3"), 2);
+    assert_eq!(native.count(b"download custom.pk3"), 0);
+    send(&mut server, socket, local, &mut native, 70, |writer, _| {
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 0,
+                total: Some(package.len() as u32),
+                bytes: &package,
+            },
+            writer,
+        )
+        .unwrap();
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 1,
+                total: None,
+                bytes: &[],
+            },
+            writer,
+        )
+        .unwrap();
+        Ok(())
+    });
+    frame(&mut host, &mut source, 70);
+    collect(&mut server, &mut native, 70);
+    frame(&mut host, &mut source, 75);
+    collect(&mut server, &mut native, 75);
+    assert_eq!(bytes(&host, b"custom.pk3"), Some(package.clone()));
+    assert_eq!(
+        bytes(&host, b"models/aliased.bin"),
+        Some(b"retained package member".to_vec())
+    );
+    assert!(bytes(&host, b"baseq3/custom.pk3").is_none());
+    assert_eq!(native.count(b"donedl"), 1);
+    assert!(
+        host.console
+            .cvars
+            .read(progress)
+            .unwrap()
+            .as_str()
+            .is_empty()
+    );
+    command(
+        &mut host,
+        &mut source,
+        "download baseq3/other.pk3 custom.pk3\n",
+        80,
+    );
+    collect(&mut server, &mut native, 80);
+    assert_eq!(native.count(b"download baseq3/other.pk3"), 0);
+    assert_eq!(bytes(&host, b"custom.pk3"), Some(package));
+}

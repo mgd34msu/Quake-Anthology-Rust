@@ -15,9 +15,30 @@ pub(crate) struct DownloadConfig {
 
 #[derive(Clone)]
 struct Request {
-    name: FixedText<64>,
+    remote: FixedText<64>,
+    local: FixedText<64>,
     mount: MountId,
     purpose: Purpose,
+}
+impl Request {
+    fn name(raw: &[u8], role: qa_network::downloads::PathRole) -> Result<FixedText<64>, String> {
+        qa_network::downloads::validate_path(raw, role)
+            .map_err(|_| "invalid native download path")?;
+        let raw = std::str::from_utf8(raw).map_err(|_| "download path is not UTF-8")?;
+        let canonical = qa_core::names::canonical_path(raw);
+        let mut name = FixedText::default();
+        name.set(&canonical).map_err(|_| "download path capacity")?;
+        Ok(name)
+    }
+}
+impl std::fmt::Display for Request {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(self.remote.as_str())?;
+        if self.remote.as_bytes() != self.local.as_bytes() {
+            write!(out, " -> {}", self.local.as_str())?;
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 enum Purpose {
@@ -103,7 +124,7 @@ impl Pending {
                 let Transfer::Active { request, .. } = transfer else {
                     return None;
                 };
-                write!(text, "download {}", request.name.as_str()).ok()?;
+                write!(text, "download {}", request.remote.as_str()).ok()?;
             }
             Self::Next => text.set("nextdl").ok()?,
             Self::Block(number) => write!(text, "nextdl {number}").ok()?,
@@ -574,7 +595,8 @@ impl ClientDownload {
 
     fn start(
         &mut self,
-        name: &[u8],
+        remote: &[u8],
+        local: Option<&[u8]>,
         vfs: &Vfs,
         cvars: &qa_console::cvars::Cvars,
         purpose: Purpose,
@@ -590,33 +612,37 @@ impl ClientDownload {
         if self.pending().is_some() {
             return Err("download acknowledgement is still pending".into());
         }
-        qa_network::downloads::validate_path(name).map_err(|_| "invalid native download path")?;
-        let text = std::str::from_utf8(name).map_err(|_| "download path is not UTF-8")?;
-        let canonical = qa_core::names::canonical_path(text);
-        let mut name = FixedText::default();
-        name.set(&canonical).map_err(|_| "download path capacity")?;
-        if vfs.open(name.as_bytes()).is_some() {
+        let remote = Request::name(remote, qa_network::downloads::PathRole::Request)?;
+        let local = match local {
+            Some(local) => Request::name(local, qa_network::downloads::PathRole::Destination)?,
+            None => remote.clone(),
+        };
+        if vfs.open(local.as_bytes()).is_some() {
             return Err("download file is already available in mounted content".into());
-        }
-        if !self.allowed(name.as_bytes(), cvars) {
-            return Err("download disabled by local CLIENT policy".into());
         }
         let config = self
             .config
             .ok_or("downloads have no configured writable roots")?;
-        let mount = if name.as_bytes().starts_with(b"skins/") {
+        let mount = if local.as_bytes().starts_with(b"skins/") {
             config.skins
         } else {
             config.game
         };
-        self.open(
-            Request {
-                name,
-                mount,
-                purpose,
-            },
-            vfs,
-        )
+        let request = Request {
+            remote,
+            local,
+            mount,
+            purpose,
+        };
+        if !self.allowed_request(&request, cvars) {
+            return Err("download disabled by local CLIENT policy".into());
+        }
+        self.open(request, vfs)
+    }
+
+    fn allowed_request(&self, request: &Request, cvars: &qa_console::cvars::Cvars) -> bool {
+        self.allowed(request.remote.as_bytes(), cvars)
+            && self.allowed(request.local.as_bytes(), cvars)
     }
 
     fn allowed(&self, name: &[u8], cvars: &qa_console::cvars::Cvars) -> bool {
@@ -635,7 +661,7 @@ impl ClientDownload {
                 .ok_or("download directory is no longer mounted")?;
             let file = StagedFile::create(
                 root,
-                request.name.as_str(),
+                request.local.as_str(),
                 config.maximum_bytes,
                 config.buffer_bytes,
             )
@@ -721,7 +747,13 @@ impl ClientDownload {
                 ..
             }
             | Transfer::Failed(request) => {
-                match self.start(request.name.as_bytes(), vfs, cvars, request.purpose) {
+                match self.start(
+                    request.remote.as_bytes(),
+                    Some(request.local.as_bytes()),
+                    vfs,
+                    cvars,
+                    request.purpose,
+                ) {
                     Ok(()) => Ok(()),
                     Err(error) => {
                         self.transfer = Transfer::Failed(request);
@@ -829,7 +861,7 @@ impl ClientDownload {
                 continue;
             }
             pass.attempted.insert(cursor);
-            match self.start(name.as_bytes(), vfs, cvars, Purpose::Skin) {
+            match self.start(name.as_bytes(), None, vfs, cvars, Purpose::Skin) {
                 Ok(()) => return rejected.map_or(Ok(()), Err),
                 Err(error) => rejected = Some(error),
             }
@@ -883,7 +915,9 @@ impl ClientDownload {
                 ProgressViews::number(views.time, time.milliseconds() as i32 as f32, cvars)?;
             }
             let (name, count) = match &self.transfer {
-                Transfer::Active { request, file, .. } => (request.name.as_str(), Some(file.len())),
+                Transfer::Active { request, file, .. } => {
+                    (request.remote.as_str(), Some(file.len()))
+                }
                 Transfer::Published { bytes, .. }
                 | Transfer::Finished { bytes, .. }
                 | Transfer::RefreshFailed { bytes, .. } => ("", Some(*bytes)),
@@ -971,7 +1005,7 @@ impl ClientDownload {
                 draining: true,
                 retry,
             } => {
-                if retry && self.allowed(request.name.as_bytes(), cvars) {
+                if retry && self.allowed_request(&request, cvars) {
                     self.open(request, vfs)
                 } else {
                     self.transfer = Transfer::Paused {
@@ -989,7 +1023,7 @@ impl ClientDownload {
                 sending: Sending::Awaiting,
             } => {
                 let result = (|| {
-                    if !self.allowed(request.name.as_bytes(), cvars) {
+                    if !self.allowed_request(&request, cvars) {
                         return Err("download disabled by local CLIENT policy".into());
                     }
                     if vfs.directory_path(request.mount).is_none() {
@@ -1002,7 +1036,7 @@ impl ClientDownload {
                             compressed,
                         } if self.blocks.is_none() => {
                             let bytes = bytes.ok_or_else(|| {
-                                format!("server has no {}", request.name.as_str())
+                                format!("server has no {}", request.remote.as_str())
                             })?;
                             if received_percent < percent || received_percent > 100 {
                                 return Err("download progress regressed".into());
@@ -1105,13 +1139,7 @@ impl ClientDownload {
                 file,
                 percent,
                 ..
-            } => writeln!(
-                out,
-                "{}: {} bytes, {}%",
-                request.name.as_str(),
-                file.len(),
-                percent
-            ),
+            } => writeln!(out, "{}: {} bytes, {}%", request, file.len(), percent),
             Transfer::Paused {
                 request,
                 draining,
@@ -1119,30 +1147,24 @@ impl ClientDownload {
             } => writeln!(
                 out,
                 "{}: paused, pending reply={}, retry={}",
-                request.name.as_str(),
-                draining,
-                retry
+                request, draining, retry
             ),
             Transfer::Published { request, bytes } => writeln!(
                 out,
                 "{}: {} bytes published, content refresh pending",
-                request.name.as_str(),
-                bytes
+                request, bytes
             ),
             Transfer::RefreshFailed { request, bytes } => writeln!(
                 out,
                 "{}: {} bytes published, refresh failed; retrydownload retries refresh",
-                request.name.as_str(),
-                bytes
+                request, bytes
             ),
             Transfer::Finished { request, bytes } => {
-                writeln!(out, "{}: {} bytes complete", request.name.as_str(), bytes)
+                writeln!(out, "{}: {} bytes complete", request, bytes)
             }
-            Transfer::Failed(request) => writeln!(
-                out,
-                "{}: failed; retrydownload retries",
-                request.name.as_str()
-            ),
+            Transfer::Failed(request) => {
+                writeln!(out, "{}: failed; retrydownload retries", request)
+            }
         }
     }
 }
@@ -1306,18 +1328,19 @@ impl crate::host::FrameHost {
             .ok_or("downloads have no configured writable roots")?;
         match command {
             0 => {
-                if args.len() != 2 {
-                    return Err("usage: download <datafile>".into());
+                if !(2..=3).contains(&args.len()) {
+                    return Err("usage: download <remote> [local]".into());
                 }
                 downloads.start(
                     args.get_bytes(1),
+                    (args.len() == 3).then(|| args.get_bytes(2)),
                     &self.runtime.vfs,
                     &self.console.cvars,
                     Purpose::Manual,
                 )?;
             }
             1 => {
-                let mut text = FixedText::<192>::default();
+                let mut text = FixedText::<320>::default();
                 downloads
                     .status(&mut text)
                     .map_err(|_| "download status capacity")?;
@@ -1362,7 +1385,7 @@ impl crate::host::FrameHost {
                 continue;
             }
             if let Transfer::Active { request, .. } = &downloads.transfer
-                && !downloads.allowed(request.name.as_bytes(), &self.console.cvars)
+                && !downloads.allowed_request(request, &self.console.cvars)
             {
                 downloads.stop();
                 continue;
@@ -1485,6 +1508,7 @@ impl crate::host::FrameHost {
                         let name = qa_core::names::canonical_path(name);
                         downloads.start(
                             name.as_bytes(),
+                            None,
                             &self.runtime.vfs,
                             &self.console.cvars,
                             Purpose::Startup,
@@ -1606,7 +1630,7 @@ impl crate::host::FrameHost {
             else {
                 continue;
             };
-            let name = request.name.as_bytes();
+            let name = request.local.as_bytes();
             let result = self
                 .runtime
                 .vfs
@@ -1667,8 +1691,7 @@ impl crate::host::FrameHost {
                     }
                     let _ = self.runtime.server.events.console_formatted(format_args!(
                         "Downloaded {} ({} bytes).\n",
-                        request.name.as_str(),
-                        bytes
+                        request, bytes
                     ));
                     downloads.transfer = Transfer::Finished { request, bytes };
                 }

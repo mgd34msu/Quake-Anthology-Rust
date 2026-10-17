@@ -227,7 +227,7 @@ impl ServerDownload {
         self.receiver = Some(receiver);
         self.pending = Pending::Unavailable;
         let raw = args.get_bytes(1);
-        if downloads::validate_path(raw).is_err() {
+        if downloads::validate_path(raw, downloads::PathRole::Request).is_err() {
             return;
         }
         let mut name = [0; 64];
