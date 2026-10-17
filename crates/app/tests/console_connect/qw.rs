@@ -304,7 +304,8 @@ fn become_active(
         .as_ref()
         .unwrap()
         .catalog()
-        .world_native_checksum(b"maps/ready.bsp")
+        .world_native_checksums(b"maps/ready.bsp")
+        .and_then(|checksums| checksums.quakeworld_lumps)
         .unwrap();
     assert_eq!(
         native.count(format!("prespawn {server_count} 0 {}", checksum as i32).as_bytes()),

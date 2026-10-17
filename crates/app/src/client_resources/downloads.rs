@@ -81,6 +81,221 @@ struct DownloadViews {
     allow: qa_console::cvars::View,
     categories: [qa_console::cvars::View; 4],
 }
+
+impl ClientResources {
+    fn next_startup_file(
+        &mut self,
+        vfs: &Vfs,
+        mut models: Option<&mut crate::model_assets::ModelAssets>,
+    ) -> Result<Option<FixedText<64>>, String> {
+        use super::startup::{Q2FileCursor, ResourceKind};
+        loop {
+            let mut name = FixedText::<64>::default();
+            if let Some((kind, ordinal, end)) = self.startup.file_cursor() {
+                if ordinal > end {
+                    self.startup.files_complete();
+                    return Ok(None);
+                }
+                let path = kind
+                    .range(self.state.layout)
+                    .get(ordinal as usize)
+                    .and_then(|row| self.state.configs.config(row))
+                    .ok_or("QW resource list row missing")?
+                    .text;
+                if kind == ResourceKind::Sound {
+                    if let Some(path) = qa_audio::sound_path(path, RuleSetId::QuakeWorld)
+                        .map_err(|_| "invalid QW sound path")?
+                    {
+                        name.set(path.as_str())
+                            .map_err(|_| "QW resource path capacity")?;
+                    }
+                } else if !path.starts_with(b"*") {
+                    name.set_bytes(path)
+                        .map_err(|_| "QW resource path capacity")?;
+                }
+                self.startup.advance_file();
+            } else if let Some(cursor) = self.startup.q2().and_then(|state| state.file_cursor()) {
+                let layout = self.state.layout;
+                let config = |range: qa_core::primitives::IndexSpan, ordinal: u32| {
+                    range
+                        .get(ordinal as usize)
+                        .and_then(|row| self.state.configs.config(row))
+                        .map(|row| row.text)
+                        .filter(|text| !text.is_empty())
+                };
+                let next = match cursor {
+                    Q2FileCursor::Models { ordinal, image } => {
+                        if ordinal >= layout.resources[0].count {
+                            Some(Q2FileCursor::Sounds(1))
+                        } else {
+                            let next_model = Q2FileCursor::Models {
+                                ordinal: ordinal + 1,
+                                image: None,
+                            };
+                            match config(layout.resources[0], ordinal)
+                                .filter(|path| !matches!(path.first(), Some(b'*' | b'#')))
+                            {
+                                Some(path) => {
+                                    if let Some(image) = image {
+                                        let Some(owner) = models.as_deref_mut() else {
+                                            return Ok(None);
+                                        };
+                                        match owner.source_image(vfs, path, image)? {
+                                            Some(path) if !path.is_empty() => {
+                                                name.set_bytes(path)
+                                                    .map_err(|_| "Q2 model image path capacity")?;
+                                                Some(Q2FileCursor::Models {
+                                                    ordinal,
+                                                    image: Some(image + 1),
+                                                })
+                                            }
+                                            _ => Some(next_model),
+                                        }
+                                    } else {
+                                        name.set_bytes(path)
+                                            .map_err(|_| "Q2 model path capacity")?;
+                                        Some(if ordinal == 1 {
+                                            next_model
+                                        } else {
+                                            Q2FileCursor::Models {
+                                                ordinal,
+                                                image: Some(0),
+                                            }
+                                        })
+                                    }
+                                }
+                                None => Some(next_model),
+                            }
+                        }
+                    }
+                    Q2FileCursor::Sounds(ordinal) => {
+                        if ordinal >= layout.resources[1].count {
+                            Some(Q2FileCursor::Images(1))
+                        } else {
+                            if let Some(raw) = config(layout.resources[1], ordinal)
+                                && let Some(path) = qa_audio::sound_path(raw, layout.rules)
+                                    .map_err(|_| "invalid Q2 sound path")?
+                            {
+                                name.set(path.as_str())
+                                    .map_err(|_| "Q2 sound path capacity")?;
+                            }
+                            Some(Q2FileCursor::Sounds(ordinal + 1))
+                        }
+                    }
+                    Q2FileCursor::Images(ordinal) => {
+                        if ordinal >= layout.resources[2].count {
+                            Some(Q2FileCursor::Players { slot: 0, part: 0 })
+                        } else {
+                            if let Some(raw) = config(layout.resources[2], ordinal) {
+                                if let Some(raw) =
+                                    raw.strip_prefix(b"/").or_else(|| raw.strip_prefix(b"\\"))
+                                {
+                                    name.set_bytes(raw).map_err(|_| "Q2 image path capacity")?;
+                                } else {
+                                    name.set("pics/")
+                                        .and_then(|()| name.append_bytes(raw))
+                                        .and_then(|()| name.append_bytes(b".pcx"))
+                                        .map_err(|_| "Q2 image path capacity")?;
+                                }
+                            }
+                            Some(Q2FileCursor::Images(ordinal + 1))
+                        }
+                    }
+                    Q2FileCursor::Players { slot, part } => {
+                        if slot >= layout.players.count {
+                            Some(Q2FileCursor::Sky(0))
+                        } else {
+                            if let Some(raw) = config(layout.players, slot)
+                                && let Some(path) =
+                                    self.state.models.player_download_path(raw, part)
+                            {
+                                name = path;
+                            }
+                            Some(if part == 4 {
+                                Q2FileCursor::Players {
+                                    slot: slot + 1,
+                                    part: 0,
+                                }
+                            } else {
+                                Q2FileCursor::Players {
+                                    slot,
+                                    part: part + 1,
+                                }
+                            })
+                        }
+                    }
+                    Q2FileCursor::Sky(index) => {
+                        if index >= 12 {
+                            Some(Q2FileCursor::Textures(0))
+                        } else {
+                            if let Some(sky) = self
+                                .state
+                                .configs
+                                .config(2)
+                                .filter(|row| !row.text.is_empty())
+                            {
+                                let face =
+                                    qa_render::sky::CubeFace::ALL[usize::from(index / 2)].suffix();
+                                let mut stem = FixedText::<64>::default();
+                                stem.set("env/")
+                                    .and_then(|()| stem.append_bytes(sky.text))
+                                    .and_then(|()| stem.append_bytes(face.as_bytes()))
+                                    .map_err(|_| "Q2 sky path capacity")?;
+                                let mut tga = stem.clone();
+                                tga.append_bytes(b".tga")
+                                    .map_err(|_| "Q2 sky path capacity")?;
+                                let mut pcx = stem.clone();
+                                pcx.append_bytes(b".pcx")
+                                    .map_err(|_| "Q2 sky path capacity")?;
+                                if vfs.open(tga.as_bytes()).is_none()
+                                    && vfs.open(pcx.as_bytes()).is_none()
+                                {
+                                    name = if index % 2 == 0 { tga } else { pcx };
+                                }
+                            }
+                            Some(Q2FileCursor::Sky(index + 1))
+                        }
+                    }
+                    Q2FileCursor::Textures(index) => {
+                        let mut path = FixedText::<64>::default();
+                        let raw = config(layout.resources[0], 1)
+                            .ok_or("Q2 server supplied no world model")?;
+                        path.set_bytes(raw).map_err(|_| "Q2 world path capacity")?;
+                        let state = self.startup.q2_mut().ok_or("Q2 startup owner changed")?;
+                        if state.world_input.is_none() {
+                            state.world_input = Some(crate::map::read(vfs, path.as_str())?);
+                        }
+                        let input = state.world_input.as_ref().ok_or("Q2 world input missing")?;
+                        if let Some(texture) = input.texture_names()?.nth(index as usize) {
+                            let texture = texture
+                                .map_err(|error| format!("Q2 texture dependency: {error:?}"))?;
+                            if !texture.is_empty() {
+                                name.set("textures/")
+                                    .and_then(|()| name.append_bytes(texture))
+                                    .and_then(|()| name.append_bytes(b".wal"))
+                                    .map_err(|_| "Q2 texture path capacity")?;
+                            }
+                            Some(Q2FileCursor::Textures(index + 1))
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(state) = self.startup.q2_mut() {
+                    state.advance_file(next);
+                }
+                if next.is_none() {
+                    return Ok(None);
+                }
+            } else {
+                return Ok(None);
+            }
+            if !name.as_bytes().is_empty() {
+                return Ok(Some(name));
+            }
+        }
+    }
+}
 impl DownloadViews {
     fn bind(
         cvars: &qa_console::cvars::Cvars,
@@ -819,13 +1034,9 @@ impl crate::host::FrameHost {
     }
 
     pub(crate) fn advance_startup_files(&mut self) {
-        use super::startup::ResourceKind;
         for index in 0..self.runtime.client_resources.len() {
             loop {
                 let Some(resources) = self.runtime.client_resources[index].as_ref() else {
-                    break;
-                };
-                let Some((kind, ordinal, end)) = resources.startup.file_cursor() else {
                     break;
                 };
                 if resources
@@ -835,47 +1046,30 @@ impl crate::host::FrameHost {
                 {
                     break;
                 }
-                if ordinal > end {
-                    if let Some(resources) = self.runtime.client_resources[index].as_mut() {
-                        resources.startup.files_complete();
-                        if kind == ResourceKind::Sound
+                let result = self.runtime.client_resources[index]
+                    .as_mut()
+                    .map(|resources| {
+                        resources.next_startup_file(
+                            &self.runtime.vfs,
+                            self.runtime.model_assets.as_mut(),
+                        )
+                    });
+                let name = match result {
+                    Some(Ok(Some(name))) => name,
+                    Some(Ok(None)) => {
+                        if let Some(resources) = self.runtime.client_resources[index].as_mut()
                             && let Some(assets) = self.runtime.sound_assets.as_deref_mut()
                         {
                             resources.prepare_sounds(assets, &self.runtime.vfs);
                         }
+                        break;
                     }
-                    break;
-                }
-                let mut name = FixedText::<64>::default();
-                let path = kind
-                    .range(resources.state.layout)
-                    .get(ordinal as usize)
-                    .and_then(|row| resources.state.configs.config(row))
-                    .map(|row| row.text);
-                let path = match path {
-                    Some(path) if kind == ResourceKind::Sound => {
-                        qa_audio::sound_path(path, qa_core::primitives::RuleSetId::QuakeWorld)
-                            .map_err(|_| "invalid QW sound path")
-                            .and_then(|path| match path {
-                                Some(path) => name
-                                    .set(path.as_str())
-                                    .map_err(|_| "QW resource path capacity"),
-                                None => Ok(()),
-                            })
+                    Some(Err(error)) => {
+                        self.reject_client_startup(ClientId(index as u32), format_args!("{error}"));
+                        break;
                     }
-                    Some(path) if path.starts_with(b"*") => Ok(()),
-                    Some(path) => name
-                        .set_bytes(path)
-                        .map_err(|_| "QW resource path capacity"),
-                    None => Err("QW resource list row missing"),
+                    None => break,
                 };
-                if let Some(resources) = self.runtime.client_resources[index].as_mut() {
-                    resources.startup.advance_file();
-                }
-                if let Err(error) = path {
-                    self.reject_client_startup(ClientId(index as u32), format_args!("{error}"));
-                    break;
-                }
                 if name.as_bytes().is_empty() || self.runtime.vfs.open(name.as_bytes()).is_some() {
                     continue;
                 }
@@ -905,6 +1099,9 @@ impl crate::host::FrameHost {
                     .as_mut()
                     .and_then(|resources| resources.downloads.as_mut())
                     .map(|downloads| {
+                        let name = std::str::from_utf8(name.as_bytes())
+                            .map_err(|_| "native resource path encoding".to_owned())?;
+                        let name = qa_core::names::canonical_path(name);
                         downloads.start(
                             name.as_bytes(),
                             &self.runtime.vfs,
@@ -915,11 +1112,10 @@ impl crate::host::FrameHost {
                 match result {
                     Some(Ok(())) => break,
                     Some(Err(error)) => {
-                        let _ = self
-                            .runtime
-                            .server
-                            .events
-                            .console_formatted(format_args!("QW resource download: {error}\n"));
+                        let _ =
+                            self.runtime.server.events.console_formatted(format_args!(
+                                "Native resource download: {error}\n"
+                            ));
                     }
                     None => {}
                 }

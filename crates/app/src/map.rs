@@ -36,7 +36,7 @@ pub struct SpawnAnchor {
 }
 
 pub struct LoadedMap {
-    pub native_checksum: Option<u32>,
+    pub native_checksums: qa_formats::bsp::NativeMapChecksums,
     pub collision: GeometryId,
     pub portals: Option<qa_world::portals::AreaPortals>,
     pub collision_bounds: Bounds,
@@ -182,7 +182,7 @@ pub struct MapInput {
     pub virtual_path: String,
     profile_product: ProfileProduct,
     entity_source: NativeEntityText,
-    native_checksum: Option<u32>,
+    native_checksums: qa_formats::bsp::NativeMapChecksums,
 }
 
 enum ProfileProduct {
@@ -201,7 +201,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         .map_err(|error| format!("map {path}: {error}"))?;
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
-    let native_checksum = bsp.quakeworld_checksum2();
+    let native_checksums = bsp.native_checksums();
     let entity_source = NativeEntityText {
         syntax: source.lineage(),
         bytes: bsp.bytes(Lump::Entities).into(),
@@ -239,11 +239,23 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         virtual_path: path,
         profile_product,
         entity_source,
-        native_checksum,
+        native_checksums,
     })
 }
 
 impl MapInput {
+    pub fn native_checksums(&self) -> qa_formats::bsp::NativeMapChecksums {
+        self.native_checksums
+    }
+
+    pub fn texture_names<'a>(
+        &'a self,
+    ) -> Result<impl ExactSizeIterator<Item = Result<&'a [u8], qa_formats::FormatError>> + 'a, String>
+    {
+        let bsp = Bsp::parse(&self.bytes).map_err(|error| format!("BSP directory: {error:?}"))?;
+        Ok(bsp.texture_info().map(|row| row.map(|info| info.name)))
+    }
+
     pub fn profile_product(&self, client: RuleSetId) -> Cow<'_, str> {
         match &self.profile_product {
             ProfileProduct::Stock(path) => Cow::Borrowed(path),
@@ -297,7 +309,7 @@ impl MapInput {
             }
         };
         Ok(LoadedMap {
-            native_checksum: self.native_checksum,
+            native_checksums: self.native_checksums,
             collision,
             portals,
             collision_bounds,

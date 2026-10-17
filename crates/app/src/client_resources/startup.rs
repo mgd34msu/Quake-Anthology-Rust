@@ -1,5 +1,7 @@
 //! Connection startup owns native phases; filenames remain in ConfigStrings.
 use super::*;
+mod q2;
+pub(crate) use q2::{FileCursor as Q2FileCursor, Q2Signon};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ResourceKind {
@@ -36,6 +38,14 @@ pub(crate) enum StartupReply {
     QwBegin {
         server: i32,
     },
+    Q2List {
+        kind: qa_network::commands::startup::ResourceStream,
+        server: i32,
+        start: u32,
+    },
+    Q2Begin {
+        server: i32,
+    },
     New,
 }
 
@@ -51,9 +61,10 @@ pub(crate) enum ClientStartup {
     #[default]
     Unmanaged,
     NetQuake(NqSignon),
-    AwaitQwHeader {
+    AwaitHeader {
         new_pending: bool,
     },
+    Quake2(Q2Signon),
     QuakeWorld(QwSignon),
 }
 #[derive(Default)]
@@ -94,16 +105,58 @@ enum QwPhase {
 }
 
 impl ClientStartup {
+    pub(crate) fn begin_q2(
+        &mut self,
+        data: &qa_network::commands::startup::Q2ServerData<'_>,
+    ) -> Result<(), &'static str> {
+        if data.game_directory.windows(2).any(|pair| pair == b"..")
+            || data
+                .game_directory
+                .iter()
+                .any(|byte| matches!(byte, b'/' | b'\\' | b':'))
+        {
+            return Err("Q2 game directory must be a single relative component");
+        }
+        *self = Self::Quake2(Q2Signon::new(data)?);
+        Ok(())
+    }
+    pub(crate) fn resource_stream(
+        &mut self,
+        kind: qa_network::commands::startup::ResourceStream,
+    ) -> Result<(), &'static str> {
+        match self {
+            Self::Unmanaged => Ok(()),
+            Self::Quake2(state) => state.stream_complete(kind),
+            _ => Err("Q2 stream before serverdata"),
+        }
+    }
+    pub(crate) fn q2(&self) -> Option<&Q2Signon> {
+        match self {
+            Self::Quake2(state) => Some(state),
+            _ => None,
+        }
+    }
+    pub(crate) fn q2_mut(&mut self) -> Option<&mut Q2Signon> {
+        match self {
+            Self::Quake2(state) => Some(state),
+            _ => None,
+        }
+    }
     pub(crate) fn connecting(&mut self, protocol: Protocol) {
         match protocol {
             Protocol::NetQuake15 => self.begin_nq(),
-            Protocol::QuakeWorld28 => *self = Self::AwaitQwHeader { new_pending: false },
+            Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038 => {
+                *self = Self::AwaitHeader { new_pending: false }
+            }
             _ => {}
         }
     }
     pub(crate) fn connected(&mut self, protocol: Protocol) {
-        if protocol == Protocol::QuakeWorld28 {
-            *self = Self::AwaitQwHeader { new_pending: true };
+        if matches!(
+            protocol,
+            Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038
+        ) {
+            *self = Self::AwaitHeader { new_pending: true };
         }
     }
     pub(crate) fn active(&self) -> bool {
@@ -113,8 +166,8 @@ impl ClientStartup {
         self.connecting(protocol);
         self.connected(protocol);
     }
-    pub(crate) fn changing(&mut self) {
-        self.connecting(Protocol::QuakeWorld28);
+    pub(crate) fn changing(&mut self, protocol: Protocol) {
+        self.connecting(protocol);
     }
     pub(crate) fn begin_nq(&mut self) {
         *self = Self::NetQuake(NqSignon::default());
@@ -150,6 +203,7 @@ impl ClientStartup {
     pub(crate) fn game_directory(&self) -> Option<&[u8]> {
         match self {
             Self::QuakeWorld(state) => Some(state.game_directory.as_bytes()),
+            Self::Quake2(state) => Some(state.game_directory.as_bytes()),
             _ => None,
         }
     }
@@ -168,22 +222,27 @@ impl ClientStartup {
     pub(crate) fn waiting(&self) -> bool {
         match self {
             Self::Unmanaged => false,
-            Self::AwaitQwHeader { .. } => true,
+            Self::AwaitHeader { .. } => true,
             Self::NetQuake(state) => state.stage < 4 || !state.resources_admitted,
             Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
+            Self::Quake2(state) => state.waiting(),
         }
     }
     pub(crate) fn resources_needed(&self) -> bool {
         match self {
             Self::NetQuake(state) => !state.resources_admitted,
             Self::QuakeWorld(state) => matches!(state.phase, QwPhase::Content),
-            Self::Unmanaged | Self::AwaitQwHeader { .. } => false,
+            Self::Quake2(state) => state.resources_needed(),
+            Self::Unmanaged | Self::AwaitHeader { .. } => false,
         }
     }
     pub(crate) fn allow_models(&self) -> bool {
+        if let Self::Quake2(state) = self {
+            return state.allows_media();
+        }
         !matches!(
             self,
-            Self::AwaitQwHeader { .. }
+            Self::AwaitHeader { .. }
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List { .. } | QwPhase::Files { .. },
                     ..
@@ -191,9 +250,12 @@ impl ClientStartup {
         )
     }
     pub(crate) fn allow_sounds(&self) -> bool {
+        if let Self::Quake2(state) = self {
+            return state.allows_media();
+        }
         !matches!(
             self,
-            Self::AwaitQwHeader { .. }
+            Self::AwaitHeader { .. }
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List {
                         kind: ResourceKind::Sound,
@@ -207,7 +269,7 @@ impl ClientStartup {
         )
     }
     pub(crate) fn allow_skins(&self) -> bool {
-        !matches!(self, Self::AwaitQwHeader { .. })
+        !matches!(self, Self::AwaitHeader { .. })
             && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
     }
     pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
@@ -228,6 +290,11 @@ impl ClientStartup {
     }
     pub(crate) fn receive_entity(&mut self, protocol: Protocol) {
         match self {
+            Self::Quake2(state)
+                if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) =>
+            {
+                state.receive_entity()
+            }
             Self::NetQuake(state) if protocol == Protocol::NetQuake15 && state.stage == 3 => {
                 state.stage = 4
             }
@@ -243,6 +310,7 @@ impl ClientStartup {
     pub(crate) fn resources_admitted(&mut self, checksum: Option<u32>) -> Result<(), &'static str> {
         match self {
             Self::NetQuake(state) => state.resources_admitted = true,
+            Self::Quake2(state) => state.resources_admitted(),
             Self::QuakeWorld(state) if matches!(state.phase, QwPhase::Content) => {
                 let checksum = checksum.ok_or("QW world has no native BSP checksum")?;
                 state.phase = QwPhase::Reply(StartupReply::QwPrespawn {
@@ -353,7 +421,8 @@ impl ClientStartup {
     pub(crate) fn reply(&self, skins_done: bool) -> Option<StartupReply> {
         match self {
             Self::Unmanaged => None,
-            Self::AwaitQwHeader { new_pending } => new_pending.then_some(StartupReply::New),
+            Self::AwaitHeader { new_pending, .. } => new_pending.then_some(StartupReply::New),
+            Self::Quake2(state) => state.reply(),
             Self::NetQuake(state) if state.observed & 2 != 0 => Some(StartupReply::Prespawn),
             Self::NetQuake(state) if state.observed & 4 != 0 => Some(match state.stage2_step {
                 0 => StartupReply::Name,
@@ -382,10 +451,13 @@ impl ClientStartup {
     }
     pub(crate) fn queued(&mut self, reply: StartupReply) {
         if matches!(reply, StartupReply::New) {
-            *self = Self::AwaitQwHeader { new_pending: false };
+            if let Self::AwaitHeader { new_pending, .. } = self {
+                *new_pending = false;
+            }
             return;
         }
         match self {
+            Self::Quake2(state) => state.queued(reply),
             Self::NetQuake(state) => match reply {
                 StartupReply::Prespawn => state.observed &= !2,
                 StartupReply::Name => state.stage2_step = 1,
@@ -403,12 +475,14 @@ impl ClientStartup {
                 StartupReply::QwBegin { .. } => state.phase = QwPhase::BeginQueued,
                 _ => state.phase = QwPhase::Signon,
             },
-            Self::Unmanaged | Self::AwaitQwHeader { .. } => {}
+            Self::Unmanaged | Self::AwaitHeader { .. } => {}
         }
     }
     pub(crate) fn stufftext(
         &mut self,
         args: qa_console::command_text::Arguments<'_>,
+        layout: ConfigLayout,
+        entity_limit: u32,
     ) -> Result<Option<ServerControl>, &'static str> {
         if args.len() == 1 {
             match args.get_bytes(0) {
@@ -420,8 +494,12 @@ impl ClientStartup {
         if args.is_empty() {
             return Ok(None);
         }
+        if let Self::Quake2(state) = self {
+            state.command(args, layout, entity_limit)?;
+            return Ok(None);
+        }
         let Self::QuakeWorld(state) = self else {
-            return Err("QW command before serverdata");
+            return Err("native command before serverdata");
         };
         match args.get_bytes(0) {
             b"" => {}

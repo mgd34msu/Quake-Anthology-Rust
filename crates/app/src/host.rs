@@ -2419,7 +2419,10 @@ impl FrameHost {
             .filter(|binding| {
                 matches!(
                     binding.protocol,
-                    Protocol::NetQuake15 | Protocol::QuakeWorld28
+                    Protocol::NetQuake15
+                        | Protocol::QuakeWorld28
+                        | Protocol::Quake2_34
+                        | Protocol::Quake2Repro1038
                 )
             })
         else {
@@ -2451,7 +2454,11 @@ impl FrameHost {
                 return;
             }
             if self.local_worlds[seat.index()].is_none() {
-                if protocol == Protocol::QuakeWorld28 && !resources.state.world_managed() {
+                if matches!(
+                    protocol,
+                    Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038
+                ) && !resources.state.world_managed()
+                {
                     self.reject_client_startup(
                         client,
                         format_args!("required world model unavailable"),
@@ -2474,7 +2481,7 @@ impl FrameHost {
                 }
                 crate::client_scene::RequiredModels::Ready => {}
             }
-            let checksum = resources.state.layout.resources[0]
+            let checksums = resources.state.layout.resources[0]
                 .get(1)
                 .and_then(|row| resources.state.configs.config(row))
                 .and_then(|row| {
@@ -2482,8 +2489,29 @@ impl FrameHost {
                         .model_assets
                         .as_ref()?
                         .catalog()
-                        .world_native_checksum(row.text)
+                        .world_native_checksums(row.text)
                 });
+            let checksum = checksums.and_then(|checksums| match protocol {
+                Protocol::QuakeWorld28 => checksums.quakeworld_lumps,
+                Protocol::Quake2_34 | Protocol::Quake2Repro1038 => Some(checksums.whole_file),
+                _ => None,
+            });
+            if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+                let expected = resources
+                    .state
+                    .layout
+                    .map_checksum()
+                    .and_then(|index| resources.state.configs.config(index))
+                    .filter(|row| !row.text.is_empty())
+                    .map(|row| row.integer as u32);
+                if checksum.is_none() || checksum != expected {
+                    self.reject_client_startup(
+                        client,
+                        format_args!("Q2 local map checksum differs from server"),
+                    );
+                    return;
+                }
+            }
             if let Some(resources) = self.runtime.client_resources[slot].as_mut()
                 && let Err(error) = resources.startup.resources_admitted(checksum)
             {
@@ -2551,7 +2579,22 @@ impl FrameHost {
                     checksum: None,
                 } => write!(text, "prespawn {server} {buffer}"),
                 StartupReply::QwSpawn { server, start } => write!(text, "spawn {server} {start}"),
-                StartupReply::QwBegin { server } => write!(text, "begin {server}"),
+                StartupReply::QwBegin { server } | StartupReply::Q2Begin { server } => {
+                    write!(text, "begin {server}")
+                }
+                StartupReply::Q2List {
+                    kind,
+                    server,
+                    start,
+                } => write!(
+                    text,
+                    "{} {server} {start}",
+                    match kind {
+                        qa_network::commands::startup::ResourceStream::ConfigStrings =>
+                            "configstrings",
+                        qa_network::commands::startup::ResourceStream::Baselines => "baselines",
+                    }
+                ),
                 StartupReply::New => text.set("new"),
             };
             if formatted.is_err()
@@ -2744,7 +2787,12 @@ impl FrameHost {
     pub(crate) fn begin_client_map_change(&mut self, client: ClientId) {
         let lifetime = self.runtime.server.clients[client.0 as usize].entity;
         if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
-            resources.startup.changing();
+            resources
+                .startup
+                .changing(self.runtime.snapshots[client.0 as usize].as_ref().map_or(
+                    qa_network::commands::packet::Protocol::QuakeWorld28,
+                    |binding| binding.protocol,
+                ));
             resources.state.request_presentation_reset(lifetime);
         }
         if let Some(binding) = self.runtime.snapshots[client.0 as usize].as_mut() {
@@ -2773,13 +2821,22 @@ impl FrameHost {
         seat: SeatId,
         text: &[u8],
         time: EventTime,
+        protocol: qa_network::commands::packet::Protocol,
     ) {
         use crate::client_resources::startup::ServerControl;
-        for line in text.split(|&byte| byte == b'\n') {
+        let mut remaining = text;
+        while !remaining.is_empty() {
+            let end = qa_core::text::command_separator(
+                remaining,
+                true,
+                protocol.rule_set() == RuleSetId::Quake3,
+            );
+            let line = &remaining[..end];
+            remaining = &remaining[end + usize::from(end < remaining.len())..];
             let result = self.runtime.client_resources[client.0 as usize]
                 .as_mut()
                 .ok_or("missing QW CLIENT resource owner")
-                .and_then(|resources| resources.receive_server_command(line));
+                .and_then(|resources| resources.receive_server_command(line, protocol));
             match result {
                 Ok(Some(control)) => {
                     if matches!(control, ServerControl::Changing | ServerControl::Reconnect)
@@ -2793,7 +2850,7 @@ impl FrameHost {
                         ServerControl::Changing => self.begin_client_map_change(client),
                         ServerControl::Reconnect => {
                             let context = qa_console::views::Context {
-                                source: RuleSetId::QuakeWorld,
+                                source: protocol.rule_set(),
                                 seat,
                                 event_time: Some(time),
                                 client_lifetime: Some((
@@ -2818,7 +2875,7 @@ impl FrameHost {
                 Err(error) => {
                     let _ =
                         self.runtime.server.events.console_formatted(format_args!(
-                            "QW server command rejected: {error}\n"
+                            "Native server command rejected: {error}\n"
                         ));
                 }
             }
@@ -3188,6 +3245,41 @@ impl FrameHost {
                                 player.movement.tuning = data.tuning;
                                 player.movement.mode = if data.spectator { qa_core::primitives::MovementMode::Spectator } else { qa_core::primitives::MovementMode::Walk };
                             }
+                            Incoming::Q2ServerData(data) => {
+                                signon_client = Some(id);
+                                self.local_worlds[seat.index()] = None;
+                                self.reset_received_client(id, seat);
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .ok_or_else(|| "missing Q2 CLIENT resource owner".to_owned())
+                                    .and_then(|resources| resources.apply_q2_server_data(id, &data));
+                                let assigned = self.runtime.snapshots[id.0 as usize].as_mut()
+                                    .is_some_and(|binding| binding.receive_q2_server_data(&data));
+                                if let Err(error) = result {
+                                    self.reject_client_startup(id, format_args!("{error}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                if !assigned {
+                                    self.reject_client_startup(id, format_args!("invalid Q2 native player assignment"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                            }
+                            Incoming::ResourceStream(kind) => {
+                                signon_client = Some(id);
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .ok_or("missing Q2 CLIENT resource owner")
+                                    .and_then(|resources| resources.startup.resource_stream(kind));
+                                if let Err(error) = result {
+                                    self.reject_client_startup(id, format_args!("{error}"));
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                            }
+                            Incoming::Reconnect => {
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    if let Some(downloads) = resources.downloads.as_mut() { downloads.close(); }
+                                }
+                                self.begin_client_map_change(id);
+                                self.receive_server_commands(id, seat, b"reconnect", time, download_protocol);
+                            }
                             Incoming::ResourceList(progress) => {
                                 signon_client = Some(id);
                                 let result = self.runtime.client_resources[id.0 as usize].as_mut()
@@ -3200,7 +3292,7 @@ impl FrameHost {
                             }
                             Incoming::StuffText(text) => {
                                 signon_client = Some(id);
-                                self.receive_server_commands(id, seat, text, time);
+                                self.receive_server_commands(id, seat, text, time, download_protocol);
                             }
                             Incoming::Download(chunk) => {
                                 let result = self.runtime.client_resources[id.0 as usize].as_mut()

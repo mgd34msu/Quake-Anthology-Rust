@@ -73,6 +73,31 @@ fn nullable(row: &mut Row<'_>, wide: bool) -> Result<i64, FormatError> {
     })
 }
 
+pub(super) fn texture_info<'a>(
+    r: &mut Row<'a>,
+    rules: RuleSetId,
+) -> Result<TextureInfo<'a>, FormatError> {
+    let mut projection = [[0.0; 4]; 2];
+    for axis in &mut projection {
+        for v in axis {
+            *v = r.float()?;
+        }
+    }
+    let (texture, flags, value, name, next) = if matches!(rules, RuleSetId::Quake) {
+        (r.i32()?, r.i32()?, 0, &[][..], -1)
+    } else {
+        (-1, r.i32()?, r.i32()?, r.name(32)?, r.i32()?)
+    };
+    Ok(TextureInfo {
+        projection,
+        texture,
+        flags,
+        value,
+        name,
+        next,
+    })
+}
+
 pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     let format = bsp.format;
     let rules = format.rule_set();
@@ -227,27 +252,11 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             },
         })
     })?;
-    let texture_info = records(&bsp, TexInfo, |r| {
-        let mut projection = [[0.0; 4]; 2];
-        for axis in &mut projection {
-            for v in axis {
-                *v = r.float()?;
-            }
-        }
-        let (texture, flags, value, name, next) = if matches!(rules, RuleSetId::Quake) {
-            (r.i32()?, r.i32()?, 0, &[][..], -1)
-        } else {
-            (-1, r.i32()?, r.i32()?, r.name(32)?, r.i32()?)
-        };
-        Ok(TextureInfo {
-            projection,
-            texture,
-            flags,
-            value,
-            name,
-            next,
-        })
-    })?;
+    let texture_rows = bsp.texture_info();
+    let mut texture_info = Vec::with_capacity(texture_rows.len());
+    for row in texture_rows {
+        texture_info.push(row?);
+    }
     let mut models = records(&bsp, Models, |r| {
         let bounds = r.bounds(2)?;
         let mut model = Model {

@@ -449,6 +449,63 @@ impl Channel {
             _ => Err(crate::commands::packet::Error::Context),
         }
     }
+    pub(crate) fn read_q2_baseline(
+        &mut self,
+        reader: &mut crate::message::Reader<'_>,
+        stream: bool,
+    ) -> Result<bool, crate::commands::packet::Error> {
+        use crate::{commands::packet::Error, snapshots::Storage, states};
+        match self.snapshots.as_mut().ok_or(Error::Context)? {
+            Storage::Quake2(ring) => {
+                let header = states::read_q2_entity_prefix(reader, false)?;
+                if stream && header.number == 0 {
+                    return Ok(false);
+                }
+                let entity =
+                    states::read_q2_entity_body(reader, header, &[0; states::Q2_ENTITY_WORDS])?;
+                let words = entity.words.ok_or(Error::Context)?;
+                if !ring.replace_baseline(u32::from(entity.number), &words) {
+                    return Err(Error::Count);
+                }
+            }
+            Storage::Quake2Repro { ring, .. } => {
+                let header = states::read_q2_entity_prefix(reader, true)?;
+                if stream && header.number == 0 {
+                    return Ok(false);
+                }
+                let entity = states::read_q2_extended_entity_body::<false>(
+                    reader,
+                    header,
+                    &[0; states::Q2_RERELEASE_ENTITY_WORDS],
+                    false,
+                    &mut states::Q2KexWire::default(),
+                )?;
+                let words = entity.words.ok_or(Error::Context)?;
+                if !ring.replace_baseline(u32::from(entity.number), &words) {
+                    return Err(Error::Count);
+                }
+            }
+            _ => return Err(Error::Context),
+        }
+        Ok(true)
+    }
+    /// Complete header validation precedes replacement of map decoder state.
+    pub(crate) fn reset_q2_startup(
+        &mut self,
+        data: crate::commands::startup::Q2ServerData<'_>,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::{commands::packet::Error, snapshots::Storage};
+        match self.snapshots.as_mut().ok_or(Error::Context)? {
+            Storage::Quake2(ring) if data.rerelease.is_none() => ring.reset_gamestate(),
+            Storage::Quake2Repro { ring, frame_ms, .. } if data.rerelease.is_some() => {
+                ring.reset_gamestate();
+                *frame_ms = data.frame_milliseconds();
+            }
+            _ => return Err(Error::Context),
+        }
+        self.reset_client_startup();
+        Ok(())
+    }
     /// A fully validated protocol28 serverdata replaces map decoder state,
     /// while the same netchan retains its sequence and reliable ACK ownership.
     pub(crate) fn reset_qw_startup(&mut self) -> Result<(), crate::commands::packet::Error> {

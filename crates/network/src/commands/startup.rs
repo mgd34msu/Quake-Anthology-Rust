@@ -1,10 +1,12 @@
 //! Borrowed native startup records enter the existing CLIENT resource rows.
+mod q2;
 use super::{packet, packet::Protocol};
 use crate::{
     headers::datagram,
     message::{Encoding, Reader, StringPolicy, Writer},
     outputs::ConfigString,
 };
+pub use q2::{Q2ReproServerData, Q2ServerData, ResourceStream};
 
 /// NetQuake's control protocol version is independent of game protocol 15.
 #[derive(Clone, Copy)]

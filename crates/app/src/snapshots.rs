@@ -221,6 +221,27 @@ impl SnapshotBinding {
         self.spectator = data.spectator;
         self.assign_native_player(u32::from(data.player_slot))
     }
+    pub(crate) fn receive_q2_server_data(
+        &mut self,
+        data: &qa_network::commands::startup::Q2ServerData<'_>,
+    ) -> bool {
+        if !matches!(
+            self.protocol,
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038
+        ) {
+            return false;
+        }
+        self.reset_received();
+        self.spectator = false;
+        if data.cinematic() {
+            self.native_client = NativePlayerBinding::Awaiting;
+            true
+        } else {
+            u32::try_from(data.client_number)
+                .ok()
+                .is_some_and(|number| self.assign_native_player(number))
+        }
+    }
     pub(crate) fn receive_gamestate(
         &mut self,
         gamestate: &qa_network::channel::commands::Q3GameState<'_>,

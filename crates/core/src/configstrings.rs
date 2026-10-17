@@ -230,6 +230,41 @@ impl ConfigLayout {
         light_bytes: 8192,
         general_end: Q3_GAME_STATE_ROWS,
     };
+    /// Negotiated Q2rePRO game-3 namespaces retain the rerelease wire role.
+    pub const fn quake2_compat(extended: bool) -> Self {
+        let native = Self::QUAKE2_RERELEASE;
+        // Protocol 1038 retains 96-byte cells with either game-3 namespace.
+        let legacy = Self {
+            rules: native.rules,
+            ordinary_bytes: native.ordinary_bytes,
+            player_bytes: native.player_bytes,
+            light_bytes: native.light_bytes,
+            ..Self::QUAKE2
+        };
+        if !extended {
+            return legacy;
+        }
+        let images = span(native.resources[2].first, 2048);
+        let lights = span(images.first + images.count, native.lights.count);
+        let items = span(lights.first + lights.count, native.items.count);
+        let players = span(items.first + items.count, native.players.count);
+        let general = span(players.first + players.count, native.general.count);
+        let end = (general.first + general.count) as usize;
+        Self {
+            rules: RuleSetId::Quake2Rerelease,
+            count: end,
+            resources: [native.resources[0], native.resources[1], images],
+            resource_policies: native.resource_policies,
+            players,
+            lights,
+            items,
+            general,
+            statusbar: native.statusbar,
+            scalar: native.scalar,
+            general_end: end,
+            ..legacy
+        }
+    }
     pub const fn for_rules(rules: RuleSetId) -> Self {
         match rules {
             RuleSetId::Quake => Self::QUAKE,
@@ -247,7 +282,14 @@ impl ConfigLayout {
     }
     /// Native Q2/RR maximum-client count; other layouts have no scalar row.
     pub fn max_clients(self) -> Option<usize> {
-        (self.scalar[1] != usize::MAX).then_some(self.scalar[1])
+        self.scalar_row(1)
+    }
+    pub fn map_checksum(self) -> Option<usize> {
+        self.scalar_row(2)
+    }
+    fn scalar_row(self, index: usize) -> Option<usize> {
+        let row = self.scalar[index];
+        (row != usize::MAX).then_some(row)
     }
     /// Maximum text bytes, excluding the native trailing NUL.
     pub fn capacity(self, index: usize) -> Option<usize> {
@@ -273,7 +315,7 @@ impl ConfigLayout {
         if index >= source.count {
             return None;
         }
-        if self.rules == source.rules {
+        if self == source {
             return Some(index);
         }
         if source.players.contains(index) {

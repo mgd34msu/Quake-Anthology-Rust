@@ -26,6 +26,14 @@ pub struct Commands {
     qw_players: Option<crate::projection::PlayerProjection>,
     history: Option<CommandHistory>,
     packet_dup: u8,
+    q2_stream: Option<Q2Stream>,
+    q2_config_end: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Q2Stream {
+    Config { baselines_follow: bool },
+    Baselines,
 }
 
 /// SERVER loss recovery retains its last decoded command.
@@ -87,6 +95,8 @@ impl Commands {
             previous_time: 0,
             history: None,
             packet_dup: 1,
+            q2_stream: None,
+            q2_config_end: protocol.resource_layout().count as u32,
             qw_players: (protocol == Protocol::QuakeWorld28)
                 .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
             delta_request: None,
@@ -584,6 +594,34 @@ impl Commands {
             // Native CL_ParseServerMessage ends at the byte boundary, with no EOF
             // opcode. Each accepted service consumes bytes from fixed scratch.
             while at < scratch.len() {
+                if let Some(stream) = self.q2_stream {
+                    use super::startup::ResourceStream;
+                    let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
+                    match stream {
+                        Q2Stream::Config { baselines_follow } => {
+                            if let Some(config) = crate::outputs::read_q2_configstring(
+                                self.protocol,
+                                &mut reader,
+                                Some(self.q2_config_end),
+                            )
+                            .map_err(|_| packet::Error::Opcode)?
+                            {
+                                consume(Incoming::ConfigString(config));
+                            } else {
+                                self.q2_stream = baselines_follow.then_some(Q2Stream::Baselines);
+                                consume(Incoming::ResourceStream(ResourceStream::ConfigStrings));
+                            }
+                        }
+                        Q2Stream::Baselines => {
+                            if !channel.read_q2_baseline(&mut reader, true)? {
+                                self.q2_stream = None;
+                                consume(Incoming::ResourceStream(ResourceStream::Baselines));
+                            }
+                        }
+                    }
+                    at += reader.byte_position();
+                    continue;
+                }
                 match (self.protocol, scratch[at]) {
                     (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
                     | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => at += 1,
@@ -645,11 +683,43 @@ impl Commands {
                         players.fill(None);
                         consume(Incoming::QwServerData(data));
                     }
-                    (Protocol::QuakeWorld28, 9) => {
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 12) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let data = super::startup::Q2ServerData::read(self.protocol, &mut reader)?;
+                        at += 1 + reader.byte_position();
+                        channel.reset_q2_startup(data)?;
+                        reset_history_storage(&mut self.history, true);
+                        self.delta_request = None;
+                        self.q2_stream = None;
+                        self.q2_config_end = data.resource_layout().count as u32;
+                        snapshot = None;
+                        consume(Incoming::Q2ServerData(data));
+                    }
+                    (Protocol::QuakeWorld28, 9)
+                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 11) => {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         let text = reader.read_string(self.protocol.string_policy())?;
                         at += 1 + reader.byte_position();
                         consume(Incoming::StuffText(text));
+                    }
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 8) => {
+                        at += 1;
+                        consume(Incoming::Reconnect);
+                    }
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 14) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        channel.read_q2_baseline(&mut reader, false)?;
+                        at += 1 + reader.byte_position();
+                    }
+                    (Protocol::Quake2Repro1038, opcode @ (36 | 38 | 39)) => {
+                        at += 1;
+                        self.q2_stream = Some(if opcode == 39 {
+                            Q2Stream::Baselines
+                        } else {
+                            Q2Stream::Config {
+                                baselines_follow: opcode == 36,
+                            }
+                        });
                     }
                     (Protocol::NetQuake15, 15) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
@@ -859,6 +929,9 @@ impl Commands {
         })();
         if result.is_err() {
             self.delta_request = None;
+            // Failed raw records cannot carry framing into the next packet.
+            // Already delivered rows and complete baselines remain accepted.
+            self.q2_stream = None;
         }
         result
     }

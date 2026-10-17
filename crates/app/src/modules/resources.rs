@@ -720,7 +720,14 @@ impl FrameHost {
                 append.commit();
                 return Ok((profile, world, presentation));
             }
-            let input = crate::map::read(&runtime.vfs, &path)?;
+            let input = match resources
+                .startup
+                .q2_mut()
+                .and_then(|state| state.world_input.take())
+            {
+                Some(input) if input.virtual_path == path => input,
+                _ => crate::map::read(&runtime.vfs, &path)?,
+            };
             let (loaded, (append, scratches), _) = owner.prepare_world(
                 &runtime.vfs,
                 &mut runtime.geometry,
@@ -792,11 +799,10 @@ impl FrameHost {
             }
             Err(error) => {
                 self.set_renderer_fullscreen_ui(previous_ui_fullscreen);
-                if matches!(
-                    protocol,
-                    qa_network::commands::packet::Protocol::NetQuake15
-                        | qa_network::commands::packet::Protocol::QuakeWorld28
-                ) {
+                if self.runtime.client_resources[slot]
+                    .as_ref()
+                    .is_some_and(|resources| resources.awaiting_startup())
+                {
                     self.reject_client_startup(client, format_args!("{error}"));
                 } else {
                     if let Some(resources) = self.runtime.client_resources[slot].as_mut() {

@@ -147,9 +147,12 @@ pub enum Incoming<'a> {
     Gamestate(crate::channel::commands::Q3GameState<'a>),
     ServerInfo(crate::commands::startup::NqServerInfo<'a>),
     QwServerData(crate::commands::startup::QwServerData<'a>),
+    Q2ServerData(crate::commands::startup::Q2ServerData<'a>),
     /// Borrowed server text; execution policy belongs to the CLIENT consumer.
     StuffText(&'a [u8]),
+    Reconnect,
     ResourceList(crate::outputs::ResourceListProgress),
+    ResourceStream(crate::commands::startup::ResourceStream),
     MaxSpeed(f32),
     EntityGravity(f32),
     Snapshot(crate::snapshots::ReceivedFrame<'a>),

@@ -275,3 +275,29 @@ fn maximum_client_row_is_the_existing_native_scalar_projection() {
         assert_eq!(layout.max_clients(), None);
     }
 }
+
+#[test]
+fn negotiated_game3_namespaces_project_by_layout_without_changing_the_wire_role() {
+    let native = ConfigLayout::QUAKE2_RERELEASE;
+    let classic = ConfigLayout::quake2_compat(false);
+    let extended = ConfigLayout::quake2_compat(true);
+    assert_eq!(classic.rules, RuleSetId::Quake2Rerelease);
+    assert_eq!(extended.rules, RuleSetId::Quake2Rerelease);
+    assert_eq!((classic.count, extended.count), (2080, 13630));
+    assert_eq!(classic.capacity(0), Some(95));
+    assert_eq!(classic.capacity(5), Some(24 * 96 - 1));
+    assert_eq!(extended.capacity(5), Some(54 * 96 - 1));
+    assert_eq!(extended.capacity(13629), Some(95));
+    assert_eq!(extended.capacity(13630), None);
+    assert_eq!(
+        (classic.map_checksum(), extended.map_checksum()),
+        (Some(31), Some(61))
+    );
+    assert_eq!(native.project_index(classic, 295), Some(8261));
+    assert_eq!(classic.project_index(native, 8261), Some(295));
+    assert_eq!(native.project_index(extended, 12353), Some(10817));
+    assert_eq!(extended.project_index(native, 10817), Some(12353));
+    assert_eq!(native.project_index(extended, 11302), None);
+    assert_eq!(native.project_index(extended, 13118), Some(11838));
+    assert_eq!(extended.project_index(extended, 13629), Some(13629));
+}

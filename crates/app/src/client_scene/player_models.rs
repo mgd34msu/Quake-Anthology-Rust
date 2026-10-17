@@ -514,6 +514,21 @@ fn player_path(parts: &[&str]) -> Option<qa_core::text::FixedText<64>> {
     }
     Some(path)
 }
+pub(super) fn download_path(
+    text: &[u8],
+    rules: PlayerModelRules,
+    part: u8,
+) -> Option<qa_core::text::FixedText<64>> {
+    let (model, skin, _) = parse_player(text, PlayerModelOptions::default(), rules)?;
+    match part {
+        0 => player_path(&["players/", model, "/tris.md2"]),
+        1 => player_path(&["players/", model, "/weapon.md2"]),
+        2 => player_path(&["players/", model, "/weapon.pcx"]),
+        3 => player_path(&["players/", model, "/", skin, ".pcx"]),
+        4 => player_path(&["players/", model, "/", skin, "_i.pcx"]),
+        _ => None,
+    }
+}
 fn parse_player(
     text: &[u8],
     options: PlayerModelOptions,
@@ -582,6 +597,13 @@ fn parse_player(
 }
 
 impl ClientModelBindings {
+    pub(crate) fn player_download_path(
+        &self,
+        text: &[u8],
+        part: u8,
+    ) -> Option<qa_core::text::FixedText<64>> {
+        download_path(text, self.players.as_ref()?.rules?, part)
+    }
     pub(crate) fn config_received(&mut self, index: usize) {
         if self.range.contains(index) {
             self.cold.insert(index - self.range.first as usize);

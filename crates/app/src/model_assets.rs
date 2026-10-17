@@ -1038,7 +1038,7 @@ enum ModelFile {
         binding: InlineBinding,
         bounds: Bounds,
         collision: Option<qa_core::primitives::GeometryId>,
-        native_checksum: Option<u32>,
+        native_checksums: Option<qa_formats::bsp::NativeMapChecksums>,
     },
     Failed(FileError),
 }
@@ -1099,6 +1099,7 @@ enum ModelSourceFile {
         metadata: ModelMetadata,
         skin_extent: Option<[u32; 2]>,
         indexed_skins: Arc<[IndexSpan]>,
+        source_images: Arc<[IndexSpan]>,
         animation: Option<Arc<ModelAnimation>>,
         skeletal: Option<Md5Source>,
         replacement: ReplacementState,
@@ -1106,6 +1107,22 @@ enum ModelSourceFile {
         tags: Option<TagLayout>,
         meshes: Vec<Option<ModelId>>,
     },
+}
+fn retained_model_span(bytes: &[u8], part: &[u8]) -> Result<IndexSpan, FileError> {
+    let first = part
+        .as_ptr()
+        .addr()
+        .checked_sub(bytes.as_ptr().addr())
+        .filter(|&first| {
+            first
+                .checked_add(part.len())
+                .is_some_and(|end| end <= bytes.len())
+        })
+        .and_then(|first| u32::try_from(first).ok())
+        .ok_or_else(|| FileError::capacity("model source range"))?;
+    let count =
+        u32::try_from(part.len()).map_err(|_| FileError::capacity("model source length"))?;
+    Ok(IndexSpan { first, count })
 }
 impl ModelSourceFile {
     fn metadata(&self) -> Option<ModelMetadata> {
@@ -3693,7 +3710,7 @@ impl ModelAssets {
                 loaded.render.world,
                 Some(loaded.collision),
                 loaded.collision_bounds,
-                loaded.native_checksum,
+                Some(loaded.native_checksums),
             )?;
             let staged = stage(self.view(), geometry, &loaded)?;
             let counts = self.assets.counts();
@@ -3792,7 +3809,7 @@ impl ModelAssets {
         world: WorldId,
         collision: Option<qa_core::primitives::GeometryId>,
         native_bounds: Bounds,
-        native_checksum: Option<u32>,
+        native_checksums: Option<qa_formats::bsp::NativeMapChecksums>,
     ) -> Result<(), String> {
         if path.is_empty() || path.starts_with('*') {
             return Err("loaded world filename".to_owned());
@@ -3812,11 +3829,11 @@ impl ModelAssets {
                     binding: existing,
                     bounds,
                     collision: existing_collision,
-                    native_checksum: existing_checksum,
+                    native_checksums: existing_checksum,
                 }) if *existing == binding
                     && *bounds == native_bounds
                     && *existing_collision == collision
-                    && *existing_checksum == native_checksum =>
+                    && *existing_checksum == native_checksums =>
                 {
                     Ok(())
                 }
@@ -3827,7 +3844,7 @@ impl ModelAssets {
             binding,
             bounds: native_bounds,
             collision,
-            native_checksum,
+            native_checksums,
         };
         Ok(())
     }
@@ -3981,13 +3998,16 @@ impl ModelAssets {
         ))
     }
 
+    fn cached_model_source(&self, path: &[u8]) -> Option<NameId> {
+        let name = self.catalog.names.find_path_bytes(path)?;
+        (!matches!(
+            self.catalog.sources.get(name.0 as usize)?,
+            ModelSourceFile::Empty
+        ))
+        .then_some(name)
+    }
     fn model_source(&mut self, vfs: &Vfs, path: &str) -> Result<Option<NameId>, FileError> {
-        if let Some(name) = self.catalog.names.find(path.as_bytes())
-            && !matches!(
-                self.catalog.sources[name.0 as usize],
-                ModelSourceFile::Empty
-            )
-        {
+        if let Some(name) = self.cached_model_source(path.as_bytes()) {
             return Ok(Some(name));
         }
         let Some(reference) = vfs.open(path.as_bytes()) else {
@@ -4075,25 +4095,22 @@ impl ModelAssets {
                     let Image::Indexed { pixels, .. } = skin else {
                         return Err(FileError::capacity("native indexed skin source"));
                     };
-                    let first = pixels
-                        .as_ptr()
-                        .addr()
-                        .checked_sub(bytes.as_ptr().addr())
-                        .filter(|&first| {
-                            first
-                                .checked_add(pixels.len())
-                                .is_some_and(|end| end <= bytes.len())
-                        })
-                        .and_then(|first| u32::try_from(first).ok())
-                        .ok_or_else(|| FileError::capacity("native indexed skin range"))?;
-                    let count = u32::try_from(pixels.len())
-                        .map_err(|_| FileError::capacity("native indexed skin length"))?;
-                    Ok(IndexSpan { first, count })
+                    retained_model_span(&bytes, pixels)
                 })
                 .collect::<Result<Arc<[_]>, FileError>>()?
         } else {
             Arc::from([])
         };
+        let source_images = model
+            .skins
+            .iter()
+            .chain(model.sprites.iter().map(|sprite| &sprite.image))
+            .filter_map(|image| match image {
+                Image::External(name) => Some(*name),
+                Image::Indexed { .. } => None,
+            })
+            .map(|image| retained_model_span(&bytes, image))
+            .collect::<Result<Arc<[_]>, FileError>>()?;
         drop(model);
         self.catalog.sources[name.0 as usize] = ModelSourceFile::Ready {
             bytes,
@@ -4101,6 +4118,7 @@ impl ModelAssets {
             metadata,
             skin_extent,
             indexed_skins,
+            source_images,
             animation,
             skeletal,
             replacement: ReplacementState::Unattempted,
@@ -4109,6 +4127,39 @@ impl ModelAssets {
             meshes,
         };
         Ok(Some(name))
+    }
+
+    pub(crate) fn source_image(
+        &mut self,
+        vfs: &Vfs,
+        path: &[u8],
+        ordinal: u32,
+    ) -> Result<Option<&[u8]>, String> {
+        let name = if let Some(name) = self.cached_model_source(path) {
+            name
+        } else {
+            let path = canonical_path(
+                std::str::from_utf8(path).map_err(|_| "model dependency path encoding")?,
+            );
+            let Some(name) = self
+                .model_source(vfs, &path)
+                .map_err(|error| error.message)?
+            else {
+                return Ok(None);
+            };
+            name
+        };
+        match &self.catalog.sources[name.0 as usize] {
+            ModelSourceFile::Ready {
+                bytes,
+                source_images,
+                ..
+            } => Ok(source_images
+                .get(ordinal as usize)
+                .and_then(|span| bytes.get(span.range()))),
+            ModelSourceFile::Invalid { error, .. } => Err(error.message.clone()),
+            ModelSourceFile::Empty => Ok(None),
+        }
     }
 
     fn model_lods(&mut self, vfs: &Vfs, path: &str) -> Result<ModelLods, FileError> {
@@ -5357,7 +5408,7 @@ impl ModelAssets {
             binding,
             bounds,
             collision: None,
-            native_checksum: None,
+            native_checksums: None,
         };
         self.catalog.inline[slot].handle = Some(handle);
         Ok(native)
@@ -6621,11 +6672,14 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
-    pub fn world_native_checksum(&self, path: &[u8]) -> Option<u32> {
+    pub fn world_native_checksums(
+        &self,
+        path: &[u8],
+    ) -> Option<qa_formats::bsp::NativeMapChecksums> {
         match file_lookup(&self.names, &self.files, path)? {
             ModelFile::LoadedWorld {
-                native_checksum, ..
-            } => *native_checksum,
+                native_checksums, ..
+            } => *native_checksums,
             _ => None,
         }
     }

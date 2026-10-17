@@ -237,6 +237,15 @@ impl ClientResources {
     pub fn received_server_info(&self) -> Option<&[u8]> {
         self.startup.server_info()
     }
+    pub fn received_q2_server_data(
+        &self,
+    ) -> Option<qa_network::commands::startup::Q2ServerData<'_>> {
+        Some(
+            self.startup
+                .q2()?
+                .data(self.state.server_info.as_ref()?.level_name.as_bytes()),
+        )
+    }
     pub fn nq_signon_stage(&self) -> Option<u8> {
         self.startup.nq_stage()
     }
@@ -275,11 +284,56 @@ impl ClientResources {
     pub(crate) fn receive_server_command(
         &mut self,
         line: &[u8],
+        protocol: Protocol,
     ) -> Result<Option<startup::ServerControl>, &'static str> {
         self.selected
-            .parse(line, RuleSetId::QuakeWorld)
-            .map_err(|_| "QW server command syntax")?;
-        self.startup.stufftext(self.selected.arguments())
+            .parse(line, protocol.rule_set())
+            .map_err(|_| "native server command syntax")?;
+        self.startup.stufftext(
+            self.selected.arguments(),
+            self.state.layout,
+            qa_network::snapshots::snapshot_limits(protocol).native_numbers as u32,
+        )
+    }
+    pub(crate) fn apply_q2_server_data(
+        &mut self,
+        client: ClientId,
+        data: &qa_network::commands::startup::Q2ServerData<'_>,
+    ) -> Result<(), String> {
+        let layout = data.resource_layout();
+        let next = if layout != self.state.layout {
+            Some((
+                ConfigStrings::load(
+                    (0..layout.count).map(|index| layout.capacity(index).unwrap_or(0)),
+                )
+                .map_err(|error| format!("Q2 configuration capacity: {error:?}"))?,
+                ClientModelBindings::load(client, layout),
+                qa_audio::SoundBindings::load(layout.resources[1].count as usize),
+                qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
+            ))
+        } else {
+            None
+        };
+        self.reset_received(None);
+        if let Some((configs, models, sounds, dirty)) = next {
+            self.state.layout = layout;
+            self.state.configs = configs;
+            self.state.models = models;
+            self.state.sounds = sounds;
+            self.state.sound_dirty = dirty;
+            self.state.sound_attached = false;
+        }
+        self.startup.begin_q2(data)?;
+        let mut level_name = qa_core::text::FixedText::default();
+        level_name
+            .set_bytes(data.level_name)
+            .map_err(|_| "Q2 level name capacity")?;
+        self.state.server_info = Some(ReceivedServerInfo {
+            max_clients: 0,
+            game_type: 0,
+            level_name,
+        });
+        Ok(())
     }
     pub(crate) fn receiving_download(&self) -> bool {
         self.downloads

@@ -475,7 +475,7 @@ fn run() -> Result<(), String> {
     let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
-    let mut native_map_checksum = None;
+    let mut native_map_checksums = None;
     let mut native_entity_source = None;
     console
         .cvars
@@ -653,7 +653,7 @@ fn run() -> Result<(), String> {
             );
             *slot = Some(client);
         }
-        native_map_checksum = loaded.native_checksum;
+        native_map_checksums = Some(loaded.native_checksums);
         map_path = Some(loaded.virtual_path);
         loaded_world = Some(loaded.render);
     }
@@ -830,7 +830,7 @@ fn run() -> Result<(), String> {
                 world,
                 Some(collision.geometry),
                 bounds,
-                native_map_checksum,
+                native_map_checksums,
             )?;
     }
     let sound_rules = host

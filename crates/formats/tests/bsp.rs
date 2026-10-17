@@ -140,6 +140,28 @@ const VERSIONS: &[u32] = &[
 ];
 
 #[test]
+fn native_wire_checksums_retain_full_file_and_independent_quakeworld_lumps() {
+    use qa_formats::bsp::Bsp;
+    for &version in VERSIONS {
+        let mut bytes = fixture(version);
+        let original = Bsp::parse(&bytes).unwrap().native_checksums();
+        assert_eq!(
+            original.whole_file,
+            qa_core::checksum::block_checksum(&bytes)
+        );
+        assert_eq!(original.quakeworld_lumps.is_some(), version == 29);
+        bytes.extend_from_slice(b"native trailing bytes");
+        let trailing = Bsp::parse(&bytes).unwrap().native_checksums();
+        assert_eq!(
+            trailing.whole_file,
+            qa_core::checksum::block_checksum(&bytes)
+        );
+        assert_ne!(trailing.whole_file, original.whole_file);
+        assert_eq!(trailing.quakeworld_lumps, original.quakeworld_lumps);
+    }
+}
+
+#[test]
 fn quakeworld_wire_checksum_excludes_rebuilt_visibility_and_entity_data() {
     use qa_formats::bsp::Bsp;
     let original = fixture(29);

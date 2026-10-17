@@ -4,6 +4,8 @@ use qa_network::{
     commands::packet::Protocol,
     outputs::{self, ConfigCommandReader, ConfigCommandStep, Error},
 };
+#[path = "configstrings/q2_startup.rs"]
+mod q2_startup;
 #[path = "configstrings/qw_startup.rs"]
 mod qw_startup;
 mod support;

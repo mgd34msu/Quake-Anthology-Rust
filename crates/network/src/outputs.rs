@@ -6,6 +6,7 @@ use crate::{
 use qa_core::primitives::{PrintKind, RuleSetId};
 
 mod configstrings;
+pub(crate) use configstrings::read_q2_configstring;
 mod cues;
 mod music;
 mod particles;

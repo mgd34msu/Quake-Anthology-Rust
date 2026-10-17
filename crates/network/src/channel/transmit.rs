@@ -262,9 +262,7 @@ impl Channel {
     /// Replace native startup's unsubmitted command text without rewinding the
     /// native reliable flight already accepted by its transport.
     pub(crate) fn reset_client_startup(&mut self) {
-        if self.endpoint != Endpoint::Client
-            || !self.policy.datagram && self.policy != super::QUAKEWORLD
-        {
+        if self.endpoint != Endpoint::Client || self.policy.command_ack {
             return;
         }
         let tx = &mut self.transmit;

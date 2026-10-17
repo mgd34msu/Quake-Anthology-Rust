@@ -841,6 +841,8 @@ impl Runtime {
                     protocol,
                     qa_network::commands::packet::Protocol::NetQuake15
                         | qa_network::commands::packet::Protocol::QuakeWorld28
+                        | qa_network::commands::packet::Protocol::Quake2_34
+                        | qa_network::commands::packet::Protocol::Quake2Repro1038
                 )
                 && matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_)) => {}
             _ => {

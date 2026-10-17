@@ -104,14 +104,28 @@ pub fn read_configstring(
     if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
         return Err(Error::Unsupported);
     }
-    let header = bytes.get(..3).ok_or(Error::Truncated)?;
-    if header[0] != 13 {
+    if bytes.first().copied().ok_or(Error::Truncated)? != 13 {
         return Err(Error::Opcode);
     }
-    let index = u16::from_le_bytes([header[1], header[2]]).into();
-    let mut reader = Reader::new(&bytes[3..], Encoding::Bytes);
-    let text = read_text(protocol, &mut reader)?;
-    Ok((ConfigString { index, text }, reader.byte_position() + 3))
+    let mut reader = Reader::new(&bytes[1..], Encoding::Bytes);
+    let config = read_q2_configstring(protocol, &mut reader, None)?.ok_or(Error::Opcode)?;
+    Ok((config, reader.byte_position() + 1))
+}
+
+pub(crate) fn read_q2_configstring<'a>(
+    protocol: Protocol,
+    reader: &mut Reader<'a>,
+    stream_end: Option<u32>,
+) -> Result<Option<ConfigString<'a>>, Error> {
+    let index = reader.read_bits(16).map_err(string_error)?;
+    if stream_end == Some(index) {
+        return Ok(None);
+    }
+    if stream_end.is_some_and(|end| index > end) {
+        return Err(Error::Unsupported);
+    }
+    let text = read_text(protocol, reader)?;
+    Ok(Some(ConfigString { index, text }))
 }
 
 /// QW retail list chunks contain several consecutive resource rows. Borrow

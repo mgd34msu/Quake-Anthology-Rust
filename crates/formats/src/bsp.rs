@@ -150,6 +150,13 @@ const Q3_TEST: &[(Lump, usize)] = &[
     (Indices, 4),
 ];
 
+/// Native wire checks retained from one accepted map source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeMapChecksums {
+    pub whole_file: u32,
+    pub quakeworld_lumps: Option<u32>,
+}
+
 pub struct Bsp<'a> {
     pub format: BspFormat,
     lumps: [&'a [u8]; 19],
@@ -241,6 +248,12 @@ impl<'a> Bsp<'a> {
     pub fn lump(&self, index: usize) -> Option<&'a [u8]> {
         self.layout.get(index).map(|_| self.lumps[index])
     }
+    pub fn native_checksums(&self) -> NativeMapChecksums {
+        NativeMapChecksums {
+            whole_file: qa_core::checksum::block_checksum(self.source),
+            quakeworld_lumps: self.quakeworld_checksum2(),
+        }
+    }
     /// Original QW prespawn checksum. This is a wire check, not a resource key.
     pub fn quakeworld_checksum2(&self) -> Option<u32> {
         if self.format != BspFormat::Quake {
@@ -255,6 +268,14 @@ impl<'a> Bsp<'a> {
                     checksum ^ qa_core::checksum::block_checksum(self.lumps[index])
                 }),
         )
+    }
+    pub fn texture_info(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<TextureInfo<'a>, FormatError>> + use<'a> {
+        let rules = self.format.rule_set();
+        self.bytes(TexInfo)
+            .chunks_exact(self.stride(TexInfo))
+            .map(move |bytes| decode::texture_info(&mut crate::read::Reader::new(bytes), rules))
     }
     pub fn record_count(&self, index: usize) -> Option<usize> {
         self.layout.get(index).and_then(|_| {
