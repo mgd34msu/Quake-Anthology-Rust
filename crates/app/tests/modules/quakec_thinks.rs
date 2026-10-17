@@ -1262,7 +1262,7 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
         }
         let models = host.runtime.model_assets.as_ref().unwrap().catalog();
         assert_eq!(
-            models.metadata(b"progs/test.mdl").unwrap().bounds,
+            models.metadata(b"progs/test.mdl", None).unwrap().bounds,
             Bounds {
                 mins: Vec3([-16.0; 3]),
                 maxs: Vec3([16.0; 3]),

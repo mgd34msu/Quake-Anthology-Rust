@@ -974,7 +974,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
     owner
         .precache(&fixture.vfs, b"progs/test.mdl", RuleSetId::Quake)
         .unwrap();
-    assert!(owner.catalog().metadata(b"progs/test.mdl").is_some());
+    assert!(owner.catalog().metadata(b"progs/test.mdl", None).is_some());
     let handle = (0..owner.catalog().capacity().names)
         .find(|&index| {
             owner

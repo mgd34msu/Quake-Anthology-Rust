@@ -47,7 +47,10 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
         .publish_admission(cpu.admitted_assets().unwrap())
         .unwrap();
     owner.end_initial_registration();
-    let registration = owner.catalog().registration(request.path, profile).unwrap();
+    let registration = owner
+        .catalog()
+        .registration(request.path, profile, None)
+        .unwrap();
     assert_eq!(
         owner.catalog().native_skin(registration),
         Some(([2, 1], palette))

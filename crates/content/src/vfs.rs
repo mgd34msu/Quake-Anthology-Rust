@@ -20,7 +20,7 @@ use std::{
 pub struct MountId(pub u32);
 /// Owned VFS selection: live default order or an explicit fixed mount order.
 /// New mounts stay outside a fixed view until its caller rebuilds it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SearchView {
     owner: Arc<()>,
     ranks: Option<Arc<[u32]>>,

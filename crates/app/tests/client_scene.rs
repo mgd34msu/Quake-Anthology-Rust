@@ -161,7 +161,7 @@ fn native_linked_model_cells_keep_their_own_skin_alpha_and_draw_properties() {
             qa_app::client_scene::StaticWorld::Selected(None),
         )];
         let registration = catalog
-            .registration("models/test/tris.md2", profile)
+            .registration("models/test/tris.md2", profile, None)
             .unwrap();
         for static_record in [false, true] {
             let input = ClientSceneInput {
@@ -1273,7 +1273,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             .map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
-                .registration("models/test/tris.md2", profile)
+                .registration("models/test/tris.md2", profile, None)
                 .and_then(|id| catalog
                     .bindings(id, 0, ModelMaterialPolicy::default())
                     .and_then(|mut surfaces| surfaces.next()))
@@ -1288,7 +1288,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             .map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
-                .registration("models/test/tris.md2", profile)
+                .registration("models/test/tris.md2", profile, None)
                 .and_then(|id| catalog
                     .bindings(id, 1, ModelMaterialPolicy::default())
                     .and_then(|mut surfaces| surfaces.next()))
@@ -1493,7 +1493,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
                     .map(|shader| shader.source(&()).unwrap()),
                 Some(
                     catalog
-                        .registration("models/test/tris.md2", profile)
+                        .registration("models/test/tris.md2", profile, None)
                         .and_then(|id| catalog
                             .bindings(id, 1, ModelMaterialPolicy::default())
                             .and_then(|mut surfaces| surfaces.next()))
@@ -1810,7 +1810,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         gun.shader.map(|shader| shader.source(&()).unwrap()),
         Some(
             catalog
-                .registration("models/test/tris.md2", profile)
+                .registration("models/test/tris.md2", profile, None)
                 .and_then(|id| catalog
                     .bindings(id, 1, ModelMaterialPolicy::default())
                     .and_then(|mut surfaces| surfaces.next()))
@@ -2386,14 +2386,14 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
                 .unwrap();
         }
         let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
-        let first_registration = catalog.registration(first.path, profile).unwrap();
+        let first_registration = catalog.registration(first.path, profile, None).unwrap();
         let first_model = catalog
             .bindings(first_registration, 0, ModelMaterialPolicy::default())
             .unwrap()
             .next()
             .unwrap()
             .model;
-        let second_registration = catalog.registration(second.path, profile).unwrap();
+        let second_registration = catalog.registration(second.path, profile, None).unwrap();
         let second_model = catalog
             .bindings(second_registration, 0, ModelMaterialPolicy::default())
             .unwrap()
@@ -2493,7 +2493,7 @@ fn netquake_oriented_spr_preserves_pitch_and_native_parent_fallback_in_shared_vi
     let angles = Vec3([30., 45., 10.]);
     let registration = owner
         .catalog()
-        .registration(request.path, request.profile())
+        .registration(request.path, request.profile(), None)
         .unwrap();
     let choice = owner
         .catalog()

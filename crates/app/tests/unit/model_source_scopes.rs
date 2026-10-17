@@ -502,29 +502,61 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
     let low = files.vfs.search_view([low_mount]).unwrap();
     let high = files.vfs.search_view([high_mount]).unwrap();
-    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut owner = ModelAssets::new(
+    let request = ModelRequest::native("models/player.md3", RuleSetId::Quake3, None);
+    let requests = [&low, &high].map(|view| ModelRequest {
+        search: Some(view),
+        ..request
+    });
+    let profile = request.profile();
+    let mut owner = ModelAssets::load(
         &files.vfs,
         Assets::load().unwrap(),
-        [profile],
+        requests,
         [],
         Default::default(),
     )
     .unwrap();
-    let name = owner.admit_name(b"models/player.md3").unwrap();
-    let mut records = Vec::new();
-    for (view, expected) in [(&low, [255, 0, 0, 255]), (&high, [0, 0, 255, 255])] {
-        let file = owner
-            .catalog
-            .files
-            .admit(Some((name, view.clone())))
-            .unwrap();
+    let mut records = [&low, &high]
+        .into_iter()
+        .zip([[255, 0, 0, 255], [0, 0, 255, 255]])
+        .map(|(view, expected)| {
+            (
+                owner
+                    .catalog
+                    .file_id(request.path.as_bytes(), Some(view))
+                    .unwrap(),
+                expected,
+            )
+        })
+        .collect::<Vec<_>>();
+    let empty = files.vfs.search_view([]).unwrap();
+    owner
+        .register_request(
+            &files.vfs,
+            ModelRequest {
+                search: Some(&empty),
+                required: false,
+                ..request
+            },
+        )
+        .unwrap();
+    assert!(
         owner
-            .ensure_file_record(&files.vfs, file, Some(profile), false)
-            .map_err(|error| error.message)
-            .unwrap();
-        records.push((file, expected));
-    }
+            .register_request(
+                &files.vfs,
+                ModelRequest {
+                    search: Some(&empty),
+                    ..request
+                },
+            )
+            .is_err()
+    );
+    assert!(
+        owner
+            .catalog
+            .metadata(request.path.as_bytes(), Some(&empty))
+            .is_none()
+    );
     let default_model = owner
         .register_model(&files.vfs, b"models/player.md3", RuleSetId::Quake3)
         .unwrap();
@@ -545,16 +577,57 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     assert_eq!(owner.catalog.profiles().collect::<Vec<_>>(), [profile]);
     let counts = owner.assets.counts();
     files.vfs.take_lookup_count();
-    for &(file, _) in &records {
-        owner
-            .ensure_file_record(&files.vfs, file, Some(profile), false)
-            .map_err(|error| error.message)
-            .unwrap();
+    for request in requests {
+        owner.register_request(&files.vfs, request).unwrap();
     }
     assert_eq!(files.vfs.take_lookup_count(), 0);
     assert_eq!(owner.assets.counts(), counts);
     records.push((ModelFileId(default_model as u32), [0, 0, 255, 255]));
+    let foreign = Vfs::default().default_view();
+    assert!(
+        owner
+            .register_request(
+                &files.vfs,
+                ModelRequest {
+                    search: Some(&foreign),
+                    ..request
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets.counts(), counts);
     let (mut owner, mut cpu) = super::registration_tests::publish(owner);
+    let equivalent_low = files.vfs.search_view([low_mount, low_mount]).unwrap();
+    for (view, (file, _)) in [&equivalent_low, &high].into_iter().zip(&records) {
+        assert_eq!(
+            owner
+                .catalog
+                .registration(request.path, profile, Some(view)),
+            owner.catalog.renderer_registration(file.0 as i32, profile)
+        );
+        assert!(
+            owner
+                .catalog
+                .metadata(request.path.as_bytes(), Some(view))
+                .is_some()
+        );
+    }
+    assert_eq!(
+        owner.catalog.registration(request.path, profile, None),
+        owner.catalog.renderer_registration(default_model, profile)
+    );
+    assert!(
+        owner
+            .catalog
+            .registration(request.path, profile, Some(&foreign))
+            .is_none()
+    );
+    assert!(
+        owner
+            .catalog
+            .metadata(request.path.as_bytes(), Some(&foreign))
+            .is_none()
+    );
     for &(file, expected) in &records {
         let registration = owner
             .catalog

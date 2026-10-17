@@ -240,7 +240,7 @@ fn queued_qw_static_keeps_original_late_filename_when_the_live_alias_changes() {
                 .bindings(
                     owner
                         .catalog()
-                        .registration("progs/a.mdl", profile)
+                        .registration("progs/a.mdl", profile, None)
                         .unwrap(),
                     0,
                     Default::default(),

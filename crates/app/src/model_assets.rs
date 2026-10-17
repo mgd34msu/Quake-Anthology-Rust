@@ -58,6 +58,8 @@ mod source_scope_tests;
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest<'a> {
     pub path: &'a str,
+    /// File and companion reads share this selection; None uses the owned default.
+    pub search: Option<&'a SearchView>,
     /// File decoding follows the resource's provenance, independently of upload.
     pub source_rules: RuleSetId,
     /// Image upload policy is independent of model format and map geometry.
@@ -74,6 +76,7 @@ impl<'a> ModelRequest<'a> {
     pub fn native(path: &'a str, rules: RuleSetId, palette: Option<PaletteId>) -> Self {
         Self {
             path,
+            search: None,
             source_rules: rules,
             rules,
             source_palette: palette,
@@ -2017,7 +2020,7 @@ impl RegistrationCheckpoint {
                 let path = canonical_path(
                     std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?,
                 );
-                file_name = catalog.file_id(path.as_bytes());
+                file_name = catalog.file_id(path.as_bytes(), None);
             }
             RendererRegistration::Skin => {
                 skin_index = find_skin_index(&catalog.names, &catalog.skin_indices, raw);
@@ -3274,7 +3277,7 @@ impl ModelAssets {
         worlds: impl IntoIterator<Item = WorldId>,
         limits: ModelLimits,
     ) -> Result<Self, String> {
-        let mut pending = Vec::<Registration>::new();
+        let mut pending = Vec::<(Registration, SearchView)>::new();
         for request in requests {
             if request.path.is_empty() || request.path.starts_with('*') {
                 continue;
@@ -3282,26 +3285,34 @@ impl ModelAssets {
             if pending.len() == limits.models || pending.len() == u32::MAX as usize {
                 return Err("model registration capacity".to_owned());
             }
-            pending.push(Registration {
-                path: canonical_path(request.path),
-                profile: request.profile(),
-                indexed_palette: request.source_palette,
-                required: request.required,
-            });
+            let search = vfs
+                .read_view(request.search)
+                .retain()
+                .map_err(|error| format!("model source selection: {error:?}"))?;
+            pending.push((
+                Registration {
+                    path: canonical_path(request.path),
+                    profile: request.profile(),
+                    indexed_palette: request.source_palette,
+                    required: request.required,
+                },
+                search,
+            ));
         }
-        pending.sort_by(|left, right| left.path.cmp(&right.path));
+        pending.sort_by(|left, right| left.0.path.cmp(&right.0.path));
         let mut owner = Self::new(
             vfs,
             assets,
-            pending.iter().map(|entry| entry.profile),
+            pending.iter().map(|(entry, _)| entry.profile),
             worlds,
             limits,
         )?;
-        for entry in &pending {
+        for (entry, search) in &pending {
             owner.register_request(
                 vfs,
                 ModelRequest {
                     path: &entry.path,
+                    search: Some(search),
                     source_rules: entry.profile.source_rules,
                     rules: entry.profile.rules,
                     source_palette: entry.profile.source_palette,
@@ -3729,7 +3740,7 @@ impl ModelAssets {
                             .map_err(|error| error.kind)
                             .and_then(|_| {
                                 self.catalog
-                                    .file_id(raw)
+                                    .file_id(raw, None)
                                     .and_then(|file| i32::try_from(file.0).ok())
                                     .ok_or(CallError::File)
                             })
@@ -4146,9 +4157,13 @@ impl ModelAssets {
             .ok_or(CallError::File)
     }
 
-    fn admit_file(&mut self, path: &[u8]) -> Result<ModelFileId, CallError> {
+    fn admit_file(
+        &mut self,
+        path: &[u8],
+        search: Option<&SearchView>,
+    ) -> Result<ModelFileId, CallError> {
         let name = self.admit_name(path)?;
-        let view = self.catalog.registration_vfs.clone();
+        let view = search.unwrap_or(&self.catalog.registration_vfs).clone();
         self.catalog.files.admit(Some((name, view)))
     }
     /// Admit the already-loaded world as native model metadata. Its surface
@@ -4174,7 +4189,7 @@ impl ModelAssets {
             .ok_or("loaded world model0")?;
         let path = canonical_path(path);
         let name = self
-            .admit_file(path.as_bytes())
+            .admit_file(path.as_bytes(), None)
             .map_err(|_| "model name capacity".to_owned())?;
         if !matches!(self.catalog.files[name], ModelFile::Empty) {
             return match self.catalog.files.get(name) {
@@ -4207,6 +4222,10 @@ impl ModelAssets {
     pub fn register_request(&mut self, vfs: &Vfs, request: ModelRequest<'_>) -> Result<(), String> {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
+        let search = vfs
+            .read_view(request.search)
+            .retain()
+            .map_err(|error| format!("model source selection: {error:?}"))?;
         if request.path.is_empty() || request.path.starts_with('*') {
             return Ok(());
         }
@@ -4218,13 +4237,13 @@ impl ModelAssets {
                 format!("model {path}: {error}")
             }
         };
-        let admission = self.ensure_file(vfs, &path);
-        let Some(name) = self.catalog.file_id(path.as_bytes()) else {
-            return Err(admission.err().map_or_else(
-                || "missing registered model name".to_owned(),
-                |e| context(&e.message),
-            ));
+        let name = match self.catalog.file_id(path.as_bytes(), Some(&search)) {
+            Some(name) => name,
+            None => self
+                .admit_file(path.as_bytes(), Some(&search))
+                .map_err(|error| format!("model name capacity: {error:?}"))?,
         };
+        let admission = self.ensure_file_record(vfs, name, None, false);
         if matches!(self.catalog.files[name], ModelFile::LoadedWorld { .. }) {
             return Ok(());
         }
@@ -4258,10 +4277,6 @@ impl ModelAssets {
             return Err(context(error));
         }
         Ok(())
-    }
-
-    fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
-        self.ensure_file_profile(vfs, path, None, false)
     }
 
     fn model_bytes(&mut self, vfs: ReadView<'_>, path: &str) -> Result<Arc<[u8]>, FileError> {
@@ -4789,10 +4804,10 @@ impl ModelAssets {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
-        let name = match self.catalog.file_id(path.as_bytes()) {
+        let name = match self.catalog.file_id(path.as_bytes(), None) {
             Some(name) => name,
             None => self
-                .admit_file(path.as_bytes())
+                .admit_file(path.as_bytes(), None)
                 .map_err(|_| FileError::capacity("model name capacity"))?,
         };
         self.ensure_file_record(vfs, name, selected, ui_fullscreen)
@@ -5527,7 +5542,7 @@ impl ModelAssets {
     ) -> Option<ShaderResource> {
         match kind {
             RendererRegistration::Model if !name.starts_with(b"*") => {
-                self.catalog.file_id(name).map(ShaderResource::Model)
+                self.catalog.file_id(name, None).map(ShaderResource::Model)
             }
             RendererRegistration::Skin => {
                 find_skin_index(&self.catalog.names, &self.catalog.skin_indices, name)
@@ -6262,7 +6277,7 @@ impl ModelAssets {
     ) -> Result<SkinSelection, String> {
         let file = self
             .catalog
-            .file_id(path.as_bytes())
+            .file_id(path.as_bytes(), None)
             .ok_or("model color file")?;
         let registration = self
             .catalog
@@ -7069,7 +7084,7 @@ impl ModelLoader for ModelAssets {
         {
             return Ok(bounds);
         }
-        self.ensure_file(vfs, &canonical_path(path))
+        self.ensure_file_profile(vfs, &canonical_path(path), None, false)
             .map_err(|error| error.kind)
     }
     fn register_model(
@@ -7327,7 +7342,7 @@ impl ModelCatalog {
                 self.inline_handle(world, index)
             }
             RendererRegistration::Model => {
-                let name = self.file_id(name)?;
+                let name = self.file_id(name, None)?;
                 self.model_cached(name, profile, variant)
             }
             RendererRegistration::Shader { lighting, .. } => {
@@ -7359,7 +7374,7 @@ impl ModelCatalog {
         source: RuleSetId,
         variant: RegistrationVariant,
     ) -> Option<i32> {
-        let name = self.file_id(name)?;
+        let name = self.file_id(name, None)?;
         let handle = i32::try_from(name.0).ok()?;
         match self.files.get(name)? {
             ModelFile::Failed(_) => return Some(0),
@@ -7625,16 +7640,21 @@ impl ModelCatalog {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
         self.names.get(self.shaders.get(index)?.name)
     }
-    pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
-        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
+    pub fn metadata(&self, path: &[u8], search: Option<&SearchView>) -> Option<ModelMetadata> {
+        match self.files.get(self.file_id(path, search)?)? {
             ModelFile::Ready { lods, .. } => self.sources.get(lods.source(0)?)?.metadata(),
             ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
         }
     }
     /// Resolve both filename and profile only at registration/configuration
     /// boundaries. A profile mismatch never selects the first same-name entry.
-    pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
-        let name = self.file_id(path.as_bytes())?;
+    pub fn registration(
+        &self,
+        path: &str,
+        profile: ModelProfile,
+        search: Option<&SearchView>,
+    ) -> Option<ModelRegistrationId> {
+        let name = self.file_id(path.as_bytes(), search)?;
         self.published_registration(self.registration_name(name, profile)?)
     }
     /// Native handles already identify the logical model record. Resolve its exact
@@ -7805,9 +7825,11 @@ impl ModelCatalog {
             })
             .map(|index| ModelRegistrationId(index as u32))
     }
-    fn file_id(&self, path: &[u8]) -> Option<ModelFileId> {
-        self.files
-            .find(&self.registration_vfs, self.names.find_path_bytes(path)?)
+    fn file_id(&self, path: &[u8], search: Option<&SearchView>) -> Option<ModelFileId> {
+        self.files.find(
+            search.unwrap_or(&self.registration_vfs),
+            self.names.find_path_bytes(path)?,
+        )
     }
     fn file_name(&self, file: ModelFileId) -> Option<&str> {
         self.name(self.files.name(file)?)

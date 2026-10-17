@@ -680,7 +680,7 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
         let body = catalog
             .bindings(
                 catalog
-                    .registration("players/late/tris.md2", profile)
+                    .registration("players/late/tris.md2", profile, None)
                     .unwrap(),
                 0,
                 Default::default(),
@@ -692,7 +692,7 @@ fn queued_player_and_weapon_changes_prepare_once_and_bad_models_do_not_starve_he
         let weapon = catalog
             .bindings(
                 catalog
-                    .registration("players/late/w1.md2", profile)
+                    .registration("players/late/w1.md2", profile, None)
                     .unwrap(),
                 0,
                 Default::default(),
@@ -875,7 +875,7 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
         .bindings(
             owner
                 .catalog()
-                .registration("players/female/tris.md2", profile)
+                .registration("players/female/tris.md2", profile, None)
                 .unwrap(),
             0,
             Default::default(),

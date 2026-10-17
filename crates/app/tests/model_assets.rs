@@ -1423,7 +1423,7 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
         let catalog = owner.catalog();
         assert!(
             catalog
-                .registration("models/later/tris.md2", profile)
+                .registration("models/later/tris.md2", profile, None)
                 .is_none()
         );
         assert!(catalog.renderer_registration(later, profile).is_none());
@@ -1495,7 +1495,7 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
     let catalog = owner.catalog();
     let registration = catalog.renderer_registration(later, profile).unwrap();
     assert_eq!(
-        catalog.registration("models/later/tris.md2", profile),
+        catalog.registration("models/later/tris.md2", profile, None),
         Some(registration)
     );
     assert!(
@@ -1606,7 +1606,7 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
     fixture.remove("sprites/first.pcx");
     fixture.remove("sprites/second.pcx");
     let registration = catalog
-        .registration(request.path, request.profile())
+        .registration(request.path, request.profile(), None)
         .unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut cpu = qa_render::cpu::CpuBackend::load(32, 32).unwrap();
@@ -1716,7 +1716,7 @@ fn retail_rerelease_sp2_uses_the_existing_archive_image_and_model_paths() {
     assert!(catalog.diagnostics.is_empty());
     for request in [native, foreign] {
         let registration = catalog
-            .registration(request.path, request.profile())
+            .registration(request.path, request.profile(), None)
             .unwrap();
         let binding = catalog
             .bindings(registration, 0, Default::default())
@@ -2289,10 +2289,14 @@ fn native_model_handles_share_file_registration_and_bounds() {
     assert_eq!(catalog.model_bounds(0), None);
     assert_eq!(catalog.model_bounds(-1), None);
     assert_eq!(catalog.model_bounds(i32::MAX), None);
-    assert!(catalog.registration("models/test.md2", profile).is_some());
+    assert!(
+        catalog
+            .registration("models/test.md2", profile, None)
+            .is_some()
+    );
     assert_eq!(
         catalog.renderer_registration(handle, profile),
-        catalog.registration("models/test.md2", profile)
+        catalog.registration("models/test.md2", profile, None)
     );
     assert!(catalog.renderer_registration(0, profile).is_none());
     assert!(catalog.renderer_registration(-1, profile).is_none());
@@ -2345,7 +2349,9 @@ fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
     assert_eq!(catalog.capacity().skins, 6);
     let mut shared = None;
     for profile in profiles {
-        let registration = catalog.registration("models/test.md3", profile).unwrap();
+        let registration = catalog
+            .registration("models/test.md3", profile, None)
+            .unwrap();
         let selected = |skin| {
             catalog
                 .bindings(registration, skin, ModelMaterialPolicy::default())
@@ -2425,7 +2431,9 @@ fn md3_tag_only_models_register_without_a_mesh_placeholder() {
     assert_eq!(
         catalog
             .bindings(
-                catalog.registration("models/hand.md3", profile).unwrap(),
+                catalog
+                    .registration("models/hand.md3", profile, None)
+                    .unwrap(),
                 0,
                 ModelMaterialPolicy::default()
             )
@@ -2685,7 +2693,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
     };
     let expected = catalog
         .bindings(
-            catalog.registration(request.path, profile).unwrap(),
+            catalog.registration(request.path, profile, None).unwrap(),
             3,
             ModelMaterialPolicy::default(),
         )
@@ -2797,7 +2805,7 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
     let catalog = owner.catalog();
     assert_eq!(
         catalog
-            .metadata(b"models/test.md3")
+            .metadata(b"models/test.md3", None)
             .unwrap()
             .renderer_bounds,
         first_frame
@@ -4206,7 +4214,7 @@ fn binding(
 ) -> Option<qa_app::model_assets::ModelBinding> {
     catalog
         .bindings(
-            catalog.registration(path, profile)?,
+            catalog.registration(path, profile, None)?,
             skin,
             ModelMaterialPolicy::default(),
         )
@@ -4658,10 +4666,10 @@ fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_z
     .unwrap();
     let ModelView { assets, catalog } = owner.view();
     let registration = catalog
-        .registration("MODELS\\TEST\\TRIS.MD2", profile)
+        .registration("MODELS\\TEST\\TRIS.MD2", profile, None)
         .unwrap();
     assert_eq!(
-        catalog.registration("models/test/tris.md2", profile),
+        catalog.registration("models/test/tris.md2", profile, None),
         Some(registration)
     );
     assert_eq!(
@@ -4672,7 +4680,7 @@ fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_z
             .bindings(registration, 0, ModelMaterialPolicy::default())
             .and_then(|mut surfaces| surfaces.next())
     );
-    assert_eq!(catalog.registration("missing.md2", profile), None);
+    assert_eq!(catalog.registration("missing.md2", profile, None), None);
     assert_eq!(catalog.capacity().names, 2); // explicit empty NameId plus file.
     assert_eq!(catalog.capacity().name_bytes, "models/test/tris.md2".len());
     assert_eq!(assets.models().len(), models_before + 1);
@@ -4737,7 +4745,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
         .unwrap();
         let ModelView { assets, catalog } = owner.view();
         let registration = catalog
-            .registration("models/test/tris.md2", profile)
+            .registration("models/test/tris.md2", profile, None)
             .unwrap();
         let opaque = catalog
             .bindings(registration, 0, ModelMaterialPolicy::default())
@@ -4813,19 +4821,23 @@ fn optional_missing_assets_report_diagnostics_without_mesh_placeholders() {
     assert_eq!(assets.models().len(), count + 2);
     assert!(
         catalog
-            .registration("progs/group.mdl", requests[0].profile())
+            .registration("progs/group.mdl", requests[0].profile(), None)
             .is_some()
     );
     for diagnostic in &catalog.diagnostics {
         assert_eq!(
-            catalog.registration(catalog.name(diagnostic.name).unwrap(), diagnostic.profile),
+            catalog.registration(
+                catalog.name(diagnostic.name).unwrap(),
+                diagnostic.profile,
+                None
+            ),
             None
         );
         assert!(!diagnostic.error.is_empty());
     }
     assert!(
         catalog
-            .registration("progs/group.spr", requests[1].profile())
+            .registration("progs/group.spr", requests[1].profile(), None)
             .is_some()
     );
     assert_eq!(
@@ -4988,10 +5000,10 @@ fn surface_name_capacity_failure_keeps_registration_transactional() {
     assert_eq!(assets.models().len(), before + 1);
     assert_eq!(catalog.capacity().registrations, profiles.len());
     assert_eq!(catalog.capacity().names, 4);
-    assert!(catalog.metadata(failed_path.as_bytes()).is_none());
+    assert!(catalog.metadata(failed_path.as_bytes(), None).is_none());
     for profile in profiles {
-        assert!(catalog.registration(failed_path, profile).is_none());
-        let registration = catalog.registration(healthy_path, profile).unwrap();
+        assert!(catalog.registration(failed_path, profile, None).is_none());
+        let registration = catalog.registration(healthy_path, profile, None).unwrap();
         assert_eq!(
             catalog.renderer_registration(handle, profile),
             Some(registration)
@@ -5135,10 +5147,10 @@ fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
             catalog.bounds(path.as_bytes(), RuleSetId::Quake),
             Some(bounds)
         );
-        let metadata = catalog.metadata(path.as_bytes()).unwrap();
+        let metadata = catalog.metadata(path.as_bytes(), None).unwrap();
         assert_eq!(metadata.bounds, bounds);
         assert_eq!(metadata.format, format);
-        assert!(catalog.registration(path, profile).is_some());
+        assert!(catalog.registration(path, profile, None).is_some());
     }
     assert_eq!(catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake), None);
 }
@@ -5176,7 +5188,7 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
     let ModelView { assets, catalog } = owner.view();
     let selected = [native, translated, different_settings, different_source].map(|request| {
         let id = catalog
-            .registration("MODELS\\TEST\\TRIS.MD2", request.profile())
+            .registration("MODELS\\TEST\\TRIS.MD2", request.profile(), None)
             .unwrap();
         catalog
             .bindings(id, 0, ModelMaterialPolicy::default())
@@ -5204,7 +5216,7 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
     assert_eq!(catalog.capacity().indices, 6);
     let mut absent = translated.profile();
     absent.rules = RuleSetId::QuakeWorld;
-    assert_eq!(catalog.registration(native.path, absent), None);
+    assert_eq!(catalog.registration(native.path, absent, None), None);
     let native_image = assets
         .image(image(&assets, &catalog, native.path, native.profile(), 0))
         .unwrap();
@@ -5280,10 +5292,13 @@ fn failed_optional_profile_does_not_hide_another_registration_of_the_same_filena
     } = owner.view();
     assert!(
         catalog
-            .registration(native.path, native.profile())
+            .registration(native.path, native.profile(), None)
             .is_some()
     );
-    assert_eq!(catalog.registration(absent.path, absent.profile()), None);
+    assert_eq!(
+        catalog.registration(absent.path, absent.profile(), None),
+        None
+    );
     assert_eq!(catalog.diagnostics.len(), 1);
     assert_eq!(catalog.diagnostics[0].profile, absent.profile());
     assert!(catalog.diagnostics[0].error.contains("source palette"));
@@ -5316,7 +5331,7 @@ fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profil
         assert_eq!(assets.models().len(), before + 1);
         assert_eq!(assets.model(healthy.model).unwrap().frame_count(), 2);
         assert_eq!(
-            catalog.registration(optional.path, optional.profile()),
+            catalog.registration(optional.path, optional.profile(), None),
             None
         );
         assert_eq!(catalog.capacity().registrations, 2);
@@ -5673,11 +5688,12 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
         Some(expected)
     );
-    assert_eq!(catalog.metadata(b"maps/start.bsp"), None);
+    assert_eq!(catalog.metadata(b"maps/start.bsp", None), None);
     assert_eq!(
         catalog.registration(
             "maps/start.bsp",
-            ModelRequest::native("", RuleSetId::Quake, None).profile()
+            ModelRequest::native("", RuleSetId::Quake, None).profile(),
+            None
         ),
         None
     );
@@ -5925,14 +5941,17 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     );
     let ModelView { assets, catalog } = owner.view();
     assert_eq!(
-        catalog.metadata(b"models/test/tris.md2").unwrap().format,
+        catalog
+            .metadata(b"models/test/tris.md2", None)
+            .unwrap()
+            .format,
         qa_formats::model::ModelFormat::Md2
     );
     assert_eq!(catalog.capacity().registrations, 1);
     assert_eq!(catalog.capacity().names, 3);
     assert_eq!(assets.models().len(), meshes + 1);
     assert!(binding(&catalog, "models/test/tris.md2", profile, 0).is_some());
-    assert_eq!(catalog.registration("maps/start.bsp", profile), None);
+    assert_eq!(catalog.registration("maps/start.bsp", profile, None), None);
     assert_eq!(
         catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
         Some(native_bounds)

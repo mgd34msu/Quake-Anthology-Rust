@@ -76,7 +76,7 @@ fn md3_lod_family_keeps_native_discovery_order_and_independent_surface_skin_list
     assert_eq!(catalog.capacity().registrations, 1);
     for name in [b"models/family_1.md3".as_slice(), b"models/family_2.md3"] {
         assert_eq!(catalog.model_handle(name, profile.source_rules), None);
-        assert_eq!(catalog.metadata(name), None);
+        assert_eq!(catalog.metadata(name, None), None);
     }
     let receipts = catalog
         .renderer_registrations(RendererRegistration::Model, handle, profile)
@@ -140,7 +140,7 @@ fn md3_lod_family_keeps_native_discovery_order_and_independent_surface_skin_list
     assert_eq!(shader(2, 2), receipts[3].shader);
     assert_eq!(catalog.model_bounds(handle), Some(parsed.frames[0].bounds));
     assert_eq!(
-        catalog.metadata(b"models/family.md3").unwrap().bounds,
+        catalog.metadata(b"models/family.md3", None).unwrap().bounds,
         parsed.bounds
     );
     assert_eq!(
@@ -226,7 +226,7 @@ fn md3_missing_lods_preserve_holes_and_known_invalid_lod_stops_before_base() {
             assert!(lods.base().is_none());
             assert_eq!(lods.base_frames(), 0);
             assert_eq!(lods.radius(0), None);
-            assert_eq!(catalog.metadata(b"models/family.md3"), None);
+            assert_eq!(catalog.metadata(b"models/family.md3", None), None);
             assert_eq!(catalog.model_bounds(handle), Some(Bounds::default()));
             assert!(!catalog.model_has_tags(handle));
         } else {

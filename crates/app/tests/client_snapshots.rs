@@ -2194,7 +2194,11 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
         catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
         Some(handle as i32)
     );
-    assert!(catalog.registration("models/test.md2", profile).is_some());
+    assert!(
+        catalog
+            .registration("models/test.md2", profile, None)
+            .is_some()
+    );
     host.bind_client_model_assets([]);
     // No backend admitted this configured profile's physical resources.
     assert_eq!(call(&mut host, 0, 12, &[path]), Ok(0));

@@ -92,7 +92,7 @@ fn bindings(owner: &ModelAssets, profile: ModelProfile) -> Vec<ModelBinding> {
         .bindings(
             owner
                 .catalog()
-                .registration("models/paired.md5mesh", profile)
+                .registration("models/paired.md5mesh", profile, None)
                 .unwrap(),
             0,
             Default::default(),
@@ -213,7 +213,7 @@ fn paired_md5_meshes_share_one_skeleton_and_named_receipts_across_profiles() {
     }
     let registration = owner
         .catalog()
-        .registration(first.path, first.profile())
+        .registration(first.path, first.profile(), None)
         .unwrap();
     let lods = owner
         .catalog()
@@ -292,7 +292,7 @@ fn empty_md5_surface_keeps_its_skin_ordinal_and_healthy_sibling_animation() {
     .unwrap();
     let registration = owner
         .catalog()
-        .registration(request.path, request.profile())
+        .registration(request.path, request.profile(), None)
         .unwrap();
     let original = bindings(&owner, request.profile());
     assert_eq!(original.len(), 2);
@@ -387,7 +387,7 @@ fn required_md5_pair_failure_never_publishes_a_bind_pose_only_model() {
         assert!(
             owner
                 .catalog()
-                .registration(first.path, first.profile())
+                .registration(first.path, first.profile(), None)
                 .is_none()
         );
         assert_eq!(
@@ -759,7 +759,7 @@ fn native_mdl_replacement_retains_parent_groups_and_requires_every_mesh_skin_mem
     assert_eq!(
         owner
             .catalog()
-            .metadata(b"models/paired.mdl")
+            .metadata(b"models/paired.mdl", None)
             .unwrap()
             .format,
         ModelFormat::Mdl
@@ -883,7 +883,7 @@ fn native_md2_replacement_uses_inserted_skin_directory_and_one_native_public_han
     assert_eq!(
         owner
             .catalog()
-            .metadata(b"models/test/tris.md2")
+            .metadata(b"models/test/tris.md2", None)
             .unwrap()
             .format,
         ModelFormat::Md2
@@ -1008,7 +1008,7 @@ fn optional_replacement_pair_failure_and_load_controls_keep_native_registration_
         assert_eq!(
             owner
                 .catalog()
-                .metadata(b"models/test/tris.md2")
+                .metadata(b"models/test/tris.md2", None)
                 .unwrap()
                 .format,
             ModelFormat::Md2
@@ -1138,7 +1138,10 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
     );
     assert_eq!(raster.render(&packet, owner.assets()).rejected, 0);
     let pixels = raster.pixels().to_vec();
-    let metadata = owner.catalog().metadata(b"models/test/tris.md2").unwrap();
+    let metadata = owner
+        .catalog()
+        .metadata(b"models/test/tris.md2", None)
+        .unwrap();
     for path in [
         "models/test/tris.md2",
         "models/test/md5/tris.md5mesh",
@@ -1273,7 +1276,7 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
             Some(handle)
         );
         assert_eq!(
-            owner.catalog().metadata(b"models/test/tris.md2"),
+            owner.catalog().metadata(b"models/test/tris.md2", None),
             Some(metadata)
         );
         assert!(Arc::ptr_eq(

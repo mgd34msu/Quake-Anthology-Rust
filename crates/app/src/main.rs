@@ -911,6 +911,7 @@ fn run() -> Result<(), String> {
                 &host.runtime.vfs,
                 qa_app::model_assets::ModelRequest {
                     path,
+                    search: None,
                     source_rules: profile.source_rules,
                     rules: profile.rules,
                     source_palette: profile.source_palette,

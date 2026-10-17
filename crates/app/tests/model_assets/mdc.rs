@@ -118,7 +118,10 @@ fn compressed_mdc_mesh_tags_and_skinned_pixels_use_independent_source_and_presen
             .model_handle(request.path.as_bytes(), profile.source_rules)
             .unwrap();
         assert_eq!(*handle.get_or_insert(native), native);
-        let registration = owner.catalog().registration(request.path, profile).unwrap();
+        let registration = owner
+            .catalog()
+            .registration(request.path, profile, None)
+            .unwrap();
         let binding = owner
             .catalog()
             .bindings(registration, 0, Default::default())
@@ -149,7 +152,7 @@ fn compressed_mdc_mesh_tags_and_skinned_pixels_use_independent_source_and_presen
         assert_eq!(
             owner
                 .catalog()
-                .metadata(request.path.as_bytes())
+                .metadata(request.path.as_bytes(), None)
                 .unwrap()
                 .format,
             qa_formats::model::ModelFormat::Mdc
@@ -187,7 +190,10 @@ fn compressed_mdc_mesh_tags_and_skinned_pixels_use_independent_source_and_presen
     let skin = skin_handle.unwrap();
     for request in &requests {
         let profile = request.profile();
-        let registration = owner.catalog().registration(request.path, profile).unwrap();
+        let registration = owner
+            .catalog()
+            .registration(request.path, profile, None)
+            .unwrap();
         let skinned = owner
             .catalog()
             .bindings(
@@ -211,7 +217,7 @@ fn compressed_mdc_mesh_tags_and_skinned_pixels_use_independent_source_and_presen
     let profile = requests.last().unwrap().profile();
     let registration = owner
         .catalog()
-        .registration("models/packed.mdc", profile)
+        .registration("models/packed.mdc", profile, None)
         .unwrap();
     let binding = owner
         .catalog()
@@ -295,7 +301,10 @@ fn requested_extension_prefers_its_format_and_missing_lod_alternates_preserve_sp
             rows[0][0].as_ref().unwrap().model,
             rows[0][2].as_ref().unwrap().model
         );
-        let metadata = owner.catalog().metadata(requested.as_bytes()).unwrap();
+        let metadata = owner
+            .catalog()
+            .metadata(requested.as_bytes(), None)
+            .unwrap();
         assert_eq!(
             metadata.format,
             if loaded_mdc {

@@ -25,7 +25,7 @@ fn first_image<'a>(
     path: &str,
     profile: ModelProfile,
 ) -> &'a qa_render::assets::Image {
-    let registration = owner.catalog().registration(path, profile).unwrap();
+    let registration = owner.catalog().registration(path, profile, None).unwrap();
     let choice = owner
         .catalog()
         .bindings(registration, 0, Default::default())
@@ -58,6 +58,7 @@ fn indexed_models_resolve_native_source_under_q3_without_changing_profile_or_tar
         let before = assets.counts();
         let requests = ["progs/test.mdl", "progs/test.spr"].map(|path| ModelRequest {
             path,
+            search: None,
             source_rules: profile.source_rules,
             rules: profile.rules,
             source_palette: None,
