@@ -2283,6 +2283,45 @@ impl RegistrationCheckpoint {
 }
 
 impl ModelAssets {
+    pub(crate) fn retry_published_file(&mut self, path: &[u8]) -> bool {
+        let Some(name) = self.catalog.names.find_path_bytes(path) else {
+            return false;
+        };
+        let mut changed = false;
+        if matches!(self.catalog.files[name.0 as usize], ModelFile::Failed(_)) {
+            self.catalog.files[name.0 as usize] = ModelFile::Empty;
+            changed = true;
+        }
+        if matches!(
+            self.catalog.sources[name.0 as usize],
+            ModelSourceFile::Invalid { .. }
+        ) {
+            self.catalog.sources[name.0 as usize] = ModelSourceFile::Empty;
+            changed = true;
+        }
+        for &index in &self.catalog.models[name.0 as usize] {
+            let state = &mut self.catalog.registrations[index].state;
+            if matches!(state, RegistrationState::Failed(_)) {
+                *state = RegistrationState::Unattempted;
+                changed = true;
+            }
+        }
+        if qa_formats::image::ImageFormat::from_path(path)
+            == Some(qa_formats::image::ImageFormat::Pcx)
+            && let Some(index) = self.catalog.skin_indices[name.0 as usize]
+        {
+            for row in &mut self.catalog.skins[index as usize].profiles {
+                if row.request == SkinRequest::Named
+                    && matches!(row.state, RegistrationState::Failed(_))
+                {
+                    row.state = RegistrationState::Unattempted;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn set_image_search_order(&mut self, order: ImageSearchOrder) {
         self.assets.set_image_search_order(order);
     }
@@ -6221,8 +6260,7 @@ impl ModelAssets {
             if rows.is_empty() {
                 return Err(CallError::File);
             }
-            self.catalog.capacity.skins = rows
-                .len()
+            rows.len()
                 .checked_mul(profile_count)
                 .and_then(|count| self.catalog.capacity.skins.checked_add(count))
                 .filter(|&count| count <= self.catalog.limits.skins)
@@ -6280,10 +6318,10 @@ impl ModelAssets {
                 .iter()
                 .position(|images| images.profile == profile.profile)
                 .ok_or(CallError::Aborted)?;
-            with_image_owner(
+            let registered = with_image_owner(
                 &mut self.catalog.profiles,
                 image_index,
-                |images| -> Result<(), CallError> {
+                |images| -> Result<usize, CallError> {
                     let alias = !skin_file && images.model_policy.source.indexed_external_pcx;
                     let mut compiled = Vec::with_capacity(mappings.len());
                     let mut members = Vec::with_capacity(mappings.len());
@@ -6371,6 +6409,7 @@ impl ModelAssets {
                     }
                     compiled.sort_by_key(|entry| entry.surface.0);
                     compiled.dedup_by_key(|entry| entry.surface.0);
+                    let registered = compiled.len();
                     profile.state = if compiled.is_empty() {
                         RegistrationState::Failed(
                             failure.unwrap_or_else(|| "missing skin mapping".to_owned()),
@@ -6386,9 +6425,15 @@ impl ModelAssets {
                                 .then(|| self.assets.counts()),
                         }
                     };
-                    Ok(())
+                    Ok(registered)
                 },
             )?;
+            self.catalog.capacity.skins = self
+                .catalog
+                .capacity
+                .skins
+                .checked_add(registered)
+                .ok_or(CallError::Capacity)?;
         }
         if self.catalog.skins[index]
             .profiles

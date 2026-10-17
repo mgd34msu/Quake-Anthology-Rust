@@ -357,8 +357,10 @@ impl Change {
                         .ok_or("native connection setup unavailable")?,
                 )
                 .map_err(|error| format!("server {target}: {error}"))?;
-            let mut channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
-                .map_err(|error| format!("native channel: {error:?}"))?;
+            let maximum_message = protocol.message_bytes();
+            let mut channel =
+                Channel::load(protocol.channel(), Endpoint::Client, maximum_message, 16)
+                    .map_err(|error| format!("native channel: {error:?}"))?;
             if protocol == Protocol::QuakeWorld28 {
                 let configured =
                     host.console
@@ -380,7 +382,7 @@ impl Change {
                 channel,
                 output: None,
                 pending_output: None,
-                commands: Some(Commands::load(protocol, 8192)),
+                commands: Some(Commands::load(protocol, maximum_message)),
             };
             let id = host.runtime.connect_client(
                 self.seat,

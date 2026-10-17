@@ -107,6 +107,7 @@ fn qw_download_publishes_only_the_complete_file_and_refreshes_the_selected_skin(
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 50,
             bytes: Some(&bytes[..768]),
         },
@@ -122,6 +123,7 @@ fn qw_download_publishes_only_the_complete_file_and_refreshes_the_selected_skin(
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(&bytes[768..]),
         },
@@ -165,6 +167,7 @@ fn cancel_and_retry_drain_the_old_reply_before_any_new_destination_can_start() {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"delayed old reply"),
         },
@@ -181,6 +184,7 @@ fn cancel_and_retry_drain_the_old_reply_before_any_new_destination_can_start() {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"retry contents"),
         },
@@ -202,6 +206,7 @@ fn cancel_and_retry_drain_the_old_reply_before_any_new_destination_can_start() {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"new destination"),
         },
@@ -263,6 +268,7 @@ fn a_full_native_reliable_queue_retains_the_download_request_until_acknowledged_
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"accepted after pressure"),
         },
@@ -291,6 +297,7 @@ fn malformed_native_block_cleans_the_partial_sink_and_does_not_stall_either_clie
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 25,
             bytes: Some(b"partial contents"),
         },
@@ -303,6 +310,7 @@ fn malformed_native_block_cleans_the_partial_sink_and_does_not_stall_either_clie
     let length = write_chunk(
         Protocol::QuakeWorld28,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b""),
         },
@@ -342,6 +350,7 @@ fn malformed_native_block_cleans_the_partial_sink_and_does_not_stall_either_clie
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"healthy transfer"),
         },
@@ -449,6 +458,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         1,
         Chunk {
+            compressed: false,
             percent: 50,
             bytes: Some(b"12"),
         },
@@ -461,6 +471,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         1,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"34"),
         },
@@ -478,6 +489,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         1,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -501,6 +513,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         1,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"okay"),
         },
@@ -518,6 +531,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -535,6 +549,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"12345"),
         },
@@ -562,6 +577,7 @@ fn mixed_clients(protocol: Protocol) {
         &mut source,
         1,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: Some(b""),
         },
@@ -639,6 +655,7 @@ fn automatic_skin_pass_preserves_manual_priority_deduplicates_peers_and_reuses_r
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(b"manual completion"),
         },
@@ -656,6 +673,7 @@ fn automatic_skin_pass_preserves_manual_priority_deduplicates_peers_and_reuses_r
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 50,
             bytes: Some(&bytes[..768]),
         },
@@ -667,6 +685,7 @@ fn automatic_skin_pass_preserves_manual_priority_deduplicates_peers_and_reuses_r
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 100,
             bytes: Some(&bytes[768..]),
         },
@@ -703,6 +722,7 @@ fn automatic_refusals_wait_for_an_explicit_pass_and_native_noskins_controls_requ
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -724,6 +744,7 @@ fn automatic_refusals_wait_for_an_explicit_pass_and_native_noskins_controls_requ
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -752,6 +773,7 @@ fn automatic_refusals_wait_for_an_explicit_pass_and_native_noskins_controls_requ
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -775,6 +797,7 @@ fn explicit_skin_pass_can_supersede_a_terminal_manual_failure() {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },
@@ -796,6 +819,7 @@ fn explicit_skin_pass_can_supersede_a_terminal_manual_failure() {
         &mut source,
         0,
         Chunk {
+            compressed: false,
             percent: 0,
             bytes: None,
         },

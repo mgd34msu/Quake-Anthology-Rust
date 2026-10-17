@@ -10,6 +10,8 @@ pub struct Chunk<'a> {
     pub percent: u8,
     /// Native signed size -1 means unavailable; an empty slice is a real block.
     pub bytes: Option<&'a [u8]>,
+    /// DEFLATE input can advance while producing an empty decoded block.
+    pub compressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,7 @@ pub enum Error {
     Size,
     Percent,
     Path,
+    Compression,
 }
 impl From<MessageError> for Error {
     fn from(error: MessageError) -> Self {
@@ -62,8 +65,12 @@ impl From<MessageError> for Error {
 
 pub fn read_chunk(protocol: Protocol, bytes: &[u8]) -> Result<(Chunk<'_>, usize), Error> {
     let policy = sequential(protocol).ok_or(Error::Unsupported)?;
+    read_chunk_service(policy.opcode, bytes)
+}
+
+pub(crate) fn read_chunk_service(opcode: u8, bytes: &[u8]) -> Result<(Chunk<'_>, usize), Error> {
     let mut reader = Reader::new(bytes, Encoding::Bytes);
-    if reader.read_bits(8)? != u32::from(policy.opcode) {
+    if reader.read_bits(8)? != u32::from(opcode) {
         return Err(Error::Opcode);
     }
     let size = reader.read_signed(16)?;
@@ -73,6 +80,7 @@ pub fn read_chunk(protocol: Protocol, bytes: &[u8]) -> Result<(Chunk<'_>, usize)
             Chunk {
                 percent,
                 bytes: None,
+                compressed: false,
             },
             reader.byte_position(),
         ));
@@ -94,11 +102,14 @@ pub fn read_chunk(protocol: Protocol, bytes: &[u8]) -> Result<(Chunk<'_>, usize)
         Chunk {
             percent,
             bytes: Some(data),
+            compressed: false,
         },
         end,
     ))
 }
 
+/// Writes an ordinary service, including when forwarding decoded DEFLATE data.
+/// The provenance flag never selects a compressed wire encoding.
 pub fn write_chunk(
     protocol: Protocol,
     chunk: Chunk<'_>,

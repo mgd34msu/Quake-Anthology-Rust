@@ -991,6 +991,7 @@ fn chunk(host: &mut FrameHost, source: &mut Source, client: usize, percent: u8, 
         Chunk {
             percent,
             bytes: Some(bytes),
+            compressed: false,
         },
         &mut packet,
     )
@@ -1200,4 +1201,160 @@ fn q2_wire_checksum_selects_the_whole_file_for_q1_geometry_and_rejects_qw_lump_s
     );
     settle(&mut host, &mut source);
     assert_eq!(source.servers[0].count(b"begin 81"), 1);
+}
+
+fn compressed_download(percent: u8, deflate: &[u8]) -> Vec<u8> {
+    message(|writer| {
+        writer.write_bits(35, 8).unwrap();
+        writer
+            .write_bits(u32::from(u16::try_from(deflate.len()).unwrap()), 16)
+            .unwrap();
+        writer.write_bits(u32::from(percent), 8).unwrap();
+        for &byte in deflate {
+            writer.write_bits(u32::from(byte), 8).unwrap();
+        }
+    })
+}
+
+#[test]
+fn rerelease_large_compressed_services_and_zero_output_download_retry_admit_the_world() {
+    let mut files = ordinary_files();
+    files.retain(|(name, _)| *name != "textures/wall.wal");
+    let (_fixture, mut host, mut source) = setup(&files, &[RERELEASE]);
+    let mount = host.runtime.vfs.mounts().next().unwrap().id;
+    host.configure_client_downloads(ClientId(0), mount, mount, 8192, 64)
+        .unwrap();
+    for name in ["cl_allowDownload", "allow_download_maps"] {
+        let view = host
+            .console
+            .cvars
+            .bind(
+                name,
+                Context {
+                    source: RuleSetId::Quake2Rerelease,
+                    side: qa_console::catalog::Scope::Client,
+                    seat: SeatId::FIRST,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        host.console.cvars.force_write(view, "1").unwrap();
+    }
+    send(
+        &mut host,
+        &mut source,
+        0,
+        &serverdata(RERELEASE, 401, 0, false, 0, 40),
+    );
+    let errors = host.runtime.network.command_errors;
+    let expected = [b'r'; 95];
+    let expanded_bytes = (12000..12100)
+        .map(|row| config(RERELEASE, row, &expected).len())
+        .sum::<usize>();
+    assert!(expanded_bytes > 8192);
+    // Python zlib level9/wbits=-15 golden for the 100 authored svc13 rows.
+    // Decoding belongs solely to the ordinary native Commands path.
+    let deflate = include_bytes!("fixtures/q2_services.deflate");
+    let mut packet = message(|writer| {
+        writer.write_bits(34, 8).unwrap();
+        writer.write_bits(deflate.len() as u32, 16).unwrap();
+        writer.write_bits(expanded_bytes as u32, 16).unwrap();
+        for &byte in deflate {
+            writer.write_bits(u32::from(byte), 8).unwrap();
+        }
+    });
+    packet.extend(config(RERELEASE, 0, b"after compressed services"));
+    send(&mut host, &mut source, 0, &packet);
+    let resources = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    for row in 12000..12100 {
+        assert_eq!(
+            resources.configs.config(row).unwrap().text,
+            expected,
+            "expanded RR row {row}"
+        );
+    }
+    assert_eq!(
+        resources.configs.config(0).unwrap().text,
+        b"after compressed services"
+    );
+    assert_eq!(host.runtime.network.command_errors, errors);
+    assert!(source.servers[0].prefixed(b"begin ").is_empty());
+    let mut rows = world_rows(RERELEASE, layout(&host, 0), false);
+    rows.extend(stuff(RERELEASE, b"precache 401\n"));
+    send(&mut host, &mut source, 0, &rows);
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"download textures/wall.wal"), 1);
+
+    // RFC1951: a nonfinal empty stored block consumes input but emits no file
+    // bytes; the final stored WAL block continues that same inflate stream.
+    let empty = compressed_download(10, &[0, 0, 0, 255, 255]);
+    let wal = q2_files::wal(22);
+    let length = u16::try_from(wal.len()).unwrap();
+    let mut final_block = vec![1];
+    final_block.extend(length.to_le_bytes());
+    final_block.extend((!length).to_le_bytes());
+    final_block.extend(&wal);
+    let final_packet = compressed_download(100, &final_block);
+    send(&mut host, &mut source, 0, &empty);
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"nextdl"), 1);
+    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_none());
+    assert!(host.local_worlds[0].is_none());
+    assert!(source.servers[0].prefixed(b"begin ").is_empty());
+    assert!(
+        !host.runtime.snapshots[0]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+
+    command(&mut host, &mut source, 0, "stopdownload\n");
+    send(&mut host, &mut source, 0, &final_packet);
+    settle(&mut host, &mut source);
+    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_none());
+    assert!(source.servers[0].prefixed(b"begin ").is_empty());
+    command(&mut host, &mut source, 0, "retrydownload\n");
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"download textures/wall.wal"), 2);
+    send(&mut host, &mut source, 0, &empty);
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"nextdl"), 2);
+    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_none());
+    let mut final_packet = final_packet;
+    final_packet.extend(config(RERELEASE, 0, b"after compressed download"));
+    send(&mut host, &mut source, 0, &final_packet);
+    settle(&mut host, &mut source);
+    let reference = host.runtime.vfs.open(b"textures/wall.wal").unwrap();
+    let actual = host
+        .runtime
+        .vfs
+        .read_to_vec(
+            &reference,
+            8192,
+            &mut qa_formats::archive::ArchiveReader::default(),
+        )
+        .unwrap();
+    assert_eq!(actual, wal);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(0)
+            .unwrap()
+            .text,
+        b"after compressed download"
+    );
+    assert_eq!(host.runtime.network.command_errors, errors);
+    assert_admitted(
+        &host,
+        &source,
+        0,
+        false,
+        (b"maps/ready.bsp", &q2_files::world(b"wall")),
+    );
+    assert_eq!(source.servers[0].count(b"begin 401"), 1);
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"begin 401"), 1);
 }

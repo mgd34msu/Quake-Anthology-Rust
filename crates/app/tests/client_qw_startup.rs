@@ -598,6 +598,7 @@ fn missing_sound_download_finishes_before_models_are_requested() {
         let length = write_chunk(
             PROTOCOL,
             Chunk {
+                compressed: false,
                 percent,
                 bytes: Some(bytes),
             },

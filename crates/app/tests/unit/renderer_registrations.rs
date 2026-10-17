@@ -2226,3 +2226,6 @@ fn grouped_spr_keeps_one_mesh_and_authored_frames_through_source_unlink_and_refr
 
 #[path = "indexed_skin_refresh.rs"]
 mod indexed_skin_refresh;
+
+#[path = "published_files.rs"]
+mod published_files;

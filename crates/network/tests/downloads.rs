@@ -25,6 +25,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
         for (chunk, expected) in [
             (
                 Chunk {
+                    compressed: false,
                     percent: 40,
                     bytes: Some(&[0, 128, 255]),
                 },
@@ -32,6 +33,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
             ),
             (
                 Chunk {
+                    compressed: false,
                     percent: 0,
                     bytes: None,
                 },
@@ -39,6 +41,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
             ),
             (
                 Chunk {
+                    compressed: false,
                     percent: 100,
                     bytes: Some(&[]),
                 },
@@ -83,6 +86,7 @@ fn malformed_or_truncated_blocks_never_borrow_beyond_the_native_service() {
         let length = downloads::write_chunk(
             protocol,
             Chunk {
+                compressed: false,
                 percent: 50,
                 bytes: Some(&data),
             },
@@ -109,6 +113,7 @@ fn malformed_or_truncated_blocks_never_borrow_beyond_the_native_service() {
             downloads::write_chunk(
                 protocol,
                 Chunk {
+                    compressed: false,
                     percent: 1,
                     bytes: Some(&vec![0; policy.block_bytes() + 1])
                 },
@@ -140,10 +145,12 @@ fn connection_parser_delivers_blocks_and_following_services_in_native_order() {
         let mut length = 0;
         for chunk in [
             Chunk {
+                compressed: false,
                 percent: 35,
                 bytes: Some(b"first"),
             },
             Chunk {
+                compressed: false,
                 percent: 100,
                 bytes: Some(b"last"),
             },

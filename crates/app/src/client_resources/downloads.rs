@@ -83,6 +83,39 @@ struct DownloadViews {
 }
 
 impl ClientResources {
+    pub(crate) fn retry_published_file(&mut self, path: &[u8]) {
+        let matches = |candidate: &[u8]| {
+            candidate
+                .iter()
+                .copied()
+                .map(qa_core::names::path_byte)
+                .eq(path.iter().copied().map(qa_core::names::path_byte))
+        };
+        for index in self.state.layout.resources[0].range() {
+            if self
+                .state
+                .configs
+                .config(index)
+                .is_some_and(|row| matches(row.text))
+            {
+                self.state.models.config_received(index);
+            }
+        }
+        for index in self.state.layout.players.range() {
+            let Some(row) = self.state.configs.config(index) else {
+                continue;
+            };
+            if (0..5).any(|part| {
+                self.state
+                    .models
+                    .player_download_path(row.text, part)
+                    .is_some_and(|name| matches(name.as_bytes()))
+            }) {
+                self.state.models.config_received(index);
+            }
+        }
+    }
+
     fn next_startup_file(
         &mut self,
         vfs: &Vfs,
@@ -724,6 +757,7 @@ impl ClientDownload {
                         .map_err(|error| format!("download write: {error}"))?;
                     let empty = qa_network::downloads::sequential(protocol)
                         .is_some_and(|policy| policy.empty_completes())
+                        && !chunk.compressed
                         && file.is_empty()
                         && bytes.is_empty();
                     if chunk.percent == 100 || empty {
@@ -735,7 +769,7 @@ impl ClientDownload {
                             bytes,
                         });
                     }
-                    if bytes.is_empty() {
+                    if bytes.is_empty() && !chunk.compressed {
                         return Err("download made no progress".into());
                     }
                     Ok(Transfer::Active {
@@ -1011,7 +1045,14 @@ impl crate::host::FrameHost {
                 downloads.close();
                 continue;
             };
-            let Some(commands) = &connection.commands else {
+            let starts_stream = matches!(
+                &downloads.transfer,
+                Transfer::Active {
+                    sending: Sending::Request,
+                    ..
+                }
+            );
+            let Some(commands) = connection.commands.as_mut() else {
                 downloads.close();
                 continue;
             };
@@ -1019,7 +1060,12 @@ impl crate::host::FrameHost {
                 .channel
                 .queue_client_command(commands.protocol, command.as_bytes())
             {
-                Ok(_) => downloads.queued(),
+                Ok(_) => {
+                    if starts_stream {
+                        commands.reset_download_stream();
+                    }
+                    downloads.queued();
+                }
                 Err(TransmitError::Full) => {}
                 Err(_) => {
                     downloads.reject();
@@ -1199,7 +1245,10 @@ impl crate::host::FrameHost {
     }
 
     pub(crate) fn finish_client_downloads(&mut self) {
-        for resources in self.runtime.client_resources.iter_mut().flatten() {
+        for index in 0..self.runtime.client_resources.len() {
+            let Some(resources) = self.runtime.client_resources[index].as_mut() else {
+                continue;
+            };
             let Some(downloads) = &mut resources.downloads else {
                 continue;
             };
@@ -1230,7 +1279,18 @@ impl crate::host::FrameHost {
                         request.name.as_str(),
                         bytes
                     ));
+                    let published = request.name.clone();
                     downloads.transfer = Transfer::Finished { request, bytes };
+                    if self
+                        .runtime
+                        .model_assets
+                        .as_mut()
+                        .is_some_and(|owner| owner.retry_published_file(published.as_bytes()))
+                    {
+                        for resources in self.runtime.client_resources.iter_mut().flatten() {
+                            resources.retry_published_file(published.as_bytes());
+                        }
+                    }
                 }
                 Err(error) => {
                     let _ = self.runtime.server.events.console_formatted(format_args!(

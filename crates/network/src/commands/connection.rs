@@ -1,4 +1,5 @@
 //! The connection owns its packet codec and fixed decode scratch.
+mod compression;
 use super::{
     Q2Cmd, Q2RrCmd, QwCmd, from_q1_move, from_q2_rr_usercmd, from_q2_usercmd, from_q3_usercmd,
     from_qw_usercmd,
@@ -28,6 +29,7 @@ pub struct Commands {
     packet_dup: u8,
     q2_stream: Option<Q2Stream>,
     q2_config_end: u32,
+    compression: Option<compression::Compression>,
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +99,8 @@ impl Commands {
             packet_dup: 1,
             q2_stream: None,
             q2_config_end: protocol.resource_layout().count as u32,
+            compression: (protocol == Protocol::Quake2Repro1038)
+                .then(compression::Compression::load),
             qw_players: (protocol == Protocol::QuakeWorld28)
                 .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
             delta_request: None,
@@ -133,6 +137,13 @@ impl Commands {
     }
     pub fn reset_history(&mut self, keep_number: bool) {
         reset_history_storage(&mut self.history, keep_number);
+    }
+    /// Retire the old compressed download before admitting a new request.
+    /// Callers drain any outstanding old reply before starting its replacement.
+    pub fn reset_download_stream(&mut self) {
+        if let Some(compression) = &mut self.compression {
+            compression.download.reset();
+        }
     }
     /// Native payload delta request. QW SERVER retains clc_delta's low byte;
     /// Q2 SERVER retains clc_move's frame, and CLIENT clears invalid frames.
@@ -259,6 +270,11 @@ impl Commands {
     }
     /// Copies the native payload into the connection's fixed decode scratch.
     pub fn stage(&mut self, bytes: &[u8]) -> Result<usize, packet::Error> {
+        if self.protocol == Protocol::Quake2Repro1038
+            && bytes.len() > qa_core::primitives::NATIVE_WIRE_BYTES
+        {
+            return Err(packet::Error::Count);
+        }
         self.scratch
             .get_mut(..bytes.len())
             .ok_or(packet::Error::Count)?
@@ -552,7 +568,7 @@ impl Commands {
         namespace: qa_core::primitives::ResourceNamespace,
         mut consume: impl FnMut(Incoming<'_>),
     ) -> Result<Option<u32>, packet::Error> {
-        let scratch = &mut self.scratch[..length];
+        let scratch = self.scratch.get_mut(..length).ok_or(packet::Error::Count)?;
         if self.protocol == Protocol::Quake3_68 {
             channel.decode_server_output(scratch, sequence, |output| match output {
                 crate::channel::commands::ServerOutput::ReliableCommand { sequence, text } => {
@@ -577,8 +593,18 @@ impl Commands {
         {
             return Err(packet::Error::Context);
         }
+        let raw = &scratch[..];
+        let (mut packet_stream, mut download_stream) = match &mut self.compression {
+            Some(compression) => (
+                Some(&mut compression.packet),
+                Some(&mut compression.download),
+            ),
+            None => (None, None),
+        };
         let result = (|| {
             let mut at = 0;
+            let mut raw_resume = None;
+            let mut expanded_length = 0;
             let mut players = [None; crate::states::QW_PLAYER_SLOTS];
             let mut snapshot = None;
             let mut nq = if self.protocol == Protocol::NetQuake15 {
@@ -593,7 +619,22 @@ impl Commands {
             };
             // Native CL_ParseServerMessage ends at the byte boundary, with no EOF
             // opcode. Each accepted service consumes bytes from fixed scratch.
-            while at < scratch.len() {
+            loop {
+                let scratch = if raw_resume.is_some() {
+                    &packet_stream
+                        .as_deref()
+                        .ok_or(packet::Error::Context)?
+                        .bytes[..expanded_length]
+                } else {
+                    raw
+                };
+                if at == scratch.len() {
+                    if let Some(resume) = raw_resume.take() {
+                        at = resume;
+                        continue;
+                    }
+                    break;
+                }
                 if let Some(stream) = self.q2_stream {
                     use super::startup::ResourceStream;
                     let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
@@ -692,6 +733,9 @@ impl Commands {
                         self.delta_request = None;
                         self.q2_stream = None;
                         self.q2_config_end = data.resource_layout().count as u32;
+                        if let Some(stream) = &mut download_stream {
+                            stream.reset();
+                        }
                         snapshot = None;
                         consume(Incoming::Q2ServerData(data));
                     }
@@ -704,7 +748,62 @@ impl Commands {
                     }
                     (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 8) => {
                         at += 1;
+                        if let Some(stream) = &mut download_stream {
+                            stream.reset();
+                        }
                         consume(Incoming::Reconnect);
+                    }
+                    (Protocol::Quake2Repro1038, 34) => {
+                        if raw_resume.is_some() {
+                            return Err(packet::Error::Context);
+                        }
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let length = reader.read_bits(16)? as usize;
+                        // Native q2repro ignores the announced expanded length.
+                        reader.read_bits(16)?;
+                        let first = at + 1 + reader.byte_position();
+                        let end = first + length;
+                        let input = raw.get(first..end).ok_or(packet::Error::Count)?;
+                        expanded_length = packet_stream
+                            .as_deref_mut()
+                            .ok_or(packet::Error::Context)?
+                            .packet(input)
+                            .map_err(|_| packet::Error::Context)?;
+                        raw_resume = Some(end);
+                        at = 0;
+                    }
+                    (Protocol::Quake2Repro1038, 35) => {
+                        let result = (|| {
+                            // Native compression cannot recursively consume an
+                            // already inflated service stream.
+                            if raw_resume.is_some() {
+                                return Err(crate::downloads::Error::Compression);
+                            }
+                            let (chunk, count) =
+                                crate::downloads::read_chunk_service(35, &scratch[at..])?;
+                            let input = chunk.bytes.ok_or(crate::downloads::Error::Size)?;
+                            let bytes = download_stream
+                                .as_deref_mut()
+                                .ok_or(crate::downloads::Error::Compression)?
+                                .download(input)
+                                .map_err(|_| crate::downloads::Error::Compression)?;
+                            consume(Incoming::Download(Ok(crate::downloads::Chunk {
+                                percent: chunk.percent,
+                                bytes: Some(bytes),
+                                compressed: true,
+                            })));
+                            Ok(count)
+                        })();
+                        match result {
+                            Ok(count) => at += count,
+                            Err(error) => {
+                                if let Some(stream) = &mut download_stream {
+                                    stream.reset();
+                                }
+                                consume(Incoming::Download(Err(error)));
+                                return Err(packet::Error::Context);
+                            }
+                        }
                     }
                     (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 14) => {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
@@ -884,6 +983,9 @@ impl Commands {
                                 consume(Incoming::Pause(paused))
                             }
                             crate::outputs::NativeService::Disconnect => {
+                                if let Some(stream) = &mut download_stream {
+                                    stream.reset();
+                                }
                                 consume(Incoming::Disconnect { output: None });
                                 return Ok(None);
                             }
@@ -914,8 +1016,6 @@ impl Commands {
                             consume(Incoming::ResourceList(progress));
                         }
                     }
-                    // Signon, temp entities, inventory and
-                    // stuffed commands require their own service bindings later.
                     _ => return Err(packet::Error::Opcode),
                 }
             }

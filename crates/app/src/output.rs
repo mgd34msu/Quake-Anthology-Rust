@@ -535,6 +535,7 @@ pub(crate) fn dispatch_frame(
                     let Ok(length) = qa_network::downloads::write_chunk(
                         protocol,
                         qa_network::downloads::Chunk {
+                            compressed: false,
                             percent,
                             bytes: available.then_some(&stored[..payload.len()]),
                         },

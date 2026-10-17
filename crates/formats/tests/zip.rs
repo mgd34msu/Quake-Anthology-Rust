@@ -310,3 +310,32 @@ fn streaming_checks_unread_tail_crc_when_reaching_eof() {
         );
     }
 }
+
+#[test]
+fn shared_inflater_keeps_exact_archive_consumption_and_announced_length_errors() {
+    let payload = b"bounded archive member";
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    for (compressed_delta, length_delta) in [(1i64, 0i64), (0, -1), (0, 1)] {
+        let (_fixture, archive) = Fixture::parse(&zip(payload, true, false, b""));
+        let mut archive = archive.unwrap();
+        archive.entries[0].compressed_length =
+            (archive.entries[0].compressed_length as i64 + compressed_delta) as u64;
+        archive.entries[0].length = (archive.entries[0].length as i64 + length_delta) as u64;
+        assert_eq!(
+            archive.read_into_reusing(0, &mut [0; 64], &mut reader),
+            Err(FormatError::Compression)
+        );
+    }
+    // The retained decoder still resets for a healthy source after each failure.
+    let (_fixture, archive) = Fixture::parse(&zip(payload, true, false, b""));
+    let archive = archive.unwrap();
+    let mut out = [0; 64];
+    let count = archive
+        .read_stream_reusing(0, 5, &mut out, &mut reader)
+        .unwrap();
+    assert_eq!(&out[..count], &payload[5..]);
+    let count = archive
+        .read_stream_reusing(0, 0, &mut out, &mut reader)
+        .unwrap();
+    assert_eq!(&out[..count], payload);
+}

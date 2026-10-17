@@ -492,11 +492,7 @@ impl Runtime {
                 client.link_order,
                 qa_world::area::LinkIntent::Explicit,
             );
-            let maximum_message = if protocol == qa_network::commands::packet::Protocol::Quake3_68 {
-                qa_network::commands::packet::Q3_MESSAGE_BYTES
-            } else {
-                8192
-            };
+            let maximum_message = protocol.message_bytes();
             for endpoint in [
                 qa_core::loopback::Endpoint::Client,
                 qa_core::loopback::Endpoint::Server,

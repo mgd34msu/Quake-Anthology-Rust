@@ -18,6 +18,14 @@ pub enum Protocol {
     Quake3_68,
 }
 impl Protocol {
+    /// Connection storage follows its native message limit, not map geometry.
+    pub const fn message_bytes(self) -> usize {
+        match self {
+            Self::Quake3_68 => Q3_MESSAGE_BYTES,
+            Self::Quake2Repro1038 => qa_core::primitives::NATIVE_WIRE_BYTES,
+            _ => 8192,
+        }
+    }
     /// Native connection controls with a CLIENT handshake owner.
     pub const fn default_connect_port(self) -> Option<u16> {
         match self {

@@ -1,6 +1,9 @@
 //! PACK/ZIP offsets mined from muse-final:crates/content/src/archive.rs.
 //! Native contracts: Q1/Q2 pack headers and Q3 qcommon/unzip.c.
-use crate::FormatError;
+use crate::{
+    FormatError,
+    inflate::{InflateFlush, Inflater},
+};
 use qa_platform::files::ReadFile;
 use std::{io, sync::Arc};
 
@@ -38,7 +41,7 @@ pub struct ArchiveReader {
 }
 struct ArchiveCursor {
     member: Option<(Arc<ReadFile>, usize)>,
-    decoder: flate2::Decompress,
+    decoder: Inflater,
     input: [u8; 8192],
     first: usize,
     last: usize,
@@ -52,7 +55,7 @@ impl Default for ArchiveReader {
         Self {
             cursor: ArchiveCursor {
                 member: None,
-                decoder: flate2::Decompress::new(false),
+                decoder: Inflater::raw(),
                 input: [0; 8192],
                 first: 0,
                 last: 0,
@@ -68,7 +71,7 @@ impl Default for ArchiveReader {
 impl ArchiveReader {
     fn start(&mut self, archive: &Archive, entry: usize) {
         self.cursor.member = Some((Arc::clone(&archive.file), entry));
-        self.cursor.decoder.reset(false);
+        self.cursor.decoder.reset();
         self.cursor.first = 0;
         self.cursor.last = 0;
         self.cursor.fetched = 0;
@@ -416,24 +419,17 @@ impl Archive {
                     cursor.last = count;
                     cursor.fetched += count as u64;
                 }
-                let before_in = cursor.decoder.total_in();
-                let before_out = cursor.decoder.total_out();
-                let status = cursor
-                    .decoder
-                    .decompress(
-                        &cursor.input[cursor.first..cursor.last],
-                        out,
-                        flate2::FlushDecompress::None,
-                    )
-                    .map_err(|_| FormatError::Compression)?;
-                let consumed = cursor.decoder.total_in() - before_in;
-                let produced = (cursor.decoder.total_out() - before_out) as usize;
-                cursor.first += consumed as usize;
+                let step = cursor.decoder.step(
+                    &cursor.input[cursor.first..cursor.last],
+                    out,
+                    InflateFlush::Continue,
+                )?;
+                cursor.first += step.consumed;
                 cursor.position = cursor.decoder.total_out();
                 if cursor.position > entry.length {
                     return Err(FormatError::Compression);
                 }
-                if status == flate2::Status::StreamEnd {
+                if step.finished {
                     if cursor.decoder.total_in() != entry.compressed_length
                         || cursor.position != entry.length
                     {
@@ -441,10 +437,10 @@ impl Archive {
                     }
                     cursor.done = true;
                 }
-                if produced != 0 || cursor.done {
-                    break produced;
+                if step.produced != 0 || cursor.done {
+                    break step.produced;
                 }
-                if consumed == 0 {
+                if step.consumed == 0 {
                     return Err(FormatError::Compression);
                 }
             }
