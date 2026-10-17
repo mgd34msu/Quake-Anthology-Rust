@@ -734,6 +734,19 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
+                    (Protocol::QuakeWorld28, 41)
+                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 16) => {
+                        let (chunk, count) =
+                            match crate::downloads::read_chunk(self.protocol, &scratch[at..]) {
+                                Ok(chunk) => chunk,
+                                Err(error) => {
+                                    consume(Incoming::Download(Err(error)));
+                                    return Err(packet::Error::Context);
+                                }
+                            };
+                        at += count;
+                        consume(Incoming::Download(Ok(chunk)));
+                    }
                     (Protocol::NetQuake15, 13 | 14 | 17 | 18)
                     | (Protocol::QuakeWorld28, 14 | 40 | 51)
                     | (

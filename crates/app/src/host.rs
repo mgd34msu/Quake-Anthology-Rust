@@ -440,6 +440,8 @@ pub struct FrameHost {
     pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
     pub(crate) allskins_command: qa_core::primitives::NameId,
     pub(crate) skins_command: qa_core::primitives::NameId,
+    pub(crate) download_commands: [qa_core::primitives::NameId; 4],
+    pub(crate) download_defaults: Option<crate::client_resources::downloads::DownloadConfig>,
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
@@ -1352,6 +1354,18 @@ impl FrameHost {
         let skins_command = console
             .register_external("skins")
             .ok_or("player skin command registration")?;
+        let [download, downloadstatus, stopdownload, retrydownload] = [
+            "download",
+            "downloadstatus",
+            "stopdownload",
+            "retrydownload",
+        ]
+        .map(|name| {
+            console
+                .register_external(name)
+                .ok_or("download command registration")
+        });
+        let download_commands = [download?, downloadstatus?, stopdownload?, retrydownload?];
         let software_waterwarp = console
             .cvars
             .bind("sw_waterwarp", q2_context)
@@ -1482,6 +1496,8 @@ impl FrameHost {
             player_skin_views,
             allskins_command,
             skins_command,
+            download_commands,
+            download_defaults: None,
             software_waterwarp,
             curve_error,
             model_lod,
@@ -2698,6 +2714,15 @@ impl FrameHost {
     }
 
     pub(crate) fn received_client_disconnect(&mut self, id: ClientId) {
+        if let Some(downloads) = self
+            .runtime
+            .client_resources
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .and_then(|resources| resources.downloads.as_mut())
+        {
+            downloads.close();
+        }
         // The network may be temporarily moved into receive_packet. Retire
         // presentation here; transport completion is observed after restoration.
         self.runtime.close_client_presentation(id);
@@ -2902,6 +2927,7 @@ impl FrameHost {
                             == Some(qa_session::clients::Connection::Local)
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
+                        let download_protocol = binding.protocol;
                         let awaiting_player = binding.native_client().is_none();
                         if awaiting_player
                             && let Incoming::SetView { entity } = &incoming
@@ -2915,6 +2941,21 @@ impl FrameHost {
                             return std::ops::ControlFlow::Break(());
                         }
                         match incoming {
+                            Incoming::Download(chunk) => {
+                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
+                                    .and_then(|resources| resources.downloads.as_mut())
+                                    .ok_or_else(|| "unsolicited download with no configured receiver".to_owned())
+                                    .and_then(|downloads| match chunk {
+                                        Ok(chunk) => downloads.receive(download_protocol, chunk, &self.runtime.vfs, &self.console.cvars),
+                                        Err(error) => {
+                                            downloads.reject();
+                                            Err(format!("malformed native download: {error:?}"))
+                                        }
+                                    });
+                                if let Err(error) = result {
+                                    let _ = self.runtime.server.events.console_formatted(format_args!("Download rejected: {error}\n"));
+                                }
+                            }
                             Incoming::Peer(update) => {
                                 if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
                                     resources.state.receive_peer(update);
@@ -3250,6 +3291,7 @@ impl FrameHost {
             network.unbind(id);
         }
         self.runtime.network = network;
+        self.flush_client_downloads();
         if let Some(id) = signon_client {
             self.flush_nq_signon_reply(id);
         }

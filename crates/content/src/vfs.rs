@@ -614,6 +614,16 @@ impl Vfs {
     pub fn mounts(&self) -> impl Iterator<Item = &MountInfo> {
         self.mounts.iter().filter(|mount| mount.active)
     }
+    /// A caller explicitly selects this content directory before granting writes.
+    /// Saved settings mounts and archives never become download destinations.
+    pub fn directory_path(&self, id: MountId) -> Option<&Path> {
+        self.mounts
+            .get(id.0 as usize)
+            .filter(|mount| {
+                mount.active && mount.kind == MountKind::Directory && !mount.settings_only
+            })
+            .map(|mount| mount.path.as_path())
+    }
     pub fn files(&self) -> impl Iterator<Item = (FileRef, &[u8])> {
         self.listing.iter().filter_map(|&slot| {
             let entry = self.entries.get(slot as usize)?.as_ref()?;

@@ -1,6 +1,7 @@
 pub mod channel;
 pub mod commands;
 mod delta;
+pub mod downloads;
 pub mod headers;
 pub mod ingress;
 pub mod message;

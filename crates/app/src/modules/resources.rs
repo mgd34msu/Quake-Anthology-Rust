@@ -190,15 +190,22 @@ impl FrameHost {
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
     ) {
-        if let Err(error) = self.refresh_resource_settings() {
+        self.flush_client_downloads();
+        let resource_settings_ready = if let Err(error) = self.refresh_resource_settings() {
             let _ = self
                 .runtime
                 .server
                 .events
                 .console_formatted(format_args!("Image search setting rejected: {error}\n"));
-        }
-        if let Some(preparer) = preparer.as_mut() {
-            self.refresh_player_skins(&mut **preparer);
+            false
+        } else {
+            true
+        };
+        if resource_settings_ready {
+            self.finish_client_downloads();
+            if let Some(preparer) = preparer.as_mut() {
+                self.refresh_player_skins(&mut **preparer);
+            }
         }
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {

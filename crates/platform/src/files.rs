@@ -7,6 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod contained;
+pub use contained::StagedFile;
+
 pub struct ReadFile {
     file: File,
 }
@@ -17,17 +20,24 @@ pub struct WriteFile {
     file: BufWriter<File>,
 }
 impl WriteFile {
-    pub fn create_new(path: impl AsRef<Path>, buffer_bytes: usize) -> io::Result<Self> {
+    fn validate_buffer(buffer_bytes: usize) -> io::Result<()> {
         if buffer_bytes > 64 * 1024 * 1024 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        Ok(())
+    }
+    fn from_file(file: File, buffer_bytes: usize) -> Self {
+        Self {
+            file: BufWriter::with_capacity(buffer_bytes, file),
+        }
+    }
+    pub fn create_new(path: impl AsRef<Path>, buffer_bytes: usize) -> io::Result<Self> {
+        Self::validate_buffer(buffer_bytes)?;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)?;
-        Ok(Self {
-            file: BufWriter::with_capacity(buffer_bytes, file),
-        })
+        Ok(Self::from_file(file, buffer_bytes))
     }
     pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.file.write_all(bytes)

@@ -12,6 +12,7 @@ use qa_network::commands::packet::Protocol;
 
 mod animation;
 pub use animation::ModelSynchronization;
+pub(crate) mod downloads;
 
 pub(crate) fn model_world(
     connection: Option<qa_session::clients::Connection>,
@@ -31,6 +32,7 @@ pub(crate) fn model_world(
 pub struct ClientResources {
     pub state: ResourceState,
     pub(crate) udp_lease: Option<qa_platform::UdpLease>,
+    pub(crate) downloads: Option<downloads::ClientDownload>,
     commands: qa_network::outputs::ConfigCommandReader,
     selected: Box<qa_console::command_text::ParsedCommand>,
     joined: qa_core::text::FixedText<8192>,
@@ -209,6 +211,7 @@ impl ClientResources {
         let layout = protocol.resource_layout();
         Ok(Some(Self {
             udp_lease: None,
+            downloads: None,
             commands: qa_network::outputs::ConfigCommandReader::load(),
             selected: Box::default(),
             joined: qa_core::text::FixedText::default(),
@@ -386,6 +389,9 @@ impl ClientResources {
             qa_render::world::WorldPresentationId,
         )>,
     ) {
+        if let Some(downloads) = &mut self.downloads {
+            downloads.close();
+        }
         self.state.configs.reset();
         self.commands.reset();
         self.selected.clear();

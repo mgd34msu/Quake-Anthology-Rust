@@ -124,6 +124,36 @@ fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
 }
 
 #[test]
+fn explicit_content_directory_selection_excludes_settings_archives_and_retired_mounts() {
+    let root = Fixture::new("download-destinations");
+    let first = root.0.join("first");
+    let second = root.0.join("second");
+    qa_platform::files::create_dir_all(&first).unwrap();
+    qa_platform::files::create_dir_all(&second).unwrap();
+    let package = root.0.join("pak0.pk3");
+    qa_platform::files::write(
+        &package,
+        zip::stored_zip(&[(b"skins/archive.pcx", b"source")]),
+    )
+    .unwrap();
+    let mut vfs = Vfs::default();
+    let a = vfs.mount_directory(&first, 0).unwrap();
+    let b = vfs.mount_directory(&second, 1).unwrap();
+    let settings = vfs.mount_settings_directory(&root.0, 10).unwrap();
+    let file = Arc::new(ReadFile::open(&package).unwrap());
+    let archive = vfs
+        .mount_archive(&package, 20, Arc::new(Archive::parse(file).unwrap()))
+        .unwrap();
+    assert_eq!(vfs.directory_path(a), Some(first.as_path()));
+    assert_eq!(vfs.directory_path(b), Some(second.as_path()));
+    assert_eq!(vfs.directory_path(settings), None);
+    assert_eq!(vfs.directory_path(archive), None);
+    assert!(vfs.unmount(a));
+    assert_eq!(vfs.directory_path(a), None);
+    assert_eq!(vfs.directory_path(b), Some(second.as_path()));
+}
+
+#[test]
 fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("products");

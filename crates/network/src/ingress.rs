@@ -156,6 +156,7 @@ pub enum Incoming<'a> {
     SetAngles(qa_core::primitives::Vec3),
     CdTrack(crate::outputs::CdTrack),
     Print(crate::outputs::Print<'a>),
+    Download(Result<crate::downloads::Chunk<'a>, crate::downloads::Error>),
     ConfigString(crate::outputs::ConfigString<'a>),
     StaticEntity(qa_core::primitives::EntityRecord),
     Particle(crate::outputs::Particle),

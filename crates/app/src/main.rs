@@ -80,6 +80,8 @@ fn run() -> Result<(), String> {
     let mut max_clients = 64usize;
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
+    let mut download_root = None;
+    let mut skin_download_root = None;
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
     let mut quakec_modules = Vec::new();
@@ -164,6 +166,18 @@ fn run() -> Result<(), String> {
                 content_priority = content_priority
                     .checked_add(100_000)
                     .ok_or("too many content mounts")?;
+            }
+            "--download-root" => {
+                download_root = Some(std::path::PathBuf::from(
+                    args.next()
+                        .ok_or("--download-root needs an existing writable content directory")?,
+                ))
+            }
+            "--skin-download-root" => {
+                skin_download_root =
+                    Some(std::path::PathBuf::from(args.next().ok_or(
+                        "--skin-download-root needs an existing writable content directory",
+                    )?))
             }
             "--map" => map_name = Some(args.next().ok_or("--map needs a virtual map name")?),
             "--movement" => {
@@ -394,6 +408,34 @@ fn run() -> Result<(), String> {
     if max_clients < seat_count {
         return Err("client capacity must cover the local seats".into());
     }
+    let download_mounts = if let Some(root) = download_root {
+        let priority = vfs
+            .mounts()
+            .map(|mount| mount.priority)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("download mount priority")?;
+        let game = vfs
+            .mount_directory(&root, priority)
+            .map_err(|error| format!("download root: {error}"))?;
+        let skins = if let Some(skins) = skin_download_root {
+            if skins == root {
+                game
+            } else {
+                vfs.mount_directory(&skins, priority)
+                    .map_err(|error| format!("skin download root: {error}"))?
+            }
+        } else {
+            game
+        };
+        Some((game, skins))
+    } else {
+        if skin_download_root.is_some() {
+            return Err("--skin-download-root requires --download-root".into());
+        }
+        None
+    };
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
         let policy = if let Some(policy) = seat_policies[0] {
@@ -646,6 +688,9 @@ fn run() -> Result<(), String> {
         .map(|request| request.context.native_rules)
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    if let Some((game, skins)) = download_mounts {
+        host.configure_download_roots(game, skins, 64 * 1024 * 1024, 8192)?;
+    }
     if render_world.is_some() {
         host.set_renderer_fullscreen_ui(false);
     }

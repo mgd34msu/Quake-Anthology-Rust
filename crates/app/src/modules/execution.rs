@@ -1316,6 +1316,26 @@ fn console_step(
                     host.module_row(producer.module)
                         .is_some_and(|row| row.request.phase == super::Phase::Client)
                 });
+            if let Some(operation) = host
+                .download_commands
+                .iter()
+                .position(|&registered| registered == command)
+            {
+                let result = if local {
+                    host.client_download_command(context.seat, operation, scratch.arguments())
+                } else {
+                    Err("download commands are local CLIENT commands".to_owned())
+                };
+                if let Err(error) = result {
+                    let _ = host
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("Download rejected: {error}\n"));
+                }
+                frame.run.reply(CommandReply::Handled);
+                return FrameStep::Continue;
+            }
             if command == host.allskins_command || command == host.skins_command {
                 if local {
                     if command == host.allskins_command {

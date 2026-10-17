@@ -54,6 +54,7 @@ struct NativeServer {
     channel: Channel,
     commands: Commands,
     time: EventTime,
+    received_commands: Vec<Vec<u8>>,
 }
 impl NativeServer {
     fn load(protocol: Protocol, client: ClientId) -> Self {
@@ -68,6 +69,7 @@ impl NativeServer {
             channel,
             commands: Commands::load(protocol, 8192),
             time: EventTime::default(),
+            received_commands: Vec::new(),
         }
     }
 
@@ -78,6 +80,7 @@ impl NativeServer {
         {
             let sequence = received.header.sequence;
             let length = self.commands.stage(payload).unwrap();
+            let received_commands = &mut self.received_commands;
             self.commands
                 .decode(
                     length,
@@ -85,7 +88,13 @@ impl NativeServer {
                     self.time.milliseconds() as i32,
                     &mut self.channel,
                     None,
-                    |_| ControlFlow::Continue(()),
+                    |incoming| {
+                        if let qa_network::ingress::Incoming::CommandString { text, .. } = incoming
+                        {
+                            received_commands.push(text.to_vec());
+                        }
+                        ControlFlow::Continue(())
+                    },
                 )
                 .unwrap();
         }
@@ -108,6 +117,10 @@ impl NativeServer {
                     .unwrap()
                     .is_some()
             );
+            if self.commands.protocol != Protocol::QuakeWorld28 && !self.channel.pending_fragments()
+            {
+                break;
+            }
         }
     }
 }
@@ -1363,3 +1376,6 @@ fn embedded_color_choices_keep_the_selected_md5_sidecar_and_native_group_timing(
 
 #[path = "client_qw_skins/refresh.rs"]
 mod refresh;
+
+#[path = "client_qw_skins/downloads.rs"]
+mod downloads;
