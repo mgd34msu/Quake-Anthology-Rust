@@ -102,6 +102,35 @@ pub enum RegistrationVariant {
     Retained,
     Guard(bool),
 }
+
+struct RegistrationTarget<'a> {
+    request: RendererRequest<&'a [u8]>,
+    file: Option<ModelFileId>,
+}
+impl<'a> RegistrationTarget<'a> {
+    fn named(request: &'a RendererRequest<impl AsRef<[u8]>>) -> Self {
+        Self {
+            request: RendererRequest {
+                name: request.name.as_ref(),
+                source: request.source,
+                kind: request.kind,
+                world: request.world,
+            },
+            file: None,
+        }
+    }
+    fn retained(file: ModelFileId, source: RuleSetId) -> Self {
+        Self {
+            request: RendererRequest {
+                name: &[],
+                source,
+                kind: RendererRegistration::Model,
+                world: None,
+            },
+            file: Some(file),
+        }
+    }
+}
 impl RegistrationVariant {
     fn matches(self, profile: ModelProfile, guard: bool) -> bool {
         match self {
@@ -2155,6 +2184,7 @@ impl RegistrationCheckpoint {
                 state.rollback_registration(*mark, self.assets.images, &mut owner.assets)?;
             }
         }
+        owner.catalog.profiles.truncate(self.images.len());
         owner.assets.discard_registration_suffix(self.assets)?;
         owner.palettes.restore(self.palettes);
         let catalog = &mut owner.catalog;
@@ -3037,27 +3067,14 @@ impl ModelAssets {
                 let entry = &self.catalog.registrations[index];
                 let profile = refresh.profile(entry.profile);
                 if profile != entry.profile && entry.state.ready().is_some() {
-                    let path = self
-                        .catalog
-                        .files
-                        .name(ModelFileId(name as u32))
-                        .and_then(|name| self.catalog.names.get(name))
-                        .ok_or("image refresh model name")?
-                        .to_vec();
-                    models.push((path, profile));
+                    models.push((ModelFileId(name as u32), profile));
                 }
             }
         }
-        for (name, profile) in models {
-            let request = RendererRequest {
-                name,
-                source: profile.source_rules,
-                kind: RendererRegistration::Model,
-                world: None,
-            };
-            self.prepare_registration(
+        for (file, profile) in models {
+            self.prepare_targets(
                 vfs,
-                &request,
+                [RegistrationTarget::retained(file, profile.source_rules)],
                 profile,
                 RegistrationVariant::Guard(ui_fullscreen),
                 |_| Ok(()),
@@ -3576,6 +3593,26 @@ impl ModelAssets {
         stage: impl FnOnce([RendererAdmission<'_>; N]) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<([i32; N], T, AssetCounts), String> {
+        self.prepare_targets(
+            vfs,
+            requests.map(RegistrationTarget::named),
+            profile,
+            variant,
+            stage,
+            prepare,
+        )
+    }
+
+    fn prepare_targets<T, const N: usize>(
+        &mut self,
+        vfs: &Vfs,
+        targets: [RegistrationTarget<'_>; N],
+        profile: ModelProfile,
+        variant: RegistrationVariant,
+        stage: impl FnOnce([RendererAdmission<'_>; N]) -> Result<T, String>,
+        prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
+    ) -> Result<([i32; N], T, AssetCounts), String> {
+        let requests = targets.each_ref().map(|target| &target.request);
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let initial = self.initial_registration;
@@ -3590,8 +3627,13 @@ impl ModelAssets {
         {
             return Err("renderer registration source/profile mismatch".to_owned());
         }
-        for request in requests {
-            if request.name.as_ref().is_empty() {
+        for (request, target) in requests.into_iter().zip(&targets) {
+            if let Some(file) = target.file {
+                self.catalog
+                    .files
+                    .get(file)
+                    .ok_or("renderer model record")?;
+            } else if request.name.is_empty() {
                 return Err("renderer registration name length".to_owned());
             }
             if profile.source_rules != request.source {
@@ -3613,14 +3655,15 @@ impl ModelAssets {
                     .ok_or("shader registration presentation")?;
             }
         }
-        let cached = requests.map(|request| {
-            self.catalog.registration_cached_variant(
-                request.kind,
-                request.name.as_ref(),
+        let cached = targets.each_ref().map(|target| match target.file {
+            Some(file) => self.catalog.model_cached(file, profile, variant),
+            None => self.catalog.registration_cached_variant(
+                target.request.kind,
+                target.request.name,
                 profile,
-                request.world,
+                target.request.world,
                 variant,
-            )
+            ),
         });
         let mut handles = [0; N];
         for (handle, cached) in handles.iter_mut().zip(cached) {
@@ -3646,7 +3689,13 @@ impl ModelAssets {
             return Err("renderer registration unavailable for invoking profile".to_owned());
         }
         let ui_fullscreen = variant.guard()?;
-        let checkpoint = RegistrationCheckpoint::capture(self, requests)?;
+        let mut checkpoint = RegistrationCheckpoint::base(self)?;
+        for target in &targets {
+            match target.file {
+                Some(file) => checkpoint.capture_file(&self.catalog, file),
+                None => checkpoint.capture_target(self, &target.request)?,
+            }
+        }
         let mut rollback = RegistrationRollback::Source;
         let result: Result<([i32; N], T, AssetCounts), String> = (|| {
             for (index, request) in requests.into_iter().enumerate() {
@@ -3662,21 +3711,29 @@ impl ModelAssets {
                         .ok_or(CallError::File)
                         .and_then(|(world, index)| self.register_inline(world, index)),
                     RendererRegistration::Model => {
-                        let path =
-                            std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?;
-                        self.ensure_file_profile(
-                            vfs,
-                            &canonical_path(path),
-                            selected,
-                            ui_fullscreen,
-                        )
-                        .map_err(|error| error.kind)
-                        .and_then(|_| {
-                            self.catalog
-                                .file_id(raw)
-                                .and_then(|file| i32::try_from(file.0).ok())
-                                .ok_or(CallError::File)
-                        })
+                        if let Some(file) = targets[index].file {
+                            self.ensure_file_record(vfs, file, selected, ui_fullscreen)
+                                .map_err(|error| error.kind)
+                                .and_then(|_| {
+                                    i32::try_from(file.0).map_err(|_| CallError::Capacity)
+                                })
+                        } else {
+                            let path =
+                                std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?;
+                            self.ensure_file_profile(
+                                vfs,
+                                &canonical_path(path),
+                                selected,
+                                ui_fullscreen,
+                            )
+                            .map_err(|error| error.kind)
+                            .and_then(|_| {
+                                self.catalog
+                                    .file_id(raw)
+                                    .and_then(|file| i32::try_from(file.0).ok())
+                                    .ok_or(CallError::File)
+                            })
+                        }
                     }
                     RendererRegistration::Skin => {
                         self.admit_skin_profile(vfs, raw, request.source, selected, ui_fullscreen)
@@ -7271,24 +7328,7 @@ impl ModelCatalog {
             }
             RendererRegistration::Model => {
                 let name = self.file_id(name)?;
-                let handle = i32::try_from(name.0).ok()?;
-                match self.files.get(name)? {
-                    ModelFile::Failed(_) => Some(0),
-                    ModelFile::LoadedWorld { .. } => Some(handle),
-                    ModelFile::Empty | ModelFile::Ready { .. } => self
-                        .files
-                        .rows(name)
-                        .iter()
-                        .copied()
-                        .map(|index| &self.registrations[index])
-                        .find(|entry| {
-                            entry.profile == profile
-                                && variant.matches(entry.profile, entry.vertex_collapse)
-                                && !entry.state.pending()
-                        })?
-                        .state
-                        .cached(handle, self.admitted_assets),
-                }
+                self.model_cached(name, profile, variant)
             }
             RendererRegistration::Shader { lighting, .. } => {
                 let (_, index) = find_shader_index(&self.names, &self.shader_indices, name)?;
@@ -7375,6 +7415,32 @@ impl ModelCatalog {
             RendererRegistration::Shader { lighting, .. } => self
                 .shader_profile_lighting_variant(handle, profile, lighting, variant)
                 .is_some_and(|entry| matches!(entry.state, RegistrationState::Ready { .. })),
+        }
+    }
+
+    fn model_cached(
+        &self,
+        file: ModelFileId,
+        profile: ModelProfile,
+        variant: RegistrationVariant,
+    ) -> Option<i32> {
+        let handle = i32::try_from(file.0).ok()?;
+        match self.files.get(file)? {
+            ModelFile::Failed(_) => Some(0),
+            ModelFile::LoadedWorld { .. } => Some(handle),
+            ModelFile::Empty | ModelFile::Ready { .. } => self
+                .files
+                .rows(file)
+                .iter()
+                .copied()
+                .map(|index| &self.registrations[index])
+                .find(|entry| {
+                    entry.profile == profile
+                        && variant.matches(entry.profile, entry.vertex_collapse)
+                        && !entry.state.pending()
+                })?
+                .state
+                .cached(handle, self.admitted_assets),
         }
     }
 

@@ -554,8 +554,8 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     assert_eq!(files.vfs.take_lookup_count(), 0);
     assert_eq!(owner.assets.counts(), counts);
     records.push((ModelFileId(default_model as u32), [0, 0, 255, 255]));
-    let (owner, mut cpu) = super::registration_tests::publish(owner);
-    for (file, expected) in records {
+    let (mut owner, mut cpu) = super::registration_tests::publish(owner);
+    for &(file, expected) in &records {
         let registration = owner
             .catalog
             .renderer_registration(file.0 as i32, profile)
@@ -585,4 +585,98 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .iter()
             .all(|pixel| *pixel == u32::from_le_bytes([0, 0, 255, 255]))
     );
+    let mut settings = [None; 5];
+    settings[RuleSetId::Quake3 as usize] = Some(ImageSettings {
+        picmip: 0,
+        ..profile.image_settings
+    });
+    let next = ModelProfile {
+        image_settings: settings[RuleSetId::Quake3 as usize].unwrap(),
+        ..profile
+    };
+    owner
+        .prepare_profile_value(next, |assets| {
+            cpu.prepare_assets(assets, None).map_err(str::to_owned)
+        })
+        .unwrap();
+    let retained = owner.assets().counts();
+    let policies = owner.catalog.profiles.len();
+    let rejected = owner.prepare_targets(
+        &files.vfs,
+        [RegistrationTarget::retained(
+            records[0].0,
+            profile.source_rules,
+        )],
+        next,
+        RegistrationVariant::Guard(false),
+        |_| Ok(()),
+        |_, ()| Err("rejected selected-source admission".into()),
+    );
+    assert_eq!(rejected.unwrap_err(), "rejected selected-source admission");
+    assert_eq!(owner.assets().counts(), retained);
+    assert_eq!(owner.catalog.profiles.len(), policies);
+    let rejected: Result<(), String> = owner.image_transaction(
+        &files.vfs,
+        None,
+        ImageRefreshMode::Reconfigure,
+        |owner, _| {
+            owner.refresh_images(
+                &files.vfs,
+                &[profile],
+                &[],
+                settings,
+                profile.finish,
+                false,
+                |_| Ok(()),
+            )?;
+            Err("rejected selected-source refresh".into())
+        },
+    );
+    assert_eq!(rejected.unwrap_err(), "rejected selected-source refresh");
+    assert_eq!(owner.assets().counts(), retained);
+    assert_eq!(owner.catalog.profiles.len(), policies);
+    let refresh = owner
+        .image_transaction(
+            &files.vfs,
+            None,
+            ImageRefreshMode::Reconfigure,
+            |owner, _| {
+                owner.refresh_images(
+                    &files.vfs,
+                    &[profile],
+                    &[],
+                    settings,
+                    profile.finish,
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            },
+        )
+        .unwrap();
+    let selected = refresh.profile(profile);
+    assert_ne!(selected, profile);
+    for &(file, expected) in &records {
+        let original = owner
+            .catalog
+            .renderer_registration(file.0 as i32, profile)
+            .unwrap();
+        let registration = refresh.registration(original, owner.catalog()).unwrap();
+        assert_eq!(
+            owner.catalog.registrations[registration.0 as usize].file,
+            file
+        );
+        let binding = owner
+            .catalog
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .next()
+            .unwrap();
+        let pixels =
+            super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding.shader);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
 }
