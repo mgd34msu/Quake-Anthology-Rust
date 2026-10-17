@@ -1244,7 +1244,7 @@ impl FrameHost {
         if let Some(file) = runtime.vfs.open(path.as_bytes()) {
             let bytes = runtime
                 .vfs
-                .read_to_vec(file, 16 * 1024 * 1024, &mut runtime.script_reader)
+                .read_to_vec(&file, 16 * 1024 * 1024, &mut runtime.script_reader)
                 .map_err(|e| format!("localization: {e}"))?;
             runtime.localization = qa_content::localization::Catalog::load(&bytes)
                 .map_err(|e| format!("localization: {e:?}"))?;

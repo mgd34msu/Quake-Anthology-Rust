@@ -138,6 +138,10 @@ pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
 pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
     std::fs::remove_file(path)
 }

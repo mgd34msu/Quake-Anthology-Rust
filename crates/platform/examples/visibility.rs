@@ -263,12 +263,12 @@ fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
         .open(spec.map.as_bytes())
         .ok_or("retail map absent in explicit archive")?;
     let length = usize::try_from(
-        vfs.length(reference)
+        vfs.length(&reference)
             .map_err(|e| format!("map length: {e:?}"))?,
     )?;
     let mut bytes = vec![0; length];
     if vfs
-        .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+        .read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
         .map_err(|e| format!("map read: {e:?}"))?
         != length
     {

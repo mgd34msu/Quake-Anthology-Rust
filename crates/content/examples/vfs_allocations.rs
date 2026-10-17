@@ -19,7 +19,7 @@ fn main() -> Result<(), &'static str> {
     for _ in 0..10_000 {
         let bytes = vfs
             .read_range_reusing(
-                reference,
+                &reference,
                 0,
                 std::hint::black_box(&mut buffer),
                 &mut archive_reader,

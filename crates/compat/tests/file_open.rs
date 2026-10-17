@@ -399,3 +399,43 @@ fn resetting_one_instance_closes_its_files_and_restarts_only_its_service_cursors
     assert_eq!(engine.file_read(peer, peer_handle, &mut byte), Ok(1));
     assert_eq!(byte, *b"c");
 }
+
+#[test]
+fn directory_refresh_keeps_open_module_files_on_their_accepted_source() {
+    let mut fixture = Fixture::new("directory-refresh");
+    let owner = ModuleId(1);
+    fixture.storage =
+        ServiceStorage::load_native(&[(owner, 0, RuleSetId::Quake3)], 2, &fixture.cvars).unwrap();
+    let mount = fixture.vfs.mounts().next().unwrap().id;
+    let (old, length) = fixture.engine().file_open(owner, b"data.dat").unwrap();
+    assert_eq!(length, 3);
+    let mut byte = [0];
+    assert_eq!(fixture.engine().file_read(owner, old, &mut byte), Ok(1));
+    assert_eq!(byte, *b"a");
+
+    qa_platform::files::write(fixture.root.join("replacement"), b"replacement").unwrap();
+    qa_platform::files::rename(
+        fixture.root.join("replacement"),
+        fixture.root.join("data.dat"),
+    )
+    .unwrap();
+    fixture.vfs.refresh_directory_prefix(mount, b"").unwrap();
+    let (new, length) = fixture.engine().file_open(owner, b"data.dat").unwrap();
+    assert_eq!(length, 11);
+    assert_ne!(old, new);
+
+    let mut bytes = [0; 16];
+    assert_eq!(fixture.engine().file_read(owner, old, &mut bytes), Ok(2));
+    assert_eq!(&bytes[..2], b"bc");
+    assert_eq!(fixture.engine().file_read(owner, old, &mut bytes), Ok(0));
+    assert_eq!(
+        fixture
+            .engine()
+            .file_seek(owner, old, std::io::SeekFrom::End(-1)),
+        Ok(true)
+    );
+    assert_eq!(fixture.engine().file_read(owner, old, &mut byte), Ok(1));
+    assert_eq!(byte, *b"c");
+    assert_eq!(fixture.engine().file_read(owner, new, &mut bytes), Ok(11));
+    assert_eq!(&bytes[..11], b"replacement");
+}

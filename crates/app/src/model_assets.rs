@@ -3749,14 +3749,14 @@ impl ModelAssets {
             kind: CallError::File,
             message: format!("missing model source {path}"),
         })?;
-        self.model_bytes_at(vfs, path, reference)
+        self.model_bytes_at(vfs, path, &reference)
     }
 
     fn model_bytes_at(
         &mut self,
         vfs: &Vfs,
         path: &str,
-        reference: qa_content::vfs::FileRef,
+        reference: &qa_content::vfs::FileRef,
     ) -> Result<Arc<[u8]>, FileError> {
         vfs.read_to_vec(
             reference,
@@ -3849,7 +3849,7 @@ impl ModelAssets {
             return Ok(None);
         };
         let precedence = vfs
-            .source_precedence(reference)
+            .source_precedence(&reference)
             .map_err(|error| FileError {
                 kind: CallError::File,
                 message: format!("model source origin: {error}"),
@@ -3857,7 +3857,7 @@ impl ModelAssets {
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model source name capacity"))?;
-        let bytes = self.model_bytes_at(vfs, path, reference)?;
+        let bytes = self.model_bytes_at(vfs, path, &reference)?;
         let model = match Model::parse(&bytes) {
             Ok(model) => model,
             Err(error) => {

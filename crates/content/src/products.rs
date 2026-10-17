@@ -340,7 +340,7 @@ pub fn client_rules_for_root(root: &Path) -> Option<RuleSetId> {
 pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
     let mut products: Vec<InstalledProduct> = Vec::new();
     for (reference, name) in vfs.files() {
-        let Some(origin) = vfs.origin(reference) else {
+        let Some(origin) = vfs.origin(&reference) else {
             continue;
         };
         let physical = if origin.kind == MountKind::Directory {
@@ -376,14 +376,14 @@ pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
                 .iter_mut()
                 .find(|p| p.id == id && p.directory == dir)
             {
-                let old = vfs.origin(product.start_map).map(|o| o.mount);
+                let old = vfs.origin(&product.start_map).map(|o| o.mount);
                 let rank = |mount| {
                     vfs.mounts()
                         .find(|m| m.id == mount)
                         .map(|m| (m.priority, m.id.0))
                 };
                 if rank(origin.mount) > old.and_then(rank) {
-                    product.start_map = reference;
+                    product.start_map = reference.clone();
                 }
                 if !product.mounts.contains(&origin.mount) {
                     product.mounts.push(origin.mount);
@@ -393,7 +393,7 @@ pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
                     id,
                     directory: dir.to_path_buf(),
                     mounts: vec![origin.mount],
-                    start_map: reference,
+                    start_map: reference.clone(),
                     shared_assets: false,
                 });
             }
@@ -408,7 +408,7 @@ pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
                 id: ProductId(11),
                 directory: p.directory.clone(),
                 mounts: p.mounts.clone(),
-                start_map: p.start_map,
+                start_map: p.start_map.clone(),
                 shared_assets: true,
             })
             .collect();

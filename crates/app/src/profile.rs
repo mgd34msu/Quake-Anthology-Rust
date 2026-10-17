@@ -26,7 +26,7 @@ impl Import {
     }
 }
 
-fn document(vfs: &Vfs, file: FileRef) -> Result<Value, String> {
+fn document(vfs: &Vfs, file: &FileRef) -> Result<Value, String> {
     let bytes = vfs
         .read_to_vec(file, 4 * 1024 * 1024, &mut ArchiveReader::default())
         .map_err(|error| {
@@ -281,7 +281,7 @@ pub fn load(
     let movement_source = movement;
     let prefix = canonical_path(&format!("{product}/"));
     if let Some((file, name)) = canonical {
-        let value = document(&runtime.vfs, *file)?;
+        let value = document(&runtime.vfs, file)?;
         if value.get("dialect").and_then(Value::as_str) != Some("q3") {
             return Err("canonical profile must use q3 names".into());
         }
@@ -326,7 +326,7 @@ pub fn load(
                 if !relative.starts_with(stage) || !relative.ends_with(".json") {
                     continue;
                 }
-                let value = document(&runtime.vfs, *file)?;
+                let value = document(&runtime.vfs, file)?;
                 let file_source = value
                     .get("dialect")
                     .and_then(Value::as_str)
@@ -360,7 +360,7 @@ pub fn load(
         .iter()
         .find(|(_, name)| name.as_slice() == seat_name.as_bytes())
     {
-        let value = document(&runtime.vfs, *file)?;
+        let value = document(&runtime.vfs, file)?;
         seat(
             console,
             runtime,
@@ -377,7 +377,7 @@ pub fn load(
             .iter()
             .find(|(_, name)| name.as_slice() == view_name.as_bytes())
     {
-        let value = document(&runtime.vfs, *file)?;
+        let value = document(&runtime.vfs, file)?;
         if let Some(fov) = value.get("fieldOfView").and_then(Value::as_f64) {
             put(
                 console,

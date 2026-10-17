@@ -10,8 +10,8 @@ use qa_app::{
     client_policy::ClientPolicy,
     client_scene::ClientSceneInput,
     host::{FrameHost, FrameResult, FrameSource},
-    map::SpawnAnchor,
     model_assets::{ModelAssets, ModelRequest},
+    snapshots::NativePlayerBinding,
 };
 use qa_compat::services::ModelLoader;
 use qa_console::{commands::Console, views::Context};
@@ -23,7 +23,9 @@ use qa_core::{
     sys_events::*,
 };
 use qa_network::{
-    commands::packet::Protocol,
+    channel::{Channel, Delivery},
+    commands::{connection::Commands, packet::Protocol},
+    ingress::{Connection, ConnectionPhase, Route},
     outputs::{self, PeerUpdate},
     projection::{EntityProjection, PlayerProjection},
     snapshots::{Entity, Frame, ReceivedFrame},
@@ -36,10 +38,73 @@ use qa_render::{
     shader::reference::ShaderView,
 };
 use qa_session::timing::TickRate;
-use std::{sync::Arc, time::Duration};
+use std::{ops::ControlFlow, sync::Arc, time::Duration};
 
 const CLIENT: ClientId = ClientId(0);
 const RULES: RuleSetId = RuleSetId::QuakeWorld;
+const SOCKET: u16 = 19;
+const SERVER: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::LOCALHOST,
+    26000,
+));
+
+struct NativeServer {
+    channel: Channel,
+    commands: Commands,
+    time: EventTime,
+}
+impl NativeServer {
+    fn load(protocol: Protocol) -> Self {
+        let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
+        channel.configure_snapshots(protocol).unwrap();
+        channel.set_qport(27000);
+        Self {
+            channel,
+            commands: Commands::load(protocol, 8192),
+            time: EventTime::default(),
+        }
+    }
+
+    fn receive(&mut self, bytes: &[u8]) {
+        let received = self.channel.receive(bytes, self.time).unwrap();
+        if let Delivery::Payload(payload) = received.delivery
+            && (!payload.is_empty() || self.commands.protocol == Protocol::QuakeWorld28)
+        {
+            let sequence = received.header.sequence;
+            let length = self.commands.stage(payload).unwrap();
+            self.commands
+                .decode(
+                    length,
+                    sequence,
+                    self.time.milliseconds() as i32,
+                    &mut self.channel,
+                    None,
+                    |_| ControlFlow::Continue(()),
+                )
+                .unwrap();
+        }
+    }
+
+    fn flush(&mut self, queue: &mut SysEventQueue) {
+        while self.channel.prepare_output(self.time).unwrap().is_some() {
+            assert!(
+                self.channel
+                    .submit_with(self.time, |bytes| queue
+                        .push(SysEvent {
+                            time: self.time,
+                            kind: EventKind::Packet {
+                                socket: SOCKET,
+                                from: Peer::Socket(SERVER),
+                                bytes,
+                            },
+                        })
+                        .is_ok())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+}
 
 struct Source {
     assets: asset_frames::Source,
@@ -50,6 +115,7 @@ struct Source {
     reject_publication: bool,
     publication_attempts: usize,
     source_palette: PaletteId,
+    server: NativeServer,
 }
 impl FrameSource for Source {
     fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
@@ -100,6 +166,8 @@ impl FrameSource for Source {
         Duration::from_millis(self.time)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        self.server.time = EventTime::from_milliseconds(self.time);
+        self.server.flush(queue);
         queue
             .push(SysEvent {
                 time: EventTime::from_milliseconds(self.time),
@@ -114,6 +182,11 @@ impl FrameSource for Source {
         Duration::ZERO
     }
     fn present(&mut self) {}
+    fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
+        assert_eq!((socket, to), (SOCKET, SERVER));
+        self.server.receive(bytes);
+        true
+    }
     fn render(
         &mut self,
         scene: Option<&mut qa_app::renderer::SceneComposer>,
@@ -228,26 +301,36 @@ fn loading_model(
     .unwrap();
     runtime.scene = Some(scene);
     runtime.model_assets = Some(owner);
+    let mut server = NativeServer::load(protocol);
+    let mut channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
+    channel.set_qport(27000);
     let client = runtime
-        .connect_local(
+        .connect_client(
             SeatId::FIRST,
-            SpawnAnchor {
-                position: Vec3::default(),
-                angles: Vec3::default(),
-                entity: 0,
-                fixture_fallback: false,
-            },
             ClientPolicy {
                 input: rules,
                 client: rules,
                 movement: RuleSetId::Quake3,
                 trace: RuleSetId::Quake2,
             },
-            protocol,
-            0,
+            NativePlayerBinding::Supplied(0),
+            Connection {
+                phase: ConnectionPhase::Connected,
+                route: Route {
+                    socket: SOCKET,
+                    peer: Peer::Socket(SERVER),
+                },
+                channel,
+                output: None,
+                pending_output: None,
+                commands: Some(Commands::load(protocol, 8192)),
+            },
+            None,
         )
         .unwrap();
     assert_eq!(client, CLIENT);
+    assert!(!runtime.server.clients[0].server_authoritative());
+    assert!(runtime.network.get(CLIENT, Endpoint::Server).is_none());
     let resources = runtime.client_resources[0].as_mut().unwrap();
     let layout = ConfigLayout::for_rules(rules);
     resources
@@ -278,7 +361,7 @@ fn loading_model(
         header.extend([2, 0]);
         header
             .extend(b"colored peers\0maps/player.bsp\0progs/player.mdl\0progs/ordinary.mdl\0\0\0");
-        send(&mut host, &header);
+        send(&mut host, &mut server, &header);
     }
     setting(&mut host, "cl_noskins", "0");
     setting(&mut host, "baseskin", "base");
@@ -342,6 +425,7 @@ fn loading_model(
         reject_publication: false,
         publication_attempts: 0,
         source_palette: palette,
+        server,
     };
     (fixture, host, source)
 }
@@ -357,48 +441,44 @@ fn drain(host: &mut FrameHost, time: EventTime) {
     host.client_modules();
 }
 
-fn peers(host: &mut FrameHost, updates: &[PeerUpdate<'_>]) {
+fn peers(host: &mut FrameHost, source: &mut Source, updates: &[PeerUpdate<'_>]) {
     let protocol = protocol(host);
     let mut bytes = [0; 1400];
     let mut length = 0;
     for &update in updates {
         length += outputs::peer_update(protocol, update, &mut bytes[length..]).unwrap();
     }
-    send(host, &bytes[..length]);
+    send(host, &mut source.server, &bytes[..length]);
 }
 
 fn protocol(host: &FrameHost) -> Protocol {
     host.runtime.snapshots[0].as_ref().unwrap().protocol
 }
 
-fn send(host: &mut FrameHost, bytes: &[u8]) {
+fn send(host: &mut FrameHost, server: &mut NativeServer, bytes: &[u8]) {
     let time = EventTime(host.time.0 + 1_000_000);
+    server.time = time;
     if protocol(host) == Protocol::QuakeWorld28 {
-        assert!(host.runtime.send_client_command(
-            CLIENT,
-            &UserCmd::default(),
-            time,
-            &mut frame_source::Sink::default()
-        ));
-        drain(host, time);
+        let mut outgoing = frame_source::Sink::default();
+        assert!(
+            host.runtime
+                .send_client_command(CLIENT, &UserCmd::default(), time, &mut outgoing)
+        );
+        for packet in outgoing.packets {
+            assert!(packet.admitted);
+            server.receive(&packet.bytes);
+        }
     }
-    let runtime = &mut host.runtime;
-    let channel = &mut runtime
-        .network
-        .get_mut(CLIENT, Endpoint::Server)
-        .unwrap()
-        .channel;
-    assert!(channel.prepare(Some(bytes), time).unwrap().is_some());
-    assert!(
-        channel
-            .submit_with(time, |packet| runtime
-                .loopback
-                .send(Endpoint::Server, CLIENT, packet)
-                .is_ok())
-            .unwrap()
-            .is_some()
-    );
+    server.channel.queue_reliable(bytes).unwrap();
+    server.flush(&mut host.queue);
     drain(host, time);
+    let mut outgoing = frame_source::Sink::default();
+    host.runtime
+        .send_client_command(CLIENT, &UserCmd::default(), time, &mut outgoing);
+    for packet in outgoing.packets {
+        assert!(packet.admitted);
+        server.receive(&packet.bytes);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -705,6 +785,7 @@ fn received_qw_peers_translate_only_the_registered_player_and_keep_local_skins()
     let (_fixture, mut host, mut source) = loading();
     peers(
         &mut host,
+        &mut source,
         &[
             PeerUpdate::UserInfo {
                 slot: 0,
@@ -789,6 +870,7 @@ fn missing_qw_skin_uses_base_but_present_malformed_skin_uses_the_model() {
     let (_fixture, mut host, mut source) = loading();
     peers(
         &mut host,
+        &mut source,
         &[
             PeerUpdate::UserInfo {
                 slot: 0,
@@ -822,6 +904,7 @@ fn video_reload_rebinds_received_qw_skin_selections_to_replayed_images() {
     let (_fixture, mut host, mut source) = loading();
     peers(
         &mut host,
+        &mut source,
         &[
             PeerUpdate::UserInfo {
                 slot: 0,
@@ -895,10 +978,11 @@ fn colored_mdl(grouped: bool) -> Vec<u8> {
     bytes
 }
 
-fn colored_peers(host: &mut FrameHost) {
+fn colored_peers(host: &mut FrameHost, source: &mut Source) {
     if protocol(host) == Protocol::NetQuake15 {
         peers(
             host,
+            source,
             &[
                 PeerUpdate::Name {
                     slot: 0,
@@ -921,6 +1005,7 @@ fn colored_peers(host: &mut FrameHost) {
     } else {
         peers(
             host,
+            source,
             &[
                 PeerUpdate::UserInfo {
                     slot: 0,
@@ -954,7 +1039,7 @@ fn restart(host: &mut FrameHost, source: &mut Source) {
 #[test]
 fn noskins_disables_external_qw_files_but_retains_embedded_player_colors() {
     let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
-    colored_peers(&mut host);
+    colored_peers(&mut host, &mut source);
     prepare(&mut host, &mut source);
     let external = draw(&host, true);
     assert_eq!(external[0].size, [320, 200]);
@@ -969,6 +1054,7 @@ fn noskins_disables_external_qw_files_but_retains_embedded_player_colors() {
 
     peers(
         &mut host,
+        &mut source,
         &[PeerUpdate::SetInfo {
             slot: 0,
             key: b"topcolor",
@@ -993,7 +1079,7 @@ fn noskins_disables_external_qw_files_but_retains_embedded_player_colors() {
 #[test]
 fn translated_embedded_groups_keep_view_timing_and_survive_reload_rollback() {
     let (fixture, mut host, mut source) = loading_model(RULES, colored_mdl(true), &[], false);
-    colored_peers(&mut host);
+    colored_peers(&mut host, &mut source);
     setting(&mut host, "cl_noskins", "1");
     prepare(&mut host, &mut source);
     let first = draw_at(&host, true, 0.125);
@@ -1055,7 +1141,7 @@ fn translated_embedded_groups_keep_view_timing_and_survive_reload_rollback() {
 fn netquake_colormap_uses_received_colors_before_target_palette_conversion() {
     let (_fixture, mut host, mut source) =
         loading_model(RuleSetId::Quake, colored_mdl(false), &[], true);
-    colored_peers(&mut host);
+    colored_peers(&mut host, &mut source);
     assert_bound_models(&host, "NQ peer receipt");
     let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
     for (slot, colors, top, bottom) in [(0, 0x23, 2, 3), (1, 0x45, 4, 5)] {
@@ -1115,6 +1201,7 @@ fn netquake_colormap_uses_received_colors_before_target_palette_conversion() {
     setting(&mut host, "gl_nocolors", "0");
     peers(
         &mut host,
+        &mut source,
         &[PeerUpdate::Colors {
             slot: 0,
             colors: 0xef,
@@ -1196,7 +1283,7 @@ frame 1 { 2 }
 fn embedded_color_choices_keep_the_selected_md5_sidecar_and_native_group_timing() {
     let files = replacement_files();
     let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(true), &files, false);
-    colored_peers(&mut host);
+    colored_peers(&mut host, &mut source);
     setting(&mut host, "cl_noskins", "1");
     prepare(&mut host, &mut source);
     let first = draw_at(&host, true, 0.125);

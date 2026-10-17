@@ -61,10 +61,10 @@ fn main() -> Result<(), String> {
             continue;
         }
         files += 1;
-        let mut bytes = vec![0; vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize];
-        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+        let mut bytes = vec![0; vfs.length(&reference).map_err(|e| format!("{e:?}"))? as usize];
+        vfs.read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
-        let origin = vfs.origin(reference).ok_or("origin")?;
+        let origin = vfs.origin(&reference).ok_or("origin")?;
         match check(name, &bytes) {
             Ok((format, count)) => {
                 *counts.entry(format).or_insert(0usize) += 1;

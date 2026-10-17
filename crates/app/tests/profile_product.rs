@@ -53,13 +53,14 @@ fn settings_follow_the_actual_product_with_foreign_bsp_syntax() -> Result<(), St
         let file = source_vfs
             .open(format!("maps/{name}.bsp").as_bytes())
             .ok_or("retail map")?;
-        let mut bytes = vec![
-            0;
-            usize::try_from(source_vfs.length(file).map_err(|e| format!("{e:?}"))?)
-                .map_err(|e| e.to_string())?
-        ];
+        let mut bytes =
+            vec![
+                0;
+                usize::try_from(source_vfs.length(&file).map_err(|e| format!("{e:?}"))?)
+                    .map_err(|e| e.to_string())?
+            ];
         let read = source_vfs
-            .read_into_reusing(file, &mut bytes, &mut ArchiveReader::default())
+            .read_into_reusing(&file, &mut bytes, &mut ArchiveReader::default())
             .map_err(|e| format!("{e:?}"))?;
         assert_eq!(read, bytes.len());
         let root = fixture.0.join(destination);

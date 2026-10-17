@@ -384,7 +384,7 @@ fn e1m1_default_exact_admission_and_supplied_boxes_preserve_native_queries() {
         .expect("retail Quake product");
     let file = vfs.open(b"maps/e1m1.bsp").expect("retail e1m1");
     let bytes = vfs
-        .read_to_vec(file, 64 * 1024 * 1024, &mut ArchiveReader::default())
+        .read_to_vec(&file, 64 * 1024 * 1024, &mut ArchiveReader::default())
         .expect("bounded retail bytes");
     let map = Map::parse(&bytes).expect("retail BSP");
     assert_eq!(map.bsp.format.rule_set(), RuleSetId::Quake);

@@ -520,6 +520,7 @@ fn run() -> Result<(), String> {
         source_palette,
         &[presentation_profile.into()],
         WorldLoadOptions::default(),
+        false,
     )?;
     let presentation = loaded
         .render

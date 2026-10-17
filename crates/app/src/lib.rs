@@ -1199,7 +1199,7 @@ impl Host for Runtime {
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
         let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
         self.vfs
-            .read_whole_into(file, destination, &mut self.script_reader)
+            .read_whole_into(&file, destination, &mut self.script_reader)
             .map_err(|error| match error {
                 qa_content::vfs::VfsError::Missing => ScriptError::Missing,
                 qa_content::vfs::VfsError::Size | qa_content::vfs::VfsError::Limit => {

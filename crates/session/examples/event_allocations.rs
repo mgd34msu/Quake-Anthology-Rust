@@ -25,7 +25,9 @@ impl EventConsumer for Consumer {
             FrameEvent::ConfigString { text, .. } | FrameEvent::ServerCommand { text, .. } => {
                 std::hint::black_box(texts.get(text));
             }
-            FrameEvent::Native(event) | FrameEvent::GameState { payload: event, .. } => {
+            FrameEvent::Native(event)
+            | FrameEvent::PeerInfo { payload: event, .. }
+            | FrameEvent::GameState { payload: event, .. } => {
                 std::hint::black_box(event);
             }
             FrameEvent::Hud(event) => {

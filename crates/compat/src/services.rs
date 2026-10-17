@@ -2379,7 +2379,7 @@ impl EngineServices<'_> {
     }
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;
-        let length = self.vfs.length(reference).map_err(|_| CallError::File)?;
+        let length = self.vfs.length(&reference).map_err(|_| CallError::File)?;
         let span = self.storage.file_span(owner)?;
         let ordinal = self.storage.files[span.range()]
             .iter()
@@ -2395,16 +2395,17 @@ impl EngineServices<'_> {
     }
     pub fn file_length(&self, path: &[u8]) -> Result<u64, CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;
-        self.vfs.length(reference).map_err(|_| CallError::File)
+        self.vfs.length(&reference).map_err(|_| CallError::File)
     }
-    fn file(&mut self, owner: ModuleId, handle: u32) -> Result<&mut OpenFile, CallError> {
+    fn file_index(&self, owner: ModuleId, handle: u32) -> Result<usize, CallError> {
         let slot = self.storage.file_index(owner, handle)?;
         self.storage
             .files
-            .get_mut(slot)
-            .and_then(Option::as_mut)
-            .filter(|f| f.owner == owner)
-            .ok_or(CallError::File)
+            .get(slot)
+            .and_then(Option::as_ref)
+            .filter(|file| file.owner == owner)
+            .ok_or(CallError::File)?;
+        Ok(slot)
     }
     pub fn file_read(
         &mut self,
@@ -2412,16 +2413,31 @@ impl EngineServices<'_> {
         handle: u32,
         buffer: &mut [u8],
     ) -> Result<usize, CallError> {
-        let file = self.file(owner, handle)?;
-        let (reference, offset) = (file.reference, file.cursor);
-        if offset >= self.vfs.length(reference).map_err(|_| CallError::File)? {
+        let slot = self.file_index(owner, handle)?;
+        let file = self
+            .storage
+            .files
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or(CallError::File)?;
+        if file.cursor
+            >= self
+                .vfs
+                .length(&file.reference)
+                .map_err(|_| CallError::File)?
+        {
             return Ok(0);
         }
         let read = self
             .vfs
-            .read_range_reusing(reference, offset, buffer, &mut self.storage.reader)
+            .read_range_reusing(
+                &file.reference,
+                file.cursor,
+                buffer,
+                &mut self.storage.reader,
+            )
             .map_err(|_| CallError::File)?;
-        self.file(owner, handle)?.cursor += read as u64;
+        file.cursor += read as u64;
         Ok(read)
     }
     pub fn file_seek(
@@ -2430,26 +2446,30 @@ impl EngineServices<'_> {
         handle: u32,
         from: std::io::SeekFrom,
     ) -> Result<bool, CallError> {
-        let file = self.file(owner, handle)?;
-        let (reference, cursor) = (file.reference, file.cursor);
+        let slot = self.file_index(owner, handle)?;
+        let file = self
+            .storage
+            .files
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or(CallError::File)?;
         let target = match from {
             std::io::SeekFrom::Start(offset) => Some(offset),
-            std::io::SeekFrom::Current(offset) => cursor.checked_add_signed(offset),
+            std::io::SeekFrom::Current(offset) => file.cursor.checked_add_signed(offset),
             std::io::SeekFrom::End(offset) => self
                 .vfs
-                .length(reference)
+                .length(&file.reference)
                 .map_err(|_| CallError::File)?
                 .checked_add_signed(offset),
         };
         let Some(target) = target else {
             return Ok(false);
         };
-        self.file(owner, handle)?.cursor = target;
+        file.cursor = target;
         Ok(true)
     }
     pub fn file_close(&mut self, owner: ModuleId, handle: u32) -> Result<(), CallError> {
-        self.file(owner, handle)?;
-        let slot = self.storage.file_index(owner, handle)?;
+        let slot = self.file_index(owner, handle)?;
         self.storage.files[slot] = None;
         Ok(())
     }

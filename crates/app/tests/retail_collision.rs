@@ -43,9 +43,9 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
     let path = format!("maps/{name}.bsp");
     let file = vfs.open(path.as_bytes()).expect("retail map");
     let mut bytes =
-        vec![0; usize::try_from(vfs.length(file).expect("map size")).expect("map length")];
+        vec![0; usize::try_from(vfs.length(&file).expect("map size")).expect("map length")];
     let read = vfs
-        .read_into_reusing(file, &mut bytes, &mut ArchiveReader::default())
+        .read_into_reusing(&file, &mut bytes, &mut ArchiveReader::default())
         .expect("retail bytes");
     assert_eq!(read, bytes.len());
     let map = Map::parse(&bytes).expect("retail BSP");

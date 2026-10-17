@@ -9,7 +9,7 @@ fn main() -> Result<(), String> {
     let products = qa_content::products::detect(&vfs);
     for product in &products {
         let spec = product.spec();
-        let origin = vfs.origin(product.start_map).ok_or("start map origin")?;
+        let origin = vfs.origin(&product.start_map).ok_or("start map origin")?;
         println!(
             "product={} edition={:?} directory={:?} start={} origin={:?}:{:?} mounts={:?} shared_assets={}",
             spec.key,
@@ -28,9 +28,9 @@ fn main() -> Result<(), String> {
         let reference = alone
             .open(spec.start_map)
             .ok_or("isolated default map missing")?;
-        let mut bytes = vec![0; alone.length(reference).map_err(|e| format!("{e:?}"))? as usize];
+        let mut bytes = vec![0; alone.length(&reference).map_err(|e| format!("{e:?}"))? as usize];
         alone
-            .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+            .read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         qa_formats::bsp::Map::parse(&bytes)
             .map_err(|e| format!("{} default geometry: {e:?}", spec.key))?;

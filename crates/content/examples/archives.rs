@@ -73,13 +73,13 @@ fn main() -> Result<(), String> {
         let reference = products
             .open(path)
             .ok_or_else(|| format!("missing {}", String::from_utf8_lossy(path)))?;
-        let length = usize::try_from(products.length(reference).map_err(|e| format!("{e:?}"))?)
+        let length = usize::try_from(products.length(&reference).map_err(|e| format!("{e:?}"))?)
             .map_err(|e| e.to_string())?;
         let mut bytes = vec![0; length];
         products
-            .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+            .read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
-        let origin = products.origin(reference).ok_or("origin")?;
+        let origin = products.origin(&reference).ok_or("origin")?;
         println!(
             "map={} bytes={length} origin={}",
             String::from_utf8_lossy(path),
@@ -99,12 +99,12 @@ fn main() -> Result<(), String> {
         ),
     ] {
         let skin = products.open(native).ok_or("original ctank path missing")?;
-        if products.open(canonical) != Some(skin) {
+        if products.open(canonical).as_ref() != Some(&skin) {
             return Err("ctank normalized lookup differs".into());
         }
-        let mut bytes = vec![0; products.length(skin).map_err(|e| format!("{e:?}"))? as usize];
+        let mut bytes = vec![0; products.length(&skin).map_err(|e| format!("{e:?}"))? as usize];
         products
-            .read_range_reusing(skin, 0, &mut bytes, &mut archive_reader)
+            .read_range_reusing(&skin, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         if bytes.len() != expected {
             return Err("ctank payload length differs".into());
@@ -112,7 +112,7 @@ fn main() -> Result<(), String> {
         println!(
             "ctank_bytes={} original_member={:?}",
             bytes.len(),
-            String::from_utf8_lossy(products.origin(skin).ok_or("ctank origin")?.member)
+            String::from_utf8_lossy(products.origin(&skin).ok_or("ctank origin")?.member)
         );
     }
     Ok(())

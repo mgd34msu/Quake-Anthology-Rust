@@ -195,7 +195,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         .open(path.as_bytes())
         .ok_or_else(|| format!("map not found in VFS: {path}"))?;
     let bytes = vfs
-        .read_to_vec(file, usize::MAX, &mut ArchiveReader::default())
+        .read_to_vec(&file, usize::MAX, &mut ArchiveReader::default())
         .map_err(|error| format!("map {path}: {error}"))?;
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
@@ -203,7 +203,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         syntax: source.lineage(),
         bytes: bsp.bytes(Lump::Entities).into(),
     };
-    let origin = vfs.origin(file).ok_or("missing map origin")?;
+    let origin = vfs.origin(&file).ok_or("missing map origin")?;
     let directory = if origin.kind == MountKind::Directory {
         origin.path
     } else {

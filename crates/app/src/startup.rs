@@ -18,7 +18,8 @@ fn selected(vfs: &Vfs) -> Result<Option<DefaultGame>, String> {
     let Some(product) = installed
         .iter()
         .filter(|product| {
-            !product.shared_assets && vfs.open(product.spec().start_map) == Some(product.start_map)
+            !product.shared_assets
+                && vfs.open(product.spec().start_map).as_ref() == Some(&product.start_map)
         })
         .min_by_key(|product| product.id.0)
     else {

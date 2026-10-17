@@ -42,7 +42,7 @@ pub fn load_catalog(vfs: &Vfs) -> Result<ShaderCatalog, CatalogLoadError> {
             return Err(CatalogLoadError::Size);
         }
         let bytes = vfs
-            .read_to_vec(file, 16 * 1024 * 1024, &mut reader)
+            .read_to_vec(&file, 16 * 1024 * 1024, &mut reader)
             .map_err(|error| match error {
                 VfsError::Size | VfsError::Limit | VfsError::Allocation => CatalogLoadError::Size,
                 VfsError::ShortRead => CatalogLoadError::ShortRead,

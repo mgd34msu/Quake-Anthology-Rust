@@ -59,7 +59,7 @@ impl std::fmt::Display for Report<'_> {
                     } else {
                         let name = self
                             .vfs
-                            .name(self.music.tracks[current.track].file)
+                            .name(&self.music.tracks[current.track].file)
                             .unwrap_or(b"<unavailable>");
                         f.write_str(std::str::from_utf8(name).unwrap_or("<byte filename>"))?;
                     }
@@ -93,22 +93,22 @@ struct Track {
 }
 impl Track {
     fn load(vfs: &Vfs, file: FileRef, reader: &mut ArchiveReader) -> Result<Self, FormatError> {
-        let length = vfs.length(file).map_err(|_| FormatError::InvalidRange)?;
+        let length = vfs.length(&file).map_err(|_| FormatError::InvalidRange)?;
         let mut magic = [0; 4];
-        read(vfs, file, 0, &mut magic, reader)?;
+        read(vfs, &file, 0, &mut magic, reader)?;
         let decoder = match &magic {
             b"RIFF" => {
                 let info =
-                    WavInfo::read_source(length, |at, out| read(vfs, file, at, out, reader))?;
+                    WavInfo::read_source(length, |at, out| read(vfs, &file, at, out, reader))?;
                 if info.frames == 0 {
                     return Err(FormatError::InvalidRange);
                 }
                 Decoder::Wave(info)
             }
             b"OggS" => {
-                let mut vorbis = Vorbis::load(length, |at, out| read(vfs, file, at, out, reader))?;
+                let mut vorbis = Vorbis::load(length, |at, out| read(vfs, &file, at, out, reader))?;
                 if vorbis
-                    .read_packet(|at, out| read(vfs, file, at, out, reader))?
+                    .read_packet(|at, out| read(vfs, &file, at, out, reader))?
                     .is_none()
                 {
                     return Err(FormatError::InvalidRange);
@@ -149,10 +149,16 @@ impl Track {
                 let size = info.format().frame_bytes();
                 let length = frames * size;
                 let offset = info.data_offset + source.position * size;
-                read(vfs, self.file, offset as u64, &mut bytes[..length], archive)?;
+                read(
+                    vfs,
+                    &self.file,
+                    offset as u64,
+                    &mut bytes[..length],
+                    archive,
+                )?;
                 let ended = source.position + frames == info.frames;
                 if ended {
-                    read(vfs, self.file, self.length, &mut [], archive)?;
+                    read(vfs, &self.file, self.length, &mut [], archive)?;
                 }
                 Ok((frames, ended))
             }
@@ -162,10 +168,10 @@ impl Track {
                 while written < frames * channels {
                     if source.packet_at == reader.samples().len() {
                         if reader
-                            .read_packet(|at, out| read(vfs, self.file, at, out, archive))?
+                            .read_packet(|at, out| read(vfs, &self.file, at, out, archive))?
                             .is_none()
                         {
-                            read(vfs, self.file, self.length, &mut [], archive)?;
+                            read(vfs, &self.file, self.length, &mut [], archive)?;
                             return Ok((written / channels, true));
                         }
                         source.packet_at = 0;
@@ -205,7 +211,7 @@ impl Source {
 }
 fn read(
     vfs: &Vfs,
-    file: FileRef,
+    file: &FileRef,
     at: u64,
     out: &mut [u8],
     reader: &mut ArchiveReader,
@@ -244,7 +250,7 @@ impl Music {
                 tracks.push(track);
             }
         }
-        tracks.sort_unstable_by_key(|track| track.file);
+        tracks.sort_unstable_by(|a, b| a.file.cmp(&b.file));
         reader.close_stream();
         Self {
             enabled: true,
@@ -267,9 +273,9 @@ impl Music {
             counts: MusicCounts::default(),
         }
     }
-    fn track(&self, file: FileRef) -> Option<usize> {
+    fn track(&self, file: &FileRef) -> Option<usize> {
         self.tracks
-            .binary_search_by_key(&file, |track| track.file)
+            .binary_search_by(|track| track.file.cmp(file))
             .ok()
     }
     fn begin(&mut self, track: usize) -> Source {
@@ -282,7 +288,7 @@ impl Music {
             for prefix in ["", "track"] {
                 let mut path = qa_core::text::FixedText::<40>::default();
                 write!(path, "music/{prefix}{number:02}.{extension}").ok()?;
-                if let Some(track) = vfs.open(path.as_bytes()).and_then(|file| self.track(file)) {
+                if let Some(track) = vfs.open(path.as_bytes()).and_then(|file| self.track(&file)) {
                     return Some(track);
                 }
             }
@@ -306,7 +312,7 @@ impl Music {
             path.append_bytes(name).ok()?;
             qa_core::names::default_extension(&mut path, extension, true).ok()?;
             if let Some(file) = vfs.open(path.as_bytes()) {
-                if self.track(file).is_some() {
+                if self.track(&file).is_some() {
                     return Some(file);
                 }
                 invalid.get_or_insert(file);
@@ -400,7 +406,7 @@ impl Music {
                 let intro = self.numbered_track(vfs, mapped);
                 let loop_track = intro
                     .filter(|_| looping)
-                    .map(|track| self.tracks[track].file);
+                    .map(|track| self.tracks[track].file.clone());
                 if self.owner == Some(owner)
                     && self.playback == playback
                     && self
@@ -444,7 +450,7 @@ impl Music {
                 }
                 let opened = intro
                     .and_then(|name| self.named_file(vfs, name, playback.wave_first))
-                    .and_then(|file| self.track(file));
+                    .and_then(|file| self.track(&file));
                 let loop_track = loop_track
                     .filter(|name| !name.is_empty())
                     .and_then(|name| self.named_file(vfs, name, playback.wave_first));
@@ -522,7 +528,7 @@ impl Music {
                 return;
             };
             if source.ended {
-                let Some(next) = self.loop_track else {
+                let Some(next) = self.loop_track.as_ref() else {
                     self.current = None;
                     self.reader.close_stream();
                     return;

@@ -22,7 +22,7 @@ fn standalone_products_and_two_rogue_packs_keep_their_own_default_sources() {
     for product in products {
         let mut content = [0; 32];
         let n = vfs
-            .read_range_reusing(product.start_map, 0, &mut content, &mut archive_reader)
+            .read_range_reusing(&product.start_map, 0, &mut content, &mut archive_reader)
             .unwrap();
         let expected = match product.spec().key {
             "q1-classic-id1" | "q1-quakeworld" => "id1",

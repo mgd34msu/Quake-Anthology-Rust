@@ -35,12 +35,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = vec![
         0;
         usize::try_from(
-            vfs.length(reference)
+            vfs.length(&reference)
                 .map_err(|e| format!("length: {e:?}"))?
         )?
     ];
     if vfs
-        .read_into_reusing(reference, &mut bytes, &mut ArchiveReader::default())
+        .read_into_reusing(&reference, &mut bytes, &mut ArchiveReader::default())
         .map_err(|e| format!("map read: {e:?}"))?
         != bytes.len()
     {

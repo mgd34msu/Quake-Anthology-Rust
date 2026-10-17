@@ -12,9 +12,39 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MountId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Retained opened source and metadata. Rename/unlink replacements preserve
+/// this opened file; external writes to the same inode remain observable.
+#[derive(Clone)]
 pub struct FileRef {
-    entry: u32,
+    owner: Arc<()>,
+    entry: Arc<Entry>,
+}
+impl std::fmt::Debug for FileRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileRef")
+            .field("entry", &self.entry.slot)
+            .field("generation", &self.entry.generation)
+            .finish()
+    }
+}
+impl PartialEq for FileRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == CmpOrdering::Equal
+    }
+}
+impl Eq for FileRef {}
+impl PartialOrd for FileRef {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for FileRef {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        Arc::as_ptr(&self.owner)
+            .cmp(&Arc::as_ptr(&other.owner))
+            .then(self.entry.slot.cmp(&other.entry.slot))
+            .then(self.entry.generation.cmp(&other.entry.generation))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -44,6 +74,7 @@ pub enum MountKind {
     Pk3,
 }
 
+#[derive(Clone)]
 pub struct MountInfo {
     pub id: MountId,
     pub path: PathBuf,
@@ -51,6 +82,7 @@ pub struct MountInfo {
     /// Larger priorities win; equally ranked mounts prefer the last mounted.
     pub priority: i32,
     active: bool,
+    settings_only: bool,
 }
 impl MountInfo {
     fn precedence(&self) -> MountPrecedence {
@@ -69,6 +101,9 @@ pub struct Origin<'a> {
 }
 
 struct Entry {
+    slot: u32,
+    generation: u64,
+    ordinal: usize,
     mount: usize,
     name: Box<[u8]>,
     original_name: Box<[u8]>,
@@ -127,10 +162,11 @@ impl From<io::Error> for VfsError {
 pub struct Vfs {
     owner: Arc<()>,
     mounts: Vec<MountInfo>,
-    entries: Vec<Entry>,
+    entries: Vec<Option<Arc<Entry>>>,
     names: Option<NameTable>,
-    winners: Box<[Option<FileRef>]>,
-    listing: Vec<FileRef>,
+    winners: Box<[Option<u32>]>,
+    listing: Vec<u32>,
+    generation: u64,
     lookups: AtomicU64,
 }
 
@@ -187,6 +223,7 @@ impl Vfs {
                 .entries
                 .iter()
                 .enumerate()
+                .filter_map(|(slot, entry)| entry.as_ref().map(|entry| (slot, entry)))
                 .filter(|(_, entry)| {
                     entry.mount == root.0 as usize
                         && !entry.name.contains(&b'/')
@@ -194,14 +231,12 @@ impl Vfs {
                             .iter()
                             .any(|extension| entry.name.ends_with(extension))
                 })
-                .map(|(entry, value)| {
-                    (
-                        FileRef {
-                            entry: entry as u32,
-                        },
+                .filter_map(|(entry, value)| {
+                    Some((
+                        self.reference(entry as u32)?,
                         value.name.to_vec(),
                         value.original_name.to_vec(),
-                    )
+                    ))
                 })
                 .collect();
             packages.sort_unstable_by(|a, b| {
@@ -211,7 +246,7 @@ impl Vfs {
             });
             let mut mounts = vec![root];
             for (rank, (reference, _, name)) in packages.into_iter().enumerate() {
-                let file = self.source_file(reference).ok_or(VfsError::Handle)?;
+                let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
                 let archive = Arc::new(Archive::parse(file)?);
                 let name = std::str::from_utf8(&name).map_err(|_| VfsError::Path)?;
                 let native_path = self.mounts[root.0 as usize].path.join(name);
@@ -224,6 +259,14 @@ impl Vfs {
         if result.is_err() {
             for mount in &mut self.mounts[first_mount..] {
                 mount.active = false;
+            }
+            for entry in &mut self.entries {
+                if entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.mount >= first_mount)
+                {
+                    *entry = None;
+                }
             }
             self.reindex();
         }
@@ -248,50 +291,34 @@ impl Vfs {
         settings_only: bool,
     ) -> Result<MountId, VfsError> {
         let root = files::canonicalize(path)?;
-        let mut pending = vec![root.clone()];
-        let mut entries = Vec::new();
-        while let Some(directory) = pending.pop() {
-            for child in files::directory_entries(directory)? {
-                if child.kind == EntryKind::Directory {
-                    if !settings_only
-                        || !(child.name.eq_ignore_ascii_case("assets")
-                            || child.name.eq_ignore_ascii_case("saves"))
-                    {
-                        pending.push(child.path);
-                    }
-                    continue;
-                }
-                if child.kind != EntryKind::File {
-                    continue;
-                }
-                let full = child.path;
-                if settings_only
-                    && !full.extension().is_some_and(|extension| {
-                        extension.eq_ignore_ascii_case("cfg")
-                            || extension.eq_ignore_ascii_case("json")
-                    })
-                {
-                    continue;
-                }
-                let relative = full.strip_prefix(&root).map_err(|_| VfsError::Path)?;
-                let name = relative
-                    .to_str()
-                    .ok_or(VfsError::Path)?
-                    .replace(std::path::MAIN_SEPARATOR, "/")
-                    .into_bytes();
-                let normalized = normalize(&name)?;
-                let file = Arc::new(ReadFile::open(full)?);
-                let length = file.length()?;
-                entries.push(Entry {
-                    mount: self.mounts.len(),
-                    name: normalized.into_boxed_slice(),
-                    original_name: name.into_boxed_slice(),
-                    source: EntrySource::Loose(file),
-                    length,
-                });
-            }
-        }
-        self.publish(root, MountKind::Directory, priority, entries)
+        let entries = scan_directory(&root, self.mounts.len(), settings_only, &[])?;
+        self.publish(root, MountKind::Directory, priority, settings_only, entries)
+    }
+
+    /// Refresh only loose files below this canonical directory prefix. Empty
+    /// prefixes refresh the entire mount. Existing FileRefs retain their opened
+    /// sources; all new lookups observe the staged replacement atomically.
+    pub fn refresh_directory_prefix(&mut self, id: MountId, prefix: &[u8]) -> Result<(), VfsError> {
+        let mount = self
+            .mounts
+            .get(id.0 as usize)
+            .filter(|mount| mount.active && mount.kind == MountKind::Directory)
+            .ok_or(VfsError::Handle)?;
+        let prefix = if prefix.is_empty() {
+            Vec::new()
+        } else {
+            normalize(prefix)?
+        };
+        let scanned = scan_directory(&mount.path, id.0 as usize, mount.settings_only, &prefix)?;
+        let (entries, generation) = self.stage_entries(
+            |entry| entry.mount == id.0 as usize && below_prefix(&entry.name, &prefix),
+            scanned,
+        )?;
+        let index = FileIndex::build(&entries, &self.mounts)?;
+        self.entries = entries;
+        self.generation = generation;
+        self.install_index(index);
+        Ok(())
     }
 
     pub fn mount_archive(
@@ -310,6 +337,9 @@ impl Vfs {
                 continue;
             }
             entries.push(Entry {
+                slot: 0,
+                generation: 0,
+                ordinal,
                 mount: self.mounts.len(),
                 name: normalize(&entry.name)?.into_boxed_slice(),
                 original_name: entry.name.clone(),
@@ -320,7 +350,7 @@ impl Vfs {
                 length: entry.length,
             });
         }
-        self.publish(path.to_path_buf(), kind, priority, entries)
+        self.publish(path.to_path_buf(), kind, priority, false, entries)
     }
 
     fn publish(
@@ -328,74 +358,87 @@ impl Vfs {
         path: PathBuf,
         kind: MountKind,
         priority: i32,
+        settings_only: bool,
         entries: Vec<Entry>,
     ) -> Result<MountId, VfsError> {
-        if self.mounts.len() >= 65536
-            || self
-                .entries
-                .len()
-                .checked_add(entries.len())
-                .is_none_or(|len| len > u32::MAX as usize)
-        {
+        if self.mounts.len() >= 65536 {
             return Err(VfsError::Capacity);
         }
-        let names = NameTable::load(
-            self.entries
-                .iter()
-                .chain(&entries)
-                .map(|entry| entry.name.as_ref()),
-        )
-        .map_err(|_| VfsError::Capacity)?;
-        let winners = vec![None; names.len()].into_boxed_slice();
         let id = MountId(self.mounts.len() as u32);
-        self.mounts.push(MountInfo {
+        let mut mounts = self.mounts.clone();
+        mounts.push(MountInfo {
             id,
             path,
             kind,
             priority,
             active: true,
+            settings_only,
         });
-        self.entries.extend(entries);
-        self.names = Some(names);
-        self.winners = winners;
-        self.reindex();
+        let (entries, generation) = self.stage_entries(|_| false, entries)?;
+        let index = FileIndex::build(&entries, &mounts)?;
+        self.mounts = mounts;
+        self.entries = entries;
+        self.generation = generation;
+        self.install_index(index);
         Ok(id)
     }
 
-    fn reindex(&mut self) {
-        self.listing.clear();
-        self.listing.extend(
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| self.mounts[entry.mount].active)
-                .map(|(index, _)| FileRef {
-                    entry: index as u32,
-                }),
-        );
-        self.listing.sort_unstable_by(|a, b| {
-            let x = &self.entries[a.entry as usize];
-            let y = &self.entries[b.entry as usize];
-            x.name
-                .cmp(&y.name)
-                .then_with(|| {
-                    self.mounts[y.mount]
-                        .precedence()
-                        .cmp(&self.mounts[x.mount].precedence())
-                })
-                .then_with(|| match self.mounts[x.mount].kind {
-                    MountKind::Pk3 => b.entry.cmp(&a.entry),
-                    MountKind::Directory | MountKind::Pak => a.entry.cmp(&b.entry),
-                })
-        });
-        self.winners.fill(None);
-        if let Some(names) = &self.names {
-            for &reference in &self.listing {
-                if let Some(id) = names.find(&self.entries[reference.entry as usize].name) {
-                    self.winners[id.0 as usize].get_or_insert(reference);
-                }
+    fn stage_entries(
+        &self,
+        remove: impl Fn(&Entry) -> bool,
+        added: Vec<Entry>,
+    ) -> Result<(Vec<Option<Arc<Entry>>>, u64), VfsError> {
+        let mut entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.as_ref().filter(|entry| !remove(entry)).cloned())
+            .collect();
+        let mut free = 0;
+        let mut generation = self.generation;
+        for mut entry in added {
+            while free < entries.len() && entries[free].is_some() {
+                free += 1;
             }
+            if free >= u32::MAX as usize {
+                return Err(VfsError::Capacity);
+            }
+            generation = generation.checked_add(1).ok_or(VfsError::Capacity)?;
+            entry.slot = free as u32;
+            entry.generation = generation;
+            let entry = Some(Arc::new(entry));
+            if free == entries.len() {
+                entries.push(entry);
+            } else {
+                entries[free] = entry;
+            }
+            free += 1;
         }
+        while entries.last().is_some_and(Option::is_none) {
+            entries.pop();
+        }
+        Ok((entries, generation))
+    }
+
+    fn install_index(&mut self, index: FileIndex) {
+        self.names = Some(index.names);
+        self.winners = index.winners;
+        self.listing = index.listing;
+    }
+
+    fn reindex(&mut self) {
+        let Some(names) = &self.names else {
+            return;
+        };
+        (self.winners, self.listing) = index_entries(&self.entries, &self.mounts, names);
+    }
+
+    fn reference(&self, slot: u32) -> Option<FileRef> {
+        let entry = self.entries.get(slot as usize)?.as_ref()?;
+        self.mounts.get(entry.mount).filter(|mount| mount.active)?;
+        Some(FileRef {
+            owner: Arc::clone(&self.owner),
+            entry: Arc::clone(entry),
+        })
     }
 
     /// Resolve names only while loading. Simulation/render/audio retain FileRefs.
@@ -404,19 +447,28 @@ impl Vfs {
         let mut normalized = [0; 4096];
         let length = normalize_into(path, &mut normalized).ok()?;
         let id = self.names.as_ref()?.find(&normalized[..length])?;
-        self.winners[id.0 as usize]
+        self.winners
+            .get(id.0 as usize)
+            .copied()
+            .flatten()
+            .and_then(|slot| self.reference(slot))
     }
 
-    fn entry(&self, reference: FileRef) -> Result<&Entry, VfsError> {
-        self.entries
-            .get(reference.entry as usize)
-            .filter(|entry| self.mounts[entry.mount].active)
-            .ok_or(VfsError::Handle)
+    fn entry<'a>(&self, reference: &'a FileRef) -> Result<&'a Entry, VfsError> {
+        if !Arc::ptr_eq(&self.owner, &reference.owner)
+            || !self
+                .mounts
+                .get(reference.entry.mount)
+                .is_some_and(|mount| mount.active)
+        {
+            return Err(VfsError::Handle);
+        }
+        Ok(&reference.entry)
     }
 
     /// Snapshot the source used by a cold read. The value remains comparable
     /// after its file is removed, its mount is retired, or this VFS is dropped.
-    pub fn source_precedence(&self, reference: FileRef) -> Result<SourcePrecedence, VfsError> {
+    pub fn source_precedence(&self, reference: &FileRef) -> Result<SourcePrecedence, VfsError> {
         let entry = self.entry(reference)?;
         Ok(SourcePrecedence {
             owner: Arc::clone(&self.owner),
@@ -424,17 +476,17 @@ impl Vfs {
         })
     }
 
-    pub fn length(&self, reference: FileRef) -> Result<u64, VfsError> {
+    pub fn length(&self, reference: &FileRef) -> Result<u64, VfsError> {
         Ok(self.entry(reference)?.length)
     }
-    pub fn name(&self, reference: FileRef) -> Result<&[u8], VfsError> {
+    pub fn name<'a>(&self, reference: &'a FileRef) -> Result<&'a [u8], VfsError> {
         Ok(&self.entry(reference)?.name)
     }
 
     /// Cold whole-file read through the same loose/archive range reader.
     pub fn read_to_vec(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         limit: usize,
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<Vec<u8>, VfsError> {
@@ -452,7 +504,7 @@ impl Vfs {
     }
     pub fn read_whole_into(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         destination: &mut [u8],
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<usize, VfsError> {
@@ -472,12 +524,12 @@ impl Vfs {
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<Vec<u8>, VfsError> {
         let file = self.open(path).ok_or(VfsError::Missing)?;
-        self.read_to_vec(file, limit, reader)
+        self.read_to_vec(&file, limit, reader)
     }
 
     pub fn read_into_reusing(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         destination: &mut [u8],
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<usize, VfsError> {
@@ -490,7 +542,7 @@ impl Vfs {
 
     fn read_loose(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         offset: u64,
         destination: &mut [u8],
     ) -> Result<usize, VfsError> {
@@ -511,7 +563,7 @@ impl Vfs {
     /// members as well as ordinary file ranges.
     pub fn read_range_reusing(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         offset: u64,
         destination: &mut [u8],
         reader: &mut qa_formats::archive::ArchiveReader,
@@ -527,7 +579,7 @@ impl Vfs {
     /// Loose files use the same owned file range path; packages verify CRC at EOF.
     pub fn read_stream_reusing(
         &self,
-        reference: FileRef,
+        reference: &FileRef,
         offset: u64,
         destination: &mut [u8],
         reader: &mut qa_formats::archive::ArchiveReader,
@@ -541,14 +593,14 @@ impl Vfs {
 
     /// The product mount loader reuses loose archive handles already opened by
     /// mount_directory. This is a cold operation; it never reopens a package.
-    pub fn source_file(&self, reference: FileRef) -> Option<Arc<ReadFile>> {
+    pub fn source_file(&self, reference: &FileRef) -> Option<Arc<ReadFile>> {
         match &self.entry(reference).ok()?.source {
             EntrySource::Loose(file) => Some(Arc::clone(file)),
             EntrySource::Archive { .. } => None,
         }
     }
 
-    pub fn origin(&self, reference: FileRef) -> Option<Origin<'_>> {
+    pub fn origin<'a>(&'a self, reference: &'a FileRef) -> Option<Origin<'a>> {
         let entry = self.entry(reference).ok()?;
         let mount = &self.mounts[entry.mount];
         Some(Origin {
@@ -563,11 +615,9 @@ impl Vfs {
         self.mounts.iter().filter(|mount| mount.active)
     }
     pub fn files(&self) -> impl Iterator<Item = (FileRef, &[u8])> {
-        self.listing.iter().map(|&reference| {
-            (
-                reference,
-                self.entries[reference.entry as usize].name.as_ref(),
-            )
+        self.listing.iter().filter_map(|&slot| {
+            let entry = self.entries.get(slot as usize)?.as_ref()?;
+            Some((self.reference(slot)?, entry.name.as_ref()))
         })
     }
     /// Cold authority-bound reads can select saved settings even when a product
@@ -576,14 +626,13 @@ impl Vfs {
         self.entries
             .iter()
             .enumerate()
-            .filter_map(move |(index, entry)| {
-                let mount = &self.mounts[entry.mount];
-                (mount.active && mount.id == id).then_some((
-                    FileRef {
-                        entry: index as u32,
-                    },
-                    entry.name.as_ref(),
-                ))
+            .filter_map(move |(slot, entry)| {
+                let entry = entry.as_ref()?;
+                let mount = self.mounts.get(entry.mount)?;
+                if !mount.active || mount.id != id {
+                    return None;
+                }
+                Some((self.reference(slot as u32)?, entry.name.as_ref()))
             })
     }
     pub fn take_lookup_count(&self) -> u64 {
@@ -599,9 +648,147 @@ impl Vfs {
             return false;
         };
         mount.active = false;
+        for entry in &mut self.entries {
+            if entry
+                .as_ref()
+                .is_some_and(|entry| entry.mount == id.0 as usize)
+            {
+                *entry = None;
+            }
+        }
         self.reindex();
         true
     }
+}
+
+struct FileIndex {
+    names: NameTable,
+    winners: Box<[Option<u32>]>,
+    listing: Vec<u32>,
+}
+impl FileIndex {
+    fn build(entries: &[Option<Arc<Entry>>], mounts: &[MountInfo]) -> Result<Self, VfsError> {
+        let names = NameTable::load(
+            entries
+                .iter()
+                .flatten()
+                .filter(|entry| mounts[entry.mount].active)
+                .map(|entry| entry.name.as_ref()),
+        )
+        .map_err(|_| VfsError::Capacity)?;
+        let (winners, listing) = index_entries(entries, mounts, &names);
+        Ok(Self {
+            names,
+            winners,
+            listing,
+        })
+    }
+}
+
+fn index_entries(
+    entries: &[Option<Arc<Entry>>],
+    mounts: &[MountInfo],
+    names: &NameTable,
+) -> (Box<[Option<u32>]>, Vec<u32>) {
+    let mut indexed: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, entry)| {
+            let entry = entry.as_deref()?;
+            let mount = mounts.get(entry.mount).filter(|mount| mount.active)?;
+            let name = names.find(&entry.name)?;
+            Some((slot as u32, entry, mount, name))
+        })
+        .collect();
+    indexed.sort_unstable_by(|(_, x, x_mount, _), (_, y, y_mount, _)| {
+        x.name
+            .cmp(&y.name)
+            .then_with(|| y_mount.precedence().cmp(&x_mount.precedence()))
+            .then_with(|| match x_mount.kind {
+                MountKind::Pk3 => y.ordinal.cmp(&x.ordinal),
+                MountKind::Directory | MountKind::Pak => x.ordinal.cmp(&y.ordinal),
+            })
+    });
+    let mut winners = vec![None; names.len()].into_boxed_slice();
+    let mut listing = Vec::with_capacity(indexed.len());
+    for (slot, _, _, name) in indexed {
+        if let Some(winner) = winners.get_mut(name.0 as usize) {
+            winner.get_or_insert(slot);
+            listing.push(slot);
+        }
+    }
+    (winners, listing)
+}
+
+fn below_prefix(name: &[u8], prefix: &[u8]) -> bool {
+    prefix.is_empty()
+        || name == prefix
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|tail| tail.starts_with(b"/"))
+}
+
+fn scan_directory(
+    root: &Path,
+    mount: usize,
+    settings_only: bool,
+    prefix: &[u8],
+) -> Result<Vec<Entry>, VfsError> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut entries = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for child in files::directory_entries(directory)? {
+            if child.kind == EntryKind::Other
+                || (settings_only
+                    && match child.kind {
+                        EntryKind::Directory => {
+                            child.name.eq_ignore_ascii_case("assets")
+                                || child.name.eq_ignore_ascii_case("saves")
+                        }
+                        EntryKind::File => !child.path.extension().is_some_and(|extension| {
+                            extension.eq_ignore_ascii_case("cfg")
+                                || extension.eq_ignore_ascii_case("json")
+                        }),
+                        EntryKind::Other => true,
+                    })
+            {
+                continue;
+            }
+            if child.kind == EntryKind::Directory && prefix.is_empty() {
+                pending.push(child.path);
+                continue;
+            }
+            let relative = child.path.strip_prefix(root).map_err(|_| VfsError::Path)?;
+            let name = relative
+                .to_str()
+                .ok_or(VfsError::Path)?
+                .replace(std::path::MAIN_SEPARATOR, "/")
+                .into_bytes();
+            let normalized = normalize(&name)?;
+            if child.kind == EntryKind::Directory {
+                if below_prefix(&normalized, prefix) || below_prefix(prefix, &normalized) {
+                    pending.push(child.path);
+                }
+                continue;
+            }
+            if !below_prefix(&normalized, prefix) {
+                continue;
+            }
+            let file = Arc::new(ReadFile::open(child.path)?);
+            let length = file.length()?;
+            entries.push(Entry {
+                slot: 0,
+                generation: 0,
+                ordinal: entries.len(),
+                mount,
+                name: normalized.into_boxed_slice(),
+                original_name: name.into_boxed_slice(),
+                source: EntrySource::Loose(file),
+                length,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 fn package_order(name: &[u8]) -> (u8, u64) {

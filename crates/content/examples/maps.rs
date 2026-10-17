@@ -18,11 +18,11 @@ fn main() -> Result<(), String> {
             continue;
         }
         maps += 1;
-        let length = vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize;
+        let length = vfs.length(&reference).map_err(|e| format!("{e:?}"))? as usize;
         let mut bytes = vec![0; length];
-        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+        vfs.read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
-        let origin = vfs.origin(reference).ok_or("origin")?;
+        let origin = vfs.origin(&reference).ok_or("origin")?;
         match Map::parse(&bytes) {
             Ok(map) => {
                 *counts

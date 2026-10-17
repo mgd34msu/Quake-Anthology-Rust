@@ -22,10 +22,10 @@ fn main() -> Result<(), String> {
         if !name.ends_with(b".wav") && !name.ends_with(b".ogg") {
             continue;
         }
-        let mut bytes = vec![0; vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize];
-        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+        let mut bytes = vec![0; vfs.length(&reference).map_err(|e| format!("{e:?}"))? as usize];
+        vfs.read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
-        let origin = vfs.origin(reference).ok_or("origin")?;
+        let origin = vfs.origin(&reference).ok_or("origin")?;
         match sound::decode(&bytes, WavPolicy::Quake) {
             Ok(pcm) => {
                 let format = if bytes.starts_with(b"OggS") {

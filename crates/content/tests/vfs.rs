@@ -29,11 +29,13 @@ fn retail_kpf_package_uses_the_same_archive_reader_and_localization_catalog() {
     let mounts = vfs.mount_product(std::path::Path::new(&root), 0).unwrap();
     assert!(mounts.len() > 1);
     let file = vfs.open(b"localization/loc_english.txt").unwrap();
-    let origin = vfs.origin(file).unwrap();
+    let origin = vfs.origin(&file).unwrap();
     assert!(origin.path.ends_with("Q2Game.kpf"));
     assert_eq!(origin.kind, MountKind::Pk3);
     let mut reader = qa_formats::archive::ArchiveReader::default();
-    let bytes = vfs.read_to_vec(file, 8 * 1024 * 1024, &mut reader).unwrap();
+    let bytes = vfs
+        .read_to_vec(&file, 8 * 1024 * 1024, &mut reader)
+        .unwrap();
     let catalog = qa_content::localization::Catalog::load(&bytes).unwrap();
     let mut text = qa_formats::localization::LocText::default();
     catalog
@@ -102,13 +104,13 @@ fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
     assert_ne!(saved, winning);
     let mut bytes = [0; 8];
     assert_eq!(
-        vfs.read_range_reusing(saved, 0, &mut bytes, &mut archive_reader)
+        vfs.read_range_reusing(&saved, 0, &mut bytes, &mut archive_reader)
             .unwrap(),
         5
     );
     assert_eq!(&bytes[..5], b"saved");
     assert_eq!(
-        vfs.read_range_reusing(winning, 0, &mut bytes, &mut archive_reader)
+        vfs.read_range_reusing(&winning, 0, &mut bytes, &mut archive_reader)
             .unwrap(),
         8
     );
@@ -116,7 +118,7 @@ fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
     assert!(vfs.unmount(profile));
     assert!(vfs.files_in_mount(profile).next().is_none());
     assert!(
-        vfs.read_range_reusing(saved, 0, &mut bytes, &mut archive_reader)
+        vfs.read_range_reusing(&saved, 0, &mut bytes, &mut archive_reader)
             .is_err()
     );
 }
@@ -137,7 +139,7 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let mut buffer = [0; 16];
     for _ in 0..10_000 {
         assert_eq!(
-            vfs.read_range_reusing(reference, 0, &mut buffer, &mut archive_reader)
+            vfs.read_range_reusing(&reference, 0, &mut buffer, &mut archive_reader)
                 .unwrap(),
             4
         );
@@ -146,7 +148,7 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     assert_eq!(vfs.take_lookup_count(), 0);
     assert_eq!(vfs.mounts().count(), 3);
     assert_eq!(vfs.files().count(), 3);
-    assert!(vfs.origin(reference).unwrap().path.ends_with("id1"));
+    assert!(vfs.origin(&reference).unwrap().path.ends_with("id1"));
     for map in [b"maps/base1.bsp".as_slice(), b"maps/q3dm1.bsp"] {
         assert!(vfs.open(map).is_some());
     }
@@ -157,14 +159,14 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let modified = vfs.open(b"maps/e1m1.bsp").unwrap();
     assert_ne!(reference, modified);
     assert_eq!(
-        vfs.read_range_reusing(modified, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&modified, 0, &mut buffer, &mut archive_reader)
             .unwrap(),
         3
     );
     assert_eq!(&buffer[..3], b"mod");
     assert!(vfs.unmount(mod_id));
     assert!(
-        vfs.read_range_reusing(modified, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&modified, 0, &mut buffer, &mut archive_reader)
             .is_err()
     );
     assert_eq!(vfs.open(b"maps/e1m1.bsp"), Some(reference));
@@ -190,17 +192,17 @@ fn retained_source_precedence_matches_winners_after_unlink_unmount_and_vfs_drop(
             .unwrap()
             .0;
         assert_eq!(
-            vfs.read_to_vec(file, 16, &mut reader).unwrap(),
+            vfs.read_to_vec(&file, 16, &mut reader).unwrap(),
             name.as_bytes()
         );
-        let rank = vfs.source_precedence(file).unwrap();
+        let rank = vfs.source_precedence(&file).unwrap();
         let other = vfs
             .files_in_mount(mount)
             .find(|(_, name)| *name == b"other")
             .unwrap()
             .0;
         assert_eq!(
-            rank.compare(&vfs.source_precedence(other).unwrap()),
+            rank.compare(&vfs.source_precedence(&other).unwrap()),
             Some(Equal)
         );
         accepted.push((mount, file, rank));
@@ -217,24 +219,24 @@ fn retained_source_precedence_matches_winners_after_unlink_unmount_and_vfs_drop(
     assert_eq!(later.compare(older), Some(Greater));
     assert_eq!(lower.compare(older), Some(Less));
     assert_eq!(higher.compare(later), Some(Greater));
-    assert_eq!(vfs.open(b"shared"), Some(*higher_file));
+    assert_eq!(vfs.open(b"shared"), Some(higher_file.clone()));
     assert!(vfs.unmount(*higher_mount));
-    assert_eq!(vfs.open(b"shared"), Some(*later_file));
+    assert_eq!(vfs.open(b"shared"), Some(later_file.clone()));
     assert!(vfs.unmount(*later_mount));
-    assert_eq!(vfs.open(b"shared"), Some(*older_file));
+    assert_eq!(vfs.open(b"shared"), Some(older_file.clone()));
 
     qa_platform::files::remove_file(root.0.join("older/shared")).unwrap();
     assert_eq!(
-        vfs.source_precedence(*older_file).unwrap().compare(older),
+        vfs.source_precedence(older_file).unwrap().compare(older),
         Some(Equal)
     );
     assert!(vfs.unmount(*older_mount));
     assert!(matches!(
-        vfs.source_precedence(*older_file),
+        vfs.source_precedence(older_file),
         Err(VfsError::Handle)
     ));
     assert!(matches!(
-        vfs.source_precedence(*higher_file),
+        vfs.source_precedence(higher_file),
         Err(VfsError::Handle)
     ));
     drop(vfs);
@@ -253,10 +255,10 @@ fn source_precedence_from_independent_vfs_owners_is_incomparable() {
     first.mount_directory(&root.0, 7).unwrap();
     second.mount_directory(&root.0, 7).unwrap();
     let first = first
-        .source_precedence(first.open(b"shared").unwrap())
+        .source_precedence(&first.open(b"shared").unwrap())
         .unwrap();
     let second = second
-        .source_precedence(second.open(b"shared").unwrap())
+        .source_precedence(&second.open(b"shared").unwrap())
         .unwrap();
     assert_eq!(first.compare(&second), None);
     assert_eq!(second.compare(&first), None);
@@ -303,31 +305,34 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let mut buffer = [0; 8];
     let first = vfs.open(b"a").unwrap();
     assert_eq!(
-        vfs.read_range_reusing(first, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&first, 0, &mut buffer, &mut archive_reader)
             .unwrap(),
         5
     );
     assert_eq!(&buffer[..5], b"first");
-    assert_eq!(vfs.origin(first).unwrap().member, b"A");
+    assert_eq!(vfs.origin(&first).unwrap().member, b"A");
     let exact = vfs.open(b"EXACT").unwrap();
     assert_eq!(
-        vfs.read_range_reusing(exact, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&exact, 0, &mut buffer, &mut archive_reader)
             .unwrap(),
         3
     );
     assert_eq!(&buffer[..3], b"old");
     let mut reader = qa_formats::archive::ArchiveReader::default();
-    assert_eq!(vfs.read_to_vec(first, 5, &mut reader).unwrap(), b"first");
+    assert_eq!(vfs.read_to_vec(&first, 5, &mut reader).unwrap(), b"first");
     assert_eq!(vfs.read_file(b"A", 5, &mut reader).unwrap(), b"first");
     assert!(matches!(
-        vfs.read_to_vec(first, 4, &mut reader),
+        vfs.read_to_vec(&first, 4, &mut reader),
         Err(VfsError::Limit)
     ));
     let skin_ref = vfs.open(skin).unwrap();
-    assert_eq!(vfs.open(b"models/monsters/ctank/skin.pcx"), Some(skin_ref));
-    assert_eq!(vfs.origin(skin_ref).unwrap().member, skin);
     assert_eq!(
-        vfs.read_range_reusing(skin_ref, 0, &mut buffer, &mut archive_reader)
+        vfs.open(b"models/monsters/ctank/skin.pcx"),
+        Some(skin_ref.clone())
+    );
+    assert_eq!(vfs.origin(&skin_ref).unwrap().member, skin);
+    assert_eq!(
+        vfs.read_range_reusing(&skin_ref, 0, &mut buffer, &mut archive_reader)
             .unwrap(),
         4
     );
@@ -345,12 +350,12 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
         .unwrap();
     let last = vfs.open(b"A").unwrap();
     assert_eq!(
-        vfs.read_range_reusing(last, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&last, 0, &mut buffer, &mut archive_reader)
             .unwrap(),
         4
     );
     assert_eq!(&buffer[..4], b"last");
-    assert_eq!(vfs.origin(last).unwrap().kind, MountKind::Pak);
+    assert_eq!(vfs.origin(&last).unwrap().kind, MountKind::Pak);
     let listing: Vec<_> = vfs
         .files()
         .map(|(reference, name)| (reference, name.to_vec()))
@@ -358,15 +363,15 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let duplicates: Vec<_> = listing
         .iter()
         .filter(|(_, name)| name == b"a")
-        .map(|(reference, _)| *reference)
+        .map(|(reference, _)| reference.clone())
         .collect();
     assert_eq!(duplicates.len(), 3);
-    assert_eq!(&duplicates[..2], [last, first]);
+    assert_eq!(&duplicates[..2], [last.clone(), first.clone()]);
     assert!(vfs.unmount(next_mount));
     assert_eq!(vfs.open(b"A"), Some(first));
     assert_eq!(vfs.files().count(), 5);
     assert!(
-        vfs.read_range_reusing(last, 0, &mut buffer, &mut archive_reader)
+        vfs.read_range_reusing(&last, 0, &mut buffer, &mut archive_reader)
             .is_err()
     );
 
@@ -401,22 +406,22 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let case_members: Vec<_> = members
         .iter()
         .filter(|(_, name)| name == b"case-zip")
-        .map(|(reference, _)| *reference)
+        .map(|(reference, _)| reference.clone())
         .collect();
     let exact_members: Vec<_> = members
         .iter()
         .filter(|(_, name)| name == b"exact-zip")
-        .map(|(reference, _)| *reference)
+        .map(|(reference, _)| reference.clone())
         .collect();
     let priority_members: Vec<_> = members
         .iter()
         .filter(|(_, name)| name == b"priority-zip")
-        .map(|(reference, _)| *reference)
+        .map(|(reference, _)| reference.clone())
         .collect();
     let map_members: Vec<_> = members
         .iter()
         .filter(|(_, name)| name == b"maps/q3dm1.bsp")
-        .map(|(reference, _)| *reference)
+        .map(|(reference, _)| reference.clone())
         .collect();
     assert_eq!(case_members.len(), 2);
     assert_eq!(exact_members.len(), 2);
@@ -424,13 +429,19 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     assert_eq!(map_members.len(), 2);
     assert_eq!(
         zip_vfs
-            .source_precedence(case_members[0])
+            .source_precedence(&case_members[0])
             .unwrap()
-            .compare(&zip_vfs.source_precedence(case_members[1]).unwrap()),
+            .compare(&zip_vfs.source_precedence(&case_members[1]).unwrap()),
         Some(std::cmp::Ordering::Equal)
     );
-    assert_eq!(zip_vfs.origin(case_members[0]).unwrap().member, b"Case-Zip");
-    assert_eq!(zip_vfs.origin(case_members[1]).unwrap().member, b"CASE-ZIP");
+    assert_eq!(
+        zip_vfs.origin(&case_members[0]).unwrap().member,
+        b"Case-Zip"
+    );
+    assert_eq!(
+        zip_vfs.origin(&case_members[1]).unwrap().member,
+        b"CASE-ZIP"
+    );
     let case_listing: Vec<_> = zip_vfs
         .files()
         .filter(|(_, name)| *name == b"case-zip")
@@ -441,19 +452,25 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
         .filter(|(_, name)| *name == b"exact-zip")
         .map(|(reference, _)| reference)
         .collect();
-    assert_eq!(case_listing, [case_members[1], case_members[0]]);
-    assert_eq!(exact_listing, [exact_members[1], exact_members[0]]);
+    assert_eq!(
+        case_listing,
+        [case_members[1].clone(), case_members[0].clone()]
+    );
+    assert_eq!(
+        exact_listing,
+        [exact_members[1].clone(), exact_members[0].clone()]
+    );
     assert_eq!(zip_vfs.take_lookup_count(), 0);
     let case_winner = zip_vfs.open(b"case-zip").unwrap();
     assert_eq!(zip_vfs.take_lookup_count(), 1);
     assert_eq!(case_winner, case_listing[0]);
     assert_eq!(case_winner, case_members[1]);
-    assert_eq!(zip_vfs.origin(case_winner).unwrap().kind, MountKind::Pk3);
-    assert_eq!(zip_vfs.origin(case_winner).unwrap().member, b"CASE-ZIP");
+    assert_eq!(zip_vfs.origin(&case_winner).unwrap().kind, MountKind::Pk3);
+    assert_eq!(zip_vfs.origin(&case_winner).unwrap().member, b"CASE-ZIP");
     let mut zip_buffer = [0; 16];
     assert_eq!(
         zip_vfs
-            .read_range_reusing(case_winner, 0, &mut zip_buffer, &mut archive_reader)
+            .read_range_reusing(&case_winner, 0, &mut zip_buffer, &mut archive_reader)
             .unwrap(),
         9
     );
@@ -462,7 +479,7 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     assert_eq!(exact_winner, exact_members[1]);
     assert_eq!(
         zip_vfs
-            .read_range_reusing(exact_winner, 0, &mut zip_buffer, &mut archive_reader)
+            .read_range_reusing(&exact_winner, 0, &mut zip_buffer, &mut archive_reader)
             .unwrap(),
         10
     );
@@ -477,7 +494,7 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     assert_eq!(product.start_map, start_map);
     assert_eq!(
         zip_vfs
-            .read_range_reusing(start_map, 0, &mut zip_buffer, &mut archive_reader)
+            .read_range_reusing(&start_map, 0, &mut zip_buffer, &mut archive_reader)
             .unwrap(),
         8
     );
@@ -488,11 +505,14 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     qa_platform::files::write(higher.join("priority-zip"), b"higher").unwrap();
     let higher_mount = zip_vfs.mount_directory(&higher, 2).unwrap();
     let priority = zip_vfs.open(b"PRIORITY-ZIP").unwrap();
-    assert_eq!(zip_vfs.origin(priority).unwrap().mount, higher_mount);
-    assert_eq!(zip_vfs.origin(priority).unwrap().kind, MountKind::Directory);
+    assert_eq!(zip_vfs.origin(&priority).unwrap().mount, higher_mount);
+    assert_eq!(
+        zip_vfs.origin(&priority).unwrap().kind,
+        MountKind::Directory
+    );
     assert_eq!(
         zip_vfs
-            .read_range_reusing(priority, 0, &mut zip_buffer, &mut archive_reader)
+            .read_range_reusing(&priority, 0, &mut zip_buffer, &mut archive_reader)
             .unwrap(),
         6
     );
@@ -505,15 +525,15 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     assert_eq!(priority_listing[0], priority);
     assert_eq!(
         &priority_listing[1..],
-        &[priority_members[1], priority_members[0]]
+        &[priority_members[1].clone(), priority_members[0].clone()]
     );
     assert!(zip_vfs.unmount(higher_mount));
     let priority = zip_vfs.open(b"priority-zip").unwrap();
     assert_eq!(priority, priority_members[1]);
-    assert_eq!(zip_vfs.origin(priority).unwrap().member, b"PRIORITY-ZIP");
+    assert_eq!(zip_vfs.origin(&priority).unwrap().member, b"PRIORITY-ZIP");
     assert_eq!(
         zip_vfs
-            .read_range_reusing(priority, 0, &mut zip_buffer, &mut archive_reader)
+            .read_range_reusing(&priority, 0, &mut zip_buffer, &mut archive_reader)
             .unwrap(),
         13
     );
@@ -529,23 +549,23 @@ fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
     vfs.mount_directory(&root.0, 0).unwrap();
     let mut reader = qa_formats::archive::ArchiveReader::default();
     let file = vfs.open(b"a").unwrap();
-    assert_eq!(vfs.read_to_vec(file, 4, &mut reader).unwrap(), b"abcd");
+    assert_eq!(vfs.read_to_vec(&file, 4, &mut reader).unwrap(), b"abcd");
     assert_eq!(vfs.read_file(b"A", 4, &mut reader).unwrap(), b"abcd");
     let mut destination = [0xaa; 6];
     assert_eq!(
-        vfs.read_whole_into(file, &mut destination, &mut reader)
+        vfs.read_whole_into(&file, &mut destination, &mut reader)
             .unwrap(),
         4
     );
     assert_eq!(&destination, b"abcd\xaa\xaa");
     destination.fill(0xbb);
     assert!(matches!(
-        vfs.read_whole_into(file, &mut destination[..3], &mut reader),
+        vfs.read_whole_into(&file, &mut destination[..3], &mut reader),
         Err(VfsError::Limit)
     ));
     assert_eq!(destination, [0xbb; 6]);
     assert!(matches!(
-        vfs.read_to_vec(file, 3, &mut reader),
+        vfs.read_to_vec(&file, 3, &mut reader),
         Err(VfsError::Limit)
     ));
     assert!(matches!(
@@ -554,13 +574,197 @@ fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
     ));
     assert!(vfs.read_file(b"empty", 0, &mut reader).unwrap().is_empty());
     assert_eq!(
-        vfs.read_whole_into(vfs.open(b"empty").unwrap(), &mut [], &mut reader)
+        vfs.read_whole_into(&vfs.open(b"empty").unwrap(), &mut [], &mut reader)
             .unwrap(),
         0
     );
     qa_platform::files::write(root.0.join("a"), b"ab").unwrap();
     assert!(matches!(
-        vfs.read_to_vec(file, 4, &mut reader),
+        vfs.read_to_vec(&file, 4, &mut reader),
         Err(VfsError::Format(qa_formats::FormatError::Truncated))
     ));
+}
+
+#[test]
+fn directory_refresh_preserves_accepted_sources_and_updates_only_current_prefix() {
+    let root = Fixture::new("directory-refresh");
+    let loose = root.0.join("loose");
+    qa_platform::files::create_dir_all(loose.join("SkInS")).unwrap();
+    for (name, bytes) in [
+        ("SkInS/base.pcx", b"old".as_slice()),
+        ("SkInS/deleted.pcx", b"deleted"),
+        ("SkInS/fallback.pcx", b"loose"),
+        ("music.ogg", b"music"),
+        ("skins-neighbor", b"neighbor"),
+    ] {
+        qa_platform::files::write(loose.join(name), bytes).unwrap();
+    }
+    let archive_path = root.0.join("fallback.pk3");
+    qa_platform::files::write(
+        &archive_path,
+        zip::stored_zip(&[(b"skins/fallback.pcx", b"archive")]),
+    )
+    .unwrap();
+    let mut vfs = Vfs::default();
+    let archive = vfs
+        .mount_archive(
+            &archive_path,
+            0,
+            Arc::new(Archive::parse(Arc::new(ReadFile::open(&archive_path).unwrap())).unwrap()),
+        )
+        .unwrap();
+    let mount = vfs.mount_directory(&loose, 10).unwrap();
+    let old = vfs.open(b"skins/base.pcx").unwrap();
+    let old_copy = old.clone();
+    let weak = Arc::downgrade(&vfs.source_file(&old).unwrap());
+    let old_rank = vfs.source_precedence(&old).unwrap();
+    let music = vfs.open(b"music.ogg").unwrap();
+    let neighbor = vfs.open(b"skins-neighbor").unwrap();
+    let archived = vfs
+        .files_in_mount(archive)
+        .find(|(_, name)| *name == b"skins/fallback.pcx")
+        .unwrap()
+        .0;
+    qa_platform::files::write(loose.join("replacement.tmp"), b"replacement").unwrap();
+    qa_platform::files::rename(loose.join("replacement.tmp"), loose.join("SkInS/base.pcx"))
+        .unwrap();
+    qa_platform::files::write(loose.join("SkInS/new.pcx"), b"new").unwrap();
+    qa_platform::files::remove_file(loose.join("SkInS/deleted.pcx")).unwrap();
+    qa_platform::files::remove_file(loose.join("SkInS/fallback.pcx")).unwrap();
+    vfs.refresh_directory_prefix(mount, b"SKINS").unwrap();
+
+    let current = vfs.open(b"skins/base.pcx").unwrap();
+    assert_ne!(old, current);
+    assert_eq!(old_copy, old);
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    assert_eq!(vfs.read_to_vec(&old, 32, &mut reader).unwrap(), b"old");
+    assert_eq!(vfs.length(&old).unwrap(), 3);
+    assert_eq!(vfs.origin(&old).unwrap().member, b"SkInS/base.pcx");
+    assert_eq!(
+        vfs.read_to_vec(&current, 32, &mut reader).unwrap(),
+        b"replacement"
+    );
+    assert_eq!(
+        old_rank.compare(&vfs.source_precedence(&current).unwrap()),
+        Some(std::cmp::Ordering::Equal)
+    );
+    assert_eq!(
+        vfs.read_file(b"skins/new.pcx", 32, &mut reader).unwrap(),
+        b"new"
+    );
+    assert!(vfs.open(b"skins/deleted.pcx").is_none());
+    assert_eq!(vfs.open(b"skins/fallback.pcx"), Some(archived));
+    assert_eq!(vfs.open(b"music.ogg"), Some(music));
+    assert_eq!(vfs.open(b"skins-neighbor"), Some(neighbor));
+    // The current index no longer owns the displaced descriptor.
+    drop(old);
+    assert!(weak.upgrade().is_some());
+    drop(old_copy);
+    assert!(weak.upgrade().is_none());
+
+    let mut other = Vfs::default();
+    other.mount_directory(&loose, 10).unwrap();
+    assert!(matches!(other.length(&current), Err(VfsError::Handle)));
+    assert!(vfs.unmount(mount));
+    assert!(matches!(vfs.length(&current), Err(VfsError::Handle)));
+}
+
+#[test]
+fn repeated_directory_refresh_releases_replaced_descriptors_and_deleted_names() {
+    let root = Fixture::new("refresh-lifetimes");
+    qa_platform::files::create_dir_all(root.0.join("skins")).unwrap();
+    let path = root.0.join("skins/current");
+    qa_platform::files::write(&path, b"first").unwrap();
+    let mut vfs = Vfs::default();
+    let mount = vfs.mount_directory(&root.0, 0).unwrap();
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    for number in 0u32..64 {
+        let accepted = vfs.open(b"skins/current").unwrap();
+        let weak = Arc::downgrade(&vfs.source_file(&accepted).unwrap());
+        let transient = format!("skins/download-{number}");
+        qa_platform::files::write(root.0.join(&transient), b"download").unwrap();
+        qa_platform::files::write(root.0.join("next"), number.to_le_bytes()).unwrap();
+        qa_platform::files::rename(root.0.join("next"), &path).unwrap();
+        vfs.refresh_directory_prefix(mount, b"skins").unwrap();
+        assert!(weak.upgrade().is_some());
+        drop(accepted);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            vfs.read_file(b"skins/current", 8, &mut reader).unwrap(),
+            number.to_le_bytes()
+        );
+        assert_eq!(vfs.files_in_mount(mount).count(), 2);
+        qa_platform::files::remove_file(root.0.join(&transient)).unwrap();
+        vfs.refresh_directory_prefix(mount, b"skins").unwrap();
+        assert!(vfs.open(transient.as_bytes()).is_none());
+        assert_eq!(vfs.files_in_mount(mount).count(), 1);
+    }
+}
+
+#[test]
+fn directory_refresh_preserves_settings_filter_and_failed_scan_is_atomic() {
+    let root = Fixture::new("refresh-filter-atomic");
+    let content = root.0.join("content");
+    for directory in ["skins", "assets/skins", "SaVeS"] {
+        qa_platform::files::create_dir_all(content.join(directory)).unwrap();
+    }
+    qa_platform::files::write(content.join("skins/settings.cfg"), b"accepted").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        qa_platform::files::write(content.join("capture:backup.bin"), b"excluded").unwrap();
+        qa_platform::files::write(
+            content.join(std::ffi::OsString::from_vec(b"capture\xff.bin".to_vec())),
+            b"excluded",
+        )
+        .unwrap();
+    }
+    let mut vfs = Vfs::default();
+    let mount = vfs.mount_settings_directory(&content, -100).unwrap();
+    let accepted = vfs.open(b"skins/settings.cfg").unwrap();
+    qa_platform::files::write(content.join("skins/new.JSON"), b"new").unwrap();
+    qa_platform::files::write(content.join("skins/image.pcx"), b"binary").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        qa_platform::files::write(content.join("skins/capture:backup.bin"), b"excluded").unwrap();
+        qa_platform::files::write(
+            content
+                .join("skins")
+                .join(std::ffi::OsString::from_vec(b"capture\xff.bin".to_vec())),
+            b"excluded",
+        )
+        .unwrap();
+    }
+    qa_platform::files::write(content.join("assets/skins/hidden.cfg"), b"hidden").unwrap();
+    qa_platform::files::write(content.join("SaVeS/hidden.json"), b"hidden").unwrap();
+    vfs.refresh_directory_prefix(mount, b"").unwrap();
+    assert!(vfs.open(b"skins/new.json").is_some());
+    assert!(vfs.open(b"skins/image.pcx").is_none());
+    assert!(vfs.open(b"assets/skins/hidden.cfg").is_none());
+    assert!(vfs.open(b"saves/hidden.json").is_none());
+    let current = vfs.open(b"skins/settings.cfg").unwrap();
+    let current_source = Arc::downgrade(&vfs.source_file(&current).unwrap());
+    let moved = root.0.join("moved");
+    qa_platform::files::rename(&content, &moved).unwrap();
+    assert!(vfs.refresh_directory_prefix(mount, b"skins").is_err());
+    assert_eq!(vfs.open(b"skins/settings.cfg"), Some(current));
+    assert_eq!(vfs.files().count(), 2);
+    assert!(current_source.upgrade().is_some());
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    assert_eq!(
+        vfs.read_to_vec(&accepted, 16, &mut reader).unwrap(),
+        b"accepted"
+    );
+    qa_platform::files::rename(&moved, &content).unwrap();
+    qa_platform::files::remove_dir_all(content.join("skins")).unwrap();
+    // A missing prefix removes that prefix, without retiring its accepted handles.
+    vfs.refresh_directory_prefix(mount, b"skins").unwrap();
+    assert_eq!(vfs.files().count(), 0);
+    assert!(vfs.open(b"skins/settings.cfg").is_none());
+    assert!(current_source.upgrade().is_none());
+    assert_eq!(
+        vfs.read_to_vec(&accepted, 16, &mut reader).unwrap(),
+        b"accepted"
+    );
 }

@@ -122,7 +122,7 @@ fn a_mount_root_follows_its_symlink_but_descendants_do_not() {
     vfs.mount_directory(&mounted, 0).unwrap();
     let map = vfs.open(b"maps/base1.bsp").unwrap();
     assert_eq!(
-        vfs.origin(map).unwrap().path,
+        vfs.origin(&map).unwrap().path,
         files::canonicalize(&actual).unwrap()
     );
     assert!(vfs.open(b"alias.cfg").is_none());

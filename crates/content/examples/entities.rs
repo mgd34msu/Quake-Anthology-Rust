@@ -24,8 +24,8 @@ fn main() -> Result<(), String> {
         if !name.ends_with(b".bsp") {
             continue;
         }
-        let mut bytes = vec![0; vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize];
-        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
+        let mut bytes = vec![0; vfs.length(&reference).map_err(|e| format!("{e:?}"))? as usize];
+        vfs.read_range_reusing(&reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let bsp = Bsp::parse(&bytes).map_err(|e| format!("{e:?}"))?;
         let syntax = bsp.format.rule_set().lineage();
@@ -67,7 +67,7 @@ fn main() -> Result<(), String> {
             }
             Err(e) => {
                 failures += 1;
-                let origin = vfs.origin(reference).ok_or("origin")?;
+                let origin = vfs.origin(&reference).ok_or("origin")?;
                 println!(
                     "failed {:?}:{:?} {e:?}",
                     origin.path,
