@@ -943,13 +943,14 @@ pub struct SkinSelection {
 #[derive(Debug)]
 pub enum IndexedSkinError {
     Missing,
+    InvalidSource(String),
     Rejected(String),
 }
 impl std::fmt::Display for IndexedSkinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Missing => f.write_str("missing indexed skin"),
-            Self::Rejected(error) => f.write_str(error),
+            Self::InvalidSource(error) | Self::Rejected(error) => f.write_str(error),
         }
     }
 }
@@ -5491,8 +5492,10 @@ impl ModelAssets {
                 self.validate_admission(counts).map_err(|error| {
                     IndexedSkinError::Rejected(format!("indexed skin admission: {error:?}"))
                 })?;
-                prepare(&self.assets, self.catalog.max_choice_nodes())
-                    .map_err(IndexedSkinError::Rejected)?;
+                if self.image_transaction_active != Some(ImageRefreshMode::IndexedSkins) {
+                    prepare(&self.assets, self.catalog.max_choice_nodes())
+                        .map_err(IndexedSkinError::Rejected)?;
+                }
                 self.apply_admission(counts);
             }
             Ok(selection)
@@ -5929,7 +5932,7 @@ impl ModelAssets {
                 return Err(if *missing {
                     IndexedSkinError::Missing
                 } else {
-                    IndexedSkinError::Rejected(error.clone())
+                    IndexedSkinError::InvalidSource(error.clone())
                 });
             }
             _ => None,
@@ -5953,6 +5956,17 @@ impl ModelAssets {
                         source
                     }
                     Err(error) => {
+                        if matches!(
+                            &error,
+                            ResourceError::Vfs(
+                                qa_content::vfs::VfsError::Allocation
+                                    | qa_content::vfs::VfsError::Capacity
+                            )
+                        ) {
+                            return Err(IndexedSkinError::Rejected(format!(
+                                "indexed skin source: {error:?}"
+                            )));
+                        }
                         let missing = matches!(error, ResourceError::Missing(_));
                         let error = format!("indexed skin source: {error:?}");
                         self.catalog.skins[index].source = Some(SkinSource::IndexedFailure {
@@ -5963,7 +5977,7 @@ impl ModelAssets {
                         return Err(if missing {
                             IndexedSkinError::Missing
                         } else {
-                            IndexedSkinError::Rejected(error)
+                            IndexedSkinError::InvalidSource(error)
                         });
                     }
                 }

@@ -29,9 +29,14 @@ struct NativeSkinViews {
     no_colors: qa_console::cvars::View,
     no_skins: qa_console::cvars::View,
 }
+#[derive(Default)]
+pub(crate) struct PlayerSkinRefresh {
+    all: [Option<FixedText<128>>; qa_core::sys_events::SeatId::COUNT],
+}
 pub(crate) struct PlayerSkinViews {
     native: [NativeSkinViews; 5],
-    all: FixedText<128>,
+    all: [FixedText<128>; qa_core::sys_events::SeatId::COUNT],
+    pending: Option<PlayerSkinRefresh>,
 }
 impl PlayerSkinViews {
     pub(crate) fn bind(cvars: &qa_console::cvars::Cvars) -> Result<Self, String> {
@@ -56,16 +61,37 @@ impl PlayerSkinViews {
         Ok(Self {
             native: [q1?, qw?, q2?, rr?, q3?],
             all: Default::default(),
+            pending: None,
         })
     }
-    pub(crate) fn set_all(&mut self, name: &[u8]) {
+    pub(crate) fn request_refresh(&mut self) {
+        self.pending.get_or_insert_with(Default::default);
+    }
+    pub(crate) fn set_all(&mut self, seat: qa_core::sys_events::SeatId, name: &[u8]) {
         let length = name.len().min(FixedText::<128>::CAPACITY - 1);
-        let _ = self.all.set_bytes(&name[..length]);
+        let mut name_text = FixedText::default();
+        let _ = name_text.set_bytes(&name[..length]);
+        self.pending.get_or_insert_with(Default::default).all[seat.index()] = Some(name_text);
+    }
+    pub(crate) fn refresh_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub(crate) fn take_refresh(&mut self) -> Option<PlayerSkinRefresh> {
+        self.pending.take()
+    }
+    pub(crate) fn commit_refresh(&mut self, request: PlayerSkinRefresh) {
+        for (current, next) in self.all.iter_mut().zip(request.all) {
+            if let Some(next) = next {
+                *current = next;
+            }
+        }
     }
     pub(crate) fn update(
         &self,
         cvars: &qa_console::cvars::Cvars,
+        seat: Option<qa_core::sys_events::SeatId>,
         models: &mut ClientModelBindings,
+        refresh: Option<&PlayerSkinRefresh>,
     ) {
         let Some(players) = &mut models.players else {
             return;
@@ -75,7 +101,14 @@ impl PlayerSkinViews {
         }
         let views = &self.native[players.source as usize];
         let mut options = IndexedPlayerOptions {
-            all: self.all.clone(),
+            all: seat
+                .map(|seat| {
+                    refresh
+                        .and_then(|request| request.all[seat.index()].as_ref())
+                        .unwrap_or(&self.all[seat.index()])
+                })
+                .unwrap_or(&players.indexed_options.all)
+                .clone(),
             player_mip: cvars.integer_view(views.player_mip).unwrap_or(0),
             no_colors: cvars.numeric(views.no_colors).unwrap_or(0.0) != 0.0,
             no_skins: cvars.numeric(views.no_skins).unwrap_or(0.0),
@@ -114,9 +147,9 @@ impl PlayerBindings {
         &mut self,
         configs: &ConfigStrings,
         assets: &mut ClientAssets<'_>,
-    ) -> u32 {
+    ) -> Result<u32, String> {
         let Some(rules) = self.color_rules else {
-            return 0;
+            return Ok(0);
         };
         self.indexed_model = self.models.range().find_map(|index| {
             let name = configs.config(index)?.text;
@@ -129,7 +162,7 @@ impl PlayerBindings {
         if !rules.external_skins && self.indexed_options.no_skins != 0.0 {
             self.indexed_models.fill(None);
             self.dirty = false;
-            return 0;
+            return Ok(0);
         }
         let ClientAssets::Prepared {
             owner,
@@ -142,7 +175,7 @@ impl PlayerBindings {
         else {
             self.cold_dirty |= matches!(assets, ClientAssets::Loading { .. });
             self.dirty = false;
-            return 0;
+            return Ok(0);
         };
         self.indexed_models.fill(None);
         let base = skin_name(self.indexed_options.base.as_bytes());
@@ -242,8 +275,10 @@ impl PlayerBindings {
                 };
                 let selection = match result {
                     Ok(selection) => Some(IndexedPlayerSkin::External(selection)),
+                    Err(IndexedSkinError::Rejected(error)) => return Err(error),
                     error => {
-                        rejected += u32::from(matches!(error, Err(IndexedSkinError::Rejected(_))));
+                        rejected +=
+                            u32::from(matches!(error, Err(IndexedSkinError::InvalidSource(_))));
                         match owner.prepare_model_colors(
                             vfs,
                             registration,
@@ -257,10 +292,7 @@ impl PlayerBindings {
                             |assets, choices| preparer.prepare_model_assets(assets, choices),
                         ) {
                             Ok(selection) => Some(IndexedPlayerSkin::Model(selection)),
-                            Err(_) => {
-                                rejected += 1;
-                                None
-                            }
+                            Err(error) => return Err(error),
                         }
                     }
                 };
@@ -272,7 +304,7 @@ impl PlayerBindings {
             }
         }
         self.dirty = false;
-        rejected
+        Ok(rejected)
     }
 
     fn indexed_skin(
@@ -301,6 +333,38 @@ impl PlayerBindings {
 }
 
 impl ClientModelBindings {
+    pub(crate) fn refresh_indexed_skins(
+        &mut self,
+        configs: &ConfigStrings,
+        owner: &mut ModelAssets,
+        vfs: &qa_content::vfs::Vfs,
+        preparer: &mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
+    ) -> Result<u32, String> {
+        let Some(profile) = self.profile else {
+            return Ok(0);
+        };
+        let Some(players) = &mut self.players else {
+            return Ok(0);
+        };
+        if players.color_rules.is_none() {
+            return Ok(0);
+        }
+        let mut published = false;
+        let rejected = players.refresh_indexed(
+            configs,
+            &mut ClientAssets::Prepared {
+                owner,
+                vfs,
+                profile,
+                preparer,
+                ui_fullscreen,
+                published: &mut published,
+            },
+        )?;
+        players.cold_dirty = false;
+        Ok(rejected)
+    }
     pub(in crate::client_scene) fn indexed_skin(
         &self,
         reference: ModelRef,

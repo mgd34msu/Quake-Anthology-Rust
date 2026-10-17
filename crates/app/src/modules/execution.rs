@@ -1316,16 +1316,20 @@ fn console_step(
                     host.module_row(producer.module)
                         .is_some_and(|row| row.request.phase == super::Phase::Client)
                 });
-            if command == host.allskins_command {
+            if command == host.allskins_command || command == host.skins_command {
                 if local {
-                    host.player_skin_views
-                        .set_all(scratch.arguments().get_bytes(1));
+                    if command == host.allskins_command {
+                        host.player_skin_views
+                            .set_all(context.seat, scratch.arguments().get_bytes(1));
+                    } else {
+                        host.player_skin_views.request_refresh();
+                    }
                 } else {
                     let _ = host
                         .runtime
                         .server
                         .events
-                        .console_bytes(b"allskins is a local client command.\n");
+                        .console_bytes(b"skins and allskins are local client commands.\n");
                 }
                 frame.run.reply(CommandReply::Handled);
                 return FrameStep::Continue;

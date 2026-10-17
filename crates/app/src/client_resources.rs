@@ -153,7 +153,22 @@ impl ReceivedWorldRequest<'_> {
 
 pub(crate) struct ClientImageRefresh {
     models: ClientModelBindings,
-    statics: Box<[crate::client_scene::StaticEntity]>,
+    statics: Option<Box<[crate::client_scene::StaticEntity]>>,
+    rejected: u32,
+}
+
+impl ClientImageRefresh {
+    fn capture(state: &ResourceState, statics: bool) -> Self {
+        Self {
+            models: state.models.clone(),
+            rejected: 0,
+            statics: statics.then(|| {
+                state.static_entities[..state.static_entity_count]
+                    .to_vec()
+                    .into_boxed_slice()
+            }),
+        }
+    }
 }
 
 pub struct PeerInfo<'a> {
@@ -898,21 +913,42 @@ impl ResourceState {
         refresh: &crate::model_assets::ImageRefresh,
         catalog: &ModelCatalog,
     ) -> Result<ClientImageRefresh, String> {
-        let mut models = self.models.clone();
-        let mut statics = self.static_entities[..self.static_entity_count]
-            .to_vec()
-            .into_boxed_slice();
-        for entity in &mut statics {
-            self.models
-                .refresh_static_images(entity, refresh, catalog)?;
+        let mut staged = ClientImageRefresh::capture(self, true);
+        if let Some(statics) = &mut staged.statics {
+            for entity in statics.iter_mut() {
+                self.models
+                    .refresh_static_images(entity, refresh, catalog)?;
+            }
         }
-        models.refresh_images(refresh, catalog)?;
-        Ok(ClientImageRefresh { models, statics })
+        staged.models.refresh_images(refresh, catalog)?;
+        Ok(staged)
+    }
+
+    pub(crate) fn stage_indexed_skin_refresh(
+        &self,
+        views: &crate::client_scene::PlayerSkinViews,
+        request: &crate::client_scene::PlayerSkinRefresh,
+        cvars: &qa_console::cvars::Cvars,
+        seat: qa_core::sys_events::SeatId,
+        owner: &mut crate::model_assets::ModelAssets,
+        vfs: &qa_content::vfs::Vfs,
+        preparer: &mut dyn crate::renderer::AssetPreparer,
+        ui_fullscreen: bool,
+    ) -> Result<ClientImageRefresh, String> {
+        let mut staged = ClientImageRefresh::capture(self, false);
+        views.update(cvars, Some(seat), &mut staged.models, Some(request));
+        staged
+            .models
+            .refresh_indexed_skins(&self.configs, owner, vfs, preparer, ui_fullscreen)?;
+        Ok(staged)
     }
 
     pub(crate) fn commit_image_refresh(&mut self, refresh: ClientImageRefresh) {
         self.models = refresh.models;
-        self.static_entities[..refresh.statics.len()].clone_from_slice(&refresh.statics);
+        self.rejected += u64::from(refresh.rejected);
+        if let Some(statics) = refresh.statics {
+            self.static_entities[..statics.len()].clone_from_slice(&statics);
+        }
     }
 
     fn world_config_row(&self) -> usize {

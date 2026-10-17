@@ -439,6 +439,7 @@ pub struct FrameHost {
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
     pub(crate) allskins_command: qa_core::primitives::NameId,
+    pub(crate) skins_command: qa_core::primitives::NameId,
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
@@ -1348,6 +1349,9 @@ impl FrameHost {
         let allskins_command = console
             .register_external("allskins")
             .ok_or("player skin command registration")?;
+        let skins_command = console
+            .register_external("skins")
+            .ok_or("player skin command registration")?;
         let software_waterwarp = console
             .cvars
             .bind("sw_waterwarp", q2_context)
@@ -1477,6 +1481,7 @@ impl FrameHost {
             player_model_options,
             player_skin_views,
             allskins_command,
+            skins_command,
             software_waterwarp,
             curve_error,
             model_lod,

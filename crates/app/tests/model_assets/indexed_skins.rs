@@ -174,7 +174,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             translation,
             |_, _| panic!("invalid skin reached backend")
         ),
-        Err(IndexedSkinError::Rejected(_))
+        Err(IndexedSkinError::InvalidSource(_))
     ));
     fixture.vfs.take_lookup_count();
     assert!(matches!(
@@ -199,7 +199,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             translation,
             |_, _| panic!()
         ),
-        Err(IndexedSkinError::Rejected(_))
+        Err(IndexedSkinError::InvalidSource(_))
     ));
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
 }

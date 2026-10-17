@@ -6,7 +6,7 @@ use qa_gameplay::rules::appearance::PlayerModelRules;
 use std::fmt::Write;
 
 mod indexed;
-pub(crate) use indexed::PlayerSkinViews;
+pub(crate) use indexed::{PlayerSkinRefresh, PlayerSkinViews};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PlayerModelOptions {
@@ -243,7 +243,7 @@ impl PlayerBindings {
         assets: &mut ClientAssets<'_>,
     ) -> u32 {
         if self.color_rules.is_some() {
-            return self.refresh_indexed(configs, assets);
+            return self.refresh_indexed(configs, assets).unwrap_or(1);
         }
         for row in &mut self.bodies {
             row.body = None;

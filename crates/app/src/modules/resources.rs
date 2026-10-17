@@ -86,6 +86,106 @@ impl FrameHost {
         }
     }
 
+    fn refresh_player_skins(&mut self, preparer: &mut dyn crate::renderer::AssetPreparer) {
+        if !self.player_skin_views.refresh_pending()
+            || self
+                .runtime
+                .scene
+                .as_mut()
+                .is_none_or(|scene| !scene.asset_stage_ready())
+            || self
+                .runtime
+                .model_assets
+                .as_ref()
+                .is_none_or(|owner| owner.initial_registration())
+        {
+            return;
+        }
+        let Some(request) = self.player_skin_views.take_refresh() else {
+            return;
+        };
+        let Some(mut owner) = self.runtime.model_assets.take() else {
+            return;
+        };
+        let mut vfs = std::mem::take(&mut self.runtime.vfs);
+        let ui_fullscreen = self.renderer_fullscreen_ui();
+        let result = (|| {
+            let mounts: Vec<_> = vfs
+                .mounts()
+                .filter(|mount| mount.kind == qa_content::vfs::MountKind::Directory)
+                .map(|mount| mount.id)
+                .collect();
+            for mount in mounts {
+                vfs.refresh_directory_prefix(mount, b"skins")
+                    .map_err(|error| format!("skin directory refresh: {error}"))?;
+            }
+            owner.image_transaction(
+                &vfs,
+                None,
+                crate::model_assets::ImageRefreshMode::IndexedSkins,
+                |owner, _| {
+                    let mut clients = Vec::new();
+                    for (index, resources) in self.runtime.client_resources.iter().enumerate() {
+                        let Some(resources) = resources else {
+                            continue;
+                        };
+                        let Some(seat) = self.runtime.snapshots[index]
+                            .as_ref()
+                            .and_then(|binding| binding.seat())
+                        else {
+                            continue;
+                        };
+                        clients.push((
+                            index,
+                            resources.state.stage_indexed_skin_refresh(
+                                &self.player_skin_views,
+                                &request,
+                                &self.console.cvars,
+                                seat,
+                                owner,
+                                &vfs,
+                                preparer,
+                                ui_fullscreen,
+                            )?,
+                        ));
+                    }
+                    let scene = self
+                        .runtime
+                        .scene
+                        .as_mut()
+                        .ok_or("missing skin refresh scene")?;
+                    let capacity = scene.stage_model_choices(
+                        owner.assets(),
+                        None,
+                        owner.catalog().max_choice_nodes(),
+                    )?;
+                    // Backend success is the last fallible operation. The receipt
+                    // owns all staged frontend and CLIENT selectors until then.
+                    preparer.prepare_assets(owner.assets(), Some(capacity.limits()))?;
+                    capacity.commit();
+                    for (index, client) in clients {
+                        if let Some(resources) = self.runtime.client_resources[index].as_mut() {
+                            resources.state.commit_image_refresh(client);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        })();
+        self.runtime.vfs = vfs;
+        self.runtime.model_assets = Some(owner);
+        match result {
+            Ok(()) => self.player_skin_views.commit_refresh(request),
+            Err(error) => {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("Player skin refresh rejected: {error}\n"));
+            }
+        }
+    }
+
     pub fn register_client_model_assets(
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
@@ -96,6 +196,9 @@ impl FrameHost {
                 .server
                 .events
                 .console_formatted(format_args!("Image search setting rejected: {error}\n"));
+        }
+        if let Some(preparer) = preparer.as_mut() {
+            self.refresh_player_skins(&mut **preparer);
         }
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {
@@ -128,8 +231,15 @@ impl FrameHost {
                         resources.state.layout.rules,
                     ) != 0,
                 });
-            self.player_skin_views
-                .update(&self.console.cvars, &mut resources.state.models);
+            let seat = runtime.snapshots[index]
+                .as_ref()
+                .and_then(|binding| binding.seat());
+            self.player_skin_views.update(
+                &self.console.cvars,
+                seat,
+                &mut resources.state.models,
+                None,
+            );
             let rejected = if let Some(owner) = runtime.model_assets.as_mut() {
                 if owner.initial_registration() {
                     resources.state.models.register_player_models(

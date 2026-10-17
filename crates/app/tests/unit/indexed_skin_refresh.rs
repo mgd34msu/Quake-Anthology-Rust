@@ -143,7 +143,7 @@ impl IndexedFixture {
                 translation,
                 |_, _| panic!("invalid source prepared")
             ),
-            Err(IndexedSkinError::Rejected(_))
+            Err(IndexedSkinError::InvalidSource(_))
         ));
         assert!(matches!(
             owner.prepare_indexed_skin(

@@ -119,7 +119,7 @@ mod player_models;
 use player_models::ClientAssets;
 pub use player_models::PeerMetadata;
 pub(crate) use player_models::PlayerModelOptions;
-pub(crate) use player_models::PlayerSkinViews;
+pub(crate) use player_models::{PlayerSkinRefresh, PlayerSkinViews};
 
 /// Received peer metadata shares the player-binding rows. Entity values and
 /// history remain in the connection's existing snapshot ring.

@@ -49,16 +49,22 @@ const SERVER: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::SocketAd
 ));
 
 struct NativeServer {
+    client: ClientId,
+    peer: std::net::SocketAddr,
     channel: Channel,
     commands: Commands,
     time: EventTime,
 }
 impl NativeServer {
-    fn load(protocol: Protocol) -> Self {
+    fn load(protocol: Protocol, client: ClientId) -> Self {
         let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
         channel.configure_snapshots(protocol).unwrap();
-        channel.set_qport(27000);
+        channel.set_qport(27000 + client.0 as u16);
+        let mut peer = SERVER;
+        peer.set_port(peer.port() + client.0 as u16);
         Self {
+            client,
+            peer,
             channel,
             commands: Commands::load(protocol, 8192),
             time: EventTime::default(),
@@ -94,7 +100,7 @@ impl NativeServer {
                             time: self.time,
                             kind: EventKind::Packet {
                                 socket: SOCKET,
-                                from: Peer::Socket(SERVER),
+                                from: Peer::Socket(self.peer),
                                 bytes,
                             },
                         })
@@ -115,7 +121,18 @@ struct Source {
     reject_publication: bool,
     publication_attempts: usize,
     source_palette: PaletteId,
-    server: NativeServer,
+    servers: Vec<NativeServer>,
+    reject_assets: bool,
+    asset_attempts: usize,
+}
+impl qa_app::renderer::AssetPreparer for Source {
+    fn prepare_assets(&mut self, assets: &Assets, limits: Option<Limits>) -> Result<(), String> {
+        self.asset_attempts += 1;
+        if self.reject_assets {
+            return Err("reject player-skin preparation".to_owned());
+        }
+        qa_app::renderer::AssetPreparer::prepare_assets(&mut self.assets, assets, limits)
+    }
 }
 impl FrameSource for Source {
     fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
@@ -159,15 +176,17 @@ impl FrameSource for Source {
         Ok(configuration)
     }
     fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
-        Some(&mut self.assets)
+        Some(self)
     }
     fn begin_frame(&mut self) -> Duration {
         self.time += 100;
         Duration::from_millis(self.time)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
-        self.server.time = EventTime::from_milliseconds(self.time);
-        self.server.flush(queue);
+        for server in &mut self.servers {
+            server.time = EventTime::from_milliseconds(self.time);
+            server.flush(queue);
+        }
         queue
             .push(SysEvent {
                 time: EventTime::from_milliseconds(self.time),
@@ -183,8 +202,12 @@ impl FrameSource for Source {
     }
     fn present(&mut self) {}
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
-        assert_eq!((socket, to), (SOCKET, SERVER));
-        self.server.receive(bytes);
+        assert_eq!(socket, SOCKET);
+        self.servers
+            .iter_mut()
+            .find(|server| server.peer == to)
+            .expect("owned fixture server")
+            .receive(bytes);
         true
     }
     fn render(
@@ -259,7 +282,7 @@ fn loading_model(
     } else {
         Protocol::QuakeWorld28
     };
-    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut runtime = Runtime::load(2, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let loaded = qa_app::map::read(&runtime.vfs, "maps/player.bsp")
         .unwrap()
@@ -301,7 +324,7 @@ fn loading_model(
     .unwrap();
     runtime.scene = Some(scene);
     runtime.model_assets = Some(owner);
-    let mut server = NativeServer::load(protocol);
+    let mut server = NativeServer::load(protocol, CLIENT);
     let mut channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
     channel.set_qport(27000);
     let client = runtime
@@ -425,7 +448,9 @@ fn loading_model(
         reject_publication: false,
         publication_attempts: 0,
         source_palette: palette,
-        server,
+        servers: vec![server],
+        reject_assets: false,
+        asset_attempts: 0,
     };
     (fixture, host, source)
 }
@@ -448,7 +473,7 @@ fn peers(host: &mut FrameHost, source: &mut Source, updates: &[PeerUpdate<'_>]) 
     for &update in updates {
         length += outputs::peer_update(protocol, update, &mut bytes[length..]).unwrap();
     }
-    send(host, &mut source.server, &bytes[..length]);
+    send(host, &mut source.servers[0], &bytes[..length]);
 }
 
 fn protocol(host: &FrameHost) -> Protocol {
@@ -458,12 +483,14 @@ fn protocol(host: &FrameHost) -> Protocol {
 fn send(host: &mut FrameHost, server: &mut NativeServer, bytes: &[u8]) {
     let time = EventTime(host.time.0 + 1_000_000);
     server.time = time;
-    if protocol(host) == Protocol::QuakeWorld28 {
+    if server.commands.protocol == Protocol::QuakeWorld28 {
         let mut outgoing = frame_source::Sink::default();
-        assert!(
-            host.runtime
-                .send_client_command(CLIENT, &UserCmd::default(), time, &mut outgoing)
-        );
+        assert!(host.runtime.send_client_command(
+            server.client,
+            &UserCmd::default(),
+            time,
+            &mut outgoing
+        ));
         for packet in outgoing.packets {
             assert!(packet.admitted);
             server.receive(&packet.bytes);
@@ -474,7 +501,7 @@ fn send(host: &mut FrameHost, server: &mut NativeServer, bytes: &[u8]) {
     drain(host, time);
     let mut outgoing = frame_source::Sink::default();
     host.runtime
-        .send_client_command(CLIENT, &UserCmd::default(), time, &mut outgoing);
+        .send_client_command(server.client, &UserCmd::default(), time, &mut outgoing);
     for packet in outgoing.packets {
         assert!(packet.admitted);
         server.receive(&packet.bytes);
@@ -493,6 +520,18 @@ struct CapturedImage {
     prepared: [u32; 2],
 }
 
+fn assert_same_image_contents(actual: [CapturedImage; 3], expected: [CapturedImage; 3]) {
+    for (actual, expected) in actual.into_iter().zip(expected) {
+        assert_eq!(
+            actual,
+            CapturedImage {
+                id: actual.id,
+                ..expected
+            }
+        );
+    }
+}
+
 fn draw(host: &FrameHost, software: bool) -> [CapturedImage; 3] {
     draw_at(host, software, 1.0)
 }
@@ -507,9 +546,22 @@ fn draw_colormaps(
     time: f64,
     colormaps: [u32; 3],
 ) -> [CapturedImage; 3] {
+    draw_client_colormaps(host, CLIENT, software, time, colormaps)
+}
+
+fn draw_client_colormaps(
+    host: &FrameHost,
+    client: ClientId,
+    software: bool,
+    time: f64,
+    colormaps: [u32; 3],
+) -> [CapturedImage; 3] {
     let owner = host.runtime.model_assets.as_ref().unwrap();
     let assets = owner.assets();
-    let protocol = protocol(host);
+    let protocol = host.runtime.snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .protocol;
     let rules = protocol.rule_set();
     let projection = EntityProjection::load(protocol);
     let player_projection = PlayerProjection::load(protocol, &[]);
@@ -520,7 +572,7 @@ fn draw_colormaps(
                 appearance: EntityAppearance {
                     source: rules,
                     models: [
-                        ModelRef::native(ResourceNamespace::Client(CLIENT), ordinal),
+                        ModelRef::native(ResourceNamespace::Client(client), ordinal),
                         None,
                         None,
                         None,
@@ -537,10 +589,12 @@ fn draw_colormaps(
     let nq = entity_rows::<{ states::NQ_ENTITY_WORDS }>(&projection, &records);
     let qw = entity_rows::<{ states::QW_ENTITY_WORDS }>(&projection, &records);
     if protocol == Protocol::NetQuake15 {
-        let resources = host.runtime.client_resources[0].as_ref().unwrap();
+        let resources = host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap();
         for (row, expected) in nq.iter().zip(&records) {
             let mut decoded = EntityRecord::default();
-            assert!(projection.apply(&row.words, &mut decoded, ResourceNamespace::Client(CLIENT)));
+            assert!(projection.apply(&row.words, &mut decoded, ResourceNamespace::Client(client)));
             assert_eq!(
                 decoded.appearance.models, expected.appearance.models,
                 "NQ model roundtrip"
@@ -614,10 +668,12 @@ fn draw_colormaps(
         })
     };
     let player = PlayerState::default();
-    let resources = host.runtime.client_resources[0].as_ref().unwrap();
+    let resources = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap();
     let input = ClientSceneInput {
         synchronization: None,
-        client: CLIENT,
+        client,
         current: Some(current),
         previous: None,
         projection: &projection,
@@ -743,7 +799,7 @@ fn entity_rows<const N: usize>(
 }
 
 fn prepare(host: &mut FrameHost, source: &mut Source) {
-    host.register_client_model_assets(Some(&mut source.assets));
+    host.register_client_model_assets(Some(source));
 }
 
 fn assert_bound_models(host: &FrameHost, phase: &str) {
@@ -862,7 +918,9 @@ fn received_qw_peers_translate_only_the_registered_player_and_keep_local_skins()
         .unwrap();
     host.execute_commands_with_driver(&mut qa_app::modules::Driver::cache_only());
     prepare(&mut host, &mut source);
-    assert_eq!(draw(&host, true), translated);
+    let restored = draw(&host, true);
+    assert_same_image_contents(restored, translated);
+    assert_eq!(restored[2], translated[2]);
 }
 
 #[test]
@@ -1302,3 +1360,6 @@ fn embedded_color_choices_keep_the_selected_md5_sidecar_and_native_group_timing(
     assert!(gl[0].skeletal && gl[1].skeletal);
     assert_eq!((gl[0].first, gl[0].second), (19, 99));
 }
+
+#[path = "client_qw_skins/refresh.rs"]
+mod refresh;
