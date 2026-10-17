@@ -1652,3 +1652,58 @@ fn peer_and_cue_publishers_keep_their_own_capture_alignment_and_single_rejection
     assert_eq!(ring.sequence_range(), before);
     assert!(ring.is_empty());
 }
+
+#[test]
+fn file_chunks_target_only_the_selected_native_client_and_preserve_empty_vs_unavailable() {
+    let mut ring = EventRing::load(4, 5, 4, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let peer = ring.bind(OutputTarget::Client(ClientId(2))).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let local = ring.bind(OutputTarget::Local(ClientId(1))).unwrap();
+    let receiver = EntityId {
+        slot: 8,
+        generation: 19,
+    };
+    ring.file_chunk(ClientId(1), receiver, 23, Some(&[0, 128, 255]))
+        .unwrap();
+    ring.file_chunk(ClientId(1), receiver, 0, Some(&[]))
+        .unwrap();
+    ring.file_chunk(ClientId(1), receiver, 0, None).unwrap();
+    for excluded in [peer, presentation, module, local] {
+        assert!(consume(&mut ring, excluded, OutputSubmission::BestEffort).is_empty());
+    }
+    let mut batch = ring.batch(client).unwrap();
+    for (percent, expected) in [
+        (23, Some(&[0, 128, 255][..])),
+        (0, Some(&[][..])),
+        (0, None),
+    ] {
+        let record = ring.next(&mut batch).unwrap();
+        assert_eq!(record.delivery, None);
+        let FrameEvent::FileChunk {
+            receiver: captured,
+            percent: actual,
+            available,
+            payload,
+        } = record.event
+        else {
+            panic!("file chunk");
+        };
+        assert_eq!(captured, receiver);
+        assert_eq!((actual, available), (percent, expected.is_some()));
+        let mut stored = [0; 8];
+        assert_eq!(
+            ring.texts.copy_payload(payload, &mut stored),
+            Some(expected.unwrap_or(&[]))
+        );
+        assert!(ring.submit(client, record.sequence, OutputSubmission::BestEffort));
+    }
+    assert!(ring.is_empty());
+    let before = ring.sequence_range();
+    assert_eq!(
+        ring.file_chunk(ClientId(1), receiver, 101, Some(b"x")),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.sequence_range(), before);
+}

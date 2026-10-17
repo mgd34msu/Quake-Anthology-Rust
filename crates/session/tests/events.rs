@@ -16,7 +16,10 @@ impl EventConsumer for Consumer {
                 0
             }
             FrameEvent::Sound(s) => s.sound.0,
-            FrameEvent::StaticEntity(_) | FrameEvent::Music(_) | FrameEvent::PeerInfo { .. } => 0,
+            FrameEvent::StaticEntity(_)
+            | FrameEvent::Music(_)
+            | FrameEvent::PeerInfo { .. }
+            | FrameEvent::FileChunk { .. } => 0,
             FrameEvent::Effect(e) => e.effect.0,
             FrameEvent::Native(_) | FrameEvent::GameState { .. } => {
                 u32::from(record.delivery.unwrap().module.0)

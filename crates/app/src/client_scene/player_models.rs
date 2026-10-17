@@ -60,6 +60,7 @@ pub(super) struct PlayerBindings {
     options: PlayerModelOptions,
     indexed_options: indexed::IndexedPlayerOptions,
     indexed_model: Option<u32>,
+    skin_revision: u64,
     indexed_models: Box<[Option<IndexedPlayerSkin>]>,
     pub(super) dirty: bool,
     pub(super) cold_dirty: bool,
@@ -87,6 +88,7 @@ impl PlayerBindings {
             options: Default::default(),
             indexed_options: Default::default(),
             indexed_model: None,
+            skin_revision: 0,
             indexed_models: if color_rules.is_some() {
                 vec![
                     None;
@@ -172,6 +174,7 @@ impl PlayerBindings {
         self.cold_dirty = true;
     }
     pub(super) fn clear_received(&mut self) {
+        self.skin_revision = self.skin_revision.wrapping_add(1);
         for row in &mut self.bodies {
             row.metadata = PeerMetadata::default();
         }
@@ -586,6 +589,7 @@ impl ClientModelBindings {
         if let Some(players) = &mut self.players
             && (players.rows.contains(index) || players.models.contains(index))
         {
+            players.skin_revision = players.skin_revision.wrapping_add(1);
             players.dirty = true;
             players.cold_dirty = true;
         }

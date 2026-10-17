@@ -14,6 +14,7 @@ pub mod output_namespace;
 pub mod profile;
 pub mod render_settings;
 pub mod renderer;
+mod server_downloads;
 pub mod snapshots;
 pub mod startup;
 mod transport;
@@ -48,6 +49,7 @@ pub struct Runtime {
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub snapshots: Box<[Option<snapshots::SnapshotBinding>]>,
     pub client_resources: Box<[Option<client_resources::ClientResources>]>,
+    pub(crate) server_downloads: Box<[server_downloads::ServerDownload]>,
     pub client_collision: Box<[Option<client_collision::ClientCollision>]>,
     pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
@@ -358,6 +360,9 @@ impl Runtime {
             renderer_configuration: None,
             scene: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
+            server_downloads: std::iter::repeat_with(server_downloads::ServerDownload::default)
+                .take(max_clients)
+                .collect(),
             client_collision: std::iter::repeat_with(|| None).take(max_clients).collect(),
             native_numbers: std::iter::repeat_with(|| {
                 output_namespace::NativeNumbers::load(
@@ -659,6 +664,7 @@ impl Runtime {
         }
         self.retain_peer_numbers(self.server.clients[slot].entity);
         self.output_duplicates.reset_client(id);
+        self.server_downloads[slot].reset();
         self.server.disconnect(id);
         self.network.unbind(id);
         self.loopback.clear_client(id);

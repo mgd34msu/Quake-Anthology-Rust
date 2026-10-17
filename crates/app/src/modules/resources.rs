@@ -206,6 +206,7 @@ impl FrameHost {
             if let Some(preparer) = preparer.as_mut() {
                 self.refresh_player_skins(&mut **preparer);
             }
+            self.advance_qw_skin_downloads();
         }
         let mut published = false;
         for index in 0..self.runtime.client_resources.len() {

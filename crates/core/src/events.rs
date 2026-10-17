@@ -38,6 +38,14 @@ pub enum FrameEvent {
         user_id: i32,
         payload: NativePayload,
     },
+    /// Engine-produced file bytes. The native adapter selects framing and
+    /// retirement policy; an unavailable file differs from a real empty block.
+    FileChunk {
+        receiver: EntityId,
+        percent: u8,
+        available: bool,
+        payload: NativePayload,
+    },
     /// One native SERVER state body, retained until its channel acknowledges
     /// receipt. Framing is regenerated without changing its command watermark.
     GameState {
@@ -452,6 +460,7 @@ impl EventRing {
             }
             FrameEvent::Native(payload)
             | FrameEvent::PeerInfo { payload, .. }
+            | FrameEvent::FileChunk { payload, .. }
             | FrameEvent::GameState { payload, .. } => {
                 pages = payload.pages;
             }
@@ -514,7 +523,7 @@ impl EventRing {
                     _ => c.target == Some(target),
                 })
                 && match event {
-                    FrameEvent::PeerInfo { .. } => {
+                    FrameEvent::PeerInfo { .. } | FrameEvent::FileChunk { .. } => {
                         matches!(c.target, Some(OutputTarget::Client(_)))
                     }
                     _ => true,
@@ -648,7 +657,7 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
-        self.publish_payload(Some(delivery), wire, captures, FrameEvent::Native)
+        self.publish_payload(None, Some(delivery), wire, captures, FrameEvent::Native)
     }
     pub fn game_state(
         &mut self,
@@ -661,7 +670,7 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
-        self.publish_payload(Some(delivery), bytes, &[], |payload| {
+        self.publish_payload(None, Some(delivery), bytes, &[], |payload| {
             FrameEvent::GameState {
                 payload,
                 command_sequence,
@@ -679,13 +688,38 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
-        self.publish_payload(None, info, captures, |payload| FrameEvent::PeerInfo {
+        self.publish_payload(None, None, info, captures, |payload| FrameEvent::PeerInfo {
             user_id,
             payload,
         })
     }
+    pub fn file_chunk(
+        &mut self,
+        client: ClientId,
+        receiver: EntityId,
+        percent: u8,
+        bytes: Option<&[u8]>,
+    ) -> Result<u64, EventStorageError> {
+        if percent > 100 {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_payload(
+            Some(OutputTarget::Client(client)),
+            None,
+            bytes.unwrap_or(&[]),
+            &[],
+            |payload| FrameEvent::FileChunk {
+                receiver,
+                percent,
+                available: bytes.is_some(),
+                payload,
+            },
+        )
+    }
     fn publish_payload(
         &mut self,
+        target: Option<OutputTarget>,
         delivery: Option<NativeDelivery>,
         wire: &[u8],
         captures: &[u8],
@@ -696,7 +730,7 @@ impl EventRing {
             self.rejected_publications += 1;
         })?;
         let sequence = self.tail;
-        self.store_slot(sequence, None, delivery, event(payload), texts, 0);
+        self.store_slot(sequence, target, delivery, event(payload), texts, 0);
         self.commit_slot(sequence);
         self.tail += 1;
         self.retire();

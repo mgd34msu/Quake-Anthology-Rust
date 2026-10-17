@@ -27,6 +27,7 @@ impl EventConsumer for Consumer {
             }
             FrameEvent::Native(event)
             | FrameEvent::PeerInfo { payload: event, .. }
+            | FrameEvent::FileChunk { payload: event, .. }
             | FrameEvent::GameState { payload: event, .. } => {
                 std::hint::black_box(event);
             }

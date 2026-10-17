@@ -37,6 +37,7 @@ pub(crate) struct PlayerSkinViews {
     native: [NativeSkinViews; 5],
     all: [FixedText<128>; qa_core::sys_events::SeatId::COUNT],
     pending: Option<PlayerSkinRefresh>,
+    download_requests: [u64; qa_core::sys_events::SeatId::COUNT],
 }
 impl PlayerSkinViews {
     pub(crate) fn bind(cvars: &qa_console::cvars::Cvars) -> Result<Self, String> {
@@ -62,10 +63,15 @@ impl PlayerSkinViews {
             native: [q1?, qw?, q2?, rr?, q3?],
             all: Default::default(),
             pending: None,
+            download_requests: [0; qa_core::sys_events::SeatId::COUNT],
         })
     }
     pub(crate) fn request_refresh(&mut self) {
         self.pending.get_or_insert_with(Default::default);
+    }
+    pub(crate) fn request_download_refresh(&mut self, seat: qa_core::sys_events::SeatId) {
+        self.download_requests[seat.index()] = self.download_requests[seat.index()].wrapping_add(1);
+        self.request_refresh();
     }
     pub(crate) fn set_all(&mut self, seat: qa_core::sys_events::SeatId, name: &[u8]) {
         let length = name.len().min(FixedText::<128>::CAPACITY - 1);
@@ -80,9 +86,10 @@ impl PlayerSkinViews {
         self.pending.take()
     }
     pub(crate) fn commit_refresh(&mut self, request: PlayerSkinRefresh) {
-        for (current, next) in self.all.iter_mut().zip(request.all) {
+        for (seat, (current, next)) in self.all.iter_mut().zip(request.all).enumerate() {
             if let Some(next) = next {
                 *current = next;
+                self.download_requests[seat] = self.download_requests[seat].wrapping_add(1);
             }
         }
     }
@@ -99,6 +106,21 @@ impl PlayerSkinViews {
         if players.color_rules.is_none() {
             return;
         }
+        let options = self.options(cvars, seat, players, refresh);
+        if !players.indexed_options.same(&options) {
+            players.indexed_options = options;
+            players.dirty = true;
+            players.cold_dirty = true;
+        }
+    }
+
+    fn options(
+        &self,
+        cvars: &qa_console::cvars::Cvars,
+        seat: Option<qa_core::sys_events::SeatId>,
+        players: &PlayerBindings,
+        refresh: Option<&PlayerSkinRefresh>,
+    ) -> IndexedPlayerOptions {
         let views = &self.native[players.source as usize];
         let mut options = IndexedPlayerOptions {
             all: seat
@@ -118,11 +140,47 @@ impl PlayerSkinViews {
             let bytes = base.as_str().as_bytes();
             let _ = options.base.set_bytes(&bytes[..bytes.len().min(127)]);
         }
-        if !players.indexed_options.same(&options) {
-            players.indexed_options = options;
-            players.dirty = true;
-            players.cold_dirty = true;
+        options
+    }
+
+    pub(crate) fn download_stamp(
+        &self,
+        cvars: &qa_console::cvars::Cvars,
+        seat: qa_core::sys_events::SeatId,
+        models: &ClientModelBindings,
+    ) -> Option<([u64; 4], usize, bool)> {
+        let players = models.players.as_ref()?;
+        if players.source != RuleSetId::QuakeWorld || !players.color_rules?.external_skins {
+            return None;
         }
+        let views = &self.native[players.source as usize];
+        Some((
+            [
+                players.skin_revision,
+                self.download_requests[seat.index()],
+                cvars.view_generation(views.base),
+                cvars.view_generation(views.no_skins),
+            ],
+            players.rows.count as usize * 2,
+            cvars.numeric(views.no_skins).unwrap_or(0.0) == 0.0,
+        ))
+    }
+
+    pub(crate) fn download_paths(
+        &self,
+        cvars: &qa_console::cvars::Cvars,
+        seat: qa_core::sys_events::SeatId,
+        models: &ClientModelBindings,
+        configs: &ConfigStrings,
+        slot: usize,
+    ) -> Option<(FixedText<64>, Option<FixedText<64>>)> {
+        let players = models.players.as_ref()?;
+        let info = configs.config(players.rows.get(slot)?)?;
+        if info.text.is_empty() {
+            return None;
+        }
+        let options = self.options(cvars, Some(seat), players, None);
+        skin_paths(&options, info.text)
     }
 }
 
@@ -140,6 +198,29 @@ fn skin_name(bytes: &[u8]) -> FixedText<15> {
     let mut name = FixedText::default();
     let _ = name.set_bytes(&bytes[..end]);
     name
+}
+
+fn skin_paths(
+    options: &IndexedPlayerOptions,
+    info: &[u8],
+) -> Option<(FixedText<64>, Option<FixedText<64>>)> {
+    let requested = info_value(info, b"skin", false).map_or(&b""[..], |range| &info[range]);
+    let selected = skin_name(if !options.all.as_bytes().is_empty() {
+        options.all.as_bytes()
+    } else if !requested.is_empty() {
+        requested
+    } else {
+        options.base.as_bytes()
+    });
+    let base = skin_name(options.base.as_bytes());
+    Some((
+        player_path(&["skins/", selected.as_str(), ".pcx"])?,
+        if selected.as_bytes() != base.as_bytes() {
+            Some(player_path(&["skins/", base.as_str(), ".pcx"])?)
+        } else {
+            None
+        },
+    ))
 }
 
 impl PlayerBindings {
@@ -178,7 +259,6 @@ impl PlayerBindings {
             return Ok(0);
         };
         self.indexed_models.fill(None);
-        let base = skin_name(self.indexed_options.base.as_bytes());
         let upload_extent = rules.upload_extent(
             profile.image_settings.max_dimension,
             self.indexed_options.player_mip,
@@ -217,15 +297,8 @@ impl PlayerBindings {
                     && self.indexed_options.no_skins != 1.0
                     && self.indexed_model == Some(ordinal as u32);
                 let result = if external {
-                    let requested = info_value(info.text, b"skin", false)
-                        .map_or(&b""[..], |range| &info.text[range]);
-                    let selected = skin_name(if !self.indexed_options.all.as_bytes().is_empty() {
-                        self.indexed_options.all.as_bytes()
-                    } else if !requested.is_empty() {
-                        requested
-                    } else {
-                        self.indexed_options.base.as_bytes()
-                    });
+                    let (selected, fallback) = skin_paths(&self.indexed_options, info.text)
+                        .ok_or("player skin path capacity")?;
                     let translation = IndexedSkinTranslation {
                         palette,
                         target: profile.palette,
@@ -248,13 +321,10 @@ impl PlayerBindings {
                         padding: 0,
                         omit_last_row: true,
                     };
-                    let mut prepare = |name: &str| {
-                        let path = player_path(&["skins/", name, ".pcx"]).ok_or_else(|| {
-                            IndexedSkinError::Rejected("player skin path capacity".into())
-                        })?;
+                    let mut prepare = |path: &str| {
                         owner.prepare_indexed_skin(
                             vfs,
-                            path.as_str(),
+                            path,
                             *profile,
                             *ui_fullscreen,
                             layout,
@@ -263,10 +333,12 @@ impl PlayerBindings {
                         )
                     };
                     match prepare(selected.as_str()) {
-                        Err(IndexedSkinError::Missing)
-                            if selected.as_bytes() != base.as_bytes() =>
-                        {
-                            prepare(base.as_str())
+                        Err(IndexedSkinError::Missing) => {
+                            if let Some(fallback) = fallback {
+                                prepare(fallback.as_str())
+                            } else {
+                                Err(IndexedSkinError::Missing)
+                            }
                         }
                         result => result,
                     }

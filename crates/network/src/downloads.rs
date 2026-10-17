@@ -1,5 +1,5 @@
 //! Borrowed native file blocks. Transfer ownership and filesystem policy stay
-//! with the receiving CLIENT; the packet decoder retains no extra byte queue.
+//! with app callers; the packet decoder retains no extra byte queue.
 use crate::{
     commands::packet::Protocol,
     message::{Encoding, Error as MessageError, ErrorKind, Reader, Writer},
@@ -52,6 +52,7 @@ pub enum Error {
     Opcode,
     Size,
     Percent,
+    Path,
 }
 impl From<MessageError> for Error {
     fn from(error: MessageError) -> Self {
@@ -123,4 +124,72 @@ pub fn write_chunk(
         writer.write_data(bytes)?;
     }
     Ok(writer.size())
+}
+
+/// Native downloads name a bounded relative content path, never an OS path.
+pub fn validate_path(name: &[u8]) -> Result<(), Error> {
+    if name.is_empty()
+        || name.len() >= 64
+        || !name.contains(&b'/')
+        || name.windows(2).any(|pair| pair == b"..")
+        || name
+            .iter()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !b"_+./-".contains(byte))
+        || name
+            .split(|byte| *byte == b'/')
+            .any(|part| part.is_empty() || part == b"." || part == b"..")
+        || name.first() == Some(&b'.')
+    {
+        return Err(Error::Path);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetCategory {
+    Package,
+    Map,
+    Texture,
+    Skin,
+    Player,
+    Model,
+    Sound,
+    Picture,
+    Other,
+}
+
+/// Classify the already canonical content path for native permission cvars.
+pub fn category(protocol: Protocol, name: &[u8]) -> AssetCategory {
+    if [b".pak".as_slice(), b".pkz", b".pk3"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    {
+        AssetCategory::Package
+    } else {
+        content_category(protocol, name)
+    }
+}
+
+/// Native SERVER permissions follow the directory even for package suffixes.
+pub fn content_category(protocol: Protocol, name: &[u8]) -> AssetCategory {
+    if name.starts_with(b"maps/") {
+        AssetCategory::Map
+    } else if name.starts_with(b"textures/") || name.starts_with(b"env/") {
+        AssetCategory::Texture
+    } else if name.starts_with(b"skins/") {
+        AssetCategory::Skin
+    } else if name.starts_with(b"players/") {
+        AssetCategory::Player
+    } else if name.starts_with(b"models/")
+        || name.starts_with(b"progs/")
+        || protocol == Protocol::Quake2Repro1038 && name.starts_with(b"sprites/")
+    {
+        AssetCategory::Model
+    } else if name.starts_with(b"sound/") {
+        AssetCategory::Sound
+    } else if name.starts_with(b"pics/") {
+        AssetCategory::Picture
+    } else {
+        AssetCategory::Other
+    }
 }

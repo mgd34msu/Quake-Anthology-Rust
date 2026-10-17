@@ -17,6 +17,19 @@ pub(crate) struct DownloadConfig {
 struct Request {
     name: FixedText<64>,
     mount: MountId,
+    purpose: Purpose,
+}
+#[derive(Clone, Copy)]
+enum Purpose {
+    Manual,
+    Skin,
+}
+
+struct SkinPass {
+    stamp: Option<[u64; 4]>,
+    cursor: usize,
+    attempted: qa_core::bits::BitSet,
+    paused: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -58,9 +71,11 @@ pub(crate) struct ClientDownload {
     config: DownloadConfig,
     transfer: Transfer,
     permissions: Option<DownloadViews>,
+    skin_pass: Option<SkinPass>,
 }
 
 struct DownloadViews {
+    protocol: Protocol,
     allow: qa_console::cvars::View,
     categories: [qa_console::cvars::View; 4],
 }
@@ -94,6 +109,7 @@ impl DownloadViews {
                 .ok_or("missing CLIENT download category")
         });
         Ok(Some(Self {
+            protocol,
             allow,
             categories: [maps?, models?, sounds?, players?],
         }))
@@ -103,40 +119,43 @@ impl DownloadViews {
             return false;
         }
         let allowed = |index| cvars.numeric(self.categories[index]).unwrap_or(0.0) != 0.0;
-        if [b".pak".as_slice(), b".pkz", b".pk3"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-        {
-            return (0..4).all(allowed);
-        }
-        if [b"maps/".as_slice(), b"env/", b"textures/"]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        {
-            allowed(0)
-        } else if name.starts_with(b"models/") || name.starts_with(b"progs/") {
-            allowed(1)
-        } else if name.starts_with(b"sound/") {
-            allowed(2)
-        } else if name.starts_with(b"players/") || name.starts_with(b"skins/") {
-            allowed(3)
-        } else {
-            true
+        use qa_network::downloads::AssetCategory;
+        match qa_network::downloads::category(self.protocol, name) {
+            AssetCategory::Package => (0..4).all(allowed),
+            AssetCategory::Map | AssetCategory::Texture => allowed(0),
+            AssetCategory::Model => allowed(1),
+            AssetCategory::Sound => allowed(2),
+            AssetCategory::Skin | AssetCategory::Player => allowed(3),
+            AssetCategory::Picture | AssetCategory::Other => true,
         }
     }
 }
 
 impl ClientDownload {
-    fn new(config: DownloadConfig, permissions: Option<DownloadViews>) -> Self {
+    fn new(config: DownloadConfig, permissions: Option<DownloadViews>, protocol: Protocol) -> Self {
         Self {
             config,
             transfer: Transfer::Idle,
             permissions,
+            skin_pass: (protocol == Protocol::QuakeWorld28).then(|| SkinPass {
+                stamp: None,
+                cursor: 0,
+                attempted: qa_core::bits::BitSet::empty(
+                    protocol.resource_layout().players.count as usize * 2,
+                ),
+                paused: false,
+            }),
         }
     }
 
     pub(crate) fn close(&mut self) {
         self.transfer = Transfer::Idle;
+        if let Some(pass) = &mut self.skin_pass {
+            pass.stamp = None;
+            pass.cursor = 0;
+            pass.attempted.clear();
+            pass.paused = false;
+        }
     }
 
     pub(crate) fn reject(&mut self) {
@@ -154,6 +173,7 @@ impl ClientDownload {
         name: &[u8],
         vfs: &Vfs,
         cvars: &qa_console::cvars::Cvars,
+        purpose: Purpose,
     ) -> Result<(), String> {
         if matches!(
             self.transfer,
@@ -163,16 +183,7 @@ impl ClientDownload {
         ) {
             return Err("a download or its outstanding reply is still active".into());
         }
-        if name.is_empty()
-            || name.len() >= 64
-            || !name.contains(&b'/')
-            || name.iter().any(|byte| {
-                !(byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'+' | b'.' | b'/' | b'-'))
-            })
-            || name.windows(2).any(|pair| pair == b"..")
-        {
-            return Err("invalid native download path".into());
-        }
+        qa_network::downloads::validate_path(name).map_err(|_| "invalid native download path")?;
         let text = std::str::from_utf8(name).map_err(|_| "download path is not UTF-8")?;
         let canonical = qa_core::names::canonical_path(text);
         let mut name = FixedText::default();
@@ -188,7 +199,14 @@ impl ClientDownload {
         } else {
             self.config.game
         };
-        self.open(Request { name, mount }, vfs)
+        self.open(
+            Request {
+                name,
+                mount,
+                purpose,
+            },
+            vfs,
+        )
     }
 
     fn allowed(&self, name: &[u8], cvars: &qa_console::cvars::Cvars) -> bool {
@@ -229,6 +247,9 @@ impl ClientDownload {
     }
 
     fn stop(&mut self) {
+        if let Some(pass) = &mut self.skin_pass {
+            pass.paused = true;
+        }
         let previous = std::mem::replace(&mut self.transfer, Transfer::Idle);
         self.transfer = match previous {
             Transfer::Active {
@@ -250,6 +271,9 @@ impl ClientDownload {
     }
 
     fn retry(&mut self, vfs: &Vfs, cvars: &qa_console::cvars::Cvars) -> Result<(), String> {
+        if let Some(pass) = &mut self.skin_pass {
+            pass.paused = false;
+        }
         let previous = std::mem::replace(&mut self.transfer, Transfer::Idle);
         match previous {
             Transfer::Paused {
@@ -269,13 +293,15 @@ impl ClientDownload {
                 draining: false,
                 ..
             }
-            | Transfer::Failed(request) => match self.start(request.name.as_bytes(), vfs, cvars) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    self.transfer = Transfer::Failed(request);
-                    Err(error)
+            | Transfer::Failed(request) => {
+                match self.start(request.name.as_bytes(), vfs, cvars, request.purpose) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        self.transfer = Transfer::Failed(request);
+                        Err(error)
+                    }
                 }
-            },
+            }
             Transfer::RefreshFailed { request, bytes } => {
                 self.transfer = Transfer::Published { request, bytes };
                 Ok(())
@@ -285,6 +311,99 @@ impl ClientDownload {
                 Ok(())
             }
         }
+    }
+
+    fn advance_skins(
+        &mut self,
+        stamp: [u64; 4],
+        count: usize,
+        enabled: bool,
+        vfs: &Vfs,
+        cvars: &qa_console::cvars::Cvars,
+        mut paths: impl FnMut(usize) -> Option<(FixedText<64>, Option<FixedText<64>>)>,
+    ) -> Result<(), String> {
+        let Some(pass) = &mut self.skin_pass else {
+            return Ok(());
+        };
+        let explicit_request = pass.stamp.is_some_and(|previous| previous[1] != stamp[1]);
+        if pass.stamp != Some(stamp) {
+            pass.stamp = Some(stamp);
+            pass.cursor = 0;
+            pass.attempted.clear();
+        }
+        if explicit_request
+            && matches!(
+                self.transfer,
+                Transfer::Failed(Request {
+                    purpose: Purpose::Manual,
+                    ..
+                })
+            )
+        {
+            self.transfer = Transfer::Idle;
+        }
+        if !enabled
+            || pass.paused
+            || !matches!(
+                self.transfer,
+                Transfer::Idle
+                    | Transfer::Finished { .. }
+                    | Transfer::Failed(Request {
+                        purpose: Purpose::Skin,
+                        ..
+                    })
+            )
+        {
+            return Ok(());
+        }
+        let mut rejected = None;
+        while self
+            .skin_pass
+            .as_ref()
+            .is_some_and(|pass| pass.cursor < count)
+        {
+            let Some(pass) = &mut self.skin_pass else {
+                break;
+            };
+            let cursor = pass.cursor;
+            pass.cursor += 1;
+            let Some((selected, fallback)) = paths(cursor / 2) else {
+                continue;
+            };
+            let name = if cursor % 2 == 0 {
+                selected
+            } else {
+                if vfs.open(selected.as_bytes()).is_some() {
+                    continue;
+                }
+                let Some(fallback) = fallback else {
+                    continue;
+                };
+                fallback
+            };
+            let duplicate = (0..cursor)
+                .filter(|&prior| pass.attempted.contains(prior))
+                .any(|prior| {
+                    let Some((selected, fallback)) = paths(prior / 2) else {
+                        return false;
+                    };
+                    let previous = if prior % 2 == 0 {
+                        Some(selected)
+                    } else {
+                        fallback
+                    };
+                    previous.is_some_and(|previous| previous.as_bytes() == name.as_bytes())
+                });
+            if duplicate || vfs.open(name.as_bytes()).is_some() {
+                continue;
+            }
+            pass.attempted.insert(cursor);
+            match self.start(name.as_bytes(), vfs, cvars, Purpose::Skin) {
+                Ok(()) => return rejected.map_or(Ok(()), Err),
+                Err(error) => rejected = Some(error),
+            }
+        }
+        rejected.map_or(Ok(()), Err)
     }
 
     fn pending(&self) -> Option<FixedText<80>> {
@@ -501,7 +620,7 @@ impl crate::host::FrameHost {
             .and_then(|binding| binding.seat())
             .ok_or("downloads require a local CLIENT seat")?;
         let permissions = DownloadViews::bind(&self.console.cvars, protocol, seat)?;
-        resources.downloads = Some(ClientDownload::new(config, permissions));
+        resources.downloads = Some(ClientDownload::new(config, permissions, protocol));
         Ok(())
     }
 
@@ -583,7 +702,12 @@ impl crate::host::FrameHost {
                 if args.len() != 2 {
                     return Err("usage: download <datafile>".into());
                 }
-                downloads.start(args.get_bytes(1), &self.runtime.vfs, &self.console.cvars)?;
+                downloads.start(
+                    args.get_bytes(1),
+                    &self.runtime.vfs,
+                    &self.console.cvars,
+                    Purpose::Manual,
+                )?;
             }
             1 => {
                 let mut text = FixedText::<192>::default();
@@ -659,6 +783,76 @@ impl crate::host::FrameHost {
                 }
             }
         }
+    }
+
+    pub(crate) fn advance_qw_skin_downloads(&mut self) {
+        for index in 0..self.runtime.client_resources.len() {
+            let Some(binding) = self.runtime.snapshots[index].as_ref() else {
+                continue;
+            };
+            if binding.protocol != Protocol::QuakeWorld28 || binding.presentation_closed() {
+                continue;
+            }
+            let Some(seat) = binding.seat() else {
+                continue;
+            };
+            if self.runtime.client_resources[index]
+                .as_ref()
+                .is_some_and(|resources| resources.downloads.is_none())
+            {
+                let Some(config) = self.download_defaults else {
+                    continue;
+                };
+                if let Err(error) = self.configure_client_downloads(
+                    ClientId(index as u32),
+                    config.game,
+                    config.skins,
+                    config.maximum_bytes,
+                    config.buffer_bytes,
+                ) {
+                    let _ = self.runtime.server.events.console_formatted(format_args!(
+                        "Automatic skin download unavailable: {error}\n"
+                    ));
+                    continue;
+                }
+            }
+            let Some(resources) = self.runtime.client_resources[index].as_mut() else {
+                continue;
+            };
+            let Some(downloads) = resources.downloads.as_mut() else {
+                continue;
+            };
+            let Some((stamp, count, enabled)) = self.player_skin_views.download_stamp(
+                &self.console.cvars,
+                seat,
+                &resources.state.models,
+            ) else {
+                continue;
+            };
+            let result = downloads.advance_skins(
+                stamp,
+                count,
+                enabled,
+                &self.runtime.vfs,
+                &self.console.cvars,
+                |slot| {
+                    self.player_skin_views.download_paths(
+                        &self.console.cvars,
+                        seat,
+                        &resources.state.models,
+                        &resources.state.configs,
+                        slot,
+                    )
+                },
+            );
+            if let Err(error) = result {
+                let _ =
+                    self.runtime.server.events.console_formatted(format_args!(
+                        "Automatic skin download rejected: {error}\n"
+                    ));
+            }
+        }
+        self.flush_client_downloads();
     }
 
     pub(crate) fn finish_client_downloads(&mut self) {

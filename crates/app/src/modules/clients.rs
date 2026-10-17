@@ -920,6 +920,12 @@ impl FrameHost {
             if quakec::setinfo(self, id, rules, args, driver)? {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
+            if self
+                .runtime
+                .server_download_command(id, args, &self.console.cvars)
+            {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
             let Some((api, _)) = api else {
                 return Ok(std::ops::ControlFlow::Continue(()));
             };

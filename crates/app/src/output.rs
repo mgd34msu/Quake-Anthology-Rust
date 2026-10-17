@@ -174,6 +174,7 @@ pub(crate) fn dispatch_frame(
     {
         runtime.publish_audio_retirements();
     }
+    runtime.flush_server_downloads();
     runtime.publish_presentation_resets();
     runtime.publish_userinfos();
     let server = &mut runtime.server;
@@ -381,7 +382,8 @@ pub(crate) fn dispatch_frame(
                         // there is no second presentation copy of their payload.
                         FrameEvent::Native(_)
                         | FrameEvent::GameState { .. }
-                        | FrameEvent::PeerInfo { .. } => true,
+                        | FrameEvent::PeerInfo { .. }
+                        | FrameEvent::FileChunk { .. } => true,
                         FrameEvent::Hud(_) => true,
                         FrameEvent::ViewFeedback(_) => true,
                         FrameEvent::ConfigString { .. } => true,
@@ -482,6 +484,7 @@ pub(crate) fn dispatch_frame(
                         FrameEvent::ServerCommand { .. }
                             | FrameEvent::ConfigString { .. }
                             | FrameEvent::GameState { .. }
+                            | FrameEvent::FileChunk { .. }
                     )
                 {
                     counts.native_unsupported += 1;
@@ -489,11 +492,74 @@ pub(crate) fn dispatch_frame(
                 }
                 // Resource-dependent services keep their source order while
                 // allowing later configstrings to publish their prerequisites.
-                if waiting_resources && !matches!(record.event, FrameEvent::ConfigString { .. }) {
+                if waiting_resources
+                    && !matches!(
+                        record.event,
+                        FrameEvent::ConfigString { .. } | FrameEvent::FileChunk { .. }
+                    )
+                {
                     return OutputSubmission::Unsent;
                 }
                 let mut resource_pending = false;
-                let submission = if let FrameEvent::PeerInfo { user_id, payload } = record.event {
+                let submission = if let FrameEvent::FileChunk {
+                    receiver,
+                    percent,
+                    available,
+                    payload,
+                } = record.event
+                {
+                    if receiver != client.entity {
+                        return OutputSubmission::BestEffort;
+                    }
+                    let Some(stored) = texts.copy_payload(payload, &mut runtime.output_bytes)
+                    else {
+                        counts.stale_texts += 1;
+                        runtime.server_downloads[slot].reset();
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(connection) = runtime
+                        .network
+                        .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                    else {
+                        runtime.server_downloads[slot].reset();
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(protocol) = connection
+                        .commands
+                        .as_ref()
+                        .map(|commands| commands.protocol)
+                    else {
+                        runtime.server_downloads[slot].reset();
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Ok(length) = qa_network::downloads::write_chunk(
+                        protocol,
+                        qa_network::downloads::Chunk {
+                            percent,
+                            bytes: available.then_some(&stored[..payload.len()]),
+                        },
+                        &mut runtime.output_native_bytes,
+                    ) else {
+                        counts.native_unsupported += 1;
+                        runtime.server_downloads[slot].reset();
+                        return OutputSubmission::BestEffort;
+                    };
+                    match native::reliable(
+                        &mut connection.channel,
+                        &runtime.output_native_bytes[..length],
+                    ) {
+                        Ok(submission) => {
+                            counts.native_messages +=
+                                u64::from(submission != OutputSubmission::Unsent);
+                            submission
+                        }
+                        Err(()) => {
+                            counts.native_unsupported += 1;
+                            runtime.server_downloads[slot].reset();
+                            OutputSubmission::BestEffort
+                        }
+                    }
+                } else if let FrameEvent::PeerInfo { user_id, payload } = record.event {
                     let Some(stored) = texts.copy_payload(payload, &mut runtime.output_bytes)
                     else {
                         counts.stale_texts += 1;
@@ -1039,6 +1105,7 @@ pub(crate) fn dispatch_frame(
             // Keep channel sequence/receipt counters: an old ACK cannot name a
             // new receipt. Update every local lifetime guard in the same pass.
             client.output = Some(resumed);
+            runtime.server_downloads[slot].reset();
             if let Some(connection) = runtime
                 .network
                 .get_mut(client_id, qa_core::loopback::Endpoint::Server)

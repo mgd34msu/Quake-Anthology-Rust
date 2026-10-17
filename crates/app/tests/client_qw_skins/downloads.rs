@@ -592,3 +592,212 @@ fn mixed_clients(protocol: Protocol) {
             .is_connected()
     );
 }
+
+fn set_pair_skin(host: &mut FrameHost, source: &mut Source, skin: &[u8]) {
+    peers(
+        host,
+        source,
+        &[
+            PeerUpdate::SetInfo {
+                slot: 0,
+                key: b"skin",
+                value: skin,
+            },
+            PeerUpdate::SetInfo {
+                slot: 1,
+                key: b"skin",
+                value: skin,
+            },
+        ],
+    );
+}
+
+#[test]
+fn automatic_skin_pass_preserves_manual_priority_deduplicates_peers_and_reuses_refresh() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host, &mut source);
+    prepare(&mut host, &mut source);
+    configure(&mut host, CLIENT, 4096);
+    command(
+        &mut host,
+        &mut source,
+        SeatId::FIRST,
+        "download skins/manual.bin\n",
+    );
+    assert_eq!(
+        received(&source.servers[0], b"download skins/manual.bin"),
+        1
+    );
+    set_pair_skin(&mut host, &mut source, b"automatic");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/automatic.pcx"),
+        0
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 100,
+            bytes: Some(b"manual completion"),
+        },
+    );
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/automatic.pcx"),
+        1
+    );
+    let before = draw(&host, true);
+    assert_eq!((before[0].first, before[1].first), (48, 80));
+    let bytes = support::pcx_dimensions(4, 2, 18);
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 50,
+            bytes: Some(&bytes[..768]),
+        },
+    );
+    step(&mut host, &mut source);
+    assert!(file(&host, b"skins/automatic.pcx").is_none());
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 100,
+            bytes: Some(&bytes[768..]),
+        },
+    );
+    step(&mut host, &mut source);
+    assert_eq!(file(&host, b"skins/automatic.pcx").unwrap(), bytes);
+    let after = draw(&host, true);
+    assert_eq!((after[0].first, after[1].first), (34, 66));
+    assert_eq!(after[2], before[2]);
+    for _ in 0..4 {
+        step(&mut host, &mut source);
+    }
+    assert_eq!(
+        received(&source.servers[0], b"download skins/automatic.pcx"),
+        1
+    );
+    assert_eq!(received(&source.servers[0], b"nextdl"), 1);
+}
+
+#[test]
+fn automatic_refusals_wait_for_an_explicit_pass_and_native_noskins_controls_requests() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host, &mut source);
+    prepare(&mut host, &mut source);
+    configure(&mut host, CLIENT, 4096);
+    set_pair_skin(&mut host, &mut source, b"refused");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/refused.pcx"),
+        1
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 0,
+            bytes: None,
+        },
+    );
+    for _ in 0..4 {
+        step(&mut host, &mut source);
+    }
+    assert_eq!(
+        received(&source.servers[0], b"download skins/refused.pcx"),
+        1
+    );
+    command(&mut host, &mut source, SeatId::FIRST, "skins\n");
+    assert_eq!(
+        received(&source.servers[0], b"download skins/refused.pcx"),
+        2
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 0,
+            bytes: None,
+        },
+    );
+    setting(&mut host, "cl_noskins", "1");
+    set_pair_skin(&mut host, &mut source, b"blocked");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/blocked.pcx"),
+        0
+    );
+    setting(&mut host, "cl_noskins", "2");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/blocked.pcx"),
+        0
+    );
+    setting(&mut host, "cl_noskins", "0");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/blocked.pcx"),
+        1
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 0,
+            bytes: None,
+        },
+    );
+}
+
+#[test]
+fn explicit_skin_pass_can_supersede_a_terminal_manual_failure() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host, &mut source);
+    prepare(&mut host, &mut source);
+    configure(&mut host, CLIENT, 4096);
+    command(
+        &mut host,
+        &mut source,
+        SeatId::FIRST,
+        "download skins/manual-miss.bin\n",
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 0,
+            bytes: None,
+        },
+    );
+    set_pair_skin(&mut host, &mut source, b"explicit");
+    step(&mut host, &mut source);
+    assert_eq!(
+        received(&source.servers[0], b"download skins/explicit.pcx"),
+        0,
+        "passive peer changes retain the manual retry target"
+    );
+    command(&mut host, &mut source, SeatId::FIRST, "skins\n");
+    assert_eq!(
+        received(&source.servers[0], b"download skins/explicit.pcx"),
+        1
+    );
+    chunk(
+        &mut host,
+        &mut source,
+        0,
+        Chunk {
+            percent: 0,
+            bytes: None,
+        },
+    );
+}

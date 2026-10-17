@@ -1342,7 +1342,8 @@ fn console_step(
                         host.player_skin_views
                             .set_all(context.seat, scratch.arguments().get_bytes(1));
                     } else {
-                        host.player_skin_views.request_refresh();
+                        host.player_skin_views
+                            .request_download_refresh(context.seat);
                     }
                 } else {
                     let _ = host

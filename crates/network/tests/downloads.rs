@@ -205,3 +205,61 @@ fn connection_parser_delivers_blocks_and_following_services_in_native_order() {
         assert_eq!(rejected, 1);
     }
 }
+
+#[test]
+fn shared_download_paths_and_categories_keep_native_content_boundaries() {
+    use downloads::AssetCategory::*;
+    for name in [
+        b"skins/name.pcx".as_slice(),
+        b"models/a+b_1-2.md2",
+        b"maps/name.bsp",
+    ] {
+        assert_eq!(downloads::validate_path(name), Ok(()));
+    }
+    for name in [
+        b"/maps/a".as_slice(),
+        b"maps/../a",
+        b"maps/a..b",
+        b"maps//a",
+        b"maps/./a",
+        b"maps/a/",
+        b"maps\\a",
+        b"maps/a:b",
+        b"maps/a\0b",
+        b"a",
+        b".maps/a",
+    ] {
+        assert_eq!(downloads::validate_path(name), Err(Error::Path));
+    }
+    let mut longest = [b'a'; 64];
+    longest[4] = b'/';
+    assert_eq!(downloads::validate_path(&longest[..63]), Ok(()));
+    assert_eq!(downloads::validate_path(&longest), Err(Error::Path));
+    for protocol in SEQUENTIAL {
+        assert_eq!(downloads::category(protocol, b"maps/a.pk3"), Package);
+        assert_eq!(downloads::content_category(protocol, b"maps/a.pk3"), Map);
+        for (name, expected) in [
+            (b"maps/a.bsp".as_slice(), Map),
+            (b"env/a.tga", Texture),
+            (b"textures/a.wal", Texture),
+            (b"skins/a.pcx", Skin),
+            (b"players/a/b.pcx", Player),
+            (b"progs/a.mdl", Model),
+            (b"models/a.md2", Model),
+            (b"sound/a.wav", Sound),
+            (b"pics/a.pcx", Picture),
+            (b"other/a.txt", Other),
+            (b"packs/a.pk3", Package),
+        ] {
+            assert_eq!(downloads::category(protocol, name), expected);
+        }
+    }
+    assert_eq!(
+        downloads::category(Protocol::Quake2Repro1038, b"sprites/a.sp2"),
+        Model
+    );
+    assert_eq!(
+        downloads::category(Protocol::Quake2_34, b"sprites/a.sp2"),
+        Other
+    );
+}
