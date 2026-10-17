@@ -585,6 +585,7 @@ const fn server() -> CallTable {
     t.entries[33] = scalar!(q3_entity_contact::<false>);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
+    t.entries[38] = scalar!(file_list);
     t.entries[42] = scalar!(snap_vector);
     t.entries[43] = scalar!(q3_trace::<true>);
     t.entries[44] = scalar!(q3_entity_contact::<true>);
@@ -719,6 +720,7 @@ const fn ui() -> CallTable {
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
+    t.entries[17] = scalar!(file_list);
     t.entries[18] = value!(register_model);
     t.entries[19] = value!(register_skin);
     t.entries[20] = value!(register_shader::<false>);
@@ -2757,6 +2759,44 @@ fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
     Ok(0)
+}
+fn file_list(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_content::vfs::{FileListQuery, FileListRequest};
+    let mut path = qa_core::text::FixedText::<{ qa_core::names::MAX_PATH_BYTES }>::default();
+    let mut extension = qa_core::text::FixedText::<{ qa_core::names::MAX_PATH_BYTES }>::default();
+    if !c.null_pointer(0)? {
+        path.set_bytes(c.memory.cstring(c.pointer(0)?)?)
+            .map_err(|_| CallError::Text)?;
+    }
+    if !c.null_pointer(1)? {
+        extension
+            .set_bytes(c.memory.cstring(c.pointer(1)?)?)
+            .map_err(|_| CallError::Text)?;
+    }
+    let request = if c.null_pointer(0)? {
+        FileListRequest::Empty
+    } else if path.as_bytes().eq_ignore_ascii_case(b"$modlist") {
+        FileListRequest::Mods {
+            base_game: b"baseq3",
+            package_suffix: b".pk3",
+            maximum: 4095,
+        }
+    } else {
+        FileListRequest::Files(FileListQuery {
+            path: path.as_bytes(),
+            extension: extension.as_bytes(),
+            maximum: 4095,
+        })
+    };
+    let output = c.pointer(2)?;
+    let capacity = c.length(3)?;
+    (ENGINE_CALLS.file_list)(
+        c.services,
+        c.context.module,
+        request,
+        c.memory.read_mut(output, capacity)?,
+    )
+    .map(|count| count as u64)
 }
 fn file_seek(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // QVM and Microsoft long are signed 32-bit; a System V x86-64 long

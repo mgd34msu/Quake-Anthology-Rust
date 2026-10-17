@@ -444,6 +444,11 @@ pub struct Modules {
     input: [input::Recipients; qa_core::sys_events::SeatId::COUNT],
 }
 impl Modules {
+    pub(crate) fn prepare_files(&mut self, vfs: &qa_content::vfs::Vfs) -> Result<(), String> {
+        self.storage
+            .prepare_files(vfs)
+            .map_err(|error| format!("module filesystem preparation: {error:?}"))
+    }
     pub(crate) fn for_each_native_sound(
         &self,
         mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
@@ -744,6 +749,9 @@ impl FrameHost {
             .collect();
         let mut storage = ServiceStorage::load_modules(&services, &host.console.cvars)
             .map_err(|e| format!("module services: {e:?}"))?;
+        storage
+            .prepare_files(&host.runtime.vfs)
+            .map_err(|e| format!("module filesystem preparation: {e:?}"))?;
         for (ordinal, mut request) in requests.into_iter().enumerate() {
             let index = usize::from(request.context.module.0);
             let entity = host

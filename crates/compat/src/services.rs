@@ -382,6 +382,7 @@ pub struct ServiceStorage {
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
+    file_listing: qa_content::vfs::FileListing,
     no_areas: CvarHandle,
     max_clients: CvarHandle,
     zombie_time: CvarHandle,
@@ -394,6 +395,16 @@ pub struct ServiceStorage {
 }
 
 impl ServiceStorage {
+    pub fn prepare_files(&mut self, vfs: &Vfs) -> Result<(), CallError> {
+        self.file_listing
+            .prepare(vfs)
+            .map_err(|_| CallError::Capacity)
+    }
+
+    fn file_search(&self, module: ModuleId) -> Option<&qa_content::vfs::SearchView> {
+        self.range(module)
+            .and_then(|range| range.file_search.as_ref())
+    }
     /// Bind an immutable source order at module load/restart. Rebinding closes
     /// this module's old handles; None restores the default shared search.
     pub fn set_file_search(
@@ -568,6 +579,7 @@ impl ServiceStorage {
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
                 .map_err(|_| CallError::Capacity)?,
             reader: qa_formats::archive::ArchiveReader::default(),
+            file_listing: qa_content::vfs::FileListing::default(),
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
             max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
             zombie_time: cvars.find("sv_zombietime").ok_or(CallError::Cvar)?,
@@ -1416,6 +1428,12 @@ pub struct EngineCallTable {
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<u64, CallError>,
+    pub file_list: fn(
+        &mut EngineServices<'_>,
+        ModuleId,
+        qa_content::vfs::FileListRequest<'_>,
+        &mut [u8],
+    ) -> Result<usize, CallError>,
     pub file_read:
         fn(&mut EngineServices<'_>, ModuleId, u32, &mut [u8]) -> Result<usize, CallError>,
     pub file_seek:
@@ -1827,6 +1845,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     file_open: |s, m, p| s.file_open(m, p),
     entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, m, p| s.file_length(m, p),
+    file_list: |s, m, q, out| s.file_list(m, q, out),
     file_read: |s, m, h, b| s.file_read(m, h, b),
     file_seek: |s, m, h, from| s.file_seek(m, h, from),
     file_close: |s, m, h| s.file_close(m, h),
@@ -2423,15 +2442,83 @@ impl EngineServices<'_> {
         Ok((ordinal as u32 + 1, length))
     }
     fn file_reference(&self, owner: ModuleId, path: &[u8]) -> Result<FileRef, CallError> {
-        let view = self
-            .storage
-            .range(owner)
-            .and_then(|range| range.file_search.as_ref());
+        let view = self.storage.file_search(owner);
         self.vfs.open_with(path, view).ok_or(CallError::File)
     }
     pub fn file_length(&self, owner: ModuleId, path: &[u8]) -> Result<u64, CallError> {
         let reference = self.file_reference(owner, path)?;
         self.vfs.length(&reference).map_err(|_| CallError::File)
+    }
+    pub fn file_list(
+        &mut self,
+        owner: ModuleId,
+        request: qa_content::vfs::FileListRequest<'_>,
+        output: &mut [u8],
+    ) -> Result<usize, CallError> {
+        use qa_content::vfs::{FileListName, FileListRequest};
+        if output.is_empty() {
+            return Err(CallError::Text);
+        }
+        self.storage.range(owner).ok_or(CallError::File)?;
+        let view = self.storage.file_search(owner).cloned();
+        output[0] = 0;
+        let mut used = 0;
+        let result = match request {
+            FileListRequest::Empty => Ok(0),
+            FileListRequest::Files(query) => {
+                self.storage
+                    .file_listing
+                    .visit(self.vfs, view.as_ref(), query, |name| {
+                        write_list_row(output, &mut used, &[name])
+                    })
+            }
+            FileListRequest::Mods {
+                base_game,
+                package_suffix,
+                maximum,
+            } => {
+                let reader = &mut self.storage.reader;
+                self.storage.file_listing.visit_mods(
+                    self.vfs,
+                    view.as_ref(),
+                    base_game,
+                    package_suffix,
+                    maximum,
+                    |name, description| {
+                        let mut text = [0; 48];
+                        let length = description
+                            .as_ref()
+                            .and_then(|file| {
+                                self.vfs.read_range_reusing(file, 0, &mut text, reader).ok()
+                            })
+                            .unwrap_or(0);
+                        let description = if length != 0 {
+                            qa_core::text::until_nul(&text[..length])
+                        } else {
+                            name
+                        };
+                        write_list_row(
+                            output,
+                            &mut used,
+                            &[
+                                FileListName {
+                                    bytes: name,
+                                    trailing_slash: false,
+                                },
+                                FileListName {
+                                    bytes: description,
+                                    trailing_slash: false,
+                                },
+                            ],
+                        )
+                    },
+                )
+            }
+        };
+        result.map_err(|error| match error {
+            qa_content::vfs::VfsError::Capacity => CallError::Capacity,
+            _ => CallError::File,
+        })
     }
     fn file_index(&self, owner: ModuleId, handle: u32) -> Result<usize, CallError> {
         let slot = self.storage.file_index(owner, handle)?;
@@ -2515,4 +2602,33 @@ impl qa_world::collision::NativeModelNames for ServiceStorage {
     fn model_name(&self, module: ModuleId, index: u32) -> Option<(&[u8], u64)> {
         self.configstring(module, index as usize).ok()
     }
+}
+
+// Native FS_GetFileList reserves one extra byte per NUL-delimited field and
+// leaves bytes after the last written terminator untouched.
+fn write_list_row(
+    output: &mut [u8],
+    used: &mut usize,
+    fields: &[qa_content::vfs::FileListName<'_>],
+) -> bool {
+    let bytes = fields.iter().map(|name| name.len() + 1).sum::<usize>();
+    if used
+        .checked_add(bytes)
+        .and_then(|end| end.checked_add(fields.len()))
+        .is_none_or(|end| end >= output.len())
+    {
+        return false;
+    }
+    for name in fields {
+        let end = *used + name.bytes.len();
+        output[*used..end].copy_from_slice(name.bytes);
+        *used = end;
+        if name.trailing_slash {
+            output[*used] = b'/';
+            *used += 1;
+        }
+        output[*used] = 0;
+        *used += 1;
+    }
+    true
 }

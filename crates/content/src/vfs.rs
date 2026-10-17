@@ -2,6 +2,9 @@ use qa_core::{
     names::{MAX_PATH_BYTES, NameTable},
     primitives::IndexSpan,
 };
+mod list;
+pub use list::{FileListName, FileListQuery, FileListRequest, FileListing};
+
 use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -21,6 +24,14 @@ pub struct MountId(pub u32);
 pub struct SearchView {
     owner: Arc<()>,
     ranks: Arc<[u32]>,
+}
+impl SearchView {
+    fn rank(&self, mount: MountId) -> Option<u32> {
+        self.ranks
+            .get(mount.0 as usize)
+            .copied()
+            .filter(|rank| *rank != u32::MAX)
+    }
 }
 
 /// Borrow the shared file table through one caller-selected search view.
@@ -49,20 +60,35 @@ impl ReadView<'_> {
 pub struct PreparedArchive {
     archive: Arc<Archive>,
     members: Box<[(usize, Box<[u8]>)]>,
+    directories: Arc<[DirectoryName]>,
 }
 impl PreparedArchive {
     pub fn read(file: Arc<ReadFile>) -> Result<Self, VfsError> {
         Self::new(Arc::new(Archive::parse(file)?))
     }
     fn new(archive: Arc<Archive>) -> Result<Self, VfsError> {
-        let members = archive
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| !entry.directory)
-            .map(|(ordinal, entry)| Ok((ordinal, normalize(&entry.name)?.into_boxed_slice())))
-            .collect::<Result<_, VfsError>>()?;
-        Ok(Self { archive, members })
+        let mut members = Vec::new();
+        let mut directories = Vec::new();
+        for (ordinal, entry) in archive.entries.iter().enumerate() {
+            if entry.directory {
+                // Unused root/traversal directory markers were never file
+                // admissions. Keep only valid virtual directory metadata.
+                if let Ok(name) = normalize(entry.name.strip_suffix(b"/").unwrap_or(&entry.name)) {
+                    directories.push(DirectoryName {
+                        ordinal,
+                        name: name.into_boxed_slice(),
+                        original_name: entry.name.clone(),
+                    });
+                }
+            } else {
+                members.push((ordinal, normalize(&entry.name)?.into_boxed_slice()));
+            }
+        }
+        Ok(Self {
+            archive,
+            members: members.into_boxed_slice(),
+            directories: directories.into(),
+        })
     }
     pub fn archive(&self) -> &Archive {
         &self.archive
@@ -147,12 +173,27 @@ pub struct MountInfo {
     settings_only: bool,
     product: Option<MountId>,
     package: Option<PackagePrecedence>,
+    contents: Option<MountContents>,
+}
+#[derive(Clone)]
+struct MountContents {
+    files: Arc<[u32]>,
     archive: Option<Arc<Archive>>,
+    directories: Arc<[DirectoryName]>,
+}
+struct DirectoryName {
+    ordinal: usize,
+    name: Box<[u8]>,
+    original_name: Box<[u8]>,
+}
+fn loose_directories(mut directories: Vec<DirectoryName>) -> Arc<[DirectoryName]> {
+    directories.sort_unstable_by(|a, b| a.original_name.cmp(&b.original_name));
+    directories.into()
 }
 impl MountInfo {
     fn retire(&mut self) {
         self.active = false;
-        self.archive = None;
+        self.contents = None;
     }
     fn precedence(&self) -> MountPrecedence {
         MountPrecedence {
@@ -357,8 +398,19 @@ impl Vfs {
         settings_only: bool,
     ) -> Result<MountId, VfsError> {
         let root = files::canonicalize(path)?;
-        let entries = scan_directory(&root, self.mounts.len(), settings_only, &[])?;
-        self.publish(root, priority, settings_only, None, entries, None)
+        let scanned = scan_directory(&root, self.mounts.len(), settings_only, &[])?;
+        self.publish(
+            root,
+            priority,
+            settings_only,
+            None,
+            scanned.files,
+            MountContents {
+                files: Arc::from([]),
+                archive: None,
+                directories: loose_directories(scanned.directories),
+            },
+        )
     }
 
     /// Refresh only loose files below this canonical directory prefix. Empty
@@ -376,11 +428,32 @@ impl Vfs {
             normalize(prefix)?
         };
         let scanned = scan_directory(&mount.path, id.0 as usize, mount.settings_only, &prefix)?;
+        let previous = mount.contents.as_ref().ok_or(VfsError::Handle)?;
+        let directories = previous
+            .directories
+            .iter()
+            .filter(|directory| {
+                !below_prefix(&directory.name, &prefix) && !below_prefix(&prefix, &directory.name)
+            })
+            .map(|directory| DirectoryName {
+                ordinal: directory.ordinal,
+                name: directory.name.clone(),
+                original_name: directory.original_name.clone(),
+            })
+            .chain(scanned.directories)
+            .collect::<Vec<_>>();
         let (entries, generation) = self.stage_entries(
             |entry| entry.mount == id.0 as usize && below_prefix(&entry.name, &prefix),
-            scanned,
+            scanned.files,
         )?;
-        let index = FileIndex::build(&entries, &self.mounts)?;
+        let mut mounts = self.mounts.clone();
+        mounts[id.0 as usize]
+            .contents
+            .as_mut()
+            .ok_or(VfsError::Handle)?
+            .directories = loose_directories(directories);
+        let index = FileIndex::build(&entries, &mut mounts)?;
+        self.mounts = mounts;
         self.entries = entries;
         self.generation = generation;
         self.install_index(index);
@@ -478,7 +551,11 @@ impl Vfs {
             false,
             product,
             entries,
-            Some(Arc::clone(archive)),
+            MountContents {
+                files: Arc::from([]),
+                archive: Some(Arc::clone(archive)),
+                directories: Arc::clone(&prepared.directories),
+            },
         )
     }
 
@@ -489,12 +566,12 @@ impl Vfs {
         settings_only: bool,
         product: Option<MountId>,
         entries: Vec<Entry>,
-        archive: Option<Arc<Archive>>,
+        contents: MountContents,
     ) -> Result<MountId, VfsError> {
         if self.mounts.len() >= 65536 {
             return Err(VfsError::Capacity);
         }
-        let kind = match archive.as_ref().map(|archive| archive.kind) {
+        let kind = match contents.archive.as_ref().map(|archive| archive.kind) {
             None => MountKind::Directory,
             Some(ArchiveKind::Pak) => MountKind::Pak,
             Some(ArchiveKind::Zip) => MountKind::Pk3,
@@ -524,10 +601,10 @@ impl Vfs {
             settings_only,
             product,
             package,
-            archive,
+            contents: Some(contents),
         });
         let (entries, generation) = self.stage_entries(|_| false, entries)?;
-        let index = FileIndex::build(&entries, &mounts)?;
+        let index = FileIndex::build(&entries, &mut mounts)?;
         self.mounts = mounts;
         self.entries = entries;
         self.generation = generation;
@@ -638,8 +715,7 @@ impl Vfs {
                 .iter()
                 .filter_map(|&slot| {
                     let entry = self.entries.get(slot as usize)?.as_ref()?;
-                    let rank = *view.ranks.get(entry.mount)?;
-                    (rank != u32::MAX).then_some((slot, rank))
+                    Some((slot, view.rank(MountId(entry.mount as u32))?))
                 })
                 .min_by_key(|(_, rank)| *rank)
                 .map(|(slot, _)| slot)
@@ -857,6 +933,8 @@ impl Vfs {
         self.mounts
             .get(mount.0 as usize)
             .filter(|mount| mount.active)?
+            .contents
+            .as_ref()?
             .archive
             .as_ref()?
             .q3_checksums()
@@ -902,16 +980,15 @@ impl Vfs {
     /// Cold authority-bound reads can select saved settings even when a product
     /// has a same-named file. The existing winner bindings remain unchanged.
     pub fn files_in_mount(&self, id: MountId) -> impl Iterator<Item = (FileRef, &[u8])> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(move |(slot, entry)| {
-                let entry = entry.as_ref()?;
-                let mount = self.mounts.get(entry.mount)?;
-                if !mount.active || mount.id != id {
-                    return None;
-                }
-                Some((self.reference(slot as u32)?, entry.name.as_ref()))
+        self.mounts
+            .get(id.0 as usize)
+            .filter(|mount| mount.active)
+            .and_then(|mount| mount.contents.as_ref())
+            .into_iter()
+            .flat_map(|contents| contents.files.iter())
+            .filter_map(move |&slot| {
+                let entry = self.entries.get(slot as usize)?.as_ref()?;
+                Some((self.reference(slot)?, entry.name.as_ref()))
             })
     }
     pub fn take_lookup_count(&self) -> u64 {
@@ -946,13 +1023,60 @@ struct FileIndex {
     listing: Vec<u32>,
 }
 impl FileIndex {
-    fn build(entries: &[Option<Arc<Entry>>], mounts: &[MountInfo]) -> Result<Self, VfsError> {
+    fn build(entries: &[Option<Arc<Entry>>], mounts: &mut [MountInfo]) -> Result<Self, VfsError> {
+        for mount in mounts.iter_mut().filter(|mount| mount.active) {
+            let mut slots: Vec<_> = entries
+                .iter()
+                .flatten()
+                .filter(|entry| entry.mount == mount.id.0 as usize)
+                .map(|entry| entry.slot)
+                .collect();
+            slots.sort_unstable_by(|&a, &b| {
+                let a = entries[a as usize].as_deref();
+                let b = entries[b as usize].as_deref();
+                match (a, b) {
+                    (Some(a), Some(b)) if mount.kind == MountKind::Directory => {
+                        a.original_name.cmp(&b.original_name)
+                    }
+                    (Some(a), Some(b)) => a.ordinal.cmp(&b.ordinal),
+                    _ => CmpOrdering::Equal,
+                }
+            });
+            if let Some(contents) = &mut mount.contents {
+                contents.files = slots.into();
+            }
+        }
         let names = NameTable::load(
             entries
                 .iter()
                 .flatten()
                 .filter(|entry| mounts[entry.mount].active)
-                .map(|entry| entry.name.as_ref()),
+                .map(|entry| entry.name.as_ref())
+                .chain(
+                    mounts
+                        .iter()
+                        .filter(|mount| mount.active)
+                        .flat_map(|mount| {
+                            mount.contents.as_ref().into_iter().flat_map(|contents| {
+                                contents
+                                    .directories
+                                    .iter()
+                                    .map(|directory| directory.name.as_ref())
+                            })
+                        }),
+                )
+                .chain(
+                    mounts
+                        .iter()
+                        .filter(|mount| {
+                            mount.active
+                                && !mount.settings_only
+                                && mount.kind == MountKind::Directory
+                        })
+                        .filter_map(|mount| {
+                            mount.path.file_name().map(|name| name.as_encoded_bytes())
+                        }),
+                ),
         )
         .map_err(|_| VfsError::Capacity)?;
         let (candidates, listing) = index_entries(entries, mounts, &names);
@@ -1009,14 +1133,19 @@ fn below_prefix(name: &[u8], prefix: &[u8]) -> bool {
             .is_some_and(|tail| tail.starts_with(b"/"))
 }
 
+struct ScannedEntries {
+    files: Vec<Entry>,
+    directories: Vec<DirectoryName>,
+}
 fn scan_directory(
     root: &Path,
     mount: usize,
     settings_only: bool,
     prefix: &[u8],
-) -> Result<Vec<Entry>, VfsError> {
+) -> Result<ScannedEntries, VfsError> {
     let mut pending = vec![root.to_path_buf()];
     let mut entries = Vec::new();
+    let mut directories = Vec::new();
     while let Some(directory) = pending.pop() {
         for child in files::directory_entries(directory)? {
             if child.kind == EntryKind::Other
@@ -1035,10 +1164,6 @@ fn scan_directory(
             {
                 continue;
             }
-            if child.kind == EntryKind::Directory && prefix.is_empty() {
-                pending.push(child.path);
-                continue;
-            }
             let relative = child.path.strip_prefix(root).map_err(|_| VfsError::Path)?;
             let name = relative
                 .to_str()
@@ -1048,6 +1173,11 @@ fn scan_directory(
             let normalized = normalize(&name)?;
             if child.kind == EntryKind::Directory {
                 if below_prefix(&normalized, prefix) || below_prefix(prefix, &normalized) {
+                    directories.push(DirectoryName {
+                        ordinal: directories.len(),
+                        name: normalized.into_boxed_slice(),
+                        original_name: name.into_boxed_slice(),
+                    });
                     pending.push(child.path);
                 }
                 continue;
@@ -1069,7 +1199,10 @@ fn scan_directory(
             });
         }
     }
-    Ok(entries)
+    Ok(ScannedEntries {
+        files: entries,
+        directories,
+    })
 }
 
 fn compare_packages(a: &[u8], b: &[u8]) -> CmpOrdering {

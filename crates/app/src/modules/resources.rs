@@ -124,6 +124,9 @@ impl FrameHost {
                 vfs.refresh_directory_prefix(mount, b"skins")
                     .map_err(|error| format!("skin directory refresh: {error}"))?;
             }
+            if let Some(modules) = &mut self.modules {
+                modules.prepare_files(&vfs)?;
+            }
             owner.image_transaction(
                 &vfs,
                 None,

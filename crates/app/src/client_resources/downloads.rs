@@ -1934,6 +1934,9 @@ impl crate::host::FrameHost {
                 .refresh_published_file(request.mount, name, package.as_deref())
                 .map_err(|error| error.to_string())
                 .and_then(|package| {
+                    if let Some(modules) = &mut self.modules {
+                        modules.prepare_files(&self.runtime.vfs)?;
+                    }
                     let vfs = &self.runtime.vfs;
                     for (_, path) in vfs
                         .files_in_mount(package.unwrap_or(request.mount))

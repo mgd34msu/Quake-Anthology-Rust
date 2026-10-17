@@ -42,8 +42,9 @@ impl Fixture {
         let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
         let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
         let cvars = Cvars::new().unwrap();
-        let storage =
+        let mut storage =
             ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 1, &cvars).unwrap();
+        storage.prepare_files(&vfs).unwrap();
         let geometry = CollisionStore::new();
         let scratch = geometry.scratch();
         Self {
@@ -254,7 +255,7 @@ fn nonzero_qvm_output_wrapping_to_zero_still_opens_and_writes_the_handle() {
 }
 
 #[test]
-fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
+fn executed_qvm_observes_boolean_existence_and_lists_loaded_files() {
     use Opcode::*;
     let mut f = Fixture::new("executed-qvm");
     let mut operations = vec![(Enter, 64)];
@@ -265,6 +266,11 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
         }
         operations.extend([(Const, -11), (Call, 0), (Store4, 0)]);
     }
+    operations.push((Const, 268));
+    for (index, argument) in [224, 225, 320, 64].into_iter().enumerate() {
+        operations.extend([(Const, argument), (Arg, 8 + index as i32 * 4)]);
+    }
+    operations.extend([(Const, -39), (Call, 0), (Store4, 0)]);
     operations.extend([(Const, 73), (Leave, 64)]);
     let mut code = Vec::new();
     for &(op, argument) in &operations {
@@ -277,6 +283,7 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
     }
     let mut data = [0xa5; 512];
     paths(&mut ModuleMemory::borrow(0, &mut data).unwrap(), 0);
+    data[224..231].copy_from_slice(b"\0.dat\0\0");
     let original = data;
     let mut bytes = Vec::new();
     for word in [
@@ -309,11 +316,13 @@ fn executed_qvm_observes_boolean_existence_and_preserves_guest_data() {
         assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(73));
     }
     assert_eq!(unknown.calls, 0);
-    for (at, expected) in [(256, 1), (260, 1), (264, 0)] {
+    for (at, expected) in [(256, 1), (260, 1), (264, 0), (268, 2)] {
         assert_eq!(vm.memory.read_word(at).unwrap(), expected);
     }
     assert_eq!(vm.memory.read(0, 256).unwrap(), &original[..256]);
-    assert_eq!(vm.memory.read(268, 244).unwrap(), &original[268..]);
+    assert_eq!(vm.memory.read(272, 48).unwrap(), &original[272..320]);
+    assert_eq!(vm.memory.read(320, 19).unwrap(), b"data.dat\0empty.dat\0");
+    assert_eq!(vm.memory.read(339, 173).unwrap(), &original[339..]);
 }
 
 #[test]
@@ -511,4 +520,206 @@ fn module_search_changes_scope_open_and_probe_without_changing_peer_handles() {
     assert_eq!(f.engine().file_length(first, b"only.dat"), Ok(7));
     f.storage.set_file_search(first, None, &f.vfs).unwrap();
     assert_eq!(f.engine().file_length(first, b"data.dat"), Ok(11));
+}
+
+#[test]
+fn native_file_lists_preserve_spare_bytes_and_checked_address_widths() {
+    let mut fixture = Fixture::new("file-lists");
+    for (mode, base) in modes() {
+        for (table, number) in [(&Q3_SERVER, 38), (&Q3_UI, 17)] {
+            let mut bytes = [0xa5; 512];
+            let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+            memory.write(base + 128, b"\0.dat\0").unwrap();
+            for (capacity, count, text) in [
+                (10, 0, b"\0".as_slice()),
+                (11, 1, b"data.dat\0"),
+                (20, 1, b"data.dat\0"),
+                (21, 2, b"data.dat\0empty.dat\0"),
+            ] {
+                memory.write(base + 256, &[0xa5; 64]).unwrap();
+                assert_eq!(
+                    fixture.call(
+                        table,
+                        mode,
+                        &mut memory,
+                        number,
+                        &[base + 128, base + 129, base + 256, capacity]
+                    ),
+                    Ok(count)
+                );
+                assert_eq!(memory.read(base + 256, text.len()).unwrap(), text);
+                assert!(
+                    memory
+                        .read(base + 256 + text.len() as u64, 64 - text.len())
+                        .unwrap()
+                        .iter()
+                        .all(|byte| *byte == 0xa5)
+                );
+            }
+            // Null extension means all files; null path produces an empty list.
+            assert_eq!(
+                fixture.call(
+                    table,
+                    mode,
+                    &mut memory,
+                    number,
+                    &[base + 128, 0, base + 256, 64]
+                ),
+                Ok(2)
+            );
+            assert_eq!(
+                fixture.call(table, mode, &mut memory, number, &[0, 0, base + 256, 64]),
+                Ok(0)
+            );
+            assert_eq!(memory.read(base + 256, 1).unwrap(), b"\0");
+            let before = memory.read(base, 512).unwrap().to_vec();
+            assert!(
+                fixture
+                    .call(
+                        table,
+                        mode,
+                        &mut memory,
+                        number,
+                        &[base + 128, base + 129, base + 500, 64]
+                    )
+                    .is_err()
+            );
+            assert_eq!(memory.read(base, 512).unwrap(), before);
+            assert_eq!(
+                fixture.call(
+                    table,
+                    mode,
+                    &mut memory,
+                    number,
+                    &[base + 128, base + 129, base + 256, 0]
+                ),
+                Err(CallError::Text)
+            );
+            assert_eq!(memory.read(base, 512).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn listing_uses_the_module_search_and_load_time_publication_only() {
+    use qa_content::vfs::{FileListQuery, FileListRequest};
+    let mut fixture = Fixture::new("listing-scopes");
+    let original = fixture.vfs.mounts().next().unwrap().id;
+    let later = fixture.root.join("later");
+    qa_platform::files::create_dir_all(&later).unwrap();
+    qa_platform::files::write(later.join("only.dat"), b"private").unwrap();
+    let mount = fixture.vfs.mount_directory(&later, 10).unwrap();
+    fixture.storage = ServiceStorage::load_modules(
+        &[
+            (ModuleId(1), 0, RuleSetId::Quake3, 1),
+            (ModuleId(2), 0, RuleSetId::Quake3, 1),
+        ],
+        &fixture.cvars,
+    )
+    .unwrap();
+    fixture.storage.prepare_files(&fixture.vfs).unwrap();
+    fixture
+        .storage
+        .set_file_search(
+            ModuleId(1),
+            Some(fixture.vfs.search_view([original]).unwrap()),
+            &fixture.vfs,
+        )
+        .unwrap();
+    let request = || {
+        FileListRequest::Files(FileListQuery {
+            path: b"",
+            extension: b".dat",
+            maximum: 4095,
+        })
+    };
+    let mut out = [0xa5; 128];
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(1), request(), &mut out),
+        Ok(2)
+    );
+    assert_eq!(&out[..19], b"data.dat\0empty.dat\0");
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(2), request(), &mut out),
+        Ok(3)
+    );
+    assert_eq!(&out[..28], b"only.dat\0data.dat\0empty.dat\0");
+    qa_platform::files::write(later.join("new.dat"), b"new").unwrap();
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(2), request(), &mut out),
+        Ok(3)
+    );
+    fixture.vfs.refresh_directory_prefix(mount, b"").unwrap();
+    fixture.storage.prepare_files(&fixture.vfs).unwrap();
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(2), request(), &mut out),
+        Ok(4)
+    );
+    assert_eq!(&out[..36], b"new.dat\0only.dat\0data.dat\0empty.dat\0");
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(1), request(), &mut out),
+        Ok(2)
+    );
+    fixture
+        .storage
+        .set_file_search(
+            ModuleId(1),
+            Some(fixture.vfs.search_view([]).unwrap()),
+            &fixture.vfs,
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(1), request(), &mut out),
+        Ok(0)
+    );
+    assert_eq!(out[0], 0);
+}
+
+#[test]
+fn mounted_mod_list_keeps_description_bytes_and_native_pair_capacity() {
+    use qa_content::vfs::FileListRequest;
+    let mut fixture = Fixture::new("mod-list");
+    for (name, description) in [
+        ("baseq3", Some(b"base".as_slice())),
+        ("arena", Some(b"Raw \xff description\0ignored".as_slice())),
+        ("fallback", None),
+    ] {
+        let path = fixture.root.join(name);
+        qa_platform::files::create_dir_all(&path).unwrap();
+        qa_platform::files::write(path.join("pak0.pk3"), b"loaded product metadata").unwrap();
+        if let Some(description) = description {
+            qa_platform::files::write(path.join("description.txt"), description).unwrap();
+        }
+        fixture
+            .vfs
+            .mount_directory(&path, if name == "arena" { 10 } else { 0 })
+            .unwrap();
+    }
+    fixture.storage.prepare_files(&fixture.vfs).unwrap();
+    let request = || FileListRequest::Mods {
+        base_game: b"baseq3",
+        package_suffix: b".pk3",
+        maximum: 4095,
+    };
+    let mut out = [0xa5; 128];
+    assert_eq!(
+        fixture.engine().file_list(ModuleId(1), request(), &mut out),
+        Ok(2)
+    );
+    let expected = b"arena\0Raw \xff description\0fallback\0fallback\0";
+    assert_eq!(&out[..expected.len()], expected);
+    for capacity in [26, 27] {
+        let mut out = [0xa5; 128];
+        assert_eq!(
+            fixture
+                .engine()
+                .file_list(ModuleId(1), request(), &mut out[..capacity]),
+            Ok(u64::from(capacity == 27) as usize)
+        );
+        if capacity == 26 {
+            assert_eq!(out[0], 0);
+        } else {
+            assert_eq!(&out[..24], b"arena\0Raw \xff description\0");
+        }
+    }
 }

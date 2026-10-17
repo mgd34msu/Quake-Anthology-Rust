@@ -31,6 +31,7 @@ use q3_lifecycle_image::{append_trace_digit, elf_lifecycle_file, function_file};
 mod command_lifetimes;
 mod cues;
 mod failure_cleanup;
+mod file_listing;
 #[path = "../elf32_q3.rs"]
 mod registered_q3;
 mod sound_routes;
@@ -5837,6 +5838,10 @@ pub fn run() {
     if std::env::args().any(|arg| arg == "--failed-owner") {
         return;
     }
+    if std::env::args().any(|arg| arg == "--file-listing") {
+        file_listing::run();
+        return;
+    }
     if std::env::args().any(|arg| arg == "--command-lifetimes") {
         command_lifetimes::run();
         return;
@@ -5921,6 +5926,7 @@ pub fn run() {
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     native_files_use_the_qvm_role_policy_and_vfs_loader();
+    file_listing::run();
     runtime_binding_respects_native_library_names_and_versions();
     missing_native_imports_log_once_and_preserve_session_dispatch();
     scalar_native_export_results_survive_session_dispatch();

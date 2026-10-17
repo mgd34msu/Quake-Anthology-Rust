@@ -1160,3 +1160,141 @@ fn staged_package_admission_keeps_the_inspected_inode_and_rejects_bad_member_pat
     assert!(!root.0.join("bad.pk3").exists());
     assert_eq!(vfs.mounts().count(), 2);
 }
+
+#[test]
+fn loaded_listing_keeps_source_order_scopes_empty_directories_and_explicit_refreshes() {
+    let root = Fixture::new("loaded-listing");
+    let low = root.0.join("low");
+    let high = root.0.join("high");
+    for path in [&low, &high] {
+        qa_platform::files::create_dir_all(path.join("maps")).unwrap();
+        qa_platform::files::create_dir_all(path.join("models/players")).unwrap();
+    }
+    qa_platform::files::create_dir_all(low.join("models/players/empty-low")).unwrap();
+    qa_platform::files::create_dir_all(high.join("models/players/empty-high")).unwrap();
+    qa_platform::files::create_dir_all(high.join("models/players/zip-only")).unwrap();
+    for (path, name) in [
+        (&low, "a.bsp"),
+        (&low, "z.bsp"),
+        (&high, "a.bsp"),
+        (&high, "b.bsp"),
+    ] {
+        qa_platform::files::write(path.join("maps").join(name), name).unwrap();
+    }
+    let mut vfs = Vfs::default();
+    let low_mount = vfs.mount_directory(&low, 0).unwrap();
+    vfs.mount_directory(&high, 10).unwrap();
+    let package = root.0.join("pak0.pk3");
+    qa_platform::files::write(
+        &package,
+        zip::stored_zip(&[
+            (b"maps/last.bsp", b"last"),
+            (b"maps/deep/nested.bsp", b"nested"),
+            (b"maps/first.bsp", b"first"),
+            (b"maps/deep/", b""),
+            (b"maps/a.bsp", b"a"),
+            (b"maps/deep/more/too-deep.bsp", b"deep"),
+            (b"models/players/zip-only/", b""),
+        ]),
+    )
+    .unwrap();
+    vfs.mount_archive(
+        &package,
+        20,
+        Arc::new(Archive::parse(Arc::new(ReadFile::open(&package).unwrap())).unwrap()),
+    )
+    .unwrap();
+    let view = vfs.search_view([low_mount]).unwrap();
+    let mut listing = FileListing::default();
+    listing.prepare(&vfs).unwrap();
+    let list = |listing: &mut FileListing,
+                vfs: &Vfs,
+                view: Option<&SearchView>,
+                path: &[u8],
+                extension: &[u8]| {
+        let mut names = Vec::new();
+        let count = listing
+            .visit(
+                vfs,
+                view,
+                FileListQuery {
+                    path,
+                    extension,
+                    maximum: 4095,
+                },
+                |name| {
+                    let mut bytes = name.bytes.to_vec();
+                    if name.trailing_slash {
+                        bytes.push(b'/');
+                    }
+                    names.push(bytes);
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(count, names.len());
+        names
+    };
+    assert_eq!(
+        list(&mut listing, &vfs, None, b"maps", b".BSP"),
+        [
+            b"last.bsp".as_slice(),
+            b"deep/nested.bsp",
+            b"first.bsp",
+            b"a.bsp",
+            b"b.bsp",
+            b"z.bsp"
+        ]
+    );
+    assert_eq!(
+        list(&mut listing, &vfs, Some(&view), b"maps", b".bsp"),
+        [b"a.bsp".as_slice(), b"z.bsp"]
+    );
+    assert_eq!(
+        list(&mut listing, &vfs, None, b"models/players", b"/"),
+        [
+            b"zip-only/".as_slice(),
+            b"empty-high",
+            b"zip-only",
+            b"empty-low"
+        ]
+    );
+    assert_eq!(
+        list(&mut listing, &vfs, None, b"maps", b""),
+        [
+            b"last.bsp".as_slice(),
+            b"deep/nested.bsp",
+            b"first.bsp",
+            b"deep/",
+            b"a.bsp",
+            b"b.bsp",
+            b"z.bsp"
+        ]
+    );
+    assert_eq!(
+        list(&mut listing, &vfs, None, b"maps/", b".bsp"),
+        [
+            b"last.bsp".as_slice(),
+            b"deep/nested.bsp",
+            b"first.bsp",
+            b"a.bsp",
+            b"deep/more/too-deep.bsp",
+            b"b.bsp",
+            b"z.bsp"
+        ]
+    );
+    qa_platform::files::create_dir_all(low.join("models/players/arrived")).unwrap();
+    assert_eq!(
+        list(&mut listing, &vfs, Some(&view), b"models/players", b"/"),
+        [b"empty-low".as_slice()]
+    );
+    vfs.refresh_directory_prefix(low_mount, b"models/players")
+        .unwrap();
+    listing.prepare(&vfs).unwrap();
+    assert_eq!(
+        list(&mut listing, &vfs, Some(&view), b"models/players", b"/"),
+        [b"arrived".as_slice(), b"empty-low"]
+    );
+    vfs.unmount(low_mount);
+    assert!(list(&mut listing, &vfs, Some(&view), b"models/players", b"/").is_empty());
+}
