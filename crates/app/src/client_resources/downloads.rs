@@ -48,6 +48,14 @@ impl Request {
         if package.archive().kind != kind {
             return Err("download package format differs from its suffix".into());
         }
+        if let Purpose::Package(expected) = self.purpose
+            && package
+                .archive()
+                .q3_checksums()
+                .is_none_or(|checksums| checksums.checksum() != expected)
+        {
+            return Err("download package differs from the server reference".into());
+        }
         Ok(Some(Arc::new(package)))
     }
 }
@@ -65,6 +73,13 @@ enum Purpose {
     Manual,
     Skin,
     Startup,
+    Package(u32),
+}
+
+struct PackagePass {
+    requests: Box<[Request]>,
+    next: Option<usize>,
+    paused: bool,
 }
 
 struct SkinPass {
@@ -117,6 +132,7 @@ pub(crate) struct ClientDownload {
     transfer: Transfer,
     permissions: Option<DownloadViews>,
     skin_pass: Option<SkinPass>,
+    packages: Option<PackagePass>,
     blocks: Option<BlockProgress>,
     progress_dirty: bool,
 }
@@ -557,6 +573,133 @@ impl DownloadViews {
 }
 
 impl ClientDownload {
+    fn begin_packages(
+        &mut self,
+        info: &[u8],
+        vfs: &Vfs,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<bool, String> {
+        let loaded: Vec<_> = vfs
+            .mounts()
+            .filter_map(|mount| vfs.q3_package_checksums(mount.id))
+            .map(|checksums| checksums.checksum())
+            .collect();
+        let mut references = qa_network::downloads::ReferencedPackages::new(info);
+        let mut requests: Vec<Request> = Vec::new();
+        while let Some(reference) = references
+            .next()
+            .map_err(|error| format!("server package references: {error:?}"))?
+        {
+            let Some(name) = reference.name.filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            if loaded.contains(&reference.checksum)
+                || qa_network::downloads::q3_stock_package(name).is_some()
+            {
+                continue;
+            }
+            let mut remote = FixedText::<{ qa_network::downloads::REQUEST_NAME_BYTES }>::default();
+            remote
+                .append_bytes(name)
+                .and_then(|()| remote.append_bytes(b".pk3"))
+                .map_err(|_| "server package exceeds native request capacity")?;
+            let remote = Request::name::<{ qa_network::downloads::REQUEST_NAME_BYTES }>(
+                remote.as_bytes(),
+                qa_network::downloads::PathRole::Request,
+            )?;
+            if let Some(previous) = requests
+                .iter()
+                .find(|request| request.remote.as_bytes() == remote.as_bytes())
+            {
+                if !matches!(previous.purpose, Purpose::Package(sum) if sum == reference.checksum) {
+                    return Err("server references conflicting versions of one package".into());
+                }
+                continue;
+            }
+            if !self.allowed(remote.as_bytes(), cvars) {
+                continue;
+            }
+            let config = self.config.ok_or("package download has no writable root")?;
+            let root_name = vfs
+                .directory_path(config.game)
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .ok_or("package download root retired")?;
+            let prefix = format!("{}/", qa_core::names::canonical_path(root_name));
+            let local = remote
+                .as_str()
+                .strip_prefix(&prefix)
+                .unwrap_or(remote.as_str());
+            let mut destination = FixedText::<{ qa_core::names::MAX_PATH_BYTES + 1 }>::default();
+            if vfs.open(local.as_bytes()).is_some() {
+                // FS_ComparePaks' native wire-checksum suffix protects an
+                // existing package. It is never a content/cache identity.
+                write!(
+                    destination,
+                    "{}.{:08x}.pk3",
+                    &local[..local.len() - 4],
+                    reference.checksum
+                )
+                .map_err(|_| "package destination capacity")?;
+            } else {
+                destination
+                    .set(local)
+                    .map_err(|_| "package destination capacity")?;
+            }
+            requests.push(self.request(
+                remote.as_bytes(),
+                Some(destination.as_bytes()),
+                vfs,
+                Purpose::Package(reference.checksum),
+            )?);
+        }
+        let needed = !requests.is_empty();
+        self.packages = Some(PackagePass {
+            requests: requests.into_boxed_slice(),
+            next: needed.then_some(0),
+            paused: false,
+        });
+        Ok(needed)
+    }
+
+    fn advance_packages(
+        &mut self,
+        vfs: &Vfs,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<bool, String> {
+        if !self.resource_idle() {
+            return Ok(false);
+        }
+        let Some(pass) = self.packages.as_mut().filter(|pass| !pass.paused) else {
+            return Ok(false);
+        };
+        let Some(next) = pass.next else {
+            return Ok(false);
+        };
+        let Some(request) = pass.requests.get(next).cloned() else {
+            pass.next = None;
+            if let Some(blocks) = &mut self.blocks {
+                blocks.done = true;
+            }
+            return Ok(true);
+        };
+        pass.next = Some(next + 1);
+        if !self.allowed_request(&request, cvars) {
+            if let Some(pass) = &mut self.packages {
+                pass.paused = true;
+                pass.next = Some(next);
+            }
+            return Err("package download disabled by local CLIENT policy".into());
+        }
+        if let Err(error) = self.open(request, vfs) {
+            if let Some(pass) = &mut self.packages {
+                pass.paused = true;
+            }
+            return Err(error);
+        }
+        Ok(false)
+    }
+
     fn configured(&self) -> bool {
         self.config.is_some()
     }
@@ -574,6 +717,7 @@ impl ClientDownload {
             config,
             transfer: Transfer::Idle,
             permissions,
+            packages: None,
             blocks: (protocol == Protocol::Quake3_68).then(BlockProgress::default),
             progress_dirty: true,
             skin_pass: (protocol == Protocol::QuakeWorld28).then(|| SkinPass {
@@ -591,6 +735,7 @@ impl ClientDownload {
     pub(crate) fn close(&mut self) {
         self.progress_dirty |= !matches!(self.transfer, Transfer::Idle);
         self.transfer = Transfer::Idle;
+        self.packages = None;
         if let Some(blocks) = &mut self.blocks {
             *blocks = BlockProgress::default();
         }
@@ -623,6 +768,14 @@ impl ClientDownload {
         cvars: &qa_console::cvars::Cvars,
         purpose: Purpose,
     ) -> Result<(), String> {
+        if !matches!(purpose, Purpose::Package(_))
+            && self
+                .packages
+                .as_ref()
+                .is_some_and(|pass| pass.next.is_some())
+        {
+            return Err("automatic package group is still pending".into());
+        }
         if matches!(
             self.transfer,
             Transfer::Active { .. }
@@ -634,6 +787,20 @@ impl ClientDownload {
         if self.pending().is_some() {
             return Err("download acknowledgement is still pending".into());
         }
+        let request = self.request(remote, local, vfs, purpose)?;
+        if !self.allowed_request(&request, cvars) {
+            return Err("download disabled by local CLIENT policy".into());
+        }
+        self.open(request, vfs)
+    }
+
+    fn request(
+        &self,
+        remote: &[u8],
+        local: Option<&[u8]>,
+        vfs: &Vfs,
+        purpose: Purpose,
+    ) -> Result<Request, String> {
         let remote = Request::name::<{ qa_network::downloads::REQUEST_NAME_BYTES }>(
             remote,
             qa_network::downloads::PathRole::Request,
@@ -653,16 +820,12 @@ impl ClientDownload {
         } else {
             config.game
         };
-        let request = Request {
+        Ok(Request {
             remote,
             local,
             mount,
             purpose,
-        };
-        if !self.allowed_request(&request, cvars) {
-            return Err("download disabled by local CLIENT policy".into());
-        }
-        self.open(request, vfs)
+        })
     }
 
     fn allowed_request(&self, request: &Request, cvars: &qa_console::cvars::Cvars) -> bool {
@@ -725,6 +888,9 @@ impl ClientDownload {
     fn stop(&mut self) {
         self.progress_dirty = true;
         self.stop_blocks();
+        if let Some(pass) = &mut self.packages {
+            pass.paused = true;
+        }
         if let Some(pass) = &mut self.skin_pass {
             pass.paused = true;
         }
@@ -749,6 +915,9 @@ impl ClientDownload {
     }
 
     fn retry(&mut self, vfs: &Vfs, cvars: &qa_console::cvars::Cvars) -> Result<(), String> {
+        if let Some(pass) = &mut self.packages {
+            pass.paused = false;
+        }
         if let Some(pass) = &mut self.skin_pass {
             pass.paused = false;
         }
@@ -1472,6 +1641,92 @@ impl crate::host::FrameHost {
         }
     }
 
+    pub(crate) fn advance_q3_package_downloads(&mut self) {
+        use super::startup::Q3Phase;
+        for index in 0..self.runtime.client_resources.len() {
+            let client = ClientId(index as u32);
+            let Some(resources) = self.runtime.client_resources[index].as_ref() else {
+                continue;
+            };
+            if resources.startup.q3() != Some(Q3Phase::Downloading) {
+                continue;
+            }
+            let configured = resources
+                .downloads
+                .as_ref()
+                .is_some_and(ClientDownload::configured);
+            if !configured && let Some(config) = self.download_defaults {
+                if let Err(error) = self.configure_client_downloads(
+                    client,
+                    config.game,
+                    config.skins,
+                    config.maximum_bytes,
+                    config.buffer_bytes,
+                ) {
+                    self.reject_client_startup(client, format_args!("{error}"));
+                    continue;
+                }
+            }
+            let Some(resources) = self.runtime.client_resources[index].as_mut() else {
+                continue;
+            };
+            if resources.downloads.is_none() {
+                let Some(seat) = self.runtime.snapshots[index]
+                    .as_ref()
+                    .and_then(|binding| binding.seat())
+                else {
+                    continue;
+                };
+                let permissions =
+                    match DownloadViews::bind(&self.console.cvars, Protocol::Quake3_68, seat) {
+                        Ok(permissions) => permissions,
+                        Err(error) => {
+                            self.reject_client_startup(client, format_args!("{error}"));
+                            continue;
+                        }
+                    };
+                resources.downloads =
+                    Some(ClientDownload::new(None, permissions, Protocol::Quake3_68));
+            }
+            let Some(downloads) = resources.downloads.as_mut() else {
+                continue;
+            };
+            if downloads.packages.is_none() {
+                let info = resources
+                    .state
+                    .configs
+                    .config(qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO)
+                    .map_or(&b""[..], |config| config.text);
+                match downloads.begin_packages(info, &self.runtime.vfs, &self.console.cvars) {
+                    Ok(false) => {
+                        resources.startup.q3_packages_ready();
+                        if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+                            resources.prepare_sounds(assets, &self.runtime.vfs);
+                        }
+                        continue;
+                    }
+                    Ok(true) => {}
+                    Err(error) => {
+                        self.reject_client_startup(client, format_args!("{error}"));
+                        continue;
+                    }
+                }
+            }
+            match downloads.advance_packages(&self.runtime.vfs, &self.console.cvars) {
+                Ok(true) => resources.startup.q3_wait_gamestate(),
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = self
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("Native package download: {error}\n"));
+                }
+            }
+        }
+        self.flush_client_downloads();
+    }
+
     pub(crate) fn advance_startup_files(&mut self) {
         for index in 0..self.runtime.client_resources.len() {
             loop {
@@ -1731,7 +1986,10 @@ impl crate::host::FrameHost {
             };
             match result {
                 Ok(package) => {
-                    if package && let Some(blocks) = &mut downloads.blocks {
+                    if package
+                        && !matches!(request.purpose, Purpose::Package(_))
+                        && let Some(blocks) = &mut downloads.blocks
+                    {
                         blocks.done = true;
                         resources.startup.q3_wait_gamestate();
                         native_complete = true;

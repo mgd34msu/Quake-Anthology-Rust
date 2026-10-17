@@ -243,6 +243,7 @@ impl FrameHost {
                 }
                 Ok(changed)
             });
+            self.advance_q3_package_downloads();
             self.advance_startup_files();
             if let Some(preparer) = preparer.as_mut() {
                 self.refresh_player_skins(&mut **preparer);

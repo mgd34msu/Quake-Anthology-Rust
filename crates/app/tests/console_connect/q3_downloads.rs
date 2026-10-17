@@ -692,3 +692,164 @@ fn q3_bad_package_stays_unpublished_and_retry_can_complete_the_same_destination(
     }
     assert_eq!(native.count(b"download baseq3/custom.pk3"), 4);
 }
+
+#[test]
+fn q3_referenced_packages_share_cancel_retry_and_publish_only_the_advertised_versions() {
+    let mut files = support::Fixture::new(&[]);
+    let parent = files.vfs.mounts().next().unwrap().id;
+    let root = files.vfs.directory_path(parent).unwrap().join("baseq3");
+    qa_platform::files::create_dir_all(&root).unwrap();
+    let original = zip::stored_zip(&[(b"models/original.bin", b"original package")]);
+    let loaded = zip::stored_zip(&[(b"models/loaded.bin", b"already loaded")]);
+    qa_platform::files::write(root.join("first.pk3"), &original).unwrap();
+    qa_platform::files::write(root.join("loaded.pk3"), &loaded).unwrap();
+    let game = files.vfs.mount_product(&root, 100).unwrap()[0];
+    let checksum = |package: &[u8]| {
+        let mut staged =
+            qa_platform::files::StagedFile::create(&root, "reference.tmp", 8192, 128).unwrap();
+        staged.append(package).unwrap();
+        let parsed =
+            qa_formats::archive::Archive::parse(std::sync::Arc::new(staged.reader().unwrap()))
+                .unwrap();
+        parsed.q3_checksums().unwrap().checksum()
+    };
+    let first = zip::stored_zip(&[(b"models/first.bin", b"first wanted version")]);
+    let second = zip::stored_zip(&[(b"models/second.bin", b"second wanted version")]);
+    let first_sum = checksum(&first);
+    let second_sum = checksum(&second);
+    let loaded_sum = checksum(&loaded);
+    let mut host = host(1);
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    host.configure_download_roots(game, game, 8192, 128)
+        .unwrap();
+    setting(&mut host, "cl_allowDownload", "1");
+    let mut source = source();
+    let mut server = EventPump::new();
+    let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
+    let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
+    let local = peer(&datagrams(&mut server)[0]);
+    let mut native = accept(
+        &mut host,
+        &mut source,
+        SeatId::FIRST,
+        &mut server,
+        socket,
+        local,
+        0,
+    );
+    native
+        .channel
+        .set_command_context(CommandContext {
+            server_id: SERVER_ID,
+            challenge: CHALLENGE as u32,
+            checksum_feed: FEED,
+        })
+        .unwrap();
+    let info = format!(
+        "\\sv_serverid\\{SERVER_ID}\\sv_pure\\0\\sv_referencedPaks\\{} 1 {} {} {}\\sv_referencedPakNames\\baseq3/elsewhere baseq3/pak0 baseq3/first baseq3/second baseq3/first",
+        loaded_sum as i32, first_sum as i32, second_sum as i32, first_sum as i32,
+    );
+    let watermark = native.channel.command_state().unwrap().queued;
+    send(&mut server, socket, local, &mut native, 30, |writer, _| {
+        write_gamestate(
+            writer,
+            watermark,
+            0,
+            FEED,
+            [(0, b"\\mapname\\ready".as_slice()), (1, info.as_bytes())],
+            std::iter::empty(),
+        )?;
+        Ok(())
+    });
+    frame(&mut host, &mut source, 30);
+    collect(&mut server, &mut native, 30);
+    assert_eq!(native.count(b"download baseq3/first.pk3"), 1);
+    assert_eq!(native.count(b"download baseq3/elsewhere.pk3"), 0);
+    assert_eq!(native.count(b"download baseq3/pak0.pk3"), 0);
+    let mut deliver = |host: &mut FrameHost,
+                       source: &mut Source,
+                       native: &mut NativePeer,
+                       package: &[u8],
+                       time| {
+        send(&mut server, socket, local, native, time, |writer, _| {
+            downloads::write_service(
+                Q3,
+                Chunk::Block {
+                    number: 0,
+                    total: Some(package.len() as u32),
+                    bytes: package,
+                },
+                writer,
+            )
+            .unwrap();
+            downloads::write_service(
+                Q3,
+                Chunk::Block {
+                    number: 1,
+                    total: None,
+                    bytes: &[],
+                },
+                writer,
+            )
+            .unwrap();
+            Ok(())
+        });
+        for time in time..time + 3 {
+            frame(host, source, time);
+            collect(&mut server, native, time);
+        }
+    };
+    // This archive is structurally valid but is not the advertised version.
+    deliver(&mut host, &mut source, &mut native, &second, 40);
+    let alias = format!("first.{first_sum:08x}.pk3");
+    assert!(!root.join(&alias).exists());
+    assert!(bytes(&host, b"models/first.bin").is_none());
+    assert_eq!(native.count(b"download baseq3/second.pk3"), 0);
+    assert_eq!(native.count(b"donedl"), 0);
+    command(&mut host, &mut source, "retrydownload\n", 50);
+    deliver(&mut host, &mut source, &mut native, &first, 60);
+    assert_eq!(bytes(&host, alias.as_bytes()), Some(first.clone()));
+    assert_eq!(bytes(&host, b"first.pk3"), Some(original));
+    assert_eq!(native.count(b"download baseq3/first.pk3"), 2);
+    assert_eq!(native.count(b"download baseq3/second.pk3"), 1);
+    assert_eq!(native.count(b"donedl"), 0);
+    command(&mut host, &mut source, "stopdownload\n", 70);
+    command(&mut host, &mut source, "retrydownload\n", 80);
+    deliver(&mut host, &mut source, &mut native, &second, 90);
+    assert_eq!(bytes(&host, b"second.pk3"), Some(second));
+    assert_eq!(
+        bytes(&host, b"models/first.bin"),
+        Some(b"first wanted version".to_vec())
+    );
+    assert_eq!(
+        bytes(&host, b"models/second.bin"),
+        Some(b"second wanted version".to_vec())
+    );
+    assert_eq!(native.count(b"download baseq3/second.pk3"), 2);
+    assert_eq!(native.count(b"donedl"), 1);
+    send(&mut server, socket, local, &mut native, 100, |writer, _| {
+        write_gamestate(
+            writer,
+            watermark,
+            0,
+            FEED,
+            [(0, b"\\mapname\\ready".as_slice()), (1, info.as_bytes())],
+            std::iter::empty(),
+        )?;
+        Ok(())
+    });
+    frame(&mut host, &mut source, 100);
+    collect(&mut server, &mut native, 100);
+    assert_eq!(native.count(b"download baseq3/first.pk3"), 2);
+    assert_eq!(native.count(b"download baseq3/second.pk3"), 2);
+    assert_eq!(native.count(b"donedl"), 1);
+    assert_eq!(host.local_clients[0], Some(client));
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .phase
+            .is_connected()
+    );
+}

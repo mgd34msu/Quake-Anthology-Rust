@@ -561,3 +561,33 @@ fn download_destinations_allow_root_files_without_relaxing_request_or_containmen
         Err(Error::Path)
     );
 }
+
+#[test]
+fn q3_reference_columns_keep_wire_bits_and_missing_names_without_crossing_info_fields() {
+    let mut references = downloads::ReferencedPackages::new(
+        b"\\sv_referencedPakNames\\baseq3/custom \"mod/second\"\\sv_referencedPaks\\-1 2147483648 17\\sv_paks\\999",
+    );
+    let first = references.next().unwrap().unwrap();
+    assert_eq!(
+        (first.checksum, first.name),
+        (u32::MAX, Some(b"baseq3/custom".as_slice()))
+    );
+    let second = references.next().unwrap().unwrap();
+    assert_eq!(
+        (second.checksum, second.name),
+        (0x80000000, Some(b"mod/second".as_slice()))
+    );
+    let third = references.next().unwrap().unwrap();
+    assert_eq!((third.checksum, third.name), (17, None));
+    assert!(references.next().unwrap().is_none());
+    assert!(
+        downloads::ReferencedPackages::new(b"\\sv_paks\\1")
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    let mut malformed = downloads::ReferencedPackages::new(
+        b"\\sv_referencedPaks\\1\\sv_referencedPakNames\\\"unfinished",
+    );
+    assert!(malformed.next().is_err());
+}

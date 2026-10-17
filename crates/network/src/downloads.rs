@@ -5,6 +5,9 @@ use crate::{
     message::{Encoding, Error as MessageError, ErrorKind, Reader, StringPolicy, Writer},
 };
 
+mod packages;
+pub use packages::{ReferencedPackage, ReferencedPackages};
+
 pub type Chunk<'a> = qa_core::primitives::FileChunk<&'a [u8]>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

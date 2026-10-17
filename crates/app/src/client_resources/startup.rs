@@ -72,6 +72,7 @@ pub(crate) enum ClientStartup {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Q3Phase {
     AwaitGamestate,
+    Downloading,
     Loading,
     Primed,
     Active,
@@ -269,7 +270,7 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
-                | Self::Quake3(Q3Phase::AwaitGamestate)
+                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List { .. } | QwPhase::Files { .. },
                     ..
@@ -284,7 +285,7 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
-                | Self::Quake3(Q3Phase::AwaitGamestate)
+                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List {
                         kind: ResourceKind::Sound,
@@ -300,7 +301,9 @@ impl ClientStartup {
     pub(crate) fn allow_skins(&self) -> bool {
         !matches!(
             self,
-            Self::AwaitHeader { .. } | Self::Restarting | Self::Quake3(Q3Phase::AwaitGamestate)
+            Self::AwaitHeader { .. }
+                | Self::Restarting
+                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
         ) && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
     }
     pub(crate) fn q3(&self) -> Option<Q3Phase> {
@@ -316,6 +319,11 @@ impl ClientStartup {
     }
     pub(crate) fn q3_gamestate(&mut self) {
         if matches!(self, Self::Quake3(_)) {
+            *self = Self::Quake3(Q3Phase::Downloading);
+        }
+    }
+    pub(crate) fn q3_packages_ready(&mut self) {
+        if self.q3() == Some(Q3Phase::Downloading) {
             *self = Self::Quake3(Q3Phase::Loading);
         }
     }
