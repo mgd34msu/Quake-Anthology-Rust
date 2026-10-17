@@ -1665,11 +1665,36 @@ fn file_chunks_target_only_the_selected_native_client_and_preserve_empty_vs_unav
         slot: 8,
         generation: 19,
     };
-    ring.file_chunk(ClientId(1), receiver, 23, Some(&[0, 128, 255]))
-        .unwrap();
-    ring.file_chunk(ClientId(1), receiver, 0, Some(&[]))
-        .unwrap();
-    ring.file_chunk(ClientId(1), receiver, 0, None).unwrap();
+    ring.file_chunk(
+        ClientId(1),
+        receiver,
+        qa_core::primitives::FileChunk::Sequential {
+            percent: 23,
+            bytes: Some(&[0, 128, 255]),
+            compressed: false,
+        },
+    )
+    .unwrap();
+    ring.file_chunk(
+        ClientId(1),
+        receiver,
+        qa_core::primitives::FileChunk::Sequential {
+            percent: 0,
+            bytes: Some(&[]),
+            compressed: false,
+        },
+    )
+    .unwrap();
+    ring.file_chunk(
+        ClientId(1),
+        receiver,
+        qa_core::primitives::FileChunk::Sequential {
+            percent: 0,
+            bytes: None,
+            compressed: false,
+        },
+    )
+    .unwrap();
     for excluded in [peer, presentation, module, local] {
         assert!(consume(&mut ring, excluded, OutputSubmission::BestEffort).is_empty());
     }
@@ -1683,27 +1708,94 @@ fn file_chunks_target_only_the_selected_native_client_and_preserve_empty_vs_unav
         assert_eq!(record.delivery, None);
         let FrameEvent::FileChunk {
             receiver: captured,
-            percent: actual,
-            available,
-            payload,
+            chunk:
+                qa_core::primitives::FileChunk::Sequential {
+                    percent: actual,
+                    bytes,
+                    ..
+                },
         } = record.event
         else {
             panic!("file chunk");
         };
         assert_eq!(captured, receiver);
-        assert_eq!((actual, available), (percent, expected.is_some()));
+        assert_eq!((actual, bytes.is_some()), (percent, expected.is_some()));
         let mut stored = [0; 8];
         assert_eq!(
-            ring.texts.copy_payload(payload, &mut stored),
-            Some(expected.unwrap_or(&[]))
+            bytes.and_then(|payload| ring.texts.copy_payload(payload, &mut stored)),
+            expected
         );
         assert!(ring.submit(client, record.sequence, OutputSubmission::BestEffort));
     }
     assert!(ring.is_empty());
     let before = ring.sequence_range();
     assert_eq!(
-        ring.file_chunk(ClientId(1), receiver, 101, Some(b"x")),
+        ring.file_chunk(
+            ClientId(1),
+            receiver,
+            qa_core::primitives::FileChunk::Sequential {
+                percent: 101,
+                bytes: Some(b"x"),
+                compressed: false
+            }
+        ),
         Err(EventStorageError::TextCapacity)
     );
     assert_eq!(ring.sequence_range(), before);
+}
+
+#[test]
+fn numbered_file_payloads_hold_leases_until_the_client_submits() {
+    use qa_core::primitives::FileChunk;
+    let mut ring = EventRing::load(4, 2, 8, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let receiver = EntityId {
+        slot: 8,
+        generation: 19,
+    };
+    for chunk in [
+        FileChunk::Block {
+            number: 0,
+            total: Some(3),
+            bytes: &[0, 128, 255][..],
+        },
+        FileChunk::Block {
+            number: 1,
+            total: None,
+            bytes: &[],
+        },
+        FileChunk::Rejected {
+            size: -1,
+            message: b"no file",
+        },
+    ] {
+        let sequence = ring.file_chunk(ClientId(1), receiver, chunk).unwrap();
+        let mut batch = ring.batch(client).unwrap();
+        let record = ring.next(&mut batch).unwrap();
+        assert_eq!(record.sequence, sequence);
+        let FrameEvent::FileChunk {
+            receiver: actual,
+            chunk: retained,
+        } = record.event
+        else {
+            panic!("file chunk");
+        };
+        assert_eq!(actual, receiver);
+        let mut buffer = [0; 32];
+        let payload = *retained.payload().unwrap();
+        assert_eq!(
+            retained.map(|p| ring.texts.copy_payload(p, &mut buffer).unwrap().to_vec()),
+            chunk.map(<[u8]>::to_vec)
+        );
+        assert!(ring.submit(client, sequence, OutputSubmission::Unsent));
+        assert_eq!(
+            ring.texts.copy_payload(payload, &mut buffer),
+            chunk.payload().copied()
+        );
+        assert!(ring.submit(client, sequence, OutputSubmission::BestEffort));
+        assert!(ring.is_empty());
+        if !payload.is_empty() {
+            assert!(ring.texts.copy_payload(payload, &mut buffer).is_none());
+        }
+    }
 }

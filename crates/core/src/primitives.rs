@@ -2583,6 +2583,61 @@ impl NativePeerRoute {
         Some(())
     }
 }
+/// File transfer metadata shared by borrowed wire blocks and leased output records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChunk<T> {
+    Sequential {
+        percent: u8,
+        /// None is unavailable; an empty payload is a real block.
+        bytes: Option<T>,
+        compressed: bool,
+    },
+    Block {
+        number: i16,
+        total: Option<u32>,
+        bytes: T,
+    },
+    Rejected {
+        size: i32,
+        message: T,
+    },
+}
+impl<T> FileChunk<T> {
+    pub fn payload(&self) -> Option<&T> {
+        match self {
+            Self::Sequential { bytes, .. } => bytes.as_ref(),
+            Self::Block { bytes, .. } => Some(bytes),
+            Self::Rejected { message, .. } => Some(message),
+        }
+    }
+    pub fn map<U>(self, mut map: impl FnMut(T) -> U) -> FileChunk<U> {
+        match self {
+            Self::Sequential {
+                percent,
+                bytes,
+                compressed,
+            } => FileChunk::Sequential {
+                percent,
+                bytes: bytes.map(map),
+                compressed,
+            },
+            Self::Block {
+                number,
+                total,
+                bytes,
+            } => FileChunk::Block {
+                number,
+                total,
+                bytes: map(bytes),
+            },
+            Self::Rejected { size, message } => FileChunk::Rejected {
+                size,
+                message: map(message),
+            },
+        }
+    }
+}
+
 /// Wire bytes and immutable native captures use the existing leased payload pages.
 #[derive(Clone, Copy, Debug)]
 pub struct NativePayload {

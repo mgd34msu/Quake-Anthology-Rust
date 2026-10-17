@@ -51,7 +51,12 @@ pub(super) fn transmit(
             } else {
                 payload.map(|(_, bytes)| bytes)
             };
-            let packet = match channel.prepare(body, time) {
+            let prepared = if let Some(bytes) = body {
+                channel.prepare_server_message(bytes, time)
+            } else {
+                channel.prepare(None, time)
+            };
+            let packet = match prepared {
                 Ok(Some(packet)) => packet,
                 Ok(None) => return false,
                 Err(error) => {

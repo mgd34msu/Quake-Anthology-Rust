@@ -244,7 +244,15 @@ impl ServerDownload {
         };
         let bytes = available.then_some(&scratch[..length]);
         if events
-            .file_chunk(id, receiver.lifetime, percent, bytes)
+            .file_chunk(
+                id,
+                receiver.lifetime,
+                downloads::Chunk::Sequential {
+                    percent,
+                    bytes,
+                    compressed: false,
+                },
+            )
             .is_err()
         {
             return;

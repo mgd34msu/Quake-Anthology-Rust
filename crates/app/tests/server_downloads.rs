@@ -41,6 +41,7 @@ struct Source {
     milliseconds: u64,
     drop: Option<ClientId>,
     blocks: [Vec<Block>; 2],
+    numbered: [Vec<qa_core::primitives::FileChunk<Vec<u8>>>; 2],
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> Duration {
@@ -71,7 +72,9 @@ impl Source {
         self.transport.time = EventTime::from_milliseconds(self.milliseconds);
         assert_eq!(host.frame(self, true).drains, 2);
         for packet in std::mem::take(&mut self.transport.packets) {
-            assert!(packet.admitted);
+            if !packet.admitted {
+                continue;
+            }
             if packet.socket == 38 {
                 let client = ClientId(u32::from(packet.to.port() - 30000));
                 host.queue
@@ -111,13 +114,17 @@ impl Source {
                     &mut connection.channel,
                     ResourceNamespace::Client(client),
                     |incoming| match incoming {
-                        Incoming::Download(block) => {
-                            let block = block.unwrap();
-                            self.blocks[client.0 as usize].push(Block {
-                                percent: block.percent,
-                                bytes: block.bytes.map(<[u8]>::to_vec),
-                            });
-                        }
+                        Incoming::Download(block) => match block.unwrap() {
+                            qa_network::downloads::Chunk::Sequential { percent, bytes, .. } => {
+                                self.blocks[client.0 as usize].push(Block {
+                                    percent,
+                                    bytes: bytes.map(<[u8]>::to_vec),
+                                });
+                            }
+                            chunk => {
+                                self.numbered[client.0 as usize].push(chunk.map(<[u8]>::to_vec))
+                            }
+                        },
                         _ => {}
                     },
                 )
@@ -523,5 +530,189 @@ fn resync_and_disconnect_retire_the_old_source_before_continuation_or_slot_reuse
             .bytes
             .unwrap(),
         b"raw native source"
+    );
+}
+
+#[test]
+fn numbered_ring_blocks_share_q3_commands_fragments_and_best_effort_retirement() {
+    use qa_core::primitives::FileChunk;
+    let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+    let client = ClientId(0);
+    host.runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel
+        .queue_reliable(b"print \"download control\"\n")
+        .unwrap();
+    let command_sequence = host
+        .runtime
+        .network
+        .get(client, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued;
+    let entity = host.runtime.server.clients[0].entity;
+    let owner = host.runtime.server.clients[0].output.unwrap();
+    let bytes: Vec<_> = (0..2048).map(|index| (index % 251) as u8).collect();
+    let record = host
+        .runtime
+        .server
+        .events
+        .file_chunk(
+            client,
+            entity,
+            FileChunk::Block {
+                number: 0,
+                total: Some(bytes.len() as u32),
+                bytes: &bytes,
+            },
+        )
+        .unwrap();
+    source.transport.reject = Some(address(client));
+    source.advance(&mut host, 2);
+    assert!(source.numbered[0].is_empty());
+    let mut batch = host.runtime.server.events.batch(owner).unwrap();
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .next(&mut batch)
+            .unwrap()
+            .sequence,
+        record
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .channel
+            .pending_packet()
+            .is_some()
+    );
+    // A stalled fragmented download must not stop a healthy peer's stream.
+    host.runtime
+        .server
+        .events
+        .file_chunk(
+            ClientId(1),
+            host.runtime.server.clients[1].entity,
+            FileChunk::Block {
+                number: 0,
+                total: Some(1),
+                bytes: &[99],
+            },
+        )
+        .unwrap();
+    source.step(&mut host);
+    assert_eq!(
+        source.numbered[1],
+        vec![FileChunk::Block {
+            number: 0,
+            total: Some(1),
+            bytes: vec![99]
+        }]
+    );
+    source.transport.reject = None;
+    source.advance(&mut host, 3);
+    assert_eq!(
+        source.numbered[0],
+        vec![FileChunk::Block {
+            number: 0,
+            total: Some(2048),
+            bytes
+        }]
+    );
+    let mut batch = host.runtime.server.events.batch(owner).unwrap();
+    assert!(host.runtime.server.events.next(&mut batch).is_none());
+    assert!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .pending_output
+            .is_none()
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .server_command(command_sequence)
+            .unwrap(),
+        b"print \"download control\"\n"
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .submitted,
+        command_sequence
+    );
+    // A record addressed to a previous slot lifetime cannot reach this connection.
+    let stale = qa_core::primitives::EntityId {
+        generation: entity.generation.wrapping_sub(1),
+        ..entity
+    };
+    host.runtime
+        .server
+        .events
+        .file_chunk(
+            client,
+            stale,
+            FileChunk::Block {
+                number: 7,
+                total: None,
+                bytes: &[88],
+            },
+        )
+        .unwrap();
+    host.runtime
+        .server
+        .events
+        .file_chunk(
+            client,
+            entity,
+            FileChunk::Block {
+                number: 1,
+                total: None,
+                bytes: &[],
+            },
+        )
+        .unwrap();
+    host.runtime
+        .server
+        .events
+        .file_chunk(
+            client,
+            entity,
+            FileChunk::Rejected {
+                size: -1,
+                message: b"file unavailable",
+            },
+        )
+        .unwrap();
+    source.advance(&mut host, 3);
+    assert_eq!(
+        source.numbered[0][1..],
+        [
+            FileChunk::Block {
+                number: 1,
+                total: None,
+                bytes: vec![]
+            },
+            FileChunk::Rejected {
+                size: -1,
+                message: b"file unavailable".to_vec()
+            }
+        ]
     );
 }

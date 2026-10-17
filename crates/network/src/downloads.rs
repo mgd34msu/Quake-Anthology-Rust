@@ -5,26 +5,7 @@ use crate::{
     message::{Encoding, Error as MessageError, ErrorKind, Reader, StringPolicy, Writer},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Chunk<'a> {
-    Sequential {
-        percent: u8,
-        /// Native signed size -1 means unavailable; an empty slice is a real block.
-        bytes: Option<&'a [u8]>,
-        /// DEFLATE input can advance while producing an empty decoded block.
-        compressed: bool,
-    },
-    Block {
-        number: i16,
-        /// Only native block zero carries the file size.
-        total: Option<u32>,
-        bytes: &'a [u8],
-    },
-    Rejected {
-        size: i32,
-        message: &'a [u8],
-    },
-}
+pub type Chunk<'a> = qa_core::primitives::FileChunk<&'a [u8]>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sequential {

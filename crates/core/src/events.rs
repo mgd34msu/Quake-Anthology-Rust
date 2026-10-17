@@ -1,5 +1,5 @@
 use crate::primitives::{
-    ClientId, EffectEvent, EntityId, EntityRecord, HudEvent, IndexSpan, ModuleId,
+    ClientId, EffectEvent, EntityId, EntityRecord, FileChunk, HudEvent, IndexSpan, ModuleId,
     NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_PEER_ROUTE_BYTES,
     NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES, NativeDelivery, NativePayload, NativeTarget,
     NumericValue, PrintEvent, PrintKind, PrintText, RuleSetId, SoundEvent, TextId, TextLease,
@@ -42,9 +42,7 @@ pub enum FrameEvent {
     /// retirement policy; an unavailable file differs from a real empty block.
     FileChunk {
         receiver: EntityId,
-        percent: u8,
-        available: bool,
-        payload: NativePayload,
+        chunk: FileChunk<NativePayload>,
     },
     /// One native SERVER state body, retained until its channel acknowledges
     /// receipt. Framing is regenerated without changing its command watermark.
@@ -460,9 +458,13 @@ impl EventRing {
             }
             FrameEvent::Native(payload)
             | FrameEvent::PeerInfo { payload, .. }
-            | FrameEvent::FileChunk { payload, .. }
             | FrameEvent::GameState { payload, .. } => {
                 pages = payload.pages;
+            }
+            FrameEvent::FileChunk { chunk, .. } => {
+                if let Some(payload) = chunk.payload() {
+                    pages = payload.pages;
+                }
             }
             _ => {}
         }
@@ -697,23 +699,20 @@ impl EventRing {
         &mut self,
         client: ClientId,
         receiver: EntityId,
-        percent: u8,
-        bytes: Option<&[u8]>,
+        chunk: FileChunk<&[u8]>,
     ) -> Result<u64, EventStorageError> {
-        if percent > 100 {
+        if matches!(chunk, FileChunk::Sequential { percent: 101.., .. }) {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
         self.publish_payload(
             Some(OutputTarget::Client(client)),
             None,
-            bytes.unwrap_or(&[]),
+            chunk.payload().copied().unwrap_or(&[]),
             &[],
             |payload| FrameEvent::FileChunk {
                 receiver,
-                percent,
-                available: bytes.is_some(),
-                payload,
+                chunk: chunk.map(|_| payload),
             },
         )
     }

@@ -501,22 +501,22 @@ pub(crate) fn dispatch_frame(
                     return OutputSubmission::Unsent;
                 }
                 let mut resource_pending = false;
-                let submission = if let FrameEvent::FileChunk {
-                    receiver,
-                    percent,
-                    available,
-                    payload,
-                } = record.event
-                {
+                let submission = if let FrameEvent::FileChunk { receiver, chunk } = record.event {
                     if receiver != client.entity {
                         return OutputSubmission::BestEffort;
                     }
-                    let Some(stored) = texts.copy_payload(payload, &mut runtime.output_bytes)
-                    else {
-                        counts.stale_texts += 1;
-                        runtime.server_downloads[slot].reset();
-                        return OutputSubmission::BestEffort;
+                    let stored = if let Some(payload) = chunk.payload() {
+                        let Some(stored) = texts.copy_payload(*payload, &mut runtime.output_bytes)
+                        else {
+                            counts.stale_texts += 1;
+                            runtime.server_downloads[slot].reset();
+                            return OutputSubmission::BestEffort;
+                        };
+                        stored
+                    } else {
+                        &[]
                     };
+                    let chunk = chunk.map(|payload| &stored[..payload.len()]);
                     let Some(connection) = runtime
                         .network
                         .get_mut(client_id, qa_core::loopback::Endpoint::Server)
@@ -532,32 +532,69 @@ pub(crate) fn dispatch_frame(
                         runtime.server_downloads[slot].reset();
                         return OutputSubmission::BestEffort;
                     };
-                    let Ok(length) = qa_network::downloads::write_chunk(
-                        protocol,
-                        qa_network::downloads::Chunk::Sequential {
-                            compressed: false,
-                            percent,
-                            bytes: available.then_some(&stored[..payload.len()]),
-                        },
-                        &mut runtime.output_native_bytes,
-                    ) else {
-                        counts.native_unsupported += 1;
-                        runtime.server_downloads[slot].reset();
-                        return OutputSubmission::BestEffort;
-                    };
-                    match native::reliable(
-                        &mut connection.channel,
-                        &runtime.output_native_bytes[..length],
-                    ) {
-                        Ok(submission) => {
-                            counts.native_messages +=
-                                u64::from(submission != OutputSubmission::Unsent);
-                            submission
-                        }
-                        Err(()) => {
+                    if protocol == qa_network::commands::packet::Protocol::Quake3_68 {
+                        let length = connection.channel.encode_server_output(
+                            &mut runtime.output_native_bytes,
+                            |writer, _| {
+                                qa_network::downloads::write_service(protocol, chunk, writer)
+                                    .map_err(|_| qa_network::commands::packet::Error::Context)
+                            },
+                        );
+                        let Ok(length) = length else {
                             counts.native_unsupported += 1;
                             runtime.server_downloads[slot].reset();
-                            OutputSubmission::BestEffort
+                            return OutputSubmission::BestEffort;
+                        };
+                        let route = connection.route;
+                        match native::transmit(
+                            connection,
+                            Some((record.sequence, &runtime.output_native_bytes[..length])),
+                            time,
+                            |bytes| {
+                                crate::transport::admit_output(
+                                    &mut runtime.loopback,
+                                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
+                                    qa_core::loopback::Endpoint::Server,
+                                    route,
+                                    bytes,
+                                )
+                            },
+                        ) {
+                            Ok((submission, sent)) => {
+                                counts.add_native(&sent);
+                                counts.native_messages += u64::from(sent.complete);
+                                submission.unwrap_or(OutputSubmission::Unsent)
+                            }
+                            Err(_) => {
+                                counts.native_unsupported += 1;
+                                runtime.server_downloads[slot].reset();
+                                OutputSubmission::BestEffort
+                            }
+                        }
+                    } else {
+                        let Ok(length) = qa_network::downloads::write_chunk(
+                            protocol,
+                            chunk,
+                            &mut runtime.output_native_bytes,
+                        ) else {
+                            counts.native_unsupported += 1;
+                            runtime.server_downloads[slot].reset();
+                            return OutputSubmission::BestEffort;
+                        };
+                        match native::reliable(
+                            &mut connection.channel,
+                            &runtime.output_native_bytes[..length],
+                        ) {
+                            Ok(submission) => {
+                                counts.native_messages +=
+                                    u64::from(submission != OutputSubmission::Unsent);
+                                submission
+                            }
+                            Err(()) => {
+                                counts.native_unsupported += 1;
+                                runtime.server_downloads[slot].reset();
+                                OutputSubmission::BestEffort
+                            }
                         }
                     }
                 } else if let FrameEvent::PeerInfo { user_id, payload } = record.event {
