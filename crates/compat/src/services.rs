@@ -330,6 +330,7 @@ struct ConfigRange {
     info_scratch: Box<[u8]>,
     span: IndexSpan,
     files: Option<IndexSpan>,
+    file_search: Option<qa_content::vfs::SearchView>,
     resources: Option<[IndexSpan; 3]>,
     resource_policies: [ResourceIndexPolicy; 3],
     message: Box<[u8]>,
@@ -393,6 +394,32 @@ pub struct ServiceStorage {
 }
 
 impl ServiceStorage {
+    /// Bind an immutable source order at module load/restart. Rebinding closes
+    /// this module's old handles; None restores the default shared search.
+    pub fn set_file_search(
+        &mut self,
+        module: ModuleId,
+        view: Option<qa_content::vfs::SearchView>,
+        vfs: &Vfs,
+    ) -> Result<(), CallError> {
+        if view.as_ref().is_some_and(|view| !vfs.accepts_search(view)) {
+            return Err(CallError::File);
+        }
+        let range = self
+            .ranges
+            .iter_mut()
+            .find(|range| range.module == module)
+            .ok_or(CallError::File)?;
+        range.file_search = view;
+        for file in self
+            .files
+            .iter_mut()
+            .filter(|file| file.as_ref().is_some_and(|file| file.owner == module))
+        {
+            *file = None;
+        }
+        Ok(())
+    }
     pub fn max_clients(&self, cvars: &Cvars, rules: qa_core::primitives::RuleSetId) -> i32 {
         cvars.integer_in(self.max_clients, rules)
     }
@@ -510,6 +537,7 @@ impl ServiceStorage {
                     count: u32::try_from(count).map_err(|_| CallError::Capacity)?,
                 },
                 files: file_span,
+                file_search: None,
                 message: vec![0; NATIVE_PAYLOAD_BYTES].into_boxed_slice(),
                 written: 0,
                 revision: 0,
@@ -1387,7 +1415,7 @@ pub struct EngineCallTable {
     pub model_bounds: fn(&EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
-    pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
+    pub file_length: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<u64, CallError>,
     pub file_read:
         fn(&mut EngineServices<'_>, ModuleId, u32, &mut [u8]) -> Result<usize, CallError>,
     pub file_seek:
@@ -1798,7 +1826,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     },
     file_open: |s, m, p| s.file_open(m, p),
     entity_token: |s, m| s.storage.entity_token(m),
-    file_length: |s, p| s.file_length(p),
+    file_length: |s, m, p| s.file_length(m, p),
     file_read: |s, m, h, b| s.file_read(m, h, b),
     file_seek: |s, m, h, from| s.file_seek(m, h, from),
     file_close: |s, m, h| s.file_close(m, h),
@@ -2379,7 +2407,7 @@ impl EngineServices<'_> {
         self.configstring(module, index, text)
     }
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
-        let reference = self.vfs.open(path).ok_or(CallError::File)?;
+        let reference = self.file_reference(owner, path)?;
         let length = self.vfs.length(&reference).map_err(|_| CallError::File)?;
         let span = self.storage.file_span(owner)?;
         let ordinal = self.storage.files[span.range()]
@@ -2394,8 +2422,15 @@ impl EngineServices<'_> {
         });
         Ok((ordinal as u32 + 1, length))
     }
-    pub fn file_length(&self, path: &[u8]) -> Result<u64, CallError> {
-        let reference = self.vfs.open(path).ok_or(CallError::File)?;
+    fn file_reference(&self, owner: ModuleId, path: &[u8]) -> Result<FileRef, CallError> {
+        let view = self
+            .storage
+            .range(owner)
+            .and_then(|range| range.file_search.as_ref());
+        self.vfs.open_with(path, view).ok_or(CallError::File)
+    }
+    pub fn file_length(&self, owner: ModuleId, path: &[u8]) -> Result<u64, CallError> {
+        let reference = self.file_reference(owner, path)?;
         self.vfs.length(&reference).map_err(|_| CallError::File)
     }
     fn file_index(&self, owner: ModuleId, handle: u32) -> Result<usize, CallError> {

@@ -923,3 +923,85 @@ fn malformed_published_packages_never_admit_members_or_replace_existing_winners(
         assert!(qa_formats::archive::ArchiveKind::from_path(&path).is_some());
     }
 }
+
+#[test]
+fn independent_search_views_select_cached_candidates_without_mutating_other_callers() {
+    let root = Fixture::new("search-views");
+    let mut vfs = Vfs::default();
+    let mut mounts = vec![];
+    for (name, data) in [("first", b"first".as_slice()), ("peer", b"peer")] {
+        let path = root.0.join(name);
+        qa_platform::files::create_dir_all(&path).unwrap();
+        qa_platform::files::write(path.join("same.dat"), data).unwrap();
+        qa_platform::files::write(path.join("unique.dat"), name.as_bytes()).unwrap();
+        mounts.push(vfs.mount_directory(&path, mounts.len() as i32).unwrap());
+    }
+    let default = vfs.open(b"same.dat").unwrap();
+    let first = vfs.search_view([mounts[0]]).unwrap();
+    let peer = vfs.search_view([mounts[1], mounts[0], mounts[1]]).unwrap();
+    let reversed = vfs.search_view([mounts[0], mounts[1]]).unwrap();
+    let empty = vfs.search_view([]).unwrap();
+    let mut reader = Default::default();
+    for (view, expected) in [
+        (&first, b"first".as_slice()),
+        (&peer, b"peer"),
+        (&reversed, b"first"),
+    ] {
+        let reference = vfs.open_with(b"SAME.DAT", Some(view)).unwrap();
+        assert_eq!(
+            vfs.read_to_vec(&reference, 4096, &mut reader).unwrap(),
+            expected
+        );
+    }
+    assert!(vfs.open_with(b"same.dat", Some(&empty)).is_none());
+    assert_eq!(vfs.open(b"same.dat"), Some(default.clone()));
+    let other = Vfs::default();
+    let foreign = other.search_view([]).unwrap();
+    assert!(!vfs.accepts_search(&foreign));
+    assert!(vfs.open_with(b"same.dat", Some(&foreign)).is_none());
+    // A later mount cannot silently enter an already admitted caller view.
+    let path = root.0.join("late");
+    qa_platform::files::create_dir_all(&path).unwrap();
+    qa_platform::files::write(path.join("same.dat"), b"late").unwrap();
+    qa_platform::files::write(path.join("late.dat"), b"new").unwrap();
+    let late = vfs.mount_directory(&path, 99).unwrap();
+    assert!(vfs.open(b"late.dat").is_some());
+    assert!(vfs.open_with(b"late.dat", Some(&peer)).is_none());
+    let refreshed = vfs.search_view([late, mounts[0]]).unwrap();
+    let current = vfs.open_with(b"same.dat", Some(&refreshed)).unwrap();
+    assert_eq!(
+        vfs.read_to_vec(&current, 4096, &mut reader).unwrap(),
+        b"late"
+    );
+    assert_eq!(
+        vfs.read_to_vec(&default, 4096, &mut reader).unwrap(),
+        b"peer"
+    );
+    vfs.unmount(mounts[0]);
+    assert!(vfs.open_with(b"same.dat", Some(&first)).is_none());
+    assert!(vfs.search_view([mounts[0]]).is_err());
+    assert!(vfs.open_with(b"same.dat", Some(&peer)).is_some());
+    for (name, data, expected) in [
+        (
+            "duplicates.pak",
+            pack(&[(b"same.dat", b"first"), (b"SAME.DAT", b"last")]),
+            b"first".as_slice(),
+        ),
+        (
+            "duplicates.pk3",
+            zip::stored_zip(&[(b"same.dat", b"first"), (b"SAME.DAT", b"last")]),
+            b"last",
+        ),
+    ] {
+        let path = root.0.join(name);
+        qa_platform::files::write(&path, data).unwrap();
+        let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&path).unwrap())).unwrap());
+        let mount = vfs.mount_archive(&path, 100, archive).unwrap();
+        let view = vfs.search_view([mount]).unwrap();
+        let reference = vfs.open_with(b"same.dat", Some(&view)).unwrap();
+        assert_eq!(
+            vfs.read_to_vec(&reference, 4096, &mut reader).unwrap(),
+            expected
+        );
+    }
+}

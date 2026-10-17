@@ -2713,7 +2713,11 @@ fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         return Err(CallError::File);
     }
     if c.null_pointer(1)? {
-        return match (ENGINE_CALLS.file_length)(c.services, c.memory.cstring(c.pointer(0)?)?) {
+        return match (ENGINE_CALLS.file_length)(
+            c.services,
+            c.context.module,
+            c.memory.cstring(c.pointer(0)?)?,
+        ) {
             Ok(_) => Ok(1),
             Err(CallError::File) => Ok(0),
             Err(error) => Err(error),

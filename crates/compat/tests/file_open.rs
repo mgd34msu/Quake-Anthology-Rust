@@ -439,3 +439,76 @@ fn directory_refresh_keeps_open_module_files_on_their_accepted_source() {
     assert_eq!(fixture.engine().file_read(owner, new, &mut bytes), Ok(11));
     assert_eq!(&bytes[..11], b"replacement");
 }
+
+#[test]
+fn module_search_changes_scope_open_and_probe_without_changing_peer_handles() {
+    let mut f = Fixture::new("module-search");
+    let first = ModuleId(1);
+    let peer = ModuleId(2);
+    f.storage = ServiceStorage::load_modules(
+        &[
+            (first, 0, RuleSetId::Quake3, 2),
+            (peer, 0, RuleSetId::Quake2, 2),
+        ],
+        &f.cvars,
+    )
+    .unwrap();
+    let original = f.vfs.mounts().next().unwrap().id;
+    let later = f.root.join("later");
+    qa_platform::files::create_dir_all(&later).unwrap();
+    qa_platform::files::write(later.join("data.dat"), b"later bytes").unwrap();
+    qa_platform::files::write(later.join("only.dat"), b"private").unwrap();
+    let mount = f.vfs.mount_directory(&later, 10).unwrap();
+    let peer_handle = f.engine().file_open(peer, b"data.dat").unwrap().0;
+    let previous = f.engine().file_open(first, b"data.dat").unwrap().0;
+    f.storage
+        .set_file_search(first, Some(f.vfs.search_view([original]).unwrap()), &f.vfs)
+        .unwrap();
+    assert_eq!(
+        f.engine().file_read(first, previous, &mut [0; 8]),
+        Err(CallError::File)
+    );
+    assert_eq!(f.engine().file_length(first, b"data.dat"), Ok(3));
+    assert_eq!(f.engine().file_length(peer, b"data.dat"), Ok(11));
+    assert_eq!(
+        f.engine().file_length(first, b"only.dat"),
+        Err(CallError::File)
+    );
+    let (handle, length) = f.engine().file_open(first, b"data.dat").unwrap();
+    assert_eq!(length, 3);
+    let mut bytes = [0; 32];
+    let count = f.engine().file_read(first, handle, &mut bytes).unwrap();
+    assert_eq!(&bytes[..count], b"abc");
+    let count = f.engine().file_read(peer, peer_handle, &mut bytes).unwrap();
+    assert_eq!(&bytes[..count], b"later bytes");
+    // Native FS_FOpenFile's null-handle probe and ordinary open share the
+    // module owner for every existing Q3 mapping and address width.
+    for (mode, base) in modes() {
+        for (table, open) in [(&Q3_SERVER, 10), (&Q3_CLIENT, 10), (&Q3_UI, 13)] {
+            let mut data = [0; 512];
+            let mut memory = ModuleMemory::borrow(base, &mut data).unwrap();
+            memory.write(base + 160, b"only.dat\0").unwrap();
+            assert_eq!(
+                f.call(table, mode, &mut memory, open, &[base + 160, 0, 0]),
+                Ok(0)
+            );
+            assert_eq!(
+                f.call(table, mode, &mut memory, open, &[base + 160, base + 256, 0]),
+                Ok(u64::from(u32::MAX))
+            );
+            assert_eq!(memory.read_word(base + 256), Ok(0));
+        }
+    }
+    f.storage
+        .set_file_search(first, Some(f.vfs.search_view([mount]).unwrap()), &f.vfs)
+        .unwrap();
+    assert_eq!(f.engine().file_length(first, b"only.dat"), Ok(7));
+    let foreign = qa_content::vfs::Vfs::default().search_view([]).unwrap();
+    assert_eq!(
+        f.storage.set_file_search(first, Some(foreign), &f.vfs),
+        Err(CallError::File)
+    );
+    assert_eq!(f.engine().file_length(first, b"only.dat"), Ok(7));
+    f.storage.set_file_search(first, None, &f.vfs).unwrap();
+    assert_eq!(f.engine().file_length(first, b"data.dat"), Ok(11));
+}

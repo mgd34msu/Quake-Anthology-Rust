@@ -1,4 +1,4 @@
-use qa_core::names::NameTable;
+use qa_core::{names::NameTable, primitives::IndexSpan};
 use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -12,6 +12,14 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MountId(pub u32);
+/// Immutable caller-selected mount order over this VFS's one file index.
+/// New mounts stay outside a retained view until its caller explicitly rebuilds it.
+#[derive(Clone)]
+pub struct SearchView {
+    owner: Arc<()>,
+    ranks: Arc<[u32]>,
+}
+
 /// Retained opened source and metadata. Rename/unlink replacements preserve
 /// this opened file; external writes to the same inode remain observable.
 #[derive(Clone)]
@@ -173,7 +181,7 @@ pub struct Vfs {
     mounts: Vec<MountInfo>,
     entries: Vec<Option<Arc<Entry>>>,
     names: Option<NameTable>,
-    winners: Box<[Option<u32>]>,
+    candidates: Box<[IndexSpan]>,
     listing: Vec<u32>,
     generation: u64,
     lookups: AtomicU64,
@@ -499,7 +507,7 @@ impl Vfs {
 
     fn install_index(&mut self, index: FileIndex) {
         self.names = Some(index.names);
-        self.winners = index.winners;
+        self.candidates = index.candidates;
         self.listing = index.listing;
     }
 
@@ -507,7 +515,7 @@ impl Vfs {
         let Some(names) = &self.names else {
             return;
         };
-        (self.winners, self.listing) = index_entries(&self.entries, &self.mounts, names);
+        (self.candidates, self.listing) = index_entries(&self.entries, &self.mounts, names);
     }
 
     fn reference(&self, slot: u32) -> Option<FileRef> {
@@ -521,15 +529,60 @@ impl Vfs {
 
     /// Resolve names only while loading. Simulation/render/audio retain FileRefs.
     pub fn open(&self, path: &[u8]) -> Option<FileRef> {
+        self.open_with(path, None)
+    }
+    pub fn search_view(
+        &self,
+        order: impl IntoIterator<Item = MountId>,
+    ) -> Result<SearchView, VfsError> {
+        let mut ranks = vec![u32::MAX; self.mounts.len()];
+        let mut next = 0;
+        for id in order {
+            self.mounts
+                .get(id.0 as usize)
+                .filter(|mount| mount.active)
+                .ok_or(VfsError::Handle)?;
+            let rank = &mut ranks[id.0 as usize];
+            if *rank == u32::MAX {
+                *rank = next;
+                next += 1;
+            }
+        }
+        Ok(SearchView {
+            owner: Arc::clone(&self.owner),
+            ranks: ranks.into(),
+        })
+    }
+    pub fn accepts_search(&self, view: &SearchView) -> bool {
+        Arc::ptr_eq(&self.owner, &view.owner)
+    }
+    /// Name conversion and candidate traversal are shared by default and scoped
+    /// reads. Selection does not mutate another caller's mount order or handles.
+    pub fn open_with(&self, path: &[u8], view: Option<&SearchView>) -> Option<FileRef> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
+        if view.is_some_and(|view| !self.accepts_search(view)) {
+            return None;
+        }
         let mut normalized = [0; 4096];
         let length = normalize_into(path, &mut normalized).ok()?;
         let id = self.names.as_ref()?.find(&normalized[..length])?;
-        self.winners
-            .get(id.0 as usize)
-            .copied()
-            .flatten()
-            .and_then(|slot| self.reference(slot))
+        let candidates = self
+            .listing
+            .get(self.candidates.get(id.0 as usize)?.range())?;
+        let slot = if let Some(view) = view {
+            candidates
+                .iter()
+                .filter_map(|&slot| {
+                    let entry = self.entries.get(slot as usize)?.as_ref()?;
+                    let rank = *view.ranks.get(entry.mount)?;
+                    (rank != u32::MAX).then_some((slot, rank))
+                })
+                .min_by_key(|(_, rank)| *rank)
+                .map(|(slot, _)| slot)?
+        } else {
+            *candidates.first()?
+        };
+        self.reference(slot)
     }
 
     fn entry<'a>(&self, reference: &'a FileRef) -> Result<&'a Entry, VfsError> {
@@ -751,7 +804,7 @@ impl Vfs {
 
 struct FileIndex {
     names: NameTable,
-    winners: Box<[Option<u32>]>,
+    candidates: Box<[IndexSpan]>,
     listing: Vec<u32>,
 }
 impl FileIndex {
@@ -764,10 +817,10 @@ impl FileIndex {
                 .map(|entry| entry.name.as_ref()),
         )
         .map_err(|_| VfsError::Capacity)?;
-        let (winners, listing) = index_entries(entries, mounts, &names);
+        let (candidates, listing) = index_entries(entries, mounts, &names);
         Ok(Self {
             names,
-            winners,
+            candidates,
             listing,
         })
     }
@@ -777,7 +830,7 @@ fn index_entries(
     entries: &[Option<Arc<Entry>>],
     mounts: &[MountInfo],
     names: &NameTable,
-) -> (Box<[Option<u32>]>, Vec<u32>) {
+) -> (Box<[IndexSpan]>, Vec<u32>) {
     let mut indexed: Vec<_> = entries
         .iter()
         .enumerate()
@@ -797,15 +850,17 @@ fn index_entries(
                 MountKind::Directory | MountKind::Pak => x.ordinal.cmp(&y.ordinal),
             })
     });
-    let mut winners = vec![None; names.len()].into_boxed_slice();
+    let mut candidates = vec![IndexSpan::default(); names.len()].into_boxed_slice();
     let mut listing = Vec::with_capacity(indexed.len());
     for (slot, _, _, name) in indexed {
-        if let Some(winner) = winners.get_mut(name.0 as usize) {
-            winner.get_or_insert(slot);
-            listing.push(slot);
+        let range = &mut candidates[name.0 as usize];
+        if range.count == 0 {
+            range.first = listing.len() as u32;
         }
+        range.count += 1;
+        listing.push(slot);
     }
-    (winners, listing)
+    (candidates, listing)
 }
 
 fn below_prefix(name: &[u8], prefix: &[u8]) -> bool {
