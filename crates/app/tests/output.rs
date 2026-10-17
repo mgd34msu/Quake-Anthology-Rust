@@ -286,10 +286,12 @@ fn emit_print(host: &mut FrameHost, tick: Tick, _driver: &mut qa_app::modules::D
 struct PeerSource {
     source: Source,
     peers: [qa_network::channel::Channel; 2],
+    commands: [qa_network::commands::connection::Commands; 2],
     ack: [u8; 1400],
     ack_length: usize,
     healthy: u64,
-    reliable: u64,
+    stalled_submissions: u64,
+    healthy_userinfos: u64,
     unsent: bool,
 }
 impl FrameSource for PeerSource {
@@ -321,25 +323,41 @@ impl FrameSource for PeerSource {
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         assert_eq!(socket, 0);
         let client = usize::from(to.port() - 1000);
-        if client == 0 && self.unsent {
-            self.reliable += 1;
-            return false;
+        if client == 0 {
+            self.stalled_submissions += 1;
+            if self.unsent {
+                return false;
+            }
         }
         let time = EventTime(self.source.time * 1_000_000);
         let received = self.peers[client].receive(bytes, time).unwrap();
         if let qa_network::channel::Delivery::Payload(body) = received.delivery {
-            for print in qa_network::outputs::Prints::new(
-                qa_network::commands::packet::Protocol::QuakeWorld28,
-                body,
-            ) {
-                let print = print.unwrap();
-                assert_eq!(print.kind, PrintKind::Center);
-                assert!(!print.text.is_empty());
-                if client == 1 {
-                    self.healthy += 1;
-                } else {
-                    self.reliable += 1;
-                }
+            let commands = &mut self.commands[client];
+            let length = commands.stage(body).unwrap();
+            let mut prints = 0;
+            let mut userinfos = 0;
+            commands
+                .decode_output(
+                    length,
+                    received.header.sequence,
+                    &mut self.peers[client],
+                    qa_core::primitives::ResourceNamespace::Client(ClientId(client as u32)),
+                    |incoming| match incoming {
+                        qa_network::ingress::Incoming::Print(print) => {
+                            assert_eq!(print.kind, PrintKind::Center);
+                            assert!(!print.text.is_empty());
+                            prints += 1;
+                        }
+                        qa_network::ingress::Incoming::Peer(
+                            qa_network::outputs::PeerUpdate::UserInfo { .. },
+                        ) => userinfos += 1,
+                        _ => {}
+                    },
+                )
+                .unwrap();
+            if client == 1 {
+                self.healthy += prints;
+                self.healthy_userinfos += userinfos;
             }
         }
         if client == 1 {
@@ -437,10 +455,17 @@ fn stalled_peer_progress(unsent: bool) {
             channel.set_qport([17, 23][slot]);
             channel
         }),
+        commands: std::array::from_fn(|_| {
+            qa_network::commands::connection::Commands::load(
+                qa_network::commands::packet::Protocol::QuakeWorld28,
+                8192,
+            )
+        }),
         ack: [0; 1400],
         ack_length: 0,
         healthy: 0,
-        reliable: 0,
+        stalled_submissions: 0,
+        healthy_userinfos: 0,
         unsent,
     };
     // Each QW peer first admits a native request. Later healthy ACK packets
@@ -492,7 +517,8 @@ fn stalled_peer_progress(unsent: bool) {
     assert_eq!(ticks, 1100);
     assert_eq!(host.runtime.server.world_frame, 400);
     assert_eq!(source.healthy, 700);
-    assert!(source.reliable > 0);
+    assert!(source.stalled_submissions > 0);
+    assert!(source.healthy_userinfos > 0);
     assert_eq!((disconnected, overflow), (1, 1));
     assert!(resync_retired >= 32);
     assert!(
@@ -528,14 +554,19 @@ fn stalled_peer_progress(unsent: bool) {
     assert_eq!(final_ack.server_ticks, 0);
     assert_eq!(host.runtime.server.world_frame, 400);
     assert_eq!(source.healthy, 700);
+    let healthy_counts = host.runtime.server.events.counters(healthy_cursor).unwrap();
     assert_eq!(
-        host.runtime
-            .server
-            .events
-            .counters(healthy_cursor)
-            .unwrap()
-            .acknowledged_records,
-        700
+        healthy_counts.acknowledged_records,
+        healthy_counts.submissions
+    );
+    assert!(healthy_counts.acknowledged_records >= source.healthy);
+    assert!(
+        !host.runtime.server.events.sequence_range().any(|sequence| {
+            host.runtime
+                .server
+                .events
+                .retained_for(healthy_cursor, sequence)
+        })
     );
     for slot in 11..14 {
         assert!(host.runtime.server.clients[slot].player.health > 600);

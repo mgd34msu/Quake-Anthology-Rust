@@ -309,6 +309,16 @@ fn queued_weapon_selection_cannot_cross_a_reused_connection_generation() {
         &mut RetirementSource::default()
     ));
     assert!(host.runtime.server.disconnect(client));
+    assert!(host.runtime.server.available_client_slot().is_none());
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut RetirementSource::default(),
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.,
+        2.,
+    );
     assert_eq!(
         host.runtime
             .server

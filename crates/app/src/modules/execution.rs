@@ -249,10 +249,12 @@ impl ExecutionSlot {
         slots
             .try_reserve_exact(capacity)
             .map_err(|_| "execution reservation")?;
-        slots.resize_with(capacity, || Self {
-            frame: None,
-            command: ParsedCommand::default(),
-        });
+        for _ in 0..capacity {
+            slots.push(Self {
+                frame: None,
+                command: ParsedCommand::default(),
+            });
+        }
         Ok(slots.into_boxed_slice())
     }
 }

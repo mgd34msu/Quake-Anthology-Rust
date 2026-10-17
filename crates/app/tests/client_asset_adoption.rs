@@ -179,7 +179,10 @@ fn queued_qw_static_keeps_original_late_filename_when_the_live_alias_changes() {
         let (_fixture, mut host, mut source, profile, _) =
             setup(Protocol::QuakeWorld28, RuleSetId::Quake, &files);
         source.step(&mut host);
-        // The ordinary CLIENT move must reach SERVER before QW can reply.
+        // Admit the initial peer information before adding model rows. Its
+        // player-color registration then shares the model admission frame.
+        host.drain(&mut Default::default());
+        source.step(&mut host);
         host.drain(&mut Default::default());
         let index = ConfigLayout::QUAKEWORLD.resources[0].get(2).unwrap();
         let record = EntityRecord {
