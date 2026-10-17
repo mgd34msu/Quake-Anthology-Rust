@@ -52,6 +52,9 @@ impl<K: BindingId> OrdinalBindings<K> {
             self.registration_keys = vec![None; registration_keys].into_boxed_slice();
         }
     }
+    pub fn capacity(&self) -> usize {
+        self.forward.len()
+    }
     pub fn valid_zero(&self) -> bool {
         self.valid_zero
     }

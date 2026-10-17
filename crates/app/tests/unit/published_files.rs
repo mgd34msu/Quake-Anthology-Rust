@@ -54,7 +54,9 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
         .names
         .find_path_bytes(b"models/later.md2")
         .unwrap();
-    let ready_name = owner.cached_model_source(b"models/ready.md2").unwrap();
+    let ready_name = owner
+        .cached_model_source(&files.vfs.default_view(), b"models/ready.md2")
+        .unwrap();
     let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[ready_name] else {
         panic!("retained ready source");
     };
@@ -378,7 +380,9 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
         panic!("generated missing image");
     };
     let missing_rgba = owner.assets.image(missing_image).unwrap().rgba.to_vec();
-    let retained_id = owner.cached_model_source(b"models/test/tris.md2").unwrap();
+    let retained_id = owner
+        .cached_model_source(&files.vfs.default_view(), b"models/test/tris.md2")
+        .unwrap();
     let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[retained_id] else {
         panic!("retained MD2 source");
     };

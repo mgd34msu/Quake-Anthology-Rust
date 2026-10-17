@@ -4,7 +4,7 @@ use qa_compat::services::{
     CallError, LoadedWorldBinding, ModelLoader, ModelLookup, RendererRegistration, RendererRequest,
     ShaderLighting,
 };
-use qa_content::vfs::{SourcePrecedence, Vfs};
+use qa_content::vfs::{ReadView, SearchView, SourcePrecedence, Vfs};
 use qa_core::names::{NameTable, canonical_path, file_stem};
 use qa_core::primitives::{Bounds, IndexSpan, ModelFileId, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 mod files;
 use files::ModelFiles;
+mod scopes;
 mod sources;
 use sources::{ModelSourceId, ModelSources};
 
@@ -49,6 +50,10 @@ mod registration_tests;
 #[cfg(test)]
 #[path = "../tests/unit/md5_registration.rs"]
 mod md5_registration_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/model_source_scopes.rs"]
+mod source_scope_tests;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest<'a> {
@@ -4099,7 +4104,7 @@ impl ModelAssets {
         self.ensure_file_profile(vfs, path, None, false)
     }
 
-    fn model_bytes(&mut self, vfs: &Vfs, path: &str) -> Result<Arc<[u8]>, FileError> {
+    fn model_bytes(&mut self, vfs: ReadView<'_>, path: &str) -> Result<Arc<[u8]>, FileError> {
         let reference = vfs.open(path.as_bytes()).ok_or_else(|| FileError {
             kind: CallError::File,
             message: format!("missing model source {path}"),
@@ -4109,7 +4114,7 @@ impl ModelAssets {
 
     fn model_bytes_at(
         &mut self,
-        vfs: &Vfs,
+        vfs: ReadView<'_>,
         path: &str,
         reference: &qa_content::vfs::FileRef,
     ) -> Result<Arc<[u8]>, FileError> {
@@ -4127,7 +4132,7 @@ impl ModelAssets {
 
     fn md5_source(
         &mut self,
-        vfs: &Vfs,
+        vfs: ReadView<'_>,
         path: &str,
         mesh: &Model<'_>,
     ) -> Result<(Md5Source, Bounds, Arc<[f32]>), FileError> {
@@ -4191,13 +4196,20 @@ impl ModelAssets {
         ))
     }
 
-    fn cached_model_source(&self, path: &[u8]) -> Option<ModelSourceId> {
+    fn cached_model_source(&self, view: &SearchView, path: &[u8]) -> Option<ModelSourceId> {
         let name = self.catalog.names.find_path_bytes(path)?;
-        let source = self.catalog.sources.find(name)?;
+        let source = self.catalog.sources.find(view, name)?;
         (!matches!(self.catalog.sources[source], ModelSourceFile::Empty)).then_some(source)
     }
-    fn model_source(&mut self, vfs: &Vfs, path: &str) -> Result<Option<ModelSourceId>, FileError> {
-        if let Some(name) = self.cached_model_source(path.as_bytes()) {
+    fn model_source(
+        &mut self,
+        vfs: ReadView<'_>,
+        path: &str,
+    ) -> Result<Option<ModelSourceId>, FileError> {
+        let view = vfs
+            .retain()
+            .map_err(|_| FileError::file("model source selection".to_owned()))?;
+        if let Some(name) = self.cached_model_source(&view, path.as_bytes()) {
             return Ok(Some(name));
         }
         let Some(reference) = vfs.open(path.as_bytes()) else {
@@ -4212,7 +4224,7 @@ impl ModelAssets {
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model source name capacity"))?;
-        let name = self.catalog.sources.intern(name)?;
+        let name = self.catalog.sources.intern(view, name)?;
         let bytes = self.model_bytes_at(vfs, path, &reference)?;
         let model = match Model::parse(&bytes) {
             Ok(model) => model,
@@ -4322,11 +4334,14 @@ impl ModelAssets {
 
     pub(crate) fn source_image(
         &mut self,
-        vfs: &Vfs,
+        vfs: ReadView<'_>,
         path: &[u8],
         ordinal: u32,
     ) -> Result<Option<&[u8]>, String> {
-        let name = if let Some(name) = self.cached_model_source(path) {
+        let view = vfs
+            .retain()
+            .map_err(|error| format!("model dependency source: {error}"))?;
+        let name = if let Some(name) = self.cached_model_source(&view, path) {
             name
         } else {
             let path = canonical_path(
@@ -4353,7 +4368,7 @@ impl ModelAssets {
         }
     }
 
-    fn model_lods(&mut self, vfs: &Vfs, path: &str) -> Result<ModelLods, FileError> {
+    fn model_lods(&mut self, vfs: ReadView<'_>, path: &str) -> Result<ModelLods, FileError> {
         let stem = file_stem(path);
         let preferred = match path[stem.len()..].strip_prefix('.') {
             Some(extension) if extension.eq_ignore_ascii_case("md3") => "md3",
@@ -4457,7 +4472,7 @@ impl ModelAssets {
 
     fn replacement_source(
         &mut self,
-        vfs: &Vfs,
+        vfs: ReadView<'_>,
         source: ModelSourceId,
     ) -> Option<ReplacementSource> {
         let ModelSourceFile::Ready {
@@ -4690,14 +4705,14 @@ impl ModelAssets {
         *self.catalog.files.rows_mut(name) = rows.clone();
         let lods = match self.catalog.files[name] {
             ModelFile::Ready { lods, .. } => lods,
-            _ => match self.model_lods(vfs, path) {
+            _ => match self.model_lods(vfs.read_view(None), path) {
                 Ok(lods) => lods,
                 Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
             },
         };
         let replacement = lods
             .source(0)
-            .and_then(|source| self.replacement_source(vfs, source));
+            .and_then(|source| self.replacement_source(vfs.read_view(None), source));
         let replacement_frames = replacement.as_ref().and_then(|replacement| {
             let original = &self.catalog.sources[lods.source(0)?];
             let ModelSourceFile::Ready {

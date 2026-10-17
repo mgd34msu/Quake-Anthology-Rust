@@ -1295,3 +1295,51 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
         assert_eq!(raster.pixels(), pixels);
     }
 }
+
+#[test]
+fn selected_md5_source_keeps_animation_and_scale_companions_together() {
+    let mut files = fixture(Some(b"origin 2"));
+    let animation = std::str::from_utf8(ANIMATION)
+        .unwrap()
+        .replace("( 0 5 1 )", "( 0 9 1 )");
+    let high = support::Fixture::new(&[
+        ("models/paired.md5mesh", mesh()),
+        ("models/paired.md5anim", animation.as_bytes().to_vec()),
+        ("models/paired.md5scale", b"origin 3".to_vec()),
+    ]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut ids = Vec::new();
+    for (mount, expected_animation, expected_scale, max_y) in [
+        (low_mount, ANIMATION, b"origin 2".as_slice(), 5.0),
+        (
+            high_mount,
+            animation.as_bytes(),
+            b"origin 3".as_slice(),
+            9.0,
+        ),
+    ] {
+        let view = files.vfs.search_view([mount]).unwrap();
+        let source = owner
+            .model_source(files.vfs.read_view(Some(&view)), "models/paired.md5mesh")
+            .map_err(|e| e.message)
+            .unwrap()
+            .unwrap();
+        let ModelSourceFile::Ready {
+            skeletal: Some(skeletal),
+            metadata,
+            ..
+        } = &owner.catalog.sources[source]
+        else {
+            panic!("paired MD5 source");
+        };
+        assert_eq!(skeletal._animation_bytes.as_ref(), expected_animation);
+        assert_eq!(skeletal._scale_bytes.as_deref(), Some(expected_scale));
+        assert_eq!(metadata.bounds.maxs.0[1], max_y);
+        assert_eq!(skeletal.skeleton.frame_count(), 2);
+        ids.push(source);
+    }
+    assert_ne!(ids[0], ids[1]);
+}

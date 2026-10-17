@@ -66,6 +66,9 @@ impl ModelFiles {
         if let Some(id) = name.and_then(|name| self.find(name)) {
             return Ok(id);
         }
+        if self.records.len() >= self.names.capacity() {
+            return Err(CallError::Capacity);
+        }
         let id = ModelFileId(u32::try_from(self.records.len()).map_err(|_| CallError::Capacity)?);
         self.records
             .try_reserve(1)

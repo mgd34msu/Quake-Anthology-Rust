@@ -65,6 +65,17 @@ impl ReadView<'_> {
     pub fn open(self, path: &[u8]) -> Option<FileRef> {
         self.vfs.open_with(path, self.search)
     }
+    pub fn read_to_vec(
+        self,
+        file: &FileRef,
+        cap: usize,
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<Vec<u8>, VfsError> {
+        self.vfs.read_to_vec(file, cap, reader)
+    }
+    pub fn source_precedence(self, file: &FileRef) -> Result<SourcePrecedence, VfsError> {
+        self.vfs.source_precedence(file)
+    }
     pub fn read_file(
         self,
         path: &[u8],

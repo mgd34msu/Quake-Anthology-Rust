@@ -3,21 +3,28 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ModelSourceId(u32);
+impl qa_core::bindings::BindingId for ModelSourceId {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct ModelSources {
     records: Vec<ModelSourceFile>,
     names: qa_core::bindings::OrdinalBindings<NameId>,
+    selected: super::scopes::ScopedBindings<ModelSourceId>,
 }
 impl ModelSources {
     pub(super) fn load(capacity: usize) -> Self {
         Self {
             records: Vec::new(),
-            names: qa_core::bindings::OrdinalBindings::load(capacity, capacity, 0, true),
+            names: qa_core::bindings::OrdinalBindings::load(capacity, 0, 0, true),
+            selected: super::scopes::ScopedBindings::load(capacity),
         }
     }
-    pub(super) fn find(&self, name: NameId) -> Option<ModelSourceId> {
-        self.names.ordinal(name).map(ModelSourceId)
+    pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<ModelSourceId> {
+        self.selected.find(view, name)
     }
     pub(super) fn name(&self, source: ModelSourceId) -> Option<NameId> {
         self.names.get(source.0)
@@ -25,9 +32,16 @@ impl ModelSources {
     pub(super) fn get(&self, source: ModelSourceId) -> Option<&ModelSourceFile> {
         self.records.get(source.0 as usize)
     }
-    pub(super) fn intern(&mut self, name: NameId) -> Result<ModelSourceId, FileError> {
-        if let Some(source) = self.find(name) {
+    pub(super) fn intern(
+        &mut self,
+        view: SearchView,
+        name: NameId,
+    ) -> Result<ModelSourceId, FileError> {
+        if let Some(source) = self.find(&view, name) {
             return Ok(source);
+        }
+        if self.records.len() >= self.names.capacity() {
+            return Err(FileError::capacity("model source slots"));
         }
         let source = ModelSourceId(
             u32::try_from(self.records.len())
@@ -39,18 +53,22 @@ impl ModelSources {
         self.names
             .set(source.0, Some(name))
             .map_err(|_| FileError::capacity("model source name binding"))?;
+        self.selected
+            .bind(view, name, source)
+            .map_err(|_| FileError::capacity("model source selection"))?;
         self.records.push(ModelSourceFile::Empty);
         Ok(source)
     }
     pub(super) fn invalidate(&mut self, name: NameId) -> bool {
-        let Some(source) = self.find(name) else {
-            return false;
-        };
-        if !matches!(self[source], ModelSourceFile::Invalid { .. }) {
-            return false;
+        let mut changed = false;
+        for source in self.selected.named(name) {
+            let record = &mut self.records[source.0 as usize];
+            if matches!(record, ModelSourceFile::Invalid { .. }) {
+                *record = ModelSourceFile::Empty;
+                changed = true;
+            }
         }
-        self[source] = ModelSourceFile::Empty;
-        true
+        changed
     }
     pub(super) fn rollback(
         &mut self,

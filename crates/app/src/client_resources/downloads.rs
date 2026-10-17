@@ -349,7 +349,11 @@ impl ClientResources {
                                         let Some(owner) = models.as_deref_mut() else {
                                             return Ok(None);
                                         };
-                                        match owner.source_image(vfs, path, image)? {
+                                        match owner.source_image(
+                                            vfs.read_view(None),
+                                            path,
+                                            image,
+                                        )? {
                                             Some(path) if !path.is_empty() => {
                                                 name.set_bytes(path)
                                                     .map_err(|_| "Q2 model image path capacity")?;
