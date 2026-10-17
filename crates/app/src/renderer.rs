@@ -490,6 +490,7 @@ pub struct SceneHudAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
     target: &'a mut [Option<hud::HudAssets>; 5],
     candidates: Vec<hud::HudUpdate>,
+    console: Option<(&'a mut console::ConsoleAssets, console::ConsoleUpdate)>,
     ui_commands: &'a mut usize,
     reserved_ui_commands: usize,
 }
@@ -503,9 +504,17 @@ impl SceneHudAppend<'_> {
         self.candidates
             .iter()
             .flat_map(hud::HudUpdate::registrations)
+            .chain(
+                self.console
+                    .iter()
+                    .flat_map(|(_, update)| update.registrations()),
+            )
     }
     pub fn commit(self) {
         self.frontend.commit();
+        if let Some((console, update)) = self.console {
+            update.commit(console);
+        }
         for candidate in self.candidates {
             let slot = candidate.rules() as usize;
             candidate.commit(&mut self.target[slot]);
@@ -777,6 +786,7 @@ impl SceneComposer {
             frontend,
             target: &mut self.hud,
             candidates: vec![hud::HudUpdate::Replace(candidate)],
+            console: None,
             ui_commands: &mut self.ui_commands,
             reserved_ui_commands,
         })
@@ -789,13 +799,22 @@ impl SceneComposer {
         path: &[u8],
         models_changed: bool,
     ) -> Result<Option<SceneHudAppend<'_>>, String> {
+        let console = self
+            .console
+            .as_ref()
+            .map(|console| console.downloaded(vfs, owner, path))
+            .transpose()?
+            .flatten();
         let mut candidates = Vec::new();
         for hud in self.hud.iter().flatten() {
-            if let Some(candidate) = hud.downloaded(vfs, owner, path)? {
+            let font = console
+                .as_ref()
+                .and_then(|update| update.font_for(hud.profile()));
+            if let Some(candidate) = hud.downloaded(vfs, owner, path, font)? {
                 candidates.push(candidate);
             }
         }
-        if candidates.is_empty() && !models_changed {
+        if candidates.is_empty() && console.is_none() && !models_changed {
             return Ok(None);
         }
         let limits = self
@@ -812,6 +831,7 @@ impl SceneComposer {
             frontend,
             target: &mut self.hud,
             candidates,
+            console: self.console.as_mut().zip(console),
             ui_commands: &mut self.ui_commands,
             reserved_ui_commands,
         }))

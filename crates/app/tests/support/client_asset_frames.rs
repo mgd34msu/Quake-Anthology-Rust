@@ -11,6 +11,7 @@ use std::time::Duration;
 pub struct Source {
     pub cpu: CpuBackend,
     pub enabled: bool,
+    pub reject: bool,
     pub attempts: usize,
     time: u64,
 }
@@ -28,6 +29,7 @@ impl Source {
             )
             .unwrap(),
             enabled: true,
+            reject: false,
             attempts: 0,
             time: 100,
         }
@@ -44,6 +46,9 @@ impl qa_app::renderer::AssetPreparer for Source {
         scene: Option<qa_render::Limits>,
     ) -> Result<(), String> {
         self.attempts += 1;
+        if self.reject {
+            return Err("fixture rejects asset admission".into());
+        }
         self.cpu
             .prepare_assets(assets, scene)
             .map_err(str::to_owned)

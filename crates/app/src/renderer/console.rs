@@ -43,7 +43,64 @@ pub struct ConsoleAssets {
     q3: bool,
     legacy_gl_alpha: bool,
 }
+pub(super) struct ConsoleUpdate {
+    profile: ModelProfile,
+    font: Option<Arc<FontAssets>>,
+    background: Option<ShaderRegistration>,
+}
+impl ConsoleUpdate {
+    pub(super) fn font_for(&self, profile: ModelProfile) -> Option<Arc<FontAssets>> {
+        self.font
+            .as_ref()
+            .filter(|font| font.profile == profile)
+            .map(Arc::clone)
+    }
+    pub(super) fn registrations(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &ShaderRegistration)> + Clone {
+        self.font
+            .iter()
+            .filter_map(|font| font.registration.as_ref())
+            .chain(self.background.iter())
+            .map(|registration| (self.profile, registration))
+    }
+    pub(super) fn commit(self, target: &mut ConsoleAssets) {
+        if let Some(font) = self.font {
+            target.font = font;
+        }
+        if let Some(background) = self.background {
+            target.background = Some(background);
+        }
+    }
+}
 impl ConsoleAssets {
+    pub(super) fn downloaded(
+        &self,
+        vfs: &Vfs,
+        owner: &mut ModelAssets,
+        path: &[u8],
+    ) -> Result<Option<ConsoleUpdate>, String> {
+        if self.q3 {
+            return Ok(None);
+        }
+        let font = self.font.downloaded(vfs, owner, path)?;
+        let background =
+            if self.background.is_none() && published_image(path, background_path(self.rules)) {
+                let palette = self.palette.ok_or("native console palette unavailable")?;
+                Some(owner.graphic_images(vfs, self.profile(), |images| {
+                    register_background(images, self.rules, palette)
+                })?)
+            } else {
+                None
+            };
+        Ok(
+            (font.is_some() || background.is_some()).then_some(ConsoleUpdate {
+                profile: self.profile(),
+                font,
+                background,
+            }),
+        )
+    }
     pub fn load(
         vfs: &Vfs,
         owner: &mut ModelAssets,
@@ -108,48 +165,7 @@ impl ConsoleAssets {
             );
         } else if let Some(palette) = palette {
             let result = owner.graphic_images(vfs, font.profile, |images| {
-                let path = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-                    "gfx/conback.lmp"
-                } else {
-                    "pics/conback.pcx"
-                };
-                let shader = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-                    let image = images
-                        .indexed_lmp(
-                            path,
-                            palette,
-                            None,
-                            ImageUse {
-                                sampler: bitmap_sampler(),
-                                ..ImageUse::pic()
-                            },
-                        )
-                        .map_err(|error| format!("{error:?}"))?;
-                    bitmap_shader(
-                        images,
-                        path,
-                        image.id,
-                        image.sampler,
-                        Some(StageBlend::ALPHA),
-                    )
-                    .map_err(str::to_owned)?
-                } else {
-                    let image = images
-                        .indexed_pcx(
-                            path,
-                            palette,
-                            None,
-                            None,
-                            ImageUse {
-                                sampler: bitmap_sampler(),
-                                ..ImageUse::pic()
-                            },
-                        )
-                        .map_err(|error| format!("{error:?}"))?;
-                    bitmap_shader(images, path, image, bitmap_sampler(), None)
-                        .map_err(str::to_owned)?
-                };
-                Ok(shader)
+                register_background(images, rules, palette)
             });
             install(&mut console.background, "background", result);
         }
@@ -331,6 +347,30 @@ pub struct FontAssets {
     native_default: Option<ShaderBindingId>,
 }
 impl FontAssets {
+    pub(super) fn downloaded(
+        &self,
+        vfs: &Vfs,
+        owner: &mut ModelAssets,
+        path: &[u8],
+    ) -> Result<Option<Arc<Self>>, String> {
+        if self.registration.is_some()
+            || self.profile.rules == RuleSetId::Quake3
+            || !published_image(path, font_path(self.profile.rules))
+        {
+            return Ok(None);
+        }
+        let font = Self::load(
+            vfs,
+            owner,
+            self.profile.rules,
+            self.profile.image_settings,
+            self.compile_policy,
+        )?;
+        if !font.native || font.profile != self.profile {
+            return Err("downloaded font is unavailable under its retained profile".into());
+        }
+        Ok(Some(font))
+    }
     pub(crate) fn registration_request(
         rules: RuleSetId,
     ) -> Option<qa_compat::services::RendererRequest<&'static [u8]>> {
@@ -407,16 +447,87 @@ impl FontAssets {
         })
     }
 }
+fn background_path(rules: RuleSetId) -> &'static str {
+    if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        "gfx/conback.lmp"
+    } else {
+        "pics/conback.pcx"
+    }
+}
+fn register_background(
+    images: &mut Images<'_>,
+    rules: RuleSetId,
+    palette: PaletteId,
+) -> Result<ShaderRegistration, String> {
+    let path = background_path(rules);
+    let shader = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        let image = images
+            .indexed_lmp(
+                path,
+                palette,
+                None,
+                ImageUse {
+                    sampler: bitmap_sampler(),
+                    ..ImageUse::pic()
+                },
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        bitmap_shader(
+            images,
+            path,
+            image.id,
+            image.sampler,
+            Some(StageBlend::ALPHA),
+        )
+        .map_err(str::to_owned)?
+    } else {
+        let image = images
+            .indexed_pcx(
+                path,
+                palette,
+                None,
+                None,
+                ImageUse {
+                    sampler: bitmap_sampler(),
+                    ..ImageUse::pic()
+                },
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        bitmap_shader(images, path, image, bitmap_sampler(), None).map_err(str::to_owned)?
+    };
+    Ok(shader)
+}
+
+fn font_path(rules: RuleSetId) -> &'static str {
+    if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        "gfx.wad"
+    } else {
+        "pics/conchars.pcx"
+    }
+}
+fn published_image(path: &[u8], requested: &str) -> bool {
+    let Ok(path) = std::str::from_utf8(path) else {
+        return false;
+    };
+    let path = qa_core::names::canonical_path(path);
+    if path == requested {
+        return true;
+    }
+    qa_formats::image::ImageFormat::from_path(requested.as_bytes()).is_some()
+        && qa_formats::image::ImageFormat::from_path(path.as_bytes()).is_some()
+        && qa_core::names::file_stem(&path) == qa_core::names::file_stem(requested)
+}
 fn register_font(
     images: &mut Images<'_>,
     rules: RuleSetId,
     palette: Option<PaletteId>,
 ) -> Result<ShaderRegistration, String> {
     let palette = palette.ok_or("native font palette unavailable")?;
+    let path = font_path(rules);
     if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
         let image = images
             .indexed_wad(
-                "gfx.wad",
+                path,
                 b"conchars",
                 palette,
                 Some(0),
@@ -433,7 +544,7 @@ fn register_font(
     let sampler = bitmap_sampler();
     let image = images
         .indexed_pcx(
-            "pics/conchars.pcx",
+            path,
             palette,
             Some(255),
             None,
@@ -444,7 +555,7 @@ fn register_font(
             },
         )
         .map_err(|error| format!("{error:?}"))?;
-    bitmap_shader(images, "pics/conchars.pcx", image, sampler, None).map_err(str::to_owned)
+    bitmap_shader(images, path, image, sampler, None).map_err(str::to_owned)
 }
 pub(crate) fn bitmap_sampler() -> Sampler {
     Sampler {

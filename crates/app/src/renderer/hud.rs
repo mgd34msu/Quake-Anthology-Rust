@@ -1,5 +1,8 @@
 //! CLIENT-owned display leases and configstrings feed the shared 2D scene.
 mod pictures;
+#[cfg(test)]
+#[path = "../../tests/unit/published_graphics.rs"]
+mod published_graphics;
 use super::{
     console::FontAssets,
     text::{BitmapFont, TextStats},
@@ -127,17 +130,18 @@ pub struct HudAssets {
 }
 pub(crate) enum HudUpdate {
     Replace(HudAssets),
-    Pictures {
+    Resources {
         rules: RuleSetId,
         profile: ModelProfile,
-        pictures: pictures::Pictures,
+        font: Option<Arc<FontAssets>>,
+        pictures: Option<pictures::Pictures>,
     },
 }
 impl HudUpdate {
     pub(crate) fn rules(&self) -> RuleSetId {
         match self {
             Self::Replace(hud) => hud.rules,
-            Self::Pictures { rules, .. } => *rules,
+            Self::Resources { rules, .. } => *rules,
         }
     }
     pub(crate) fn registrations(
@@ -147,10 +151,13 @@ impl HudUpdate {
             Self::Replace(hud) => Some(hud),
             _ => None,
         };
-        let pictures = match self {
-            Self::Pictures {
-                profile, pictures, ..
-            } => Some((*profile, pictures)),
+        let resources = match self {
+            Self::Resources {
+                profile,
+                font,
+                pictures,
+                ..
+            } => Some((*profile, font, pictures)),
             _ => None,
         };
         whole
@@ -159,19 +166,25 @@ impl HudUpdate {
                 hud.registrations()
                     .map(move |receipt| (hud.profile(), receipt))
             })
-            .chain(pictures.into_iter().flat_map(|(profile, pictures)| {
-                pictures
-                    .registrations()
+            .chain(resources.into_iter().flat_map(|(profile, font, pictures)| {
+                font.iter()
+                    .filter_map(|font| font.registration.as_ref())
+                    .chain(pictures.iter().flat_map(pictures::Pictures::registrations))
                     .map(move |receipt| (profile, receipt))
             }))
     }
     pub(crate) fn commit(self, target: &mut Option<HudAssets>) {
         match self {
             Self::Replace(hud) => *target = Some(hud),
-            Self::Pictures { pictures, .. } => {
+            Self::Resources { font, pictures, .. } => {
                 // This candidate was staged from the same retained HUD slot.
                 if let Some(hud) = target {
-                    hud.pictures = pictures;
+                    if let Some(font) = font {
+                        hud.font = font;
+                    }
+                    if let Some(pictures) = pictures {
+                        hud.pictures = pictures;
+                    }
                 }
             }
         }
@@ -183,15 +196,27 @@ impl HudAssets {
         vfs: &qa_content::vfs::Vfs,
         owner: &mut ModelAssets,
         path: &[u8],
+        font: Option<Arc<FontAssets>>,
     ) -> Result<Option<HudUpdate>, String> {
-        Ok(self
-            .pictures
-            .downloaded(vfs, owner, self.rules, &self.font, path)?
-            .map(|pictures| HudUpdate::Pictures {
+        let font = match font {
+            Some(font) => Some(font),
+            None => self.font.downloaded(vfs, owner, path)?,
+        };
+        let pictures = self.pictures.downloaded(
+            vfs,
+            owner,
+            self.rules,
+            font.as_ref().unwrap_or(&self.font),
+            path,
+        )?;
+        Ok(
+            (font.is_some() || pictures.is_some()).then_some(HudUpdate::Resources {
                 rules: self.rules,
                 profile: self.profile(),
+                font,
                 pictures,
-            }))
+            }),
+        )
     }
     pub fn from_font(rules: RuleSetId, font: Arc<FontAssets>, width: u32) -> Result<Self, String> {
         let rules_data = text_rules(rules);

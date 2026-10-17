@@ -1,3 +1,6 @@
+#[cfg(test)]
+extern crate self as qa_app;
+
 pub mod audio;
 pub mod catalog;
 pub mod client_collision;
