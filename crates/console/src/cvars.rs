@@ -1697,15 +1697,14 @@ impl Cvars {
         &self,
         context: Context,
         flag: u32,
+        rules: qa_core::text::InfoRules,
         output: &mut [u8],
     ) -> Result<usize, WriteError> {
+        if rules.bytes == 0 || output.len() < rules.bytes {
+            return Err(WriteError::Capacity);
+        }
+        output[0] = 0;
         let mut length = 0;
-        let rules = qa_core::text::InfoRules {
-            bytes: output.len(),
-            key_bytes: MAX_TEXT + 1,
-            value_bytes: MAX_TEXT + 1,
-            filter: qa_core::text::InfoBytes::Exact,
-        };
         let mut append = |view: View| -> Result<(), WriteError> {
             if self.flags(view) & flag == 0 {
                 return Ok(());
@@ -1715,17 +1714,14 @@ impl Cvars {
             if value.as_str().is_empty() {
                 return Ok(());
             }
-            qa_core::text::info_set(
+            let _ = qa_core::text::info_set(
                 output,
                 &mut length,
                 name.as_bytes(),
                 value.as_str().as_bytes(),
                 rules,
-            )
-            .map_err(|error| match error {
-                qa_core::text::InfoError::Invalid => WriteError::InvalidInfo,
-                qa_core::text::InfoError::Capacity => WriteError::Capacity,
-            })
+            );
+            Ok(())
         };
         for (index, binding) in BINDINGS.iter().enumerate() {
             if binding.native_sources & (1 << context.source as u8) != 0

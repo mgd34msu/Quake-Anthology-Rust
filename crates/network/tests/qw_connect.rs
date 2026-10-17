@@ -14,7 +14,9 @@ use qa_network::{
         },
     },
     headers::{self, Direction, Header},
-    ingress::{Connection, ConnectionPhase, Connections, Incoming, NativeConnect, Route},
+    ingress::{
+        ConnectParameters, Connection, ConnectionPhase, Connections, Incoming, NativeConnect, Route,
+    },
 };
 use std::{net::SocketAddr, ops::ControlFlow};
 
@@ -65,7 +67,7 @@ fn send(
             info_reads += 1;
             let info = info?;
             scratch[..info.len()].copy_from_slice(info);
-            Some(info.len())
+            Some(ConnectParameters::new(info.len()))
         },
         |route, bytes| {
             assert_eq!(route.socket, 7);

@@ -103,21 +103,20 @@ pub(super) fn begin(
                 .filter(|connection| connection.phase.is_connected())
                 .and_then(|connection| connection.commands.as_ref())
                 .map(|commands| commands.protocol)
-                .filter(|protocol| {
-                    matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28)
-                });
+                .filter(|protocol| protocol.default_connect_port().is_some());
             if let Some(protocol) = protocol {
-                if protocol == Protocol::QuakeWorld28
+                if matches!(protocol, Protocol::QuakeWorld28 | Protocol::Quake2_34)
                     && host.runtime.client_resources[id.0 as usize]
                         .as_ref()
                         .is_some_and(|resources| resources.receiving_download())
                 {
                     return None;
                 }
-                if protocol == Protocol::QuakeWorld28
-                    && host.runtime.client_resources[id.0 as usize]
-                        .as_ref()
-                        .is_some_and(|resources| resources.startup.active())
+                if protocol == Protocol::Quake2Repro1038
+                    || protocol != Protocol::NetQuake15
+                        && host.runtime.client_resources[id.0 as usize]
+                            .as_ref()
+                            .is_none_or(|resources| !resources.startup.reconnect_in_place())
                 {
                     if driver.connector.is_none() {
                         report(
@@ -152,7 +151,7 @@ pub(super) fn begin(
                         retiring: None,
                     });
                 }
-                if protocol == Protocol::QuakeWorld28 {
+                if protocol != Protocol::NetQuake15 {
                     host.begin_client_map_change(id);
                 }
                 if let Some(resources) = host.runtime.client_resources[id.0 as usize].as_mut() {
@@ -161,7 +160,7 @@ pub(super) fn begin(
             } else {
                 report(
                     host,
-                    format_args!("Reconnect requires a connected NetQuake or QuakeWorld peer\n"),
+                    format_args!("Reconnect requires a connected native peer\n"),
                 );
             }
         } else {
@@ -357,22 +356,34 @@ impl Change {
                         .ok_or("native connection setup unavailable")?,
                 )
                 .map_err(|error| format!("server {target}: {error}"))?;
-            let maximum_message = protocol.message_bytes();
-            let mut channel =
-                Channel::load(protocol.channel(), Endpoint::Client, maximum_message, 16)
-                    .map_err(|error| format!("native channel: {error:?}"))?;
-            if protocol == Protocol::QuakeWorld28 {
+            let qport = if protocol.userinfo_bytes().is_some() {
                 let configured =
                     host.console
                         .cvars
                         .numeric(host.qport)
                         .map_err(|_| "invalid native qport")? as i32 as u16;
-                channel.set_qport(if configured == 0 {
+                let captured = if configured == 0 {
                     lease.local_port()
                 } else {
                     configured
-                });
-            }
+                };
+                if protocol == Protocol::Quake2Repro1038 {
+                    u16::from(captured as u8)
+                } else {
+                    captured
+                }
+            } else {
+                0
+            };
+            let maximum_message = protocol.message_bytes();
+            let mut channel = Channel::load(
+                protocol.client_channel(qport),
+                Endpoint::Client,
+                maximum_message,
+                16,
+            )
+            .map_err(|error| format!("native channel: {error:?}"))?;
+            channel.set_qport(qport);
             let connection = Connection {
                 phase: ConnectionPhase::Connecting(NativeConnect::new()),
                 route: Route {
@@ -454,7 +465,10 @@ fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) 
     }
     let bytes = &mut runtime.output_native_bytes;
     let length = match protocol {
-        Protocol::NetQuake15 | Protocol::QuakeWorld28 => protocol.write_disconnect(bytes),
+        Protocol::NetQuake15
+        | Protocol::QuakeWorld28
+        | Protocol::Quake2_34
+        | Protocol::Quake2Repro1038 => protocol.write_disconnect(bytes),
         _ => connection
             .channel
             .queue_client_command(protocol, b"disconnect")
@@ -466,10 +480,17 @@ fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) 
         report(host, format_args!("Disconnect command was not admitted\n"));
         return;
     };
-    let submissions = if protocol == Protocol::QuakeWorld28 {
-        3
-    } else {
-        1
+    let (submissions, repeats) = match protocol {
+        Protocol::QuakeWorld28 | Protocol::Quake2_34 => (3, 1),
+        Protocol::Quake2Repro1038 => (1, 3),
+        _ => (1, 1),
+    };
+    let mut disconnect_admit = |bytes: &[u8]| {
+        let mut accepted = false;
+        for _ in 0..repeats {
+            accepted |= admit(bytes);
+        }
+        accepted
     };
     for _ in 0..submissions {
         let submitted = crate::transport::send(
@@ -481,7 +502,7 @@ fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) 
                     .prepare_move(&bytes[..length], host.time, None, None)
                     .is_ok_and(|packet| packet.is_some())
             },
-            &mut admit,
+            &mut disconnect_admit,
             |channel, included, disposition| {
                 *included |= disposition == Unreliable::Included;
                 *included && !channel.pending_fragments()

@@ -4,8 +4,10 @@ use crate::commands::{
     connection::Commands,
     packet::Protocol,
     startup::{
-        NqControl, QW_CONNECT_USERINFO_BYTES, QwConnectionless, read_nq_control,
-        read_qw_connectionless, write_nq_control, write_qw_connect, write_qw_getchallenge,
+        NqControl, Q2_CONNECT_PACKET_LENGTH, Q2_CONNECT_USERINFO_BYTES, Q2Connectionless,
+        QwConnectionless, read_nq_control, read_q2_connectionless, read_qw_connectionless,
+        write_nq_control, write_q2_connect, write_q2_getchallenge, write_qw_connect,
+        write_qw_getchallenge,
     },
 };
 pub use qa_core::sys_events::Peer;
@@ -29,7 +31,22 @@ pub struct NativeConnect {
     submitted: u8,
     last_submission: Option<EventTime>,
     pending_challenge: Option<i32>,
-    admitted_userinfo: Option<FixedText<QW_CONNECT_USERINFO_BYTES>>,
+    admitted_userinfo: Option<FixedText<Q2_CONNECT_USERINFO_BYTES>>,
+}
+
+/// An actual connect attempt borrows current userinfo and native packet policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectParameters {
+    pub userinfo_length: usize,
+    pub packet_length: i32,
+}
+impl ConnectParameters {
+    pub const fn new(userinfo_length: usize) -> Self {
+        Self {
+            userinfo_length,
+            packet_length: Q2_CONNECT_PACKET_LENGTH,
+        }
+    }
 }
 impl NativeConnect {
     pub const fn new() -> Self {
@@ -79,6 +96,32 @@ pub struct Connection {
     /// Other SERVER senders must leave it for its output consumer to complete.
     pub pending_output: Option<u64>,
     pub commands: Option<Commands>,
+}
+
+fn accept_native_connect(
+    connection: &mut Connection,
+    client: ClientId,
+    endpoint: Endpoint,
+    consume: &mut impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
+) {
+    if !matches!(&connection.phase, ConnectionPhase::Connecting(connect) if connect.admitted_userinfo.is_some())
+    {
+        return;
+    }
+    let Peer::Socket(address) = connection.route.peer else {
+        return;
+    };
+    let previous = std::mem::replace(&mut connection.phase, ConnectionPhase::Connected);
+    if let ConnectionPhase::Connecting(connect) = previous {
+        let _ = consume(
+            client,
+            endpoint,
+            Incoming::ConnectAccepted {
+                port: address.port(),
+                userinfo: connect.admitted_userinfo.as_ref().map(FixedText::as_bytes),
+            },
+        );
+    }
 }
 impl Connection {
     fn matches_socket(&self, socket: u16, from: std::net::SocketAddr, bytes: &[u8]) -> bool {
@@ -289,8 +332,12 @@ impl Connections {
                 || !connection.commands.as_ref().is_some_and(|commands| {
                     matches!(
                         commands.protocol,
-                        Protocol::NetQuake15 | Protocol::QuakeWorld28
-                    ) && connection.channel.policy() == commands.protocol.channel()
+                        Protocol::NetQuake15
+                            | Protocol::QuakeWorld28
+                            | Protocol::Quake2_34
+                            | Protocol::Quake2Repro1038
+                    ) && connection.channel.policy()
+                        == commands.protocol.client_channel(connection.channel.qport())
                 }))
         {
             return Err(BindError::Route);
@@ -343,11 +390,11 @@ impl Connections {
         }
     }
     /// Regenerate due native requests from the existing row. Only transport
-    /// admission commits attempt time or the exact pending QW userinfo receipt.
+    /// admission commits attempt time or the exact pending userinfo receipt.
     pub fn send_connect_requests(
         &mut self,
         time: EventTime,
-        mut userinfo: impl FnMut(ClientId, Protocol, Route, &mut [u8]) -> Option<usize>,
+        mut userinfo: impl FnMut(ClientId, Protocol, Route, &mut [u8]) -> Option<ConnectParameters>,
         mut submit: impl FnMut(Route, &[u8]) -> bool,
         mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
     ) {
@@ -365,16 +412,19 @@ impl Connections {
             else {
                 continue;
             };
-            let qw = protocol == Protocol::QuakeWorld28;
-            let interval = if qw { 5000 } else { 2500 };
-            if connect.pending_challenge.is_none()
-                && connect
-                    .last_submission
-                    .is_some_and(|last| time.since(last) < EventTime::from_milliseconds(interval).0)
+            let interval = match protocol {
+                Protocol::NetQuake15 => 2500,
+                Protocol::QuakeWorld28 => 5000,
+                Protocol::Quake2_34 | Protocol::Quake2Repro1038 => 3000,
+                Protocol::Quake3_68 => continue,
+            };
+            if connect
+                .last_submission
+                .is_some_and(|last| time.since(last) < EventTime::from_milliseconds(interval).0)
             {
                 continue;
             }
-            if !qw && connect.submitted == 3 {
+            if protocol == Protocol::NetQuake15 && connect.submitted == 3 {
                 connection.phase = ConnectionPhase::Rejected;
                 if consume(
                     ClientId(slot as u32),
@@ -389,30 +439,45 @@ impl Connections {
                 }
                 continue;
             }
-            let mut bytes = [0; 256];
-            let mut info = [0; QW_CONNECT_USERINFO_BYTES];
+            let mut bytes = [0; crate::message::COMMAND_STRING_BYTES];
+            let mut info = [0; Q2_CONNECT_USERINFO_BYTES];
             let mut admitted = None;
-            let request = if qw {
+            let request = if protocol != Protocol::NetQuake15 {
                 if let Some(challenge) = connect.pending_challenge {
-                    let Some(length) =
-                        userinfo(ClientId(slot as u32), protocol, connection.route, &mut info)
-                            .filter(|&length| length < info.len())
+                    let Some(capacity) = protocol.userinfo_bytes() else {
+                        continue;
+                    };
+                    let Some(info) = info.get_mut(..capacity) else {
+                        continue;
+                    };
+                    let Some(parameters) =
+                        userinfo(ClientId(slot as u32), protocol, connection.route, info)
+                            .filter(|parameters| parameters.userinfo_length < info.len())
                     else {
                         continue;
                     };
                     let mut receipt = FixedText::default();
-                    if receipt.set_bytes(&info[..length]).is_err() {
+                    let info = &info[..parameters.userinfo_length];
+                    if receipt.set_bytes(info).is_err() {
                         continue;
                     }
                     admitted = Some(receipt);
-                    write_qw_connect(
-                        connection.channel.qport(),
-                        challenge,
-                        &info[..length],
-                        &mut bytes,
-                    )
-                } else {
+                    if protocol == Protocol::QuakeWorld28 {
+                        write_qw_connect(connection.channel.qport(), challenge, info, &mut bytes)
+                    } else {
+                        write_q2_connect(
+                            protocol,
+                            connection.channel.qport(),
+                            challenge,
+                            info,
+                            parameters.packet_length,
+                            &mut bytes,
+                        )
+                    }
+                } else if protocol == Protocol::QuakeWorld28 {
                     write_qw_getchallenge(&mut bytes)
+                } else {
+                    write_q2_getchallenge(&mut bytes)
                 }
             } else {
                 write_nq_control(NqControl::Connect, &mut bytes)
@@ -423,7 +488,9 @@ impl Connections {
             if submit(connection.route, &bytes[..length]) {
                 if let Some(receipt) = admitted {
                     connect.admitted_userinfo = Some(receipt);
-                    connect.pending_challenge = None;
+                    if protocol != Protocol::Quake2Repro1038 {
+                        connect.pending_challenge = None;
+                    }
                 }
                 connect.submitted = connect.submitted.saturating_add(1);
                 connect.last_submission = Some(time);
@@ -518,35 +585,74 @@ impl Connections {
                         QwConnectionless::Challenge(challenge) => {
                             if let ConnectionPhase::Connecting(connect) = &mut connection.phase {
                                 connect.pending_challenge = Some(challenge);
+                                connect.last_submission = None;
                             }
                         }
                         QwConnectionless::Accepted => {
-                            if !matches!(&connection.phase, ConnectionPhase::Connecting(connect) if connect.admitted_userinfo.is_some())
-                            {
-                                return;
-                            }
-                            let Peer::Socket(address) = connection.route.peer else {
-                                return;
-                            };
-                            let previous = std::mem::replace(
-                                &mut connection.phase,
-                                ConnectionPhase::Connected,
+                            accept_native_connect(
+                                connection,
+                                ClientId(client as u32),
+                                Endpoint::from_index(endpoint),
+                                &mut consume,
                             );
-                            if let ConnectionPhase::Connecting(connect) = previous {
-                                let _ = consume(
-                                    ClientId(client as u32),
-                                    Endpoint::from_index(endpoint),
-                                    Incoming::ConnectAccepted {
-                                        port: address.port(),
-                                        userinfo: connect
-                                            .admitted_userinfo
-                                            .as_ref()
-                                            .map(FixedText::as_bytes),
-                                    },
-                                );
-                            }
                         }
                         QwConnectionless::Print(text) => {
+                            let _ = consume(
+                                ClientId(client as u32),
+                                Endpoint::from_index(endpoint),
+                                Incoming::Print(crate::outputs::Print {
+                                    kind: qa_core::primitives::PrintKind::Console,
+                                    level: None,
+                                    text,
+                                }),
+                            );
+                        }
+                    }
+                    return;
+                }
+                if let Some(protocol @ (Protocol::Quake2_34 | Protocol::Quake2Repro1038)) =
+                    connection
+                        .commands
+                        .as_ref()
+                        .map(|commands| commands.protocol)
+                {
+                    let reply = match read_q2_connectionless(protocol, bytes) {
+                        Ok(reply) => reply,
+                        Err(_) => {
+                            self.malformed += 1;
+                            return;
+                        }
+                    };
+                    let Some(connection) = &mut self.clients[client][endpoint] else {
+                        return;
+                    };
+                    match reply {
+                        Q2Connectionless::Challenge(challenge) => {
+                            if let ConnectionPhase::Connecting(connect) = &mut connection.phase {
+                                if protocol == Protocol::Quake2Repro1038
+                                    && connect.pending_challenge.is_some()
+                                {
+                                    return;
+                                }
+                                connect.pending_challenge = Some(challenge);
+                                connect.last_submission = None;
+                            }
+                        }
+                        Q2Connectionless::Accepted(_) => {
+                            accept_native_connect(
+                                connection,
+                                ClientId(client as u32),
+                                Endpoint::from_index(endpoint),
+                                &mut consume,
+                            );
+                        }
+                        Q2Connectionless::Print(text) => {
+                            if protocol == Protocol::Quake2Repro1038
+                                && let ConnectionPhase::Connecting(connect) = &mut connection.phase
+                            {
+                                connect.pending_challenge = None;
+                                connect.admitted_userinfo = None;
+                            }
                             let _ = consume(
                                 ClientId(client as u32),
                                 Endpoint::from_index(endpoint),
@@ -627,13 +733,15 @@ impl Connections {
         let Some(connection) = &mut self.clients[client][endpoint] else {
             return;
         };
-        // Native QW connectionless replies have no sequenced ACK ownership.
+        // Native connectionless replies have no sequenced ACK ownership.
         // Late challenge/accept/print packets cannot touch the connected channel.
         if connection.channel.endpoint() == Endpoint::Client
-            && connection
-                .commands
-                .as_ref()
-                .is_some_and(|commands| commands.protocol == Protocol::QuakeWorld28)
+            && connection.commands.as_ref().is_some_and(|commands| {
+                matches!(
+                    commands.protocol,
+                    Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038
+                )
+            })
             && bytes.starts_with(&[255; 4])
         {
             return;

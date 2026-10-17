@@ -64,6 +64,7 @@ pub(crate) enum ClientStartup {
     AwaitHeader {
         new_pending: bool,
     },
+    Restarting,
     Quake2(Q2Signon),
     QuakeWorld(QwSignon),
 }
@@ -159,8 +160,16 @@ impl ClientStartup {
             *self = Self::AwaitHeader { new_pending: true };
         }
     }
-    pub(crate) fn active(&self) -> bool {
-        !self.waiting()
+    pub(crate) fn restart_connection(&mut self) {
+        *self = Self::Restarting;
+    }
+    pub(crate) fn reconnect_in_place(&self) -> bool {
+        match self {
+            Self::AwaitHeader { .. } | Self::NetQuake(_) => true,
+            Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
+            Self::Quake2(state) => state.reconnect_in_place(),
+            Self::Unmanaged | Self::Restarting => false,
+        }
     }
     pub(crate) fn reconnect(&mut self, protocol: Protocol) {
         self.connecting(protocol);
@@ -222,7 +231,7 @@ impl ClientStartup {
     pub(crate) fn waiting(&self) -> bool {
         match self {
             Self::Unmanaged => false,
-            Self::AwaitHeader { .. } => true,
+            Self::AwaitHeader { .. } | Self::Restarting => true,
             Self::NetQuake(state) => state.stage < 4 || !state.resources_admitted,
             Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
             Self::Quake2(state) => state.waiting(),
@@ -233,7 +242,7 @@ impl ClientStartup {
             Self::NetQuake(state) => !state.resources_admitted,
             Self::QuakeWorld(state) => matches!(state.phase, QwPhase::Content),
             Self::Quake2(state) => state.resources_needed(),
-            Self::Unmanaged | Self::AwaitHeader { .. } => false,
+            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting => false,
         }
     }
     pub(crate) fn allow_models(&self) -> bool {
@@ -243,6 +252,7 @@ impl ClientStartup {
         !matches!(
             self,
             Self::AwaitHeader { .. }
+                | Self::Restarting
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List { .. } | QwPhase::Files { .. },
                     ..
@@ -256,6 +266,7 @@ impl ClientStartup {
         !matches!(
             self,
             Self::AwaitHeader { .. }
+                | Self::Restarting
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List {
                         kind: ResourceKind::Sound,
@@ -269,7 +280,7 @@ impl ClientStartup {
         )
     }
     pub(crate) fn allow_skins(&self) -> bool {
-        !matches!(self, Self::AwaitHeader { .. })
+        !matches!(self, Self::AwaitHeader { .. } | Self::Restarting)
             && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
     }
     pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
@@ -420,7 +431,7 @@ impl ClientStartup {
     }
     pub(crate) fn reply(&self, skins_done: bool) -> Option<StartupReply> {
         match self {
-            Self::Unmanaged => None,
+            Self::Unmanaged | Self::Restarting => None,
             Self::AwaitHeader { new_pending, .. } => new_pending.then_some(StartupReply::New),
             Self::Quake2(state) => state.reply(),
             Self::NetQuake(state) if state.observed & 2 != 0 => Some(StartupReply::Prespawn),
@@ -475,7 +486,7 @@ impl ClientStartup {
                 StartupReply::QwBegin { .. } => state.phase = QwPhase::BeginQueued,
                 _ => state.phase = QwPhase::Signon,
             },
-            Self::Unmanaged | Self::AwaitHeader { .. } => {}
+            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting => {}
         }
     }
     pub(crate) fn stufftext(

@@ -1034,6 +1034,10 @@ impl FrameHost {
                         ..row.request.context.console
                     },
                     flag,
+                    qa_core::text::InfoRules {
+                        bytes: info[slot].len(),
+                        ..qa_compat::services::userinfo_rules(RuleSetId::Quake3)
+                    },
                     &mut info[slot],
                 ) {
                     Ok(length) => lengths[slot] = length,

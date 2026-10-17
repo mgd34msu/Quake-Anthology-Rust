@@ -359,22 +359,20 @@ impl ClientUserinfo {
             seat,
             ..Default::default()
         };
-        let capacity = qa_compat::services::userinfo_rules(protocol.rule_set()).bytes;
+        let rules = protocol
+            .userinfo_rules()
+            .ok_or(qa_console::cvars::WriteError::InvalidInfo)?;
         let output = output
-            .get_mut(..capacity)
+            .get_mut(..rules.bytes)
             .ok_or(qa_console::cvars::WriteError::Capacity)?;
-        let mut length = cvars.info_string(context, 2, output)?;
+        let mut length = cvars.info_string(context, 2, rules, output)?;
         if protocol == qa_network::commands::packet::Protocol::QuakeWorld28
             && let qa_core::sys_events::Peer::Socket(address) = peer
         {
             use std::fmt::Write;
             let mut text = qa_core::text::FixedText::<64>::default();
             if write!(text, "{address}").is_ok()
-                && let Ok(update) = qa_core::text::InfoUpdate::new(
-                    b"*ip",
-                    text.as_bytes(),
-                    qa_compat::services::userinfo_rules(protocol.rule_set()),
-                )
+                && let Ok(update) = qa_core::text::InfoUpdate::new(b"*ip", text.as_bytes(), rules)
             {
                 // Native Info_SetValueForStarKey leaves usable userinfo when
                 // this optional address cannot fit its total native budget.
@@ -391,7 +389,9 @@ impl ClientUserinfo {
         use qa_core::text::{FixedText, InfoUpdate, info_changes, info_value};
         use qa_network::{channel::TransmitError, commands::packet::Protocol};
         let previous = self.queued.clone();
-        let rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
+        let rules = Protocol::QuakeWorld28
+            .userinfo_rules()
+            .ok_or(TransmitError::MessageTooLarge)?;
         // Shrink first so individually valid replacements cannot overflow the
         // native total while exchanging a long value for a short one.
         for growing in [false, true] {
@@ -473,6 +473,7 @@ pub struct FrameHost {
     q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) qw_highchars: qa_console::cvars::View,
     pub(crate) qport: qa_console::cvars::View,
+    connect_packet_length: qa_console::cvars::View,
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
     pub(crate) allskins_command: qa_core::primitives::NameId,
@@ -1396,6 +1397,10 @@ impl FrameHost {
                 },
             )
             .ok_or("missing native qport")?;
+        let connect_packet_length = console
+            .cvars
+            .bind("net_maxmsglen", q2_context)
+            .ok_or("missing native packet length")?;
         let allskins_command = console
             .register_external("allskins")
             .ok_or("player skin command registration")?;
@@ -1540,6 +1545,7 @@ impl FrameHost {
             q2_fov,
             qw_highchars,
             qport,
+            connect_packet_length,
             nq_identity,
             player_model_options,
             player_skin_views,
@@ -2381,11 +2387,18 @@ impl FrameHost {
         self.retire_unconnected_clients(source);
         let runtime = &mut self.runtime;
         let cvars = &self.console.cvars;
+        let packet_length = self.connect_packet_length;
         runtime.network.send_connect_requests(
             self.time,
             |id, protocol, route, output| {
                 let seat = runtime.snapshots.get(id.0 as usize)?.as_ref()?.seat()?;
-                ClientUserinfo::serialize(cvars, protocol, seat, route.peer, output).ok()
+                let mut parameters = qa_network::ingress::ConnectParameters::new(
+                    ClientUserinfo::serialize(cvars, protocol, seat, route.peer, output).ok()?,
+                );
+                if protocol == qa_network::commands::packet::Protocol::Quake2Repro1038 {
+                    parameters.packet_length = cvars.integer_view(packet_length).ok()?;
+                }
+                Some(parameters)
             },
             |route, bytes| {
                 crate::transport::admit_output(
@@ -2715,24 +2728,29 @@ impl FrameHost {
         }
     }
 
-    fn builtin_userinfo(
+    fn receive_client_userinfo(
         &mut self,
         id: ClientId,
         protocol: qa_network::commands::packet::Protocol,
         text: &[u8],
+        driver: &mut crate::modules::Driver<'_>,
     ) -> Result<(), crate::modules::ClientCommandError> {
         use crate::modules::ClientCommandError;
         use qa_network::commands::packet::Protocol;
+        let rules = protocol
+            .userinfo_rules()
+            .ok_or(ClientCommandError::Usercmd(
+                qa_compat::services::CallError::Unsupported,
+            ))?;
         self.runtime
             .server
-            .replace_userinfo(
-                id,
-                text,
-                qa_compat::services::userinfo_rules(protocol.rule_set()),
-            )
+            .replace_userinfo(id, text, rules)
             .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
-        // The negotiated module boundary selects consumer policy; wire storage
-        // and the player's movement/trace roles remain independent.
+        if self.runtime.server.module_moves(id).is_some() {
+            return self
+                .notify_userinfo_module_client_with_driver(id, driver)
+                .map(|_| ());
+        }
         let policy = match protocol {
             Protocol::Quake2_34 => Some((90, Some(0x8000))),
             Protocol::Quake2Repro1038 => Some((1, None)),
@@ -2839,7 +2857,8 @@ impl FrameHost {
                 .and_then(|resources| resources.receive_server_command(line, protocol));
             match result {
                 Ok(Some(control)) => {
-                    if matches!(control, ServerControl::Changing | ServerControl::Reconnect)
+                    if protocol != qa_network::commands::packet::Protocol::Quake2Repro1038
+                        && matches!(control, ServerControl::Changing | ServerControl::Reconnect)
                         && self.runtime.client_resources[client.0 as usize]
                             .as_ref()
                             .is_some_and(|resources| resources.receiving_download())
@@ -2849,6 +2868,25 @@ impl FrameHost {
                     match control {
                         ServerControl::Changing => self.begin_client_map_change(client),
                         ServerControl::Reconnect => {
+                            if protocol == qa_network::commands::packet::Protocol::Quake2Repro1038
+                                && self.runtime.client_resources[client.0 as usize]
+                                    .as_ref()
+                                    .is_some_and(|resources| resources.startup.reconnect_in_place())
+                            {
+                                if self.runtime.client_resources[client.0 as usize]
+                                    .as_ref()
+                                    .is_some_and(|resources| resources.receiving_download())
+                                {
+                                    continue;
+                                }
+                                self.begin_client_map_change(client);
+                                if let Some(resources) =
+                                    self.runtime.client_resources[client.0 as usize].as_mut()
+                                {
+                                    resources.startup.reconnect(protocol);
+                                }
+                                continue;
+                            }
                             let context = qa_console::views::Context {
                                 source: protocol.rule_set(),
                                 seat,
@@ -2864,7 +2902,7 @@ impl FrameHost {
                                 .append_registered(self.connection_commands[2], context)
                             {
                                 let _ = self.runtime.server.events.console_formatted(format_args!(
-                                    "QW reconnect rejected: {error:?}\n"
+                                    "Native reconnect rejected: {error:?}\n"
                                 ));
                             }
                         }
@@ -2873,10 +2911,9 @@ impl FrameHost {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    let _ =
-                        self.runtime.server.events.console_formatted(format_args!(
-                            "Native server command rejected: {error}\n"
-                        ));
+                    let _ = self.runtime.server.events.console_formatted(format_args!(
+                        "Native server command rejected: {error}\n"
+                    ));
                 }
             }
         }
@@ -3278,6 +3315,9 @@ impl FrameHost {
                                     if let Some(downloads) = resources.downloads.as_mut() { downloads.close(); }
                                 }
                                 self.begin_client_map_change(id);
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.startup.restart_connection();
+                                }
                                 self.receive_server_commands(id, seat, b"reconnect", time, download_protocol);
                             }
                             Incoming::ResourceList(progress) => {
@@ -3546,11 +3586,7 @@ impl FrameHost {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                         {
-                            let result = if self.runtime.server.module_moves(id).is_some() {
-                                self.userinfo_module_client_with_driver(id, text, driver)
-                            } else {
-                                self.builtin_userinfo(id, protocol, text)
-                            };
+                            let result = self.receive_client_userinfo(id, protocol, text, driver);
                             if let Err(error) = result {
                                 let _ = self.runtime.server.events.console_formatted(format_args!(
                                     "ClientUserinfoChanged: {error}\n"

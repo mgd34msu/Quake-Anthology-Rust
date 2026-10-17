@@ -89,6 +89,7 @@ pub struct StringPolicy {
     stop_at_limit: bool,
     sanitize: bool,
     sanitize_high: bool,
+    eof_terminator: bool,
 }
 impl StringPolicy {
     /// NQ/QW/Q2 MSG_ReadChar strings: 0xff terminates, and a full native
@@ -99,6 +100,7 @@ impl StringPolicy {
         stop_at_limit: true,
         sanitize: false,
         sanitize_high: false,
+        eof_terminator: false,
     };
     /// Rerelease/q2proto strings borrow every byte through their NUL.
     pub const UNSIGNED: Self = Self {
@@ -107,6 +109,7 @@ impl StringPolicy {
         stop_at_limit: false,
         sanitize: false,
         sanitize_high: false,
+        eof_terminator: false,
     };
     /// Q3 MSG_ReadString keeps its original 1024-byte buffer and conversion.
     pub const Q3: Self = Self {
@@ -115,6 +118,7 @@ impl StringPolicy {
         stop_at_limit: true,
         sanitize: true,
         sanitize_high: true,
+        eof_terminator: false,
     };
     /// Native MSG_ReadBigString sanitizes percent signs, preserving high bytes.
     pub const Q3_BIG: Self = Self {
@@ -124,6 +128,12 @@ impl StringPolicy {
     };
     pub const fn limited(self, maximum: usize) -> Self {
         Self { maximum, ..self }
+    }
+    pub(crate) const fn allow_eof(self) -> Self {
+        Self {
+            eof_terminator: true,
+            ..self
+        }
     }
     pub(crate) const fn reserved(self, bytes: usize) -> Self {
         Self {
@@ -314,6 +324,16 @@ impl<'a> Reader<'a> {
         loop {
             if policy.stop_at_limit && length == policy.maximum {
                 return Ok(length);
+            }
+            if policy.eof_terminator && self.bit == self.data.len() * 8 {
+                // MSG_ReadChar advances its cursor on the failed EOF read.
+                // Accepted command effects precede any subsequent badread.
+                self.bit += 8;
+                return if length <= policy.maximum {
+                    Ok(length)
+                } else {
+                    Err(self.error(ErrorKind::Capacity))
+                };
             }
             let byte = self.read_bits(8)? as u8;
             if policy.terminates(byte) {

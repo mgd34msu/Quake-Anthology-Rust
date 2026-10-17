@@ -394,7 +394,10 @@ fn q3_serverinfo_uses_native_server_scope_and_the_same_cvar_writer() {
         .register("_qa_server_info", Some("from-module"), 4, server)
         .unwrap();
     let mut expected = [0; Q3_USERINFO_BYTES];
-    let length = fixture.cvars.info_string(server, 4, &mut expected).unwrap();
+    let length = fixture
+        .cvars
+        .info_string(server, 4, userinfo_rules(server.source), &mut expected)
+        .unwrap();
     let value = qa_core::text::info_value(&expected[..length], b"password", false).unwrap();
     assert_eq!(&expected[value], b"server-secret");
     for (mode, base) in modes() {

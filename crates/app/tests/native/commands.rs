@@ -295,6 +295,33 @@ fn packet_commands_for_abi(rerelease: bool) {
     .unwrap();
     host.local_clients[0] = Some(client);
     host.runtime.loopback.clear_client(client);
+    if rerelease {
+        assert_eq!(api.abi.userinfo_bytes, 2048);
+        assert_eq!(api.abi.value_bytes, 256);
+    }
+    let calls_before_invalid = host.module_counts(module).unwrap().calls;
+    let mut long_field = b"\\name\\initial\\extra\\".to_vec();
+    long_field.extend([b'x'; 80]);
+    let mut long_record = b"\\name\\initial".to_vec();
+    for index in 0..12 {
+        long_record.extend(format!("\\extra{index}\\{}", "y".repeat(40)).bytes());
+    }
+    assert!(long_record.len() >= protocol.userinfo_bytes().unwrap());
+    for invalid in [long_field, long_record] {
+        let mut prefix = Vec::new();
+        string(&mut prefix, 3, &invalid);
+        submit(&mut host, client, &prefix, None, &[]);
+        assert_eq!(
+            host.runtime.server.userinfo(client),
+            Some(&b"\\name\\initial"[..])
+        );
+        assert_eq!(
+            host.module_counts(module).unwrap().calls,
+            calls_before_invalid
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        assert!(host.runtime.server.clients[client.0 as usize].is_active());
+    }
     let movement = if rerelease {
         let mut commands = [ZERO_Q2_RR; 3];
         commands[2].msec = 10;
@@ -314,7 +341,7 @@ fn packet_commands_for_abi(rerelease: bool) {
     string(&mut prefix, 4, COMMAND);
     let mut suffix = Vec::new();
     string(&mut suffix, 4, COMMAND);
-    submit(&mut host, client, &prefix, &movement, &suffix);
+    submit(&mut host, client, &prefix, Some(&movement), &suffix);
     assert!(
         !host.runtime.quit,
         "packet strings must not reach local commands"
@@ -325,7 +352,7 @@ fn packet_commands_for_abi(rerelease: bool) {
     );
     let mut prefix = Vec::new();
     string(&mut prefix, 3, b"\\name\\\x80native");
-    submit(&mut host, client, &prefix, &movement, &[]);
+    submit(&mut host, client, &prefix, Some(&movement), &[]);
     assert_eq!(
         host.runtime.server.clients[client.0 as usize].player.health, 122,
         "userinfo callback must precede the next ClientThink ({rules:?})"
@@ -334,7 +361,7 @@ fn packet_commands_for_abi(rerelease: bool) {
     let mut prefix = Vec::new();
     string(&mut prefix, 4, b"disconnect");
     string(&mut prefix, 4, b"set bad");
-    submit(&mut host, client, &prefix, &movement, &[]);
+    submit(&mut host, client, &prefix, Some(&movement), &[]);
     assert!(
         host.runtime.server.clients[client.0 as usize]
             .connection
@@ -382,7 +409,7 @@ fn submit(
     host: &mut FrameHost,
     client: qa_core::primitives::ClientId,
     prefix: &[u8],
-    movement: &qa_network::commands::packet::Move,
+    movement: Option<&qa_network::commands::packet::Move>,
     suffix: &[u8],
 ) {
     use qa_core::loopback::Endpoint;
@@ -395,13 +422,15 @@ fn submit(
     let sequence = connection.channel.send_state().sequence;
     let mut bytes = [0; 1400];
     bytes[..prefix.len()].copy_from_slice(prefix);
-    let length = packet::write(
-        &mut bytes[prefix.len()..],
-        movement,
-        sequence,
-        Key::default(),
-    )
-    .unwrap();
+    let length = movement.map_or(0, |movement| {
+        packet::write(
+            &mut bytes[prefix.len()..],
+            movement,
+            sequence,
+            Key::default(),
+        )
+        .unwrap()
+    });
     let end = prefix.len() + length;
     bytes[end..end + suffix.len()].copy_from_slice(suffix);
     connection

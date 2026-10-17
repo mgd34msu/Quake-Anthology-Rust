@@ -36,7 +36,13 @@ fn native_info_uses_selected_scope_source_names_and_module_rows_once() {
             .unwrap();
         cvars.register("_qa_empty", Some(""), 2, client).unwrap();
         let mut info = [0; 2048];
-        let length = cvars.info_string(client, 2, &mut info).unwrap();
+        let rules = qa_core::text::InfoRules {
+            bytes: info.len(),
+            key_bytes: 64,
+            value_bytes: 256,
+            filter: qa_core::text::InfoBytes::Ascii7Printable,
+        };
+        let length = cvars.info_string(client, 2, rules, &mut info).unwrap();
         let bytes = &info[..length];
         let info = std::str::from_utf8(bytes).unwrap();
         let password = info_value(bytes, b"password", false).unwrap();
@@ -47,10 +53,81 @@ fn native_info_uses_selected_scope_source_names_and_module_rows_once() {
         assert!(info_value(bytes, b"_qa_empty", false).is_none());
         assert!(info_value(bytes, b"skin", false).is_some());
         assert_eq!(
-            cvars.info_string(client, 2, &mut [0; 1]).unwrap_err(),
+            cvars
+                .info_string(client, 2, rules, &mut [0; 1])
+                .unwrap_err(),
             WriteError::Capacity
         );
     }
+}
+
+#[test]
+fn native_info_omits_fields_outside_the_supplied_budget_and_keeps_later_fields() {
+    use qa_core::text::{InfoBytes, InfoRules, info_value};
+    let mut cvars = Cvars::new().unwrap();
+    let client = Context {
+        source: RuleSetId::Quake2Rerelease,
+        ..Default::default()
+    };
+    for name in ["_qa_first", "_qa_second", "_qa_third"] {
+        cvars
+            .register(name, Some(&"x".repeat(230)), 2, client)
+            .unwrap();
+    }
+    cvars
+        .register("_qa_field_limit", Some(&"y".repeat(256)), 2, client)
+        .unwrap();
+    cvars
+        .register(&"k".repeat(64), Some("invalid-key"), 2, client)
+        .unwrap();
+    cvars
+        .register("_qa_after", Some("kept"), 2, client)
+        .unwrap();
+    let rules = InfoRules {
+        bytes: 512,
+        key_bytes: 64,
+        value_bytes: 256,
+        filter: InfoBytes::Ascii7Printable,
+    };
+    let mut output = [0xa5; 600];
+    let length = cvars.info_string(client, 2, rules, &mut output).unwrap();
+    assert!(length < rules.bytes);
+    assert_eq!(output[length], 0);
+    assert_eq!(&output[rules.bytes..], &[0xa5; 88]);
+    let info = &output[..length];
+    assert!(info_value(info, b"_qa_first", false).is_some());
+    assert!(info_value(info, b"_qa_third", false).is_none());
+    assert!(info_value(info, b"_qa_field_limit", false).is_none());
+    assert!(info_value(info, &vec![b'k'; 64], false).is_none());
+    let after = info_value(info, b"_qa_after", false).unwrap();
+    assert_eq!(&info[after], b"kept");
+}
+
+#[test]
+fn native_info_keeps_binding_conversion_failures_scoped_to_the_caller() {
+    let mut cvars = Cvars::new().unwrap();
+    let client = Context {
+        source: RuleSetId::Quake,
+        ..Default::default()
+    };
+    let gamma = cvars.bind("gamma", client).unwrap();
+    cvars.full_set(gamma, "1", 2).unwrap();
+    cvars.set_text(gamma.canonical(), "0").unwrap();
+    let mut output = [0; 512];
+    assert!(matches!(
+        cvars.info_string(
+            client,
+            2,
+            qa_core::text::InfoRules {
+                bytes: output.len(),
+                key_bytes: 64,
+                value_bytes: 256,
+                filter: qa_core::text::InfoBytes::Exact,
+            },
+            &mut output
+        ),
+        Err(WriteError::Conversion(_))
+    ));
 }
 
 #[test]

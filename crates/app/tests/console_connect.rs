@@ -8,11 +8,13 @@ use qa_app::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     loopback::Endpoint,
-    primitives::{RuleSetId, Vec3},
+    primitives::{ClientId, RuleSetId, Vec3},
     sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_network::{
+    channel::{Channel, Delivery},
     commands::{
+        connection::Commands,
         packet::Protocol,
         startup::{NqControl, read_nq_control, write_nq_control},
     },
@@ -21,10 +23,13 @@ use qa_network::{
 };
 use qa_platform::EventPump;
 use qa_session::timing::TickRate;
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, ops::ControlFlow, time::Duration};
 
 #[path = "support/client_asset_frames.rs"]
 mod asset_frames;
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod support;
 
 struct Source {
     pump: EventPump,
@@ -449,5 +454,136 @@ fn one_slot_replacement_waits_for_presentation_and_preserves_all_role_choices() 
     }
 }
 
+#[path = "console_connect/q2.rs"]
+mod q2;
 #[path = "console_connect/qw.rs"]
 mod qw;
+
+fn source() -> Source {
+    Source {
+        pump: EventPump::new(),
+        time: EventTime::default(),
+        reject_connect: false,
+        rejected_connects: 0,
+        backend: None,
+    }
+}
+fn frame(host: &mut FrameHost, source: &mut Source, milliseconds: u64) {
+    source.time = EventTime::from_milliseconds(milliseconds);
+    assert_eq!(host.frame(source, true).drains, 2);
+}
+fn peer(packet: &(Peer, Vec<u8>)) -> SocketAddr {
+    let Peer::Socket(address) = packet.0 else {
+        panic!("private UDP peer")
+    };
+    address
+}
+fn response(pump: &mut EventPump, socket: u16, address: SocketAddr, text: &[u8]) {
+    let mut bytes = vec![255; 4];
+    bytes.extend(text);
+    pump.send_udp(socket, address, &bytes).unwrap();
+}
+fn history(host: &FrameHost, client: ClientId) -> u64 {
+    host.runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .commands
+        .as_ref()
+        .unwrap()
+        .history()
+        .unwrap()
+        .number()
+}
+
+struct NativePeer {
+    channel: Channel,
+    commands: Commands,
+    strings: Vec<Vec<u8>>,
+    userinfos: Vec<Vec<u8>>,
+    moves: usize,
+}
+impl NativePeer {
+    fn new(protocol: Protocol, qport: u16) -> Self {
+        let mut channel =
+            Channel::load(protocol.client_channel(qport), Endpoint::Server, 8192, 16).unwrap();
+        channel.configure_snapshots(protocol).unwrap();
+        channel.set_qport(qport);
+        Self {
+            channel,
+            commands: Commands::load(protocol, 8192),
+            strings: vec![],
+            userinfos: vec![],
+            moves: 0,
+        }
+    }
+    fn receive(&mut self, bytes: &[u8], milliseconds: u64) {
+        let time = EventTime::from_milliseconds(milliseconds);
+        let received = self.channel.receive(bytes, time).unwrap();
+        if let Delivery::Payload(payload) = received.delivery {
+            let length = self.commands.stage(payload).unwrap();
+            self.commands
+                .decode(
+                    length,
+                    received.header.sequence,
+                    milliseconds as i32,
+                    &mut self.channel,
+                    None,
+                    |incoming| {
+                        match incoming {
+                            qa_network::ingress::Incoming::CommandString { text, .. } => {
+                                self.strings.push(text.to_vec());
+                                if text == b"disconnect" {
+                                    return ControlFlow::Break(());
+                                }
+                            }
+                            qa_network::ingress::Incoming::Command { .. } => self.moves += 1,
+                            qa_network::ingress::Incoming::Userinfo { text, .. } => {
+                                self.userinfos.push(text.to_vec())
+                            }
+                            _ => {}
+                        }
+                        ControlFlow::Continue(())
+                    },
+                )
+                .unwrap();
+        }
+    }
+    fn count(&self, text: &[u8]) -> usize {
+        self.strings
+            .iter()
+            .filter(|candidate| candidate.as_slice() == text)
+            .count()
+    }
+    fn reply(&mut self, pump: &mut EventPump, socket: u16, address: SocketAddr, milliseconds: u64) {
+        let time = EventTime::from_milliseconds(milliseconds);
+        let packet = self.channel.prepare_output(time).unwrap().unwrap();
+        pump.send_udp(socket, address, packet.bytes).unwrap();
+        self.channel.submitted(time).unwrap();
+    }
+}
+
+fn wire(write: impl FnOnce(&mut qa_network::message::Writer<'_>)) -> Vec<u8> {
+    let mut bytes = [0; 2048];
+    let mut writer =
+        qa_network::message::Writer::new(&mut bytes, qa_network::message::Encoding::Bytes);
+    write(&mut writer);
+    writer.bytes().to_vec()
+}
+fn deliver(
+    host: &mut FrameHost,
+    source: &mut Source,
+    server: &mut EventPump,
+    socket: u16,
+    local: SocketAddr,
+    native: &mut NativePeer,
+    bytes: &[u8],
+    milliseconds: u64,
+) {
+    native.channel.queue_reliable(bytes).unwrap();
+    native.reply(server, socket, local, milliseconds);
+    frame(host, source, milliseconds);
+    for (_, bytes) in datagrams(server) {
+        native.receive(&bytes, milliseconds);
+    }
+}

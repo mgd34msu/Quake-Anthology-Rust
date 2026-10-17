@@ -858,13 +858,16 @@ impl ResourceState {
                 self.configs.set(index, &name[..name.len().min(capacity)])
             }
             PeerUpdate::SetInfo { key, value, .. } => {
-                let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES];
+                let mut bytes = [0; qa_network::commands::startup::QW_CONNECT_USERINFO_BYTES];
                 let Some(current) = self.configs.config(index) else {
                     return false;
                 };
                 let mut length = current.text.len();
                 bytes[..length].copy_from_slice(current.text);
-                let mut rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
+                let Some(mut rules) = Protocol::QuakeWorld28.userinfo_rules() else {
+                    self.rejected += 1;
+                    return false;
+                };
                 rules.filter = if qa_core::names::compare_folded(key, b"name").is_eq() {
                     qa_core::text::InfoBytes::AboveCarriageReturn
                 } else if qa_core::names::compare_folded(key, b"team").is_eq() {

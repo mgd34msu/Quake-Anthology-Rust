@@ -31,10 +31,52 @@ impl Protocol {
         match self {
             Self::NetQuake15 => Some(26000),
             Self::QuakeWorld28 => Some(27500),
+            Self::Quake2_34 | Self::Quake2Repro1038 => Some(27910),
             _ => None,
         }
     }
-    /// Q2/Q3 disconnect through their existing string-command queue instead.
+    /// Native wire userinfo is independent of a module ABI's input buffer.
+    pub const fn userinfo_rules(self) -> Option<qa_core::text::InfoRules> {
+        use qa_core::text::{InfoBytes, InfoRules};
+        let (bytes, fields, filter) = match self {
+            Self::NetQuake15 => return None,
+            Self::QuakeWorld28 => (
+                super::startup::QW_CONNECT_USERINFO_BYTES,
+                64,
+                InfoBytes::Exact,
+            ),
+            Self::Quake2_34 | Self::Quake2Repro1038 => (
+                super::startup::Q2_CONNECT_USERINFO_BYTES,
+                64,
+                InfoBytes::Ascii7Printable,
+            ),
+            Self::Quake3_68 => (
+                crate::message::COMMAND_STRING_BYTES,
+                crate::message::COMMAND_STRING_BYTES,
+                InfoBytes::Exact,
+            ),
+        };
+        Some(InfoRules {
+            bytes,
+            key_bytes: fields,
+            value_bytes: fields,
+            filter,
+        })
+    }
+    pub const fn userinfo_bytes(self) -> Option<usize> {
+        match self.userinfo_rules() {
+            Some(rules) => Some(rules.bytes),
+            None => None,
+        }
+    }
+    /// Protocol1038 omits its byte qport entirely when that byte is zero.
+    pub const fn client_channel(self, qport: u16) -> channel::Policy {
+        match self {
+            Self::Quake2Repro1038 => channel::q2_new(qport as u8 != 0),
+            _ => self.channel(),
+        }
+    }
+    /// Native final CLIENT payload; Q3 keeps its reliable command path.
     pub fn write_disconnect(self, out: &mut [u8]) -> Result<usize, Error> {
         match self {
             Self::NetQuake15 => {
@@ -43,6 +85,10 @@ impl Protocol {
                 Ok(writer.size())
             }
             Self::QuakeWorld28 => self.write_client_text(4, b"drop", out),
+            Self::Quake2_34 | Self::Quake2Repro1038 => {
+                let length = self.write_client_text(4, b"disconnect", out)?;
+                Ok(length - usize::from(self == Self::Quake2_34))
+            }
             _ => Err(Error::Context),
         }
     }
@@ -632,7 +678,11 @@ pub fn read_with_commands(
                 4,
             )
             | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 3) => {
-                let policy = protocol.client_string_policy();
+                let policy = if protocol == Protocol::Quake2_34 && opcode == 4 {
+                    protocol.client_string_policy().allow_eof()
+                } else {
+                    protocol.client_string_policy()
+                };
                 let text = r.read_string(policy).map_err(|error| {
                     if error.kind == crate::message::ErrorKind::Capacity {
                         Error::Count

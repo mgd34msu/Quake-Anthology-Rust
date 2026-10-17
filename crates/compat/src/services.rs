@@ -694,6 +694,7 @@ impl ServiceStorage {
                     ..Context::default()
                 },
                 4,
+                range.info,
                 &mut range.info_scratch,
             )
             .map_err(|_| CallError::Cvar)?;

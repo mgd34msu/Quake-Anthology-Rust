@@ -1,26 +1,9 @@
 use super::*;
 use qa_core::{primitives::ClientId, text::info_value};
-use qa_network::{
-    channel::{Channel, Delivery},
-    commands::{connection::Commands, startup::write_qw_connect},
-};
-use std::ops::ControlFlow;
-
-#[path = "../model_assets/support.rs"]
-#[allow(dead_code)]
-mod support;
+use qa_network::commands::startup::write_qw_connect;
 
 const QW: Protocol = Protocol::QuakeWorld28;
 
-fn source() -> Source {
-    Source {
-        pump: EventPump::new(),
-        time: EventTime::default(),
-        reject_connect: false,
-        rejected_connects: 0,
-        backend: None,
-    }
-}
 fn qw_context(seat: SeatId) -> Context {
     Context {
         source: RuleSetId::QuakeWorld,
@@ -31,10 +14,6 @@ fn qw_context(seat: SeatId) -> Context {
 fn setting(host: &mut FrameHost, seat: SeatId, name: &str, value: &str) {
     let view = host.console.cvars.bind(name, qw_context(seat)).unwrap();
     host.console.cvars.force_write(view, value).unwrap();
-}
-fn frame(host: &mut FrameHost, source: &mut Source, milliseconds: u64) {
-    source.time = EventTime::from_milliseconds(milliseconds);
-    assert_eq!(host.frame(source, true).drains, 2);
 }
 fn connect(
     host: &mut FrameHost,
@@ -49,25 +28,24 @@ fn connect(
     frame(host, source, milliseconds);
     host.local_clients[seat.index()].unwrap()
 }
-fn peer(packet: &(Peer, Vec<u8>)) -> SocketAddr {
-    let Peer::Socket(address) = packet.0 else {
-        panic!("private UDP peer")
-    };
-    address
-}
 fn userinfo(host: &FrameHost, seat: SeatId, server: SocketAddr) -> Vec<u8> {
     let mut bytes = [0; qa_network::commands::startup::QW_CONNECT_USERINFO_BYTES];
     let mut length = host
         .console
         .cvars
-        .info_string(qw_context(seat), 2, &mut bytes)
+        .info_string(
+            qw_context(seat),
+            2,
+            QW.userinfo_rules().unwrap(),
+            &mut bytes,
+        )
         .unwrap();
     qa_core::text::info_set(
         &mut bytes,
         &mut length,
         b"*ip",
         server.to_string().as_bytes(),
-        qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld),
+        QW.userinfo_rules().unwrap(),
     )
     .unwrap();
     bytes[..length].to_vec()
@@ -80,89 +58,6 @@ fn expected_connect(qport: u16, challenge: i32, info: &[u8]) -> Vec<u8> {
     let length = write_qw_connect(qport, challenge, info, &mut bytes).unwrap();
     bytes[..length].to_vec()
 }
-fn response(pump: &mut EventPump, socket: u16, address: SocketAddr, text: &[u8]) {
-    let mut bytes = vec![255; 4];
-    bytes.extend(text);
-    pump.send_udp(socket, address, &bytes).unwrap();
-}
-fn history(host: &FrameHost, client: ClientId) -> u64 {
-    host.runtime
-        .network
-        .get(client, Endpoint::Client)
-        .unwrap()
-        .commands
-        .as_ref()
-        .unwrap()
-        .history()
-        .unwrap()
-        .number()
-}
-
-struct ConnectedPeer {
-    channel: Channel,
-    commands: Commands,
-    strings: Vec<Vec<u8>>,
-    moves: usize,
-}
-impl ConnectedPeer {
-    fn new(qport: u16) -> Self {
-        let mut channel = Channel::load(QW.channel(), Endpoint::Server, 8192, 16).unwrap();
-        channel.configure_snapshots(QW).unwrap();
-        channel.set_qport(qport);
-        Self {
-            channel,
-            commands: Commands::load(QW, 8192),
-            strings: vec![],
-            moves: 0,
-        }
-    }
-    fn receive(&mut self, bytes: &[u8], milliseconds: u64) {
-        let time = EventTime::from_milliseconds(milliseconds);
-        let received = self.channel.receive(bytes, time).unwrap();
-        if let Delivery::Payload(payload) = received.delivery {
-            let length = self.commands.stage(payload).unwrap();
-            self.commands
-                .decode(
-                    length,
-                    received.header.sequence,
-                    milliseconds as i32,
-                    &mut self.channel,
-                    None,
-                    |incoming| {
-                        match incoming {
-                            qa_network::ingress::Incoming::CommandString { text, .. } => {
-                                self.strings.push(text.to_vec())
-                            }
-                            qa_network::ingress::Incoming::Command { .. } => self.moves += 1,
-                            _ => {}
-                        }
-                        ControlFlow::Continue(())
-                    },
-                )
-                .unwrap();
-        }
-    }
-    fn count(&self, text: &[u8]) -> usize {
-        self.strings
-            .iter()
-            .filter(|candidate| candidate.as_slice() == text)
-            .count()
-    }
-    fn reply(&mut self, pump: &mut EventPump, socket: u16, address: SocketAddr, milliseconds: u64) {
-        let time = EventTime::from_milliseconds(milliseconds);
-        let packet = self.channel.prepare_output(time).unwrap().unwrap();
-        pump.send_udp(socket, address, packet.bytes).unwrap();
-        self.channel.submitted(time).unwrap();
-    }
-}
-
-fn wire(write: impl FnOnce(&mut qa_network::message::Writer<'_>)) -> Vec<u8> {
-    let mut bytes = [0; 2048];
-    let mut writer =
-        qa_network::message::Writer::new(&mut bytes, qa_network::message::Encoding::Bytes);
-    write(&mut writer);
-    writer.bytes().to_vec()
-}
 fn text(writer: &mut qa_network::message::Writer<'_>, bytes: &[u8]) {
     writer.write_string(QW.string_policy(), bytes).unwrap();
 }
@@ -171,23 +66,6 @@ fn stuff(bytes: &[u8]) -> Vec<u8> {
         writer.write_bits(9, 8).unwrap();
         text(writer, bytes);
     })
-}
-fn deliver(
-    host: &mut FrameHost,
-    source: &mut Source,
-    server: &mut EventPump,
-    socket: u16,
-    local: SocketAddr,
-    native: &mut ConnectedPeer,
-    bytes: &[u8],
-    milliseconds: u64,
-) {
-    native.channel.queue_reliable(bytes).unwrap();
-    native.reply(server, socket, local, milliseconds);
-    frame(host, source, milliseconds);
-    for (_, bytes) in datagrams(server) {
-        native.receive(&bytes, milliseconds);
-    }
 }
 fn model_owner(
     host: &mut FrameHost,
@@ -235,7 +113,7 @@ fn become_active(
     server: &mut EventPump,
     socket: u16,
     local: SocketAddr,
-    native: &mut ConnectedPeer,
+    native: &mut NativePeer,
     client: ClientId,
     server_count: i32,
     first_ms: u64,
@@ -415,7 +293,7 @@ fn active_qw_reconnect_drops_the_old_channel_then_repeats_oob_admission_with_the
         );
         response(&mut server, socket, local, b"j");
         frame(&mut host, &mut source, 20);
-        let mut native = ConnectedPeer::new(local.port());
+        let mut native = NativePeer::new(QW, local.port());
         for (_, bytes) in datagrams(&mut server) {
             native.receive(&bytes, 20);
         }
@@ -618,7 +496,7 @@ fn active_qw_reconnect_drops_the_old_channel_then_repeats_oob_admission_with_the
         );
         response(&mut server, socket, new_local, b"j");
         frame(&mut host, &mut source, restart_at + 20);
-        let mut replacement_native = ConnectedPeer::new(new_local.port());
+        let mut replacement_native = NativePeer::new(QW, new_local.port());
         for (_, bytes) in datagrams(&mut server) {
             replacement_native.receive(&bytes, restart_at + 20);
         }
@@ -763,7 +641,7 @@ fn qw_acceptance_uses_the_last_admitted_userinfo_and_queues_new_before_serverdat
     let connection = host.runtime.network.get(client, Endpoint::Client).unwrap();
     assert!(connection.phase.is_connected());
     assert_eq!(connection.route.socket, token);
-    let mut native = ConnectedPeer::new(54321);
+    let mut native = NativePeer::new(QW, 54321);
     for (_, bytes) in datagrams(&mut server) {
         native.receive(&bytes, 30);
     }
@@ -906,7 +784,7 @@ fn two_seats_capture_distinct_default_qports_from_their_owned_udp_leases() {
     assert_eq!(connected.len(), 2);
     for request in &requests {
         let local = peer(request);
-        let mut native = ConnectedPeer::new(local.port());
+        let mut native = NativePeer::new(QW, local.port());
         for packet in connected.iter().filter(|packet| peer(packet) == local) {
             native.receive(&packet.1, 20);
         }

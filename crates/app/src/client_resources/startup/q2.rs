@@ -74,6 +74,12 @@ impl Q2Signon {
     pub(crate) fn waiting(&self) -> bool {
         !matches!(self.phase, Phase::Active)
     }
+    pub(crate) fn reconnect_in_place(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::List { .. } | Phase::Files(_) | Phase::Content
+        )
+    }
     pub(crate) fn allows_media(&self) -> bool {
         matches!(
             self.phase,

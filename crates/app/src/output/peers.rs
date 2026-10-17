@@ -199,10 +199,12 @@ fn encode_row(
     let slot = u8::try_from(slot).map_err(|_| ())?;
     match protocol {
         Protocol::QuakeWorld28 => {
-            let mut projected = FixedText::<{ qa_compat::quakec::QW_USERINFO_BYTES }>::default();
+            let mut projected = FixedText::<
+                { qa_network::commands::startup::QW_CONNECT_USERINFO_BYTES },
+            >::default();
             let rules = InfoRules {
                 filter: InfoBytes::AboveCarriageReturn,
-                ..qa_compat::services::userinfo_rules(protocol.rule_set())
+                ..protocol.userinfo_rules().ok_or(())?
             };
             for (key, value) in info_changes(b"", info).filter(|(key, _)| !key.starts_with(b"_")) {
                 if let Ok(update) = InfoUpdate::new(key, value, rules) {

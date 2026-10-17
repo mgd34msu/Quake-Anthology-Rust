@@ -879,6 +879,7 @@ fn run() -> Result<(), String> {
                     ..Context::default()
                 },
                 2,
+                qa_compat::services::userinfo_rules(api.rules),
                 &mut info,
             )
             .map_err(|e| format!("native userinfo: {e:?}"))?;
