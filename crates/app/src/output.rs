@@ -555,17 +555,40 @@ pub(crate) fn dispatch_frame(
                         return OutputSubmission::BestEffort;
                     };
                     if protocol == qa_network::commands::packet::Protocol::Quake3_68 {
-                        let length = connection.channel.encode_server_output(
-                            &mut runtime.output_native_bytes,
-                            |writer, _| {
-                                qa_network::downloads::write_service(protocol, chunk, writer)
-                                    .map_err(|_| qa_network::commands::packet::Error::Context)
-                            },
-                        );
-                        let Ok(length) = length else {
+                        let Ok(maximum) = connection.channel.native_payload_capacity() else {
                             counts.native_unsupported += 1;
                             runtime.server_downloads[slot].reset();
                             return OutputSubmission::BestEffort;
+                        };
+                        let maximum = maximum.min(runtime.output_native_bytes.len());
+                        let length = connection.channel.encode_server_output(
+                            &mut runtime.output_native_bytes[..maximum],
+                            |writer, _| {
+                                qa_network::downloads::write_service(protocol, chunk, writer)
+                                    .map_err(|error| match error {
+                                        qa_network::downloads::Error::Message(error) => {
+                                            error.into()
+                                        }
+                                        _ => qa_network::commands::packet::Error::Context,
+                                    })
+                            },
+                        );
+                        let length = match length {
+                            Ok(length) => length,
+                            Err(qa_network::commands::packet::Error::Message(error))
+                                if error.kind == qa_network::message::ErrorKind::Capacity
+                                    && connection
+                                        .channel
+                                        .command_state()
+                                        .is_some_and(|state| state.queued > state.acknowledged) =>
+                            {
+                                return OutputSubmission::Unsent;
+                            }
+                            Err(_) => {
+                                counts.native_unsupported += 1;
+                                runtime.server_downloads[slot].reset();
+                                return OutputSubmission::BestEffort;
+                            }
                         };
                         let route = connection.route;
                         match native::transmit(

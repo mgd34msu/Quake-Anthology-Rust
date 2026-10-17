@@ -163,7 +163,7 @@ impl ClientStartup {
     }
     pub(crate) fn connected(&mut self, protocol: Protocol) {
         if protocol == Protocol::Quake3_68 {
-            *self = Self::Quake3(Q3Phase::AwaitGamestate);
+            self.connecting(protocol);
             return;
         }
         if matches!(
@@ -307,6 +307,11 @@ impl ClientStartup {
         match self {
             Self::Quake3(phase) => Some(*phase),
             _ => None,
+        }
+    }
+    pub(crate) fn q3_wait_gamestate(&mut self) {
+        if self.q3().is_some() {
+            self.connecting(Protocol::Quake3_68);
         }
     }
     pub(crate) fn q3_gamestate(&mut self) {

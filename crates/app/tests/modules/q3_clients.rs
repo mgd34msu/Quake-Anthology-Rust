@@ -993,3 +993,302 @@ fn accepted_userinfo_survives_text_pressure_without_repeating_the_module_callbac
     assert!(host.runtime.server.clients[0].is_active());
     assert!(!host.runtime.quit);
 }
+
+#[test]
+fn download_completion_resends_current_gamestate_through_native_ack_ownership() {
+    use qa_core::events::{OutputSubmission, OutputTarget};
+    use qa_core::loopback::Endpoint;
+    use qa_network::{
+        channel::{Channel, Delivery, commands::ServerOutput},
+        commands::connection::Commands,
+        ingress::Route,
+    };
+    struct Wire {
+        time: EventTime,
+        packets: Vec<(std::net::SocketAddr, Vec<u8>)>,
+    }
+    impl FrameSource for Wire {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_nanos(self.time.0)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            queue
+                .push(SysEvent {
+                    time: self.time,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            Duration::from_nanos(self.time.0)
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+        fn send_packet(&mut self, _: u16, peer: std::net::SocketAddr, bytes: &[u8]) -> bool {
+            self.packets.push((peer, bytes.to_vec()));
+            true
+        }
+    }
+    fn states(
+        host: &mut FrameHost,
+        observer: qa_core::events::OutputConsumerId,
+    ) -> Vec<(ClientId, u64)> {
+        let mut found = Vec::new();
+        qa_core::events::dispatch_consumer(
+            &mut host.runtime.server.events,
+            observer,
+            &mut |record: qa_core::events::OutputRecord, _: &mut qa_core::events::TextStore| {
+                if matches!(record.event, FrameEvent::GameState { .. })
+                    && let Some(NativeDelivery {
+                        target: NativeTarget::Client(client),
+                        ..
+                    }) = record.delivery
+                {
+                    found.push((client, record.sequence));
+                }
+                OutputSubmission::BestEffort
+            },
+        );
+        found
+    }
+    fn receive(
+        wire: &mut Wire,
+        client: &mut Channel,
+        peer: std::net::SocketAddr,
+    ) -> Vec<Vec<(u32, Vec<u8>)>> {
+        let mut states = Vec::new();
+        for (to, packet) in std::mem::take(&mut wire.packets) {
+            if to != peer {
+                continue;
+            } // The second peer deliberately withholds its ACK.
+            let received = client.receive(&packet, wire.time).unwrap();
+            let sequence = received.header.sequence;
+            if let Delivery::Payload(body) = received.delivery {
+                let mut body = body.to_vec();
+                client
+                    .decode_server_output(&mut body, sequence, |output| {
+                        if let ServerOutput::Gamestate(state) = output {
+                            let mut rows = Vec::new();
+                            state
+                                .for_each_config(|row| rows.push((row.index, row.text.to_vec())))
+                                .unwrap();
+                            states.push(rows);
+                        }
+                    })
+                    .unwrap();
+            }
+        }
+        states
+    }
+    fn command(
+        host: &mut FrameHost,
+        wire: &mut Wire,
+        peer: std::net::SocketAddr,
+        client: &mut Channel,
+        text: Option<&[u8]>,
+    ) -> Vec<u8> {
+        if let Some(text) = text {
+            client
+                .queue_client_command(Protocol::Quake3_68, text)
+                .unwrap();
+        }
+        let codec = Commands::load(Protocol::Quake3_68, Protocol::Quake3_68.message_bytes());
+        let mut bytes = vec![0; Protocol::Quake3_68.message_bytes()];
+        let length = codec
+            .encode(&UserCmd::default(), |_| 0, client, &mut bytes)
+            .unwrap();
+        let bytes = client
+            .prepare_move(&bytes[..length], wire.time, None, None)
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        client.submitted(wire.time).unwrap();
+        host.queue
+            .push(SysEvent {
+                time: wire.time,
+                kind: EventKind::Packet {
+                    socket: 37,
+                    from: Peer::Socket(peer),
+                    bytes: &bytes,
+                },
+            })
+            .unwrap();
+        host.drain(&mut Default::default());
+        bytes
+    }
+    let (mut host, client_id, _) = fixture(0, Phase::Server, None);
+    host.connect_module_client(MODULE, client_id, b"\\name\\Downloader")
+        .unwrap();
+    // This fixture uses a separate native peer, without a local presentation seat.
+    host.runtime.server.clients[client_id.0 as usize].connection = Some(Connection::Remote);
+    let peer = ([127, 0, 0, 1], 29000).into();
+    let connection = host
+        .runtime
+        .network
+        .get_mut(client_id, Endpoint::Server)
+        .unwrap();
+    connection.route = Route {
+        socket: 37,
+        peer: Peer::Socket(peer),
+    };
+    let output = connection.output.unwrap();
+    let mut client = Channel::load(
+        Protocol::Quake3_68.channel(),
+        Endpoint::Client,
+        Protocol::Quake3_68.message_bytes(),
+        8,
+    )
+    .unwrap();
+    client.set_qport(connection.channel.qport());
+    client
+        .set_command_context(connection.channel.command_context().unwrap())
+        .unwrap();
+    let stalled = host
+        .runtime
+        .connect_local(
+            SeatId::ALL[1],
+            SpawnAnchor {
+                position: Vec3::default(),
+                angles: Vec3::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy {
+                input: RuleSetId::Quake3,
+                client: RuleSetId::Quake3,
+                movement: RuleSetId::Quake,
+                trace: RuleSetId::Quake2,
+            },
+            Protocol::Quake3_68,
+            1,
+        )
+        .unwrap();
+    host.connect_module_client(MODULE, stalled, b"\\name\\Stalled")
+        .unwrap();
+    host.runtime.server.clients[stalled.0 as usize].connection = Some(Connection::Remote);
+    host.runtime
+        .network
+        .get_mut(stalled, Endpoint::Server)
+        .unwrap()
+        .route = Route {
+        socket: 37,
+        peer: Peer::Socket(([127, 0, 0, 1], 29001).into()),
+    };
+    let stalled_output = host.runtime.server.clients[stalled.0 as usize]
+        .output
+        .unwrap();
+    let observer = host
+        .runtime
+        .server
+        .events
+        .bind(OutputTarget::Module(ModuleId(99)))
+        .unwrap();
+    let mut wire = Wire {
+        time: EventTime::from_milliseconds(50),
+        packets: Vec::new(),
+    };
+    host.frame(&mut wire, true);
+    let initial_states = states(&mut host, observer);
+    assert_eq!(initial_states.len(), 2);
+    let initial = initial_states
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id == client_id)
+        .collect::<Vec<_>>();
+    let stalled_state = initial_states
+        .iter()
+        .find(|(id, _)| *id == stalled)
+        .unwrap()
+        .1;
+    assert_eq!(receive(&mut wire, &mut client, peer).len(), 1);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(output, initial[0].1)
+    );
+    let old_ack = command(&mut host, &mut wire, peer, &mut client, None);
+    assert!(
+        !host
+            .runtime
+            .server
+            .events
+            .retained_for(output, initial[0].1)
+    );
+    let context = Context {
+        source: RuleSetId::Quake3,
+        side: qa_console::catalog::Scope::Server,
+        ..Default::default()
+    };
+    let hostname = host.console.cvars.bind("hostname", context).unwrap();
+    host.console
+        .cvars
+        .force_write(hostname, "after-download")
+        .unwrap();
+    let module_commands = count(&mut host, 6);
+    command(&mut host, &mut wire, peer, &mut client, Some(b"donedl"));
+    assert_eq!(count(&mut host, 6), module_commands);
+    wire.time = EventTime::from_milliseconds(100);
+    host.frame(&mut wire, true);
+    let refreshed = states(&mut host, observer);
+    assert_eq!(refreshed.len(), 1);
+    assert_eq!(refreshed[0].0, client_id);
+    assert!(refreshed[0].1 > initial[0].1);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(stalled_output, stalled_state)
+    );
+    let state = receive(&mut wire, &mut client, peer);
+    assert_eq!(state.len(), 1);
+    assert!(state[0].iter().any(|(_, text)| {
+        text.windows(b"after-download".len())
+            .any(|bytes| bytes == b"after-download")
+    }));
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(output, refreshed[0].1)
+    );
+    host.queue
+        .push(SysEvent {
+            time: wire.time,
+            kind: EventKind::Packet {
+                socket: 37,
+                from: Peer::Socket(peer),
+                bytes: &old_ack,
+            },
+        })
+        .unwrap();
+    host.drain(&mut Default::default());
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(output, refreshed[0].1)
+    );
+    command(&mut host, &mut wire, peer, &mut client, None);
+    assert!(
+        !host
+            .runtime
+            .server
+            .events
+            .retained_for(output, refreshed[0].1)
+    );
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(stalled_output, stalled_state)
+    );
+    assert!(
+        host.runtime.server.clients[stalled.0 as usize]
+            .connection
+            .is_some()
+    );
+}

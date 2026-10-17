@@ -902,3 +902,102 @@ fn q3_download_batches_follow_client_snaps_rate_and_live_server_rate_limit() {
         }
     }
 }
+
+#[test]
+fn q3_download_waits_for_reliable_commands_to_free_message_capacity() {
+    use qa_core::primitives::FileChunk;
+    let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+    let client = ClientId(0);
+    let server = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let text = [b'x'; 900];
+    let mut queued = 0;
+    while server.queue_reliable(&text).is_ok() {
+        queued += 1;
+    }
+    assert!(queued > 8);
+    let entity = host.runtime.server.clients[0].entity;
+    let output = host.runtime.server.clients[0].output.unwrap();
+    let bytes: Vec<u8> = (0..2048).map(|index| (index % 251) as u8).collect();
+    let sequence = host
+        .runtime
+        .server
+        .events
+        .file_chunk(
+            client,
+            entity,
+            FileChunk::Block {
+                number: 0,
+                total: Some(2048),
+                bytes: &bytes,
+            },
+        )
+        .unwrap();
+    source.advance(&mut host, 2);
+    assert!(source.numbered[0].is_empty());
+    let mut batch = host.runtime.server.events.batch(output).unwrap();
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .next(&mut batch)
+            .unwrap()
+            .sequence,
+        sequence
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .received,
+        queued
+    );
+    queue(&mut host, client, b"echo native-ack");
+    source.advance(&mut host, 3);
+    assert_eq!(
+        source.numbered[0],
+        vec![FileChunk::Block {
+            number: 0,
+            total: Some(2048),
+            bytes
+        }]
+    );
+}
+
+#[test]
+fn q3_done_without_a_server_gamestate_publisher_does_not_stall_snapshots() {
+    let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+    let previous = [ClientId(0), ClientId(1)].map(|id| {
+        host.runtime
+            .network
+            .get(id, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap()
+            .time()
+    });
+    queue(&mut host, ClientId(0), b"donedl");
+    source.advance(&mut host, 3);
+    for (index, id) in [ClientId(0), ClientId(1)].into_iter().enumerate() {
+        assert_ne!(
+            host.runtime
+                .network
+                .get(id, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .unwrap()
+                .time(),
+            previous[index]
+        );
+    }
+}

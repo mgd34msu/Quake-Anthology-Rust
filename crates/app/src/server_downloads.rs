@@ -634,7 +634,10 @@ impl Runtime {
             }
             return Ok(false);
         }
-        if !matches!(args.get_bytes(0), b"download" | b"nextdl" | b"stopdl") {
+        if !matches!(
+            args.get_bytes(0),
+            b"download" | b"nextdl" | b"stopdl" | b"donedl"
+        ) {
             return Ok(false);
         }
         let slot = id.0 as usize;
@@ -654,8 +657,12 @@ impl Runtime {
         if policy.is_none() && protocol != Protocol::Quake3_68 {
             return Ok(false);
         }
-        if args.get_bytes(0) == b"stopdl" && protocol != Protocol::Quake3_68 {
+        if matches!(args.get_bytes(0), b"stopdl" | b"donedl") && protocol != Protocol::Quake3_68 {
             return Ok(false);
+        }
+        if args.get_bytes(0) == b"donedl" {
+            self.config_publications[slot].restart_game_state();
+            return Ok(true);
         }
         let Some(output) = client.output.filter(|output| binding.output == *output) else {
             return Ok(true);

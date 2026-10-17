@@ -269,6 +269,7 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     assert_eq!(bytes(&host, b"maps/broken.bin"), Some(b"abcd".to_vec()));
     assert_eq!(host.local_clients[0], Some(client));
     let package = zip::stored_zip(&[(b"models/downloaded.bin", b"queued package member")]);
+    assert_eq!(native.count(b"donedl"), 0);
     command(&mut host, &mut source, "download packs/late.pk3\n", 140);
     collect(&mut server, &mut native, 140);
     assert!(bytes(&host, b"models/downloaded.bin").is_none());
@@ -305,6 +306,22 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     let origin = host.runtime.vfs.origin(&reference).unwrap();
     assert_eq!(origin.kind, qa_content::vfs::MountKind::Pk3);
     assert!(origin.path.ends_with("packs/late.pk3"));
+    frame(&mut host, &mut source, 155);
+    collect(&mut server, &mut native, 155);
+    assert_eq!(native.count(b"donedl"), 1);
+    let done = native
+        .strings
+        .iter()
+        .position(|text| text.as_slice() == b"donedl")
+        .unwrap();
+    assert!(
+        native.strings[..done]
+            .iter()
+            .rev()
+            .take(2)
+            .any(|text| text.as_slice() == b"nextdl 1")
+    );
+
     command(&mut host, &mut source, "download maps/cancel.bin\n", 160);
     collect(&mut server, &mut native, 160);
     assert_eq!(progress(&host, "cl_downloadName"), "maps/cancel.bin");

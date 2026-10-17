@@ -84,6 +84,7 @@ struct BlockProgress {
     queued: i32,
     total: Option<u32>,
     stop: bool,
+    done: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -92,6 +93,7 @@ enum Pending {
     Next,
     Block(i32),
     Stop,
+    Done,
 }
 impl Pending {
     fn text(self, transfer: &Transfer) -> Option<FixedText<80>> {
@@ -106,6 +108,7 @@ impl Pending {
             Self::Next => text.set("nextdl").ok()?,
             Self::Block(number) => write!(text, "nextdl {number}").ok()?,
             Self::Stop => text.set("stopdl").ok()?,
+            Self::Done => text.set("donedl").ok()?,
         }
         Some(text)
     }
@@ -584,10 +587,7 @@ impl ClientDownload {
         ) {
             return Err("a download or its outstanding reply is still active".into());
         }
-        if self
-            .pending()
-            .is_some_and(|pending| matches!(pending, Pending::Block(_) | Pending::Stop))
-        {
+        if self.pending().is_some() {
             return Err("download acknowledgement is still pending".into());
         }
         qa_network::downloads::validate_path(name).map_err(|_| "invalid native download path")?;
@@ -666,6 +666,7 @@ impl ClientDownload {
     fn stop_blocks(&mut self) {
         if let Some(blocks) = &mut self.blocks {
             blocks.stop = true;
+            blocks.done = false;
             blocks.queued = blocks.received;
         }
     }
@@ -910,6 +911,9 @@ impl ClientDownload {
             if blocks.queued < blocks.received {
                 return Some(Pending::Block(blocks.queued));
             }
+            if blocks.done {
+                return Some(Pending::Done);
+            }
         }
         let Transfer::Active { sending, .. } = self.transfer else {
             return None;
@@ -931,6 +935,11 @@ impl ClientDownload {
             Pending::Stop => {
                 if let Some(blocks) = &mut self.blocks {
                     blocks.stop = false;
+                }
+            }
+            Pending::Done => {
+                if let Some(blocks) = &mut self.blocks {
+                    blocks.done = false;
                 }
             }
             Pending::Request | Pending::Next => {
@@ -1585,6 +1594,7 @@ impl crate::host::FrameHost {
             &mut crate::modules::renderer_contexts::Contexts,
         ) -> Result<bool, String>,
     ) {
+        let mut native_complete = false;
         for index in 0..self.runtime.client_resources.len() {
             let Some(request) = self.runtime.client_resources[index]
                 .as_ref()
@@ -1636,7 +1646,7 @@ impl crate::host::FrameHost {
                             }
                         }
                     }
-                    Ok(())
+                    Ok(package.is_some())
                 });
             let Some(resources) = self.runtime.client_resources[index].as_mut() else {
                 continue;
@@ -1649,7 +1659,12 @@ impl crate::host::FrameHost {
                 continue;
             };
             match result {
-                Ok(()) => {
+                Ok(package) => {
+                    if package && let Some(blocks) = &mut downloads.blocks {
+                        blocks.done = true;
+                        resources.startup.q3_wait_gamestate();
+                        native_complete = true;
+                    }
                     let _ = self.runtime.server.events.console_formatted(format_args!(
                         "Downloaded {} ({} bytes).\n",
                         request.name.as_str(),
@@ -1664,6 +1679,9 @@ impl crate::host::FrameHost {
                     downloads.transfer = Transfer::RefreshFailed { request, bytes };
                 }
             }
+        }
+        if native_complete {
+            self.flush_client_downloads();
         }
     }
 }

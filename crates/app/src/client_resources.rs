@@ -1624,6 +1624,9 @@ impl ConfigPublication {
     pub(crate) fn require_game_state(&mut self) {
         self.game_state_required = true;
     }
+    pub(crate) fn restart_game_state(&mut self) {
+        self.game_state = None;
+    }
     pub(crate) fn publish_game_state(&mut self, sequence: u64) {
         self.game_state = Some((sequence, false));
     }
