@@ -88,9 +88,6 @@ pub(crate) fn read_chunk_service(opcode: u8, bytes: &[u8]) -> Result<(Chunk<'_>,
     if size < 0 {
         return Err(Error::Size);
     }
-    if percent > 100 {
-        return Err(Error::Percent);
-    }
     // Unlike the SERVER's preferred chunk size, the signed wire width is a
     // receive boundary. Larger positive blocks remain bounded by this packet.
     let first = reader.byte_position();
@@ -98,6 +95,9 @@ pub(crate) fn read_chunk_service(opcode: u8, bytes: &[u8]) -> Result<(Chunk<'_>,
     let data = bytes
         .get(first..end)
         .ok_or_else(|| reader.error(ErrorKind::Truncated))?;
+    if percent > 100 {
+        return Err(Error::Percent);
+    }
     Ok((
         Chunk {
             percent,

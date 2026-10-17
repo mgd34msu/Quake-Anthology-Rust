@@ -8,6 +8,8 @@ use qa_network::{
     headers::{self, Direction, Header},
     ingress::{BindError, Connection, Connections, Incoming, Route},
 };
+#[path = "ingress/client_errors.rs"]
+mod client_errors;
 mod support;
 
 #[test]
@@ -51,6 +53,7 @@ fn qw_packet_timing_uses_submitted_move_slots_once_even_without_a_valid_service_
     let mut receipts = Vec::new();
     let mut empty_payloads = 0;
     let mut prints = 0;
+    let mut disconnected = 0;
     for (sequence, acknowledgement, payload, expected) in [
         (1, submitted[0].0, b"".as_slice(), Some(submitted[0].1)),
         (
@@ -94,6 +97,7 @@ fn qw_packet_timing_uses_submitted_move_slots_once_even_without_a_valid_service_
                         assert_eq!(print.text, b"receipt");
                         prints += 1;
                     }
+                    Incoming::Disconnect { .. } => disconnected += 1,
                     _ => panic!("timing metadata must not create snapshot/control data"),
                 }
                 std::ops::ControlFlow::Continue(())
@@ -114,6 +118,7 @@ fn qw_packet_timing_uses_submitted_move_slots_once_even_without_a_valid_service_
         assert_eq!(receipts.len(), before + 1);
     }
     assert_eq!((empty_payloads, prints), (1, 1));
+    assert_eq!(disconnected, 1);
     assert_eq!(
         (peers.delivered, peers.command_errors, peers.malformed),
         (3, 1, 0)

@@ -6,8 +6,8 @@ use qa_core::{
 use qa_network::{
     channel::Channel,
     commands::{
-        connection::Commands,
-        packet::{Error, Protocol, ZERO_QW},
+        connection::{Commands, OutputError},
+        packet::{Protocol, ZERO_QW},
     },
     ingress::Incoming,
     message::{Encoding, Writer},
@@ -75,7 +75,7 @@ fn apply(
     bytes: &[u8],
     sequence: u32,
     consume: impl FnMut(Incoming<'_>),
-) -> Result<Option<u32>, Error> {
+) -> Result<Option<u32>, OutputError> {
     let length = commands.stage(bytes)?;
     commands.decode_output(
         length,

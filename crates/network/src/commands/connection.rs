@@ -18,6 +18,37 @@ use qa_core::{
 };
 use std::ops::ControlFlow;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputError {
+    Service(packet::Error),
+    RejectedDownload(crate::downloads::Error),
+    MalformedDownload(crate::downloads::Error),
+}
+impl OutputError {
+    fn download(error: crate::downloads::Error) -> Self {
+        match error {
+            crate::downloads::Error::Percent => Self::RejectedDownload(error),
+            _ => Self::MalformedDownload(error),
+        }
+    }
+}
+impl From<packet::Error> for OutputError {
+    fn from(error: packet::Error) -> Self {
+        Self::Service(error)
+    }
+}
+impl From<crate::message::Error> for OutputError {
+    fn from(error: crate::message::Error) -> Self {
+        Self::Service(error.into())
+    }
+}
+impl std::fmt::Display for OutputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "native CLIENT service {self:?}")
+    }
+}
+impl std::error::Error for OutputError {}
+
 pub struct Commands {
     pub protocol: Protocol,
     scratch: Box<[u8]>,
@@ -567,7 +598,7 @@ impl Commands {
         channel: &mut Channel,
         namespace: qa_core::primitives::ResourceNamespace,
         mut consume: impl FnMut(Incoming<'_>),
-    ) -> Result<Option<u32>, packet::Error> {
+    ) -> Result<Option<u32>, OutputError> {
         let scratch = self.scratch.get_mut(..length).ok_or(packet::Error::Count)?;
         if self.protocol == Protocol::Quake3_68 {
             channel.decode_server_output(scratch, sequence, |output| match output {
@@ -591,7 +622,7 @@ impl Commands {
                 | Protocol::Quake2Repro1038
         ) || channel.endpoint() != qa_core::loopback::Endpoint::Client
         {
-            return Err(packet::Error::Context);
+            return Err(packet::Error::Context.into());
         }
         let raw = &scratch[..];
         let (mut packet_stream, mut download_stream) = match &mut self.compression {
@@ -684,7 +715,7 @@ impl Commands {
                     (Protocol::NetQuake15, 4) => {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         if reader.read_bits(32)? != self.protocol.number() {
-                            return Err(packet::Error::Context);
+                            return Err(packet::Error::Context.into());
                         }
                         at += 1 + reader.byte_position();
                     }
@@ -755,7 +786,7 @@ impl Commands {
                     }
                     (Protocol::Quake2Repro1038, 34) => {
                         if raw_resume.is_some() {
-                            return Err(packet::Error::Context);
+                            return Err(packet::Error::Context.into());
                         }
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         let length = reader.read_bits(16)? as usize;
@@ -801,7 +832,7 @@ impl Commands {
                                     stream.reset();
                                 }
                                 consume(Incoming::Download(Err(error)));
-                                return Err(packet::Error::Context);
+                                return Err(OutputError::download(error));
                             }
                         }
                     }
@@ -848,7 +879,7 @@ impl Commands {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         let stage = reader.read_bits(8)? as u8;
                         if !(1..=4).contains(&stage) {
-                            return Err(packet::Error::Context);
+                            return Err(packet::Error::Context.into());
                         }
                         at += 1 + reader.byte_position();
                         consume(Incoming::SignonStage { stage });
@@ -867,7 +898,7 @@ impl Commands {
                             &mut record,
                             namespace,
                         ) {
-                            return Err(packet::Error::Context);
+                            return Err(packet::Error::Context.into());
                         }
                         consume(Incoming::NqEntityUpdate {
                             number: update.number,
@@ -941,7 +972,7 @@ impl Commands {
                                 Ok(chunk) => chunk,
                                 Err(error) => {
                                     consume(Incoming::Download(Err(error)));
-                                    return Err(packet::Error::Context);
+                                    return Err(OutputError::download(error));
                                 }
                             };
                         at += count;
@@ -1016,7 +1047,7 @@ impl Commands {
                             consume(Incoming::ResourceList(progress));
                         }
                     }
-                    _ => return Err(packet::Error::Opcode),
+                    _ => return Err(packet::Error::Opcode.into()),
                 }
             }
             if let Some(packet) = nq {

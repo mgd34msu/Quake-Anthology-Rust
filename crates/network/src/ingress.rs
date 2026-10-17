@@ -1,7 +1,7 @@
 //! Connected packet routing. Physical intake remains the platform event source.
 use crate::channel::{Channel, Delivery};
 use crate::commands::{
-    connection::Commands,
+    connection::{Commands, OutputError},
     packet::Protocol,
     startup::{
         NqControl, Q2_CONNECT_PACKET_LENGTH, Q2Connectionless, Q3_CONNECT_USERINFO_BYTES,
@@ -982,7 +982,7 @@ impl Connections {
                                 }
                                 let _ = consume(client, endpoint, incoming);
                             };
-                            match length.and_then(|length| {
+                            match length.map_err(OutputError::from).and_then(|length| {
                                 commands.decode_output(
                                     length,
                                     sequence,
@@ -991,13 +991,12 @@ impl Connections {
                                     &mut deliver,
                                 )
                             }) {
+                                Err(OutputError::RejectedDownload(_)) => self.command_errors += 1,
                                 Err(_) => {
                                     self.command_errors += 1;
-                                    if commands.protocol == Protocol::Quake3_68 {
-                                        deliver(Incoming::Disconnect {
-                                            output: connection.output,
-                                        });
-                                    }
+                                    deliver(Incoming::Disconnect {
+                                        output: connection.output,
+                                    });
                                 }
                                 Ok(Some(sequence)) => {
                                     if let Some(frame) = connection.channel.snapshot(sequence) {

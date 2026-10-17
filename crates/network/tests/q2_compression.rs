@@ -5,7 +5,7 @@ use qa_core::{
 use qa_network::{
     channel::Channel,
     commands::{
-        connection::Commands,
+        connection::{Commands, OutputError},
         packet::{Error, Protocol},
     },
     downloads::{self, Chunk},
@@ -53,7 +53,7 @@ fn apply(
     channel: &mut Channel,
     wire: &[u8],
     consume: impl FnMut(Incoming<'_>),
-) -> Result<Option<u32>, Error> {
+) -> Result<Option<u32>, OutputError> {
     let length = commands.stage(wire)?;
     commands.decode_output(
         length,
@@ -293,7 +293,7 @@ fn compressed_download_retains_history_and_empty_progress_across_packets() {
 }
 
 #[test]
-fn compressed_download_expansion_error_is_scoped_and_allows_a_fresh_retry() {
+fn compressed_download_errors_preserve_the_cause_and_reset_the_inflater() {
     let (mut commands, mut channel) = setup(RR);
     for malformed in [
         block(OVERFLOW, 20),
@@ -303,18 +303,23 @@ fn compressed_download_expansion_error_is_scoped_and_allows_a_fresh_retry() {
         vec![35, 3, 0, 20, 0],
     ] {
         let mut rejected = 0;
-        assert!(
-            apply(
-                &mut commands,
-                &mut channel,
-                &malformed,
-                |event| match event {
-                    Incoming::Download(Err(_)) => rejected += 1,
-                    _ => panic!("invalid block must not publish partial file bytes"),
-                }
-            )
-            .is_err()
+        let result = apply(
+            &mut commands,
+            &mut channel,
+            &malformed,
+            |event| match event {
+                Incoming::Download(Err(_)) => rejected += 1,
+                _ => panic!("invalid block must not publish partial file bytes"),
+            },
         );
+        if malformed.get(3) == Some(&101) {
+            assert_eq!(
+                result,
+                Err(OutputError::RejectedDownload(downloads::Error::Percent))
+            );
+        } else {
+            assert!(matches!(result, Err(OutputError::MalformedDownload(_))));
+        }
         assert_eq!(rejected, 1);
         apply(
             &mut commands,

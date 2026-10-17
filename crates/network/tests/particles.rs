@@ -239,6 +239,7 @@ fn incomplete_particle_never_delivers_a_partial_record_or_suppresses_prior_print
         payload.extend_from_slice(&LITERAL[..cut]);
         let bytes = native_packet(&payload);
         let mut prints = 0;
+        let mut disconnects = 0;
         connections.receive(
             Endpoint::Client.socket(),
             Peer::Loopback(ClientId(0)),
@@ -251,12 +252,17 @@ fn incomplete_particle_never_delivers_a_partial_record_or_suppresses_prior_print
                         prints += 1;
                     }
                     Incoming::Particle(_) => panic!("incomplete native record"),
+                    Incoming::Disconnect { .. } => {
+                        assert_eq!(prints, 1);
+                        disconnects += 1;
+                    }
                     _ => panic!("print/particle stream"),
                 }
                 ControlFlow::Continue(())
             },
         );
         assert_eq!(prints, 1);
+        assert_eq!(disconnects, 1);
         assert_eq!(connections.command_errors, 1);
     }
 }

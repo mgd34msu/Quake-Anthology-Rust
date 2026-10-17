@@ -2,7 +2,10 @@ use qa_core::loopback::Endpoint;
 use qa_core::primitives::{ClientId, PrintKind, ResourceNamespace};
 use qa_network::{
     channel::Channel,
-    commands::{connection::Commands, packet::Protocol},
+    commands::{
+        connection::{Commands, OutputError},
+        packet::Protocol,
+    },
     downloads::{self, Chunk, Error},
     ingress::Incoming,
     message::{Encoding, ErrorKind, Writer},
@@ -195,19 +198,18 @@ fn connection_parser_delivers_blocks_and_following_services_in_native_order() {
         malformed[1..3].copy_from_slice(&(-2i16).to_le_bytes());
         let staged = commands.stage(&malformed).unwrap();
         let mut rejected = 0;
-        assert!(
-            commands
-                .decode_output(
-                    staged,
-                    2,
-                    &mut channel,
-                    ResourceNamespace::Client(ClientId(0)),
-                    |event| match event {
-                        Incoming::Download(Err(Error::Size)) => rejected += 1,
-                        _ => panic!("invalid prefix must deliver only its scoped rejection"),
-                    },
-                )
-                .is_err()
+        assert_eq!(
+            commands.decode_output(
+                staged,
+                2,
+                &mut channel,
+                ResourceNamespace::Client(ClientId(0)),
+                |event| match event {
+                    Incoming::Download(Err(Error::Size)) => rejected += 1,
+                    _ => panic!("invalid prefix must deliver only its scoped rejection"),
+                },
+            ),
+            Err(OutputError::MalformedDownload(Error::Size))
         );
         assert_eq!(rejected, 1);
     }

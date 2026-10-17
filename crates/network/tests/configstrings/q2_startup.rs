@@ -6,8 +6,8 @@ use qa_core::{
 use qa_network::{
     channel::{Channel, Delivery},
     commands::{
-        connection::Commands,
-        packet::{Error, Protocol},
+        connection::{Commands, OutputError},
+        packet::Protocol,
         startup::{Q2ReproServerData, ResourceStream},
     },
     ingress::Incoming,
@@ -52,7 +52,7 @@ fn apply(
     channel: &mut Channel,
     bytes: &[u8],
     consume: impl FnMut(Incoming<'_>),
-) -> Result<Option<u32>, Error> {
+) -> Result<Option<u32>, OutputError> {
     let length = commands.stage(bytes)?;
     commands.decode_output(
         length,

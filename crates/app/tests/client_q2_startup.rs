@@ -68,6 +68,38 @@ impl Server {
             time: EventTime::default(),
         }
     }
+    fn connect(&self, runtime: &mut Runtime) -> ClientId {
+        let mut channel =
+            Channel::load(self.protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
+        channel.set_qport(29000 + self.client.0 as u16);
+        let client = runtime
+            .connect_client(
+                SeatId::new(self.client.0 as u8).unwrap(),
+                ClientPolicy {
+                    input: self.protocol.rule_set(),
+                    client: self.protocol.rule_set(),
+                    movement: RuleSetId::Quake3,
+                    trace: RuleSetId::Quake,
+                },
+                NativePlayerBinding::Supplied(7),
+                Connection {
+                    phase: ConnectionPhase::Connected,
+                    route: Route {
+                        socket: SOCKET,
+                        peer: Peer::Socket(self.address),
+                    },
+                    channel,
+                    output: None,
+                    pending_output: None,
+                    commands: Some(Commands::load(self.protocol, 8192)),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(client, self.client);
+        assert!(!runtime.server.clients[client.0 as usize].server_authoritative());
+        client
+    }
     fn receive(&mut self, bytes: &[u8]) {
         let received = self.channel.receive(bytes, self.time).unwrap();
         if let Delivery::Payload(payload) = received.delivery
@@ -236,37 +268,7 @@ fn setup(
         .map(|(index, &protocol)| Server::new(ClientId(index as u32), protocol))
         .collect();
     for server in &servers {
-        let mut channel =
-            Channel::load(server.protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
-        channel.set_qport(29000 + server.client.0 as u16);
-        assert_eq!(
-            runtime
-                .connect_client(
-                    SeatId::new(server.client.0 as u8).unwrap(),
-                    ClientPolicy {
-                        input: server.protocol.rule_set(),
-                        client: server.protocol.rule_set(),
-                        movement: RuleSetId::Quake3,
-                        trace: RuleSetId::Quake
-                    },
-                    NativePlayerBinding::Supplied(7),
-                    Connection {
-                        phase: ConnectionPhase::Connected,
-                        route: Route {
-                            socket: SOCKET,
-                            peer: Peer::Socket(server.address)
-                        },
-                        channel,
-                        output: None,
-                        pending_output: None,
-                        commands: Some(Commands::load(server.protocol, 8192))
-                    },
-                    None,
-                )
-                .unwrap(),
-            server.client
-        );
-        assert!(!runtime.server.clients[server.client.0 as usize].server_authoritative());
+        server.connect(&mut runtime);
     }
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
@@ -658,13 +660,13 @@ fn raw_baselines(number: u16) -> Vec<u8> {
     bytes
 }
 
-fn snapshot(protocol: Protocol) -> Vec<u8> {
+fn snapshot(protocol: Protocol, sequence: u32) -> Vec<u8> {
     message(|writer| {
         if protocol == CLASSIC {
             let mut ring = Q2Ring::load(8, 1024, 32, None).unwrap();
             ring.store(Snapshot {
-                sequence: 1,
-                time: ThinkTime::Milliseconds(100),
+                sequence,
+                time: ThinkTime::Milliseconds(i64::from(sequence) * 100),
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
@@ -674,12 +676,12 @@ fn snapshot(protocol: Protocol) -> Vec<u8> {
                 entities: &[],
             })
             .unwrap();
-            snapshots::write_q2(writer, &ring, 1, None, 0).unwrap();
+            snapshots::write_q2(writer, &ring, sequence, None, 0).unwrap();
         } else {
             let mut ring = Q2ReproRing::load(8, 8192, 255, None).unwrap();
             ring.store(Snapshot {
-                sequence: 1,
-                time: ThinkTime::Milliseconds(25),
+                sequence,
+                time: ThinkTime::Milliseconds(i64::from(sequence) * 25),
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
@@ -689,7 +691,7 @@ fn snapshot(protocol: Protocol) -> Vec<u8> {
                 entities: &[],
             })
             .unwrap();
-            snapshots::write_q2_repro(writer, &mut ring, 1, None, Q2EntityPolicy::default())
+            snapshots::write_q2_repro(writer, &mut ring, sequence, None, Q2EntityPolicy::default())
                 .unwrap();
         }
     })
@@ -861,7 +863,7 @@ fn rerelease_raw_streams_preserve_supplied_layout_fps_and_new_generation() {
             before_history,
             "begin is not an authoritative snapshot"
         );
-        send(&mut host, &mut source, 0, &snapshot(RERELEASE));
+        send(&mut host, &mut source, 0, &snapshot(RERELEASE, 1));
         let current = host
             .runtime
             .network
@@ -881,23 +883,189 @@ fn rerelease_raw_streams_preserve_supplied_layout_fps_and_new_generation() {
 }
 
 #[test]
-fn malformed_headers_preserve_accepted_rows_and_cinematic_minus_one_has_no_player() {
+fn malformed_headers_drop_only_their_client_and_a_fresh_channel_can_sign_on() {
+    for protocol in [CLASSIC, RERELEASE] {
+        for truncate in [true, false] {
+            let (_fixture, mut host, mut source) = setup(&ordinary_files(), &[protocol, RERELEASE]);
+            let profiles: Vec<_> = host
+                .runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .catalog()
+                .profiles()
+                .collect();
+            let profile = *profiles
+                .iter()
+                .find(|profile| profile.source_rules == protocol.rule_set())
+                .unwrap();
+            let healthy_profile = *profiles
+                .iter()
+                .find(|profile| profile.source_rules == RERELEASE.rule_set())
+                .unwrap();
+            send(
+                &mut host,
+                &mut source,
+                1,
+                &serverdata(RERELEASE, 91, 31, false, 0, 40),
+            );
+            let stream = rerelease_stream(
+                layout(&host, 1),
+                false,
+                91,
+                (b"maps/ready.bsp", &q2_files::world(b"wall")),
+            );
+            send(&mut host, &mut source, 1, &stream);
+            settle(&mut host, &mut source);
+            assert_admitted(
+                &host,
+                &source,
+                1,
+                true,
+                (b"maps/ready.bsp", &q2_files::world(b"wall")),
+            );
+            send(&mut host, &mut source, 1, &snapshot(RERELEASE, 1));
+            settle(&mut host, &mut source);
+            assert!(history(&host, 1) > 0);
+            let healthy_lifetime = host.runtime.server.clients[1].entity;
+            let healthy_history = history(&host, 1);
+            let healthy_applied = host.runtime.snapshots[1].as_ref().unwrap().applied;
+
+            let mut accepted = serverdata(protocol, 91, 31, false, 0, 40);
+            accepted.extend(config(protocol, 0, b"accepted title"));
+            send(&mut host, &mut source, 0, &accepted);
+            assert_eq!(
+                host.runtime.client_resources[0]
+                    .as_ref()
+                    .unwrap()
+                    .received_q2_server_data()
+                    .unwrap()
+                    .server_count,
+                91
+            );
+            let old_lifetime = host.runtime.server.clients[0].entity;
+            let errors = host.runtime.network.command_errors;
+            let assets = host
+                .runtime
+                .model_assets
+                .as_ref()
+                .unwrap()
+                .assets()
+                .counts();
+            let mut malformed = serverdata(
+                protocol,
+                92,
+                if truncate { 2 } else { -2 },
+                true,
+                0x8000,
+                60,
+            );
+            if truncate {
+                malformed.pop();
+            }
+            send(&mut host, &mut source, 0, &malformed);
+            settle(&mut host, &mut source);
+            assert_eq!(host.runtime.network.command_errors, errors + 1);
+            assert!(
+                host.runtime
+                    .network
+                    .get(ClientId(0), Endpoint::Client)
+                    .is_none()
+            );
+            assert!(host.runtime.client_resources[0].is_none());
+            assert!(host.runtime.snapshots[0].is_none());
+            assert_eq!(host.local_clients[0], None);
+            assert!(host.local_worlds[0].is_none());
+            assert!(source.servers[0].prefixed(b"begin ").is_empty());
+            assert_eq!(
+                host.runtime
+                    .model_assets
+                    .as_ref()
+                    .unwrap()
+                    .assets()
+                    .counts(),
+                assets
+            );
+
+            send(&mut host, &mut source, 1, &snapshot(RERELEASE, 2));
+            settle(&mut host, &mut source);
+            assert_eq!(host.local_clients[1], Some(ClientId(1)));
+            assert_eq!(host.runtime.server.clients[1].entity, healthy_lifetime);
+            assert_eq!(
+                host.runtime.snapshots[1].as_ref().unwrap().applied,
+                healthy_applied + 1
+            );
+            assert!(history(&host, 1) > healthy_history);
+            assert_eq!(source.servers[1].count(b"begin 91"), 1);
+            assert_admitted(
+                &host,
+                &source,
+                1,
+                true,
+                (b"maps/ready.bsp", &q2_files::world(b"wall")),
+            );
+
+            source.servers[0] = Server::new(ClientId(0), protocol);
+            let replacement = source.servers[0].connect(&mut host.runtime);
+            host.local_clients[0] = Some(replacement);
+            assert_ne!(host.runtime.server.clients[0].entity, old_lifetime);
+            assert_eq!(history(&host, 0), 0);
+            host.bind_client_model_assets([
+                (replacement, profile, None),
+                (ClientId(1), healthy_profile, host.local_worlds[1]),
+            ]);
+            let mut header = serverdata(protocol, 93, 2, false, 0, 40);
+            if protocol == CLASSIC {
+                header.extend(stuff(protocol, b"cmd configstrings 93 0\n"));
+            }
+            send(&mut host, &mut source, 0, &header);
+            settle(&mut host, &mut source);
+            if protocol == CLASSIC {
+                assert_eq!(source.servers[0].count(b"configstrings 93 0"), 1);
+                let mut rows = world_rows(protocol, layout(&host, 0), true);
+                rows.extend(stuff(protocol, b"cmd baselines 93 0\n"));
+                send(&mut host, &mut source, 0, &rows);
+                settle(&mut host, &mut source);
+                assert_eq!(source.servers[0].count(b"baselines 93 0"), 1);
+                let mut rows = baseline(protocol, false, 7);
+                rows.extend(stuff(protocol, b"precache 93\n"));
+                send(&mut host, &mut source, 0, &rows);
+            } else {
+                let stream = rerelease_stream(
+                    layout(&host, 0),
+                    false,
+                    93,
+                    (b"maps/ready.bsp", &q2_files::world(b"wall")),
+                );
+                send(&mut host, &mut source, 0, &stream);
+            }
+            settle(&mut host, &mut source);
+            assert_admitted(
+                &host,
+                &source,
+                0,
+                true,
+                (b"maps/ready.bsp", &q2_files::world(b"wall")),
+            );
+            assert_eq!(source.servers[0].count(b"begin 93"), 1);
+            assert_eq!(history(&host, 0), 0);
+            send(&mut host, &mut source, 0, &snapshot(protocol, 1));
+            settle(&mut host, &mut source);
+            assert!(history(&host, 0) > 0);
+            assert_eq!(host.local_clients[1], Some(ClientId(1)));
+            assert_eq!(host.runtime.server.clients[1].entity, healthy_lifetime);
+            assert!(!host.runtime.quit);
+        }
+    }
+}
+
+#[test]
+fn accepted_headers_and_cinematic_minus_one_preserve_native_metadata() {
     let (_fixture, mut host, mut source) = setup(&ordinary_files(), &[CLASSIC, RERELEASE]);
     for (client, protocol) in [CLASSIC, RERELEASE].into_iter().enumerate() {
         let mut bytes = serverdata(protocol, 91, 31, false, 0, 40);
         bytes.extend(config(protocol, 0, b"accepted title"));
         send(&mut host, &mut source, client, &bytes);
-        let errors = host.runtime.network.command_errors;
-        let mut truncated = serverdata(protocol, 92, 2, true, 0x8000, 60);
-        truncated.pop();
-        send(&mut host, &mut source, client, &truncated);
-        send(
-            &mut host,
-            &mut source,
-            client,
-            &serverdata(protocol, 93, -2, false, 0, 60),
-        );
-        assert!(host.runtime.network.command_errors >= errors + 2);
         let resources = host.runtime.client_resources[client].as_ref().unwrap();
         let data = resources.received_q2_server_data().unwrap();
         assert_eq!(

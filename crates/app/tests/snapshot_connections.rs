@@ -1375,18 +1375,36 @@ fn queued_netquake_setview_selects_retained_camera_without_reassigning_the_physi
     );
     queue_netquake_control(&mut host, first, &[5, 42]);
     host.drain(&mut qa_app::host::FrameResult::default());
-    let binding = host.runtime.snapshots[first.0 as usize].as_ref().unwrap();
+    assert!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(host.client_views()[0].is_none());
     assert_eq!(
-        (
-            binding.view_entity(None),
-            binding.player_entity(None),
-            binding.applied
-        ),
-        (Some(43), Some(6), 2)
+        host.client_views()[1].unwrap().origin,
+        Vec3([30., 40., 72.])
+    );
+    queue_nq_view_snapshot(
+        &mut host,
+        second,
+        2.,
+        Some(Vec3([31., 41., 51.])),
+        (42, Vec3([401., 501., 601.])),
+        None,
+    );
+    host.drain(&mut Default::default());
+    assert_eq!(
+        host.runtime.snapshots[second.0 as usize]
+            .as_ref()
+            .unwrap()
+            .applied,
+        2
     );
     assert_eq!(
-        host.client_views()[0].unwrap().origin,
-        Vec3([50., 60., 92.])
+        host.client_views()[1].unwrap().origin,
+        Vec3([31., 41., 73.])
     );
     assert_eq!(
         (
@@ -1854,40 +1872,6 @@ fn queued_netquake_serverinfo_replaces_client_resources_without_reassigning_the_
         Some(geometry)
     );
 
-    // A truncated replacement cannot clear any admitted row or camera target.
-    queue_netquake_control(&mut host, first, &[5, 42, 0]);
-    host.drain(&mut Default::default());
-    let revision = host.runtime.client_resources[first.0 as usize]
-        .as_ref()
-        .unwrap()
-        .state
-        .configs
-        .config(1)
-        .unwrap()
-        .revision;
-    let errors = host.runtime.network.command_errors;
-    queue_netquake_control(&mut host, first, &header[..header.len() - 1]);
-    host.drain(&mut Default::default());
-    assert_eq!(host.runtime.network.command_errors, errors + 1);
-    assert_eq!(
-        host.runtime.client_resources[first.0 as usize]
-            .as_ref()
-            .unwrap()
-            .state
-            .configs
-            .config(1)
-            .unwrap()
-            .revision,
-        revision
-    );
-    assert_eq!(
-        host.runtime.snapshots[first.0 as usize]
-            .as_ref()
-            .unwrap()
-            .view_entity(None),
-        Some(42)
-    );
-
     // Checked header, replacement rows, SetView and native update share the
     // ordinary packet decoder and become visible in that admitted order.
     let mut prefix = nq_server_info(b"same packet", &[b"maps/ready.bsp", b"*1"], &[]);
@@ -1985,6 +1969,19 @@ fn queued_netquake_serverinfo_replaces_client_resources_without_reassigning_the_
         None
     );
     assert!(host.client_views()[0].is_none());
+    assert!(host.local_worlds[1].is_some());
+
+    let errors = host.runtime.network.command_errors;
+    queue_netquake_control(&mut host, first, &header[..header.len() - 1]);
+    host.drain(&mut Default::default());
+    assert_eq!(host.runtime.network.command_errors, errors + 1);
+    assert!(
+        host.runtime.snapshots[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .presentation_closed()
+    );
+    assert!(host.runtime.network.get(second, Endpoint::Client).is_some());
     assert!(host.local_worlds[1].is_some());
 }
 
@@ -2702,17 +2699,6 @@ fn queued_netquake_signon_replies_preserve_native_text_retry_progress_and_stage_
             .nq_signon_stage(),
         Some(3)
     );
-    // A truncated fast-update body cannot admit the native transition.
-    queue_netquake_control(&mut host, client, &[0x80]);
-    host.drain(&mut Default::default());
-    assert_eq!(
-        host.runtime.client_resources[client.0 as usize]
-            .as_ref()
-            .unwrap()
-            .nq_signon_stage(),
-        Some(3)
-    );
-    assert_eq!(host.runtime.network.command_errors, 1);
     queue_nq_view_snapshot(&mut host, client, 3., None, (42, Vec3::default()), None);
     host.drain(&mut Default::default());
     assert_eq!(

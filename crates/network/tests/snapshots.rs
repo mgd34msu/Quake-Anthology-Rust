@@ -6,7 +6,7 @@ use qa_core::{
 use qa_network::{
     channel::{Channel, QUAKE3},
     commands::{
-        connection::Commands,
+        connection::{Commands, OutputError},
         packet::{Error, Protocol},
     },
     ingress::{Connection, Connections, Incoming, Route},
@@ -356,7 +356,7 @@ fn deliver_server_message(
     client: &mut Channel,
     client_commands: &mut Commands,
     snapshot: Option<(&Q3Ring, Option<u32>)>,
-) -> Result<(), Error> {
+) -> Result<(), OutputError> {
     let sequence = server.send_state().sequence;
     let mut payload = [0; 1400];
     let n = server.encode_server_output(&mut payload, |writer, _| {
@@ -377,7 +377,7 @@ fn deliver_server_message(
         .receive(&bytes[..n], EventTime(2))
         .map_err(|_| Error::Context)?;
     let qa_network::channel::Delivery::Payload(payload) = received.delivery else {
-        return Err(Error::Context);
+        return Err(Error::Context.into());
     };
     let n = client_commands.stage(payload)?;
     client_commands
@@ -431,8 +431,8 @@ fn deliver_client_move(
 }
 
 #[test]
-fn native_snapshot_request_tracks_message_ack_before_stale_command_filtering() -> Result<(), Error>
-{
+fn native_snapshot_request_tracks_message_ack_before_stale_command_filtering()
+-> Result<(), OutputError> {
     let mut server =
         Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
     let mut client =
@@ -481,8 +481,8 @@ fn native_snapshot_request_tracks_message_ack_before_stale_command_filtering() -
 }
 
 #[test]
-fn missing_snapshot_base_requests_full_without_acknowledging_an_invalid_frame() -> Result<(), Error>
-{
+fn missing_snapshot_base_requests_full_without_acknowledging_an_invalid_frame()
+-> Result<(), OutputError> {
     let mut server =
         Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
     let mut client =
@@ -849,7 +849,8 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
 }
 
 #[test]
-fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Result<(), Error> {
+fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Result<(), OutputError>
+{
     let policy = Protocol::Quake2_34.channel();
     let mut client =
         Channel::load(policy, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
@@ -1966,7 +1967,9 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
             |_, _, incoming| {
                 if matches!(
                     incoming,
-                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+                    Incoming::CommandProgress(_)
+                        | Incoming::PacketTiming { .. }
+                        | Incoming::Disconnect { .. }
                 ) {
                     return;
                 }
@@ -1985,8 +1988,8 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
 }
 
 #[test]
-fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() -> Result<(), Error>
-{
+fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection()
+-> Result<(), OutputError> {
     use qa_network::commands::packet::ZERO_QW;
     let (mut server, _, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     assert!(server.set_qw_player_model(7).is_err());
@@ -2620,6 +2623,9 @@ fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -
                 &mut connections,
                 &replacement[..cut],
                 |_, _, incoming| {
+                    if matches!(incoming, Incoming::Disconnect { .. }) {
+                        return;
+                    }
                     assert_eq!(protocol, Protocol::QuakeWorld28);
                     assert!(
                         matches!(incoming, Incoming::PacketTiming { .. }),
@@ -2652,6 +2658,9 @@ fn q1_baseline_replacements_are_atomic_per_record_and_keep_accepted_prefixes() -
                 &mut connections,
                 &payload,
                 |_, _, incoming| {
+                    if matches!(incoming, Incoming::Disconnect { .. }) {
+                        return;
+                    }
                     assert_eq!(protocol, Protocol::QuakeWorld28);
                     assert!(
                         matches!(incoming, Incoming::PacketTiming { .. }),
@@ -2703,6 +2712,9 @@ fn q1_baseline_native_capacities_do_not_widen_qw_packet_entity_numbers() -> Resu
                 &mut connections,
                 &baseline,
                 |_, _, incoming| {
+                    if matches!(incoming, Incoming::Disconnect { .. }) {
+                        return;
+                    }
                     assert_eq!(protocol, Protocol::QuakeWorld28);
                     assert!(
                         matches!(incoming, Incoming::PacketTiming { .. }),
@@ -2721,6 +2733,9 @@ fn q1_baseline_native_capacities_do_not_widen_qw_packet_entity_numbers() -> Resu
                 &mut connections,
                 &baseline,
                 |_, _, incoming| {
+                    if matches!(incoming, Incoming::Disconnect { .. }) {
+                        return;
+                    }
                     assert_eq!(protocol, Protocol::QuakeWorld28);
                     assert!(
                         matches!(incoming, Incoming::PacketTiming { .. }),
@@ -2981,7 +2996,7 @@ fn nq_serverinfo_cancels_only_validated_unsubmitted_client_text_and_prepared_byt
             &mut server,
             &mut connections,
             &NQ_SERVERINFO[..NQ_SERVERINFO.len() - 1],
-            |_, _, _| panic!("malformed replacement escaped validation"),
+            |_, _, incoming| assert!(matches!(incoming, Incoming::Disconnect { .. })),
         )?;
         let client = connections
             .get(ClientId(0), Endpoint::Client)
@@ -3435,7 +3450,7 @@ fn nq_serverinfo_truncation_or_invalid_header_keeps_the_prior_ring_and_baselines
             &mut server,
             &mut connections,
             &NQ_SERVERINFO[..cut],
-            |_, _, _| panic!("partially validated header escaped"),
+            |_, _, incoming| assert!(matches!(incoming, Incoming::Disconnect { .. })),
         )?;
         rejected += 1;
         let channel = &connections
@@ -3449,8 +3464,8 @@ fn nq_serverinfo_truncation_or_invalid_header_keeps_the_prior_ring_and_baselines
     for (offset, value) in [(1, 28), (5, 0), (5, 17)] {
         let mut invalid = NQ_SERVERINFO.to_vec();
         invalid[offset] = value;
-        server_payload(&mut server, &mut connections, &invalid, |_, _, _| {
-            panic!("invalid header escaped")
+        server_payload(&mut server, &mut connections, &invalid, |_, _, incoming| {
+            assert!(matches!(incoming, Incoming::Disconnect { .. }));
         })?;
         rejected += 1;
     }
@@ -3511,6 +3526,10 @@ fn nq_serverinfo_resource_lists_keep_native_ordinals_counts_and_path_widths() ->
         let before = connections.command_errors;
         let mut admitted = 0;
         nq_reliable_payload(&mut server, &mut connections, &payload, |_, _, incoming| {
+            if matches!(incoming, Incoming::Disconnect { .. }) {
+                assert!(!valid);
+                return;
+            }
             let Incoming::ServerInfo(info) = incoming else {
                 panic!("resource-only header fabricated an event")
             };
@@ -3724,8 +3743,8 @@ fn nq_invalid_or_truncated_signon_stage_preserves_the_admitted_control_prefix() 
         },
     )?;
     for invalid in [b"\x19".as_slice(), b"\x19\0", b"\x19\x05", b"\x19\xff"] {
-        server_payload(&mut server, &mut connections, invalid, |_, _, _| {
-            panic!("invalid signon operand escaped")
+        server_payload(&mut server, &mut connections, invalid, |_, _, incoming| {
+            assert!(matches!(incoming, Incoming::Disconnect { .. }));
         })?;
         assert_eq!(stage, Some(1));
     }
@@ -3739,6 +3758,7 @@ fn nq_invalid_or_truncated_signon_stage_preserves_the_admitted_control_prefix() 
                 admitted += 1;
                 stage = Some(value);
             }
+            Incoming::Disconnect { .. } => (),
             _ => panic!("invalid signon tail published another event"),
         },
     )?;
@@ -3836,6 +3856,7 @@ fn nq_signon_completion_requires_an_entire_fast_update_body() -> Result<(), Erro
             &payload,
             |_, _, incoming| match incoming {
                 Incoming::SignonStage { stage: value } => stage = Some(value),
+                Incoming::Disconnect { .. } => (),
                 _ => panic!("truncated fast body completed signon or published a frame"),
             },
         )?;
@@ -3851,6 +3872,7 @@ fn nq_signon_completion_requires_an_entire_fast_update_body() -> Result<(), Erro
         &payload,
         |_, _, incoming| match incoming {
             Incoming::NqEntityUpdate { .. } => updates += 1,
+            Incoming::Disconnect { .. } => (),
             _ => panic!("malformed tail published more than its complete update prefix"),
         },
     )?;
@@ -3920,7 +3942,9 @@ fn nq_signon_controls_are_connection_local_and_not_admitted_for_qw() -> Result<(
         server_payload(&mut qw_server, &mut qw, payload, |_, _, incoming| {
             assert!(matches!(
                 incoming,
-                Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+                Incoming::CommandProgress(_)
+                    | Incoming::PacketTiming { .. }
+                    | Incoming::Disconnect { .. }
             ));
         })?;
     }
@@ -4045,9 +4069,14 @@ fn nq_truncated_setview_keeps_prior_controls_and_accepted_frame() -> Result<(), 
         .ok_or(Error::Context)?
         .sequence();
     for truncated in [b"\x05".as_slice(), b"\x05\xef"] {
-        server_payload(&mut server, &mut connections, truncated, |_, _, _| {
-            panic!("truncated setview delivered an event")
-        })?;
+        server_payload(
+            &mut server,
+            &mut connections,
+            truncated,
+            |_, _, incoming| {
+                assert!(matches!(incoming, Incoming::Disconnect { .. }));
+            },
+        )?;
         assert_eq!(target, Some(0x1234));
     }
     // A later malformed operand does not undo a previously complete service.
@@ -4057,6 +4086,7 @@ fn nq_truncated_setview_keeps_prior_controls_and_accepted_frame() -> Result<(), 
         b"\x05\x22\x11\x05",
         |_, _, incoming| match incoming {
             Incoming::SetView { entity } => target = Some(entity),
+            Incoming::Disconnect { .. } => (),
             _ => panic!("malformed tail published more than its valid control prefix"),
         },
     )?;
@@ -4114,7 +4144,9 @@ fn nq_setview_intake_is_independent_between_connections_and_not_admitted_for_qw(
             assert!(
                 matches!(
                     incoming,
-                    Incoming::CommandProgress(_) | Incoming::PacketTiming { .. }
+                    Incoming::CommandProgress(_)
+                        | Incoming::PacketTiming { .. }
+                        | Incoming::Disconnect { .. }
                 ),
                 "NQ setview support leaked into QW"
             );
@@ -4206,6 +4238,7 @@ fn nq_original_literal_time_and_version_services_have_distinct_native_meanings()
         b"\x08prefix\0\x04\x1c\0\0\0",
         |_, _, incoming| match incoming {
             Incoming::Print(print) => prints.push(print.text.to_vec()),
+            Incoming::Disconnect { .. } => (),
             _ => panic!("rejected version must not publish a clock"),
         },
     )?;
@@ -4677,6 +4710,7 @@ fn native_peer_updates_reach_connected_intake_in_wire_order_once_and_keep_valid_
             |_, _, incoming| match incoming {
                 Incoming::Peer(PeerUpdate::Frags { slot: 0, frags: -2 }) => prefix += 1,
                 Incoming::PacketTiming { .. } if protocol == Protocol::QuakeWorld28 => (),
+                Incoming::Disconnect { .. } => (),
                 _ => panic!("truncated peer service reached consumer"),
             },
         )?;
