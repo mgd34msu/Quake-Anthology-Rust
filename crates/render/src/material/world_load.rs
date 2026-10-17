@@ -4,8 +4,8 @@ use super::{
     finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
-        ImageProfile, ImageReload, ImageReloadScope, ImageRole, ImageSettings, ImageUse, Images,
-        ImagesState, IndexedTarget, ResolvedImage, ResourceError,
+        ImageProfile, ImageRegistrationMark, ImageReload, ImageReloadScope, ImageRole,
+        ImageSettings, ImageUse, Images, ImagesState, IndexedTarget, ResolvedImage, ResourceError,
     },
 };
 use crate::{
@@ -393,13 +393,7 @@ impl WorldMaterialSource {
             ));
         }
         for (index, (_, reload)) in states.iter().enumerate() {
-            let state = self.images[index]
-                .state
-                .take()
-                .ok_or(WorldMaterialError::Boundary(
-                    "world images already borrowed",
-                ))?;
-            let mut images = Images::from_state(vfs, assets, state);
+            let (mut images, _) = borrow_images(vfs, assets, &mut self.images[index].state)?;
             let result = images.replay_reload(reload);
             self.images[index].state = Some(images.into_state());
             result?;
@@ -482,15 +476,8 @@ impl WorldMaterialSource {
             });
             previous
         };
-        let state = self.images[index]
-            .state
-            .take()
-            .ok_or(WorldMaterialError::Boundary(
-                "world images already borrowed",
-            ))?;
         let retained = assets.counts();
-        let mark = state.registration_mark();
-        let mut images = Images::from_state(vfs, assets, state);
+        let (mut images, mark) = borrow_images(vfs, assets, &mut self.images[index].state)?;
         let result = compile(self, &mut images);
         let mut state = images.into_state();
         let rollback = if result.is_err() {
@@ -2724,3 +2711,21 @@ fn load_layered_sky(
 #[cfg(test)]
 #[path = "../../tests/legacy_kind/oracle.rs"]
 mod legacy_kind_tests;
+
+fn borrow_images<'a>(
+    vfs: &'a Vfs,
+    assets: &'a mut Assets,
+    slot: &mut Option<ImagesState>,
+) -> Result<(Images<'a>, ImageRegistrationMark), WorldMaterialError> {
+    let state = slot.take().ok_or(WorldMaterialError::Boundary(
+        "world images already borrowed",
+    ))?;
+    let mark = state.registration_mark();
+    match Images::from_state(vfs, assets, state) {
+        Ok(images) => Ok((images, mark)),
+        Err(rejected) => {
+            *slot = Some(rejected.state);
+            Err(rejected.error.into())
+        }
+    }
+}

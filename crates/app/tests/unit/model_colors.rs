@@ -259,7 +259,7 @@ fn model_colors_keep_every_native_group_and_independent_skeletal_sidecars() {
 #[test]
 fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rejection() {
     let files = color_files();
-    let fixture = from_owned_files(&files);
+    let mut fixture = from_owned_files(&files);
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake);
     let mut owner = replacement_owner(assets, profile);
@@ -352,6 +352,15 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
         );
         assert_eq!(result.is_err(), reject);
         if reject {
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("reject derived profile publication")
+            );
+        }
+
+        if reject {
             assert_eq!(owner.assets().counts(), prefix);
             assert!(
                 owner
@@ -364,13 +373,14 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
         }
     }
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
-    let fixture = from_owned_files(
-        &files
-            .iter()
-            .filter(|(name, _)| name.ends_with(".lmp"))
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
+    let mount = fixture.vfs.mounts().next().unwrap().id;
+    let root = fixture.vfs.directory_path(mount).unwrap().to_path_buf();
+    for (name, bytes) in &files {
+        if name.ends_with(".lmp") {
+            qa_platform::files::write(root.join(name), bytes).unwrap();
+        }
+    }
+    fixture.vfs.refresh_directory_prefix(mount, b"").unwrap();
     let prefix = owner.assets().counts();
     let capacity = owner.catalog().capacity();
     for reject in [true, false, false] {
@@ -406,6 +416,15 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
                 Ok(())
             });
         assert_eq!(result.is_err(), reject);
+        if reject {
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("reject model color reload publication")
+            );
+        }
+
         if reject {
             assert_eq!(owner.assets().counts(), prefix);
         }

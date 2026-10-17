@@ -371,7 +371,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
     std::fs::remove_file(root.0.join("env/native.pcx")).unwrap();
     vfs.take_lookup_count();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     images.replay_reload(&reload).unwrap();
     assert_eq!(images.assets.counts().images, prefix.images + 1);
     assert_eq!(vfs.take_lookup_count(), 0);
@@ -388,7 +388,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
             ..prefix
         })
         .unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     assert_eq!(
         images
             .translated_skin("env/native.pcx", 0, source.view(), settings)
@@ -611,7 +611,7 @@ fn scoped_skin_reload_evicts_exact_external_requests_across_old_source_dimension
         layout: Default::default(),
         translation: settings,
     }]));
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     assert_eq!(
         images
             .translated_skin("env/native.pcx", 1, first, settings)
@@ -653,7 +653,7 @@ fn scoped_skin_reload_evicts_exact_external_requests_across_old_source_dimension
     let mut state = images.into_state();
     state.restore_reload(reload, &mut assets).unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     assert_eq!(
         images
             .translated_skin("env/native.pcx", 0, first, settings)

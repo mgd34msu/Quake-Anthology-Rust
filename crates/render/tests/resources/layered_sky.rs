@@ -211,7 +211,7 @@ fn invalid_shapes_and_discarded_replacements_retry_without_stale_layer_ids() {
     root.tga(512, 256, [40, 50, 60, 128]);
     let mount = vfs.mount_directory(&root.0, 0).unwrap();
     let mark = state.registration_mark();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     let rejected = images.layered_sky(44, &mip, palette).unwrap();
     let mut state = images.into_state();
     state
@@ -222,7 +222,7 @@ fn invalid_shapes_and_discarded_replacements_retry_without_stale_layer_ids() {
     assert!(vfs.unmount(mount));
     root.tga(512, 256, [20, 21, 22, 128]);
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     let retried = images.layered_sky(44, &mip, palette).unwrap();
     assert_eq!(retried, rejected);
     assert_eq!(

@@ -111,7 +111,7 @@ fn explicit_indexed_source_wins_without_native_palette_files() {
 
 #[test]
 fn rejected_source_palette_and_translation_are_rebuilt_by_the_same_registration() {
-    let first = support::Fixture::new(&native_files(0));
+    let mut first = support::Fixture::new(&native_files(0));
     let replacement = support::Fixture::new(&native_files(37));
     let mut assets = Assets::load().unwrap();
     let target = support::palette(&mut assets);
@@ -134,26 +134,27 @@ fn rejected_source_palette_and_translation_are_rebuilt_by_the_same_registration(
         profile.source_rules,
         None,
     );
-    assert!(
-        owner
-            .prepare_registration(
-                &first.vfs,
-                &request,
-                profile,
-                RegistrationVariant::Guard(false),
-                |_| Ok(()),
-                |assets, _| {
-                    CpuBackend::load_with_limits(32, 32, assets, limits).unwrap();
-                    Err("reject prepared sprite".to_owned())
-                },
-            )
-            .is_err()
-    );
+    let error = owner
+        .prepare_registration(
+            &first.vfs,
+            &request,
+            profile,
+            RegistrationVariant::Guard(false),
+            |_| Ok(()),
+            |assets, _| {
+                CpuBackend::load_with_limits(32, 32, assets, limits).unwrap();
+                Err("reject prepared sprite".to_owned())
+            },
+        )
+        .unwrap_err();
+    assert!(error.contains("reject prepared sprite"), "{error}");
     assert_eq!(owner.assets().counts(), before);
     assert!(owner.palettes().get(RuleSetId::Quake).is_none());
+    let replacement_root = replacement.vfs.mounts().next().unwrap().path.clone();
+    first.vfs.mount_directory(&replacement_root, 10).unwrap();
     owner
         .prepare_registration(
-            &replacement.vfs,
+            &first.vfs,
             &request,
             profile,
             RegistrationVariant::Guard(false),

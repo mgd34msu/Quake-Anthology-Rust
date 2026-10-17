@@ -112,7 +112,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
     let mut state = images.into_state();
     let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
     std::fs::write(root.0.join("env/native.jpeg"), vec![0; JPEG.len()]).unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     assert!(matches!(
         images.replay_reload(&reload),
         Err(ResourceError::Format(_))
@@ -120,7 +120,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
     let mut state = images.into_state();
     state.restore_reload(reload, &mut assets).unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     vfs.take_lookup_count();
     assert_eq!(
         images.raster("ENV\\NATIVE.TGA", usage, target).unwrap(),
@@ -131,7 +131,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
     std::fs::write(root.0.join("env/native.jpeg"), JPEG).unwrap();
     let mut state = images.into_state();
     let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     images.replay_reload(&reload).unwrap();
     vfs.take_lookup_count();
     let next = images.raster("env/native.tga", usage, target).unwrap();
@@ -411,7 +411,7 @@ fn mutable_order_changes_future_misses_but_cached_rr_type_and_q3_first_flags_rem
     assert_ne!(second.id, first.id);
     assert!(images.assets.image(second.id).unwrap().rgba[2] > 230);
     let state = images.into_state();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     images.set_search_order(order(b"tga"));
     vfs.take_lookup_count();
     assert_eq!(
@@ -538,7 +538,7 @@ fn image_suffix_rollback_prunes_selected_recipe_and_retry_keeps_registered_peer(
     let prefix = images.assets.counts();
     let state = images.into_state();
     let mark = state.registration_mark();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     let rejected = images
         .raster("env/candidate.tga", ImageUse::pic(), None)
         .unwrap();
@@ -548,7 +548,7 @@ fn image_suffix_rollback_prunes_selected_recipe_and_retry_keeps_registered_peer(
         .unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
     assert!(assets.image(rejected.id).is_none());
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     vfs.take_lookup_count();
     assert_eq!(
         images
@@ -776,7 +776,7 @@ fn immutable_image_sources_keep_aliases_reload_and_missing_fallbacks_in_the_sele
     later.tga("env/private.tga", 1, 1, [100, 0, 0]);
     vfs.mount_directory(&later.0, 20).unwrap();
     let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     images.replay_reload(&reload).unwrap();
     let reloaded = images.raster("env/scoped.tga", usage, None).unwrap();
     assert_eq!(
@@ -804,21 +804,18 @@ fn immutable_image_sources_keep_aliases_reload_and_missing_fallbacks_in_the_sele
     let mut state = images.into_state();
     state.commit_reload(reload);
     let foreign = Vfs::default().search_view([]).unwrap();
-    let mut images = Images::new(
-        &vfs,
-        &mut assets,
-        rules,
-        rules,
-        ImageSettings::native(rules),
-        None,
-        Some(foreign),
-    )
-    .unwrap();
     assert!(matches!(
-        images.raster("env/scoped.tga", usage, None),
-        Err(ResourceError::Missing(_))
+        Images::new(
+            &vfs,
+            &mut assets,
+            rules,
+            rules,
+            ImageSettings::native(rules),
+            None,
+            Some(foreign)
+        ),
+        Err(ResourceError::Vfs(qa_content::vfs::VfsError::Handle))
     ));
-    drop(images);
     let empty = vfs.search_view([]).unwrap();
     let mut images = Images::new(
         &vfs,
@@ -834,4 +831,56 @@ fn immutable_image_sources_keep_aliases_reload_and_missing_fallbacks_in_the_sele
         images.raster("env/scoped.tga", usage, None),
         Err(ResourceError::Missing(_))
     ));
+}
+
+#[test]
+fn detached_file_images_reject_a_foreign_vfs_before_returning_cached_aliases() {
+    let original = Fixture::new();
+    let other = Fixture::new();
+    original.tga("env/owned.tga", 2, 2, [90, 20, 10]);
+    other.tga("env/owned.tga", 2, 2, [10, 70, 100]);
+    let vfs = mount(&original);
+    let foreign = mount(&other);
+    for selected in [true, false] {
+        let search = selected.then(|| vfs.search_view(vfs.mounts().map(|mount| mount.id)).unwrap());
+        let mut assets = Assets::load().unwrap();
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            RuleSetId::Quake3,
+            RuleSetId::Quake3,
+            ImageSettings::native(RuleSetId::Quake3),
+            None,
+            search,
+        )
+        .unwrap();
+        let first = images
+            .raster("env/owned.tga", ImageUse::pic(), None)
+            .unwrap();
+        let counts = images.assets.counts();
+        let state = images.into_state();
+        let rejected = match Images::from_state(&foreign, &mut assets, state) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("foreign VFS accepted the selected={selected} image owner"),
+        };
+        assert!(matches!(
+            rejected.error,
+            ResourceError::Vfs(qa_content::vfs::VfsError::Handle)
+        ));
+        assert_eq!(assets.counts(), counts);
+        let mut restored = Images::from_state(&vfs, &mut assets, rejected.state).unwrap();
+        vfs.take_lookup_count();
+        assert_eq!(
+            restored
+                .raster("ENV\\OWNED.TGA", ImageUse::pic(), None)
+                .unwrap(),
+            first
+        );
+        assert_eq!(vfs.take_lookup_count(), 0);
+        assert_eq!(
+            restored.assets.image(first.id).unwrap().rgba[..4],
+            [90, 20, 10, 255]
+        );
+        assert_eq!(restored.assets.counts(), counts);
+    }
 }

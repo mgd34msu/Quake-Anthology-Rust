@@ -936,6 +936,16 @@ impl ImagesState {
         resolved
     }
 }
+/// A rejected borrow keeps the complete cache available to its original owner.
+pub struct ImageBindError {
+    pub error: ResourceError,
+    pub state: ImagesState,
+}
+impl std::fmt::Debug for ImageBindError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.error, out)
+    }
+}
 pub struct Images<'a> {
     pub assets: &'a mut Assets,
     vfs: &'a Vfs,
@@ -1298,7 +1308,7 @@ impl<'a> Images<'a> {
         indexed_palettes: Option<(PaletteId, PaletteId)>,
         search: Option<SearchView>,
     ) -> Result<Self, ResourceError> {
-        Ok(Self::from_state(
+        Self::from_state(
             vfs,
             assets,
             ImagesState::new(
@@ -1308,10 +1318,25 @@ impl<'a> Images<'a> {
                 indexed_palettes,
                 search,
             )?,
-        ))
+        )
+        .map_err(|rejected| rejected.error)
     }
-    pub fn from_state(vfs: &'a Vfs, assets: &'a mut Assets, state: ImagesState) -> Self {
-        Self { assets, vfs, state }
+    pub fn from_state(
+        vfs: &'a Vfs,
+        assets: &'a mut Assets,
+        mut state: ImagesState,
+    ) -> Result<Self, ImageBindError> {
+        let search = match vfs.read_view(state.search.as_ref()).retain() {
+            Ok(search) => search,
+            Err(error) => {
+                return Err(ImageBindError {
+                    error: error.into(),
+                    state,
+                });
+            }
+        };
+        state.search = Some(search);
+        Ok(Self { assets, vfs, state })
     }
     pub fn into_state(self) -> ImagesState {
         self.state

@@ -1316,7 +1316,13 @@ impl ProfileImages {
         };
         match state {
             Ok(state) => {
-                let mut images = Images::from_state(vfs, assets, state);
+                let mut images = match Images::from_state(vfs, assets, state) {
+                    Ok(images) => images,
+                    Err(rejected) => {
+                        self.state = Some(Ok(rejected.state));
+                        return Err(format!("model image source: {:?}", rejected.error));
+                    }
+                };
                 let result = compile(&mut images);
                 self.state = Some(Ok(images.into_state()));
                 result

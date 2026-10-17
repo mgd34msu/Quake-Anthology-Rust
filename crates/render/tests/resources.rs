@@ -42,7 +42,7 @@ fn detached_image_state_keeps_recipe_ids_native_flags_and_conflict_history() {
     let image_count = images.assets.images().len();
     let state = images.into_state();
     std::fs::remove_file(root.0.join("env/detached.tga")).unwrap();
-    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
     let second = images.raster("ENV\\DETACHED.TGA", usage, None).unwrap();
     assert_eq!(first, second);
     assert_eq!(images.assets.images().len(), image_count);
@@ -284,7 +284,7 @@ fn indexed_qpic_and_wad_share_native_registration_upload_and_detached_recipe_cac
         let state = images.into_state();
         std::fs::remove_file(root.0.join("env/pic.lmp")).unwrap();
         std::fs::remove_file(root.0.join("env/font.wad")).unwrap();
-        let mut images = Images::from_state(&vfs, &mut assets, state);
+        let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
         assert_eq!(
             images
                 .indexed_lmp("ENV\\PIC.LMP", palette, None, usage)
@@ -1032,7 +1032,7 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
         );
         assert_eq!(prepared.levels.len(), 5);
         let counts = assets.counts();
-        let mut images = Images::from_state(&vfs, &mut assets, state);
+        let mut images = Images::from_state(&vfs, &mut assets, state).unwrap();
         // The native first image wins even when this ordinary caller has no
         // indexed raster target, as in a source-Q3 indexed model profile.
         let ordinary = images.raster("*default", ImageUse::pic(), None).unwrap();
@@ -1060,7 +1060,7 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
             .unwrap(),
             fallback
         );
-        let mut mixed = Images::from_state(&vfs, images.assets, state);
+        let mut mixed = Images::from_state(&vfs, images.assets, state).unwrap();
         assert_eq!(
             mixed
                 .raster("*default", ImageUse::default(), None)
