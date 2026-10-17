@@ -982,8 +982,9 @@ struct SkinProfile {
     request: SkinRequest,
     vertex_collapse: bool,
     state: RegistrationState<SkinReady>,
+    reserved: Option<SkinReady>,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct SkinReady {
     mappings: Box<[SkinMapping]>,
     members: Box<[[ShaderChoice; 4]]>,
@@ -1512,6 +1513,17 @@ struct ReloadCheckpoint {
     worlds: Option<WorldImageReload>,
 }
 impl ReloadCheckpoint {
+    fn commit(self, owner: &mut ModelAssets) {
+        for (index, receipt) in self.images {
+            if let Some(Ok(state)) = &mut owner.catalog.profiles[index].state {
+                state.commit_reload(receipt);
+            }
+        }
+        if let Some(worlds) = self.worlds {
+            worlds.commit(&mut owner.assets);
+        }
+    }
+
     fn replay(&self, vfs: &Vfs, owner: &mut ModelAssets) -> Result<(), String> {
         if self.mode == ImageRefreshMode::Reload {
             for (index, receipt) in &self.images {
@@ -1617,7 +1629,7 @@ impl ReloadCheckpoint {
             let Some(Ok(state)) = &mut owner.catalog.profiles[index].state else {
                 return Err("image replay owner unavailable".to_owned());
             };
-            state.restore_reload(receipt);
+            state.restore_reload(receipt, &mut owner.assets)?;
         }
         if let Some((bindings, surfaces)) = self.derived {
             owner.catalog.bindings = bindings;
@@ -1652,6 +1664,7 @@ struct SkinCheckpoint {
     profiles: usize,
     unattempted: Vec<usize>,
     source: Option<SkinSource>,
+    reserved: Vec<Option<SkinReady>>,
 }
 struct ProfileCheckpoint {
     registration: RegistrationCheckpoint,
@@ -1805,6 +1818,11 @@ impl RegistrationCheckpoint {
                 };
                 if selected {
                     clear_source |= matches!(profile.request, SkinRequest::Indexed(_));
+                    if matches!(profile.request, SkinRequest::Indexed(_))
+                        && let Some((ready, _)) = profile.state.ready()
+                    {
+                        profile.reserved = Some(ready.clone());
+                    }
                     skins.push((
                         skin,
                         row,
@@ -1980,6 +1998,11 @@ impl RegistrationCheckpoint {
                     .filter_map(|(index, profile)| profile.state.pending().then_some(index))
                     .collect(),
                 source: catalog.skins[index].source.clone(),
+                reserved: catalog.skins[index]
+                    .profiles
+                    .iter()
+                    .map(|row| row.reserved.clone())
+                    .collect(),
             });
         }
         if let Some(name) = file_name
@@ -2083,6 +2106,11 @@ impl RegistrationCheckpoint {
         if let Some(reload) = self.reload.take() {
             reload.restore(owner)?;
         }
+        for (profile, mark) in owner.catalog.profiles.iter_mut().zip(&self.images) {
+            if let (Some(Ok(state)), Some(mark)) = (&mut profile.state, mark) {
+                state.rollback_registration(*mark, self.assets.images, &mut owner.assets)?;
+            }
+        }
         owner.assets.discard_registration_suffix(self.assets)?;
         owner.palettes.restore(self.palettes);
         let catalog = &mut owner.catalog;
@@ -2099,11 +2127,6 @@ impl RegistrationCheckpoint {
             }
             for source in &mut catalog.sources {
                 source.rollback_resources(self.assets, self.tags);
-            }
-        }
-        for (profile, mark) in catalog.profiles.iter_mut().zip(self.images) {
-            if let (Some(Ok(state)), Some(mark)) = (&mut profile.state, mark) {
-                state.rollback_registration(mark, self.assets.images);
             }
         }
         catalog.bindings.truncate(self.bindings);
@@ -2174,6 +2197,13 @@ impl RegistrationCheckpoint {
             if matches!(mode, RegistrationRollback::Retry) {
                 catalog.skins[skin.index].profiles.truncate(skin.profiles);
                 catalog.skins[skin.index].source = skin.source;
+                for (row, reserved) in catalog.skins[skin.index]
+                    .profiles
+                    .iter_mut()
+                    .zip(skin.reserved)
+                {
+                    row.reserved = reserved;
+                }
             }
             for index in skin.unattempted {
                 catalog.skins[skin.index].profiles[index]
@@ -2462,6 +2492,7 @@ impl ModelAssets {
                 profile,
                 vertex_collapse: profile.finish.compile(false).collapse_vertex(),
                 state: RegistrationState::Unattempted,
+                reserved: None,
             });
         }
         self.catalog.profiles.push(images);
@@ -2594,6 +2625,9 @@ impl ModelAssets {
         self.image_transaction_active = None;
         match result {
             Ok(ready) => {
+                if let Some(reload) = checkpoint.registration.reload.take() {
+                    reload.commit(self);
+                }
                 if let Some(receipt) = world_rebuild {
                     receipt.commit();
                 }
@@ -5384,6 +5418,7 @@ impl ModelAssets {
                         .compile(ui_fullscreen)
                         .collapse_vertex(),
                     state: RegistrationState::Unattempted,
+                    reserved: None,
                 })
                 .collect(),
         });
@@ -5591,6 +5626,7 @@ impl ModelAssets {
                     vertex_collapse: collapse,
                     request,
                     state: RegistrationState::Unattempted,
+                    reserved: None,
                 });
                 row
             }
@@ -5646,6 +5682,7 @@ impl ModelAssets {
             .checked_add(1)
             .filter(|&count| count <= self.catalog.limits.skins)
             .ok_or_else(|| IndexedSkinError::Rejected("indexed skin capacity".to_owned()))?;
+        let reserved = self.catalog.skins[index].profiles[row].reserved.as_ref();
         let ready = with_image_owner(&mut self.catalog.profiles, image_index, |images| {
             let policy = images.model_policy;
             images.with_images(vfs, &mut self.assets, |images| {
@@ -5653,6 +5690,22 @@ impl ModelAssets {
                     .translated_skin(path, 0, source.view(), request.translation)
                     .map_err(|error| format!("indexed skin image: {error:?}"))?
                     .id;
+                if let Some(reserved) = reserved {
+                    let shader = reserved
+                        .members
+                        .first()
+                        .and_then(|members| match members[0] {
+                            ShaderChoice::Direct(shader) => Some(shader),
+                            _ => None,
+                        })
+                        .and_then(|shader| images.assets.shader_binding(shader))
+                        .and_then(|shader| images.assets.material(shader.material))
+                        .and_then(|material| material.stages.first());
+                    if !shader.is_some_and(|stage| stage.texture == StageTexture::Image(image)) {
+                        return Err("indexed skin reservation image changed".to_owned());
+                    }
+                    return Ok(reserved.clone());
+                }
                 let variants = alias_image_materials(images.assets, path, 0, image, policy, false)?;
                 let registration = images
                     .assets
@@ -5670,6 +5723,7 @@ impl ModelAssets {
         })
         .map_err(|error| IndexedSkinError::Rejected(format!("indexed skin material: {error:?}")))?;
         self.catalog.capacity.skins = next;
+        self.catalog.skins[index].profiles[row].reserved = None;
         self.catalog.skins[index].profiles[row].state = RegistrationState::Ready {
             value: ready,
             required_assets: (!self.initial_registration).then(|| self.assets.counts()),
@@ -6048,6 +6102,7 @@ impl ModelAssets {
                         .compile(ui_fullscreen)
                         .collapse_vertex(),
                     state: RegistrationState::Unattempted,
+                    reserved: None,
                 });
             }
         }

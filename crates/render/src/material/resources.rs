@@ -1,5 +1,5 @@
 //! Cold VFS image/palette resolution. Frames retain numeric asset handles.
-use crate::assets::{Assets, ImageId, PaletteId, Sampler, upload};
+use crate::assets::{Assets, Image, ImageId, ImageReplacement, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use qa_content::vfs::{Vfs, VfsError};
 use qa_core::names::file_stem;
@@ -523,11 +523,12 @@ struct ImageRecord {
     image: ResolvedImage,
     first_use: ImageUse,
     first_requested: NameId,
+    available: bool,
 }
 
 /// Numeric projection of an existing externally loaded indexed-skin request.
 /// Decoded dimensions are excluded so replacing the source can change its size.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct IndexedSkinReload {
     pub name: NameId,
     pub source: u32,
@@ -546,31 +547,43 @@ impl ImageReloadScope<'_> {
                 key.recipe,
                 ImageRecipe::NativeDefault { .. } | ImageRecipe::MissingSkin { .. }
             ),
-            Self::IndexedSkins(requests) => {
-                let ImageRecipe::TranslatedSkin {
-                    source,
-                    layout,
-                    settings,
-                    ..
-                } = key.recipe
-                else {
-                    return false;
-                };
-                requests.iter().any(|request| {
-                    request.name == key.name
-                        && request.source == source
-                        && request.layout == layout
-                        && request.translation == settings
-                })
-            }
+            Self::IndexedSkins(requests) => key
+                .indexed_request()
+                .is_some_and(|key| requests.contains(&key)),
         }
     }
+}
+impl ImageKey {
+    fn indexed_request(self) -> Option<IndexedSkinReload> {
+        let ImageRecipe::TranslatedSkin {
+            source,
+            layout,
+            settings,
+            ..
+        } = self.recipe
+        else {
+            return None;
+        };
+        Some(IndexedSkinReload {
+            name: self.name,
+            source,
+            layout,
+            translation: settings,
+        })
+    }
+}
+
+struct ImageChange {
+    before: ImageRecord,
+    after: ImageKey,
+    body: ImageReplacement,
 }
 
 /// Cold rollback storage for the same image owner; it is never a live lookup cache.
 pub struct ImageReload {
     resolved: Vec<ImageRecord>,
     conflicts: Vec<ImageConflict>,
+    changes: usize,
 }
 
 /// Canonical file names form a sorted load index. No content fingerprints or
@@ -585,22 +598,26 @@ pub struct ImagesState {
     raster_target: Option<IndexedTarget>,
     resolved: Vec<ImageRecord>,
     conflicts: Vec<ImageConflict>,
+    changes: Vec<ImageChange>,
 }
 #[derive(Clone, Copy)]
 pub struct ImageRegistrationMark {
     conflicts: usize,
+    changes: usize,
 }
 impl ImagesState {
     /// Start a cold replay while retaining procedural helpers under this same policy.
     /// The receipt must be restored before discarding Assets on rejection.
     pub fn begin_reload(&mut self, scope: ImageReloadScope<'_>) -> ImageReload {
         let resolved = std::mem::take(&mut self.resolved);
-        self.resolved.extend(
-            resolved
-                .iter()
-                .copied()
-                .filter(|entry| !scope.selects(entry.key)),
-        );
+        self.resolved
+            .extend(resolved.iter().copied().filter_map(|mut entry| {
+                if scope.selects(entry.key) {
+                    entry.key.indexed_request()?;
+                    entry.available = false;
+                }
+                Some(entry)
+            }));
         let conflicts = std::mem::take(&mut self.conflicts);
         if matches!(scope, ImageReloadScope::IndexedSkins(_)) {
             self.conflicts.extend(conflicts.iter().cloned());
@@ -608,27 +625,72 @@ impl ImagesState {
         ImageReload {
             resolved,
             conflicts,
+            changes: self.changes.len(),
         }
     }
 
-    pub fn restore_reload(&mut self, reload: ImageReload) {
+    pub fn restore_reload(
+        &mut self,
+        reload: ImageReload,
+        assets: &mut Assets,
+    ) -> Result<(), &'static str> {
+        self.restore_changes(reload.changes, assets)?;
         self.resolved = reload.resolved;
         self.conflicts = reload.conflicts;
+        Ok(())
+    }
+
+    pub fn commit_reload(&mut self, reload: ImageReload) {
+        self.changes.truncate(reload.changes);
     }
 
     pub fn registration_mark(&self) -> ImageRegistrationMark {
         ImageRegistrationMark {
             conflicts: self.conflicts.len(),
+            changes: self.changes.len(),
         }
     }
 
     /// The name-sorted cache can insert anywhere, so retain by resource
     /// identity rather than truncating it to its previous number of entries.
-    pub fn rollback_registration(&mut self, mark: ImageRegistrationMark, images: usize) {
+    pub fn rollback_registration(
+        &mut self,
+        mark: ImageRegistrationMark,
+        images: usize,
+        assets: &mut Assets,
+    ) -> Result<(), &'static str> {
+        self.restore_changes(mark.changes, assets)?;
+        self.discard_registration_suffix(images);
+        self.conflicts.truncate(mark.conflicts);
+        Ok(())
+    }
+
+    pub(crate) fn discard_registration_suffix(&mut self, images: usize) {
         self.resolved
             .retain(|entry| (entry.image.id.0 as usize) < images);
-        self.conflicts.truncate(mark.conflicts);
         self.indexed_maps.clear();
+    }
+
+    fn restore_changes(
+        &mut self,
+        retained: usize,
+        assets: &mut Assets,
+    ) -> Result<(), &'static str> {
+        while self.changes.len() > retained {
+            let Some(change) = self.changes.pop() else {
+                break;
+            };
+            let row = self
+                .resolved
+                .iter()
+                .position(|entry| {
+                    entry.key == change.after && entry.image.id == change.before.image.id
+                })
+                .ok_or("image replacement record unavailable")?;
+            change.body.restore(assets)?;
+            self.resolved[row] = change.before;
+        }
+        Ok(())
     }
 
     pub(crate) fn clear_conflicts(&mut self) {
@@ -650,6 +712,7 @@ impl ImagesState {
             raster_target: None,
             resolved: Vec::new(),
             conflicts: Vec::new(),
+            changes: Vec::new(),
         })
     }
     pub fn set_raster_target(
@@ -776,6 +839,9 @@ impl ImagesState {
     }
     fn find(&self, key: ImageKey) -> Option<usize> {
         self.named_range(key.name).find(|&index| {
+            if !self.resolved[index].available {
+                return false;
+            }
             let old = self.resolved[index].key;
             old == key
                 || self.source_rules == RuleSetId::Quake2Rerelease
@@ -860,6 +926,7 @@ impl ImagesState {
                 image: resolved,
                 first_use: usage,
                 first_requested,
+                available: true,
             },
         );
         resolved
@@ -1238,10 +1305,12 @@ impl<'a> Images<'a> {
         let mark = self.state.registration_mark();
         let result = register(self);
         if result.is_err() {
+            self.state
+                .rollback_registration(mark, retained.images, self.assets)
+                .map_err(|error| E::from(ResourceError::Asset(error)))?;
             self.assets
                 .discard_registration_suffix(retained)
                 .map_err(|error| E::from(ResourceError::Asset(error)))?;
-            self.state.rollback_registration(mark, retained.images);
         }
         result
     }
@@ -1440,10 +1509,62 @@ impl<'a> Images<'a> {
         palette: PaletteId,
         target: Option<PaletteId>,
     ) -> Result<ImageId, ResourceError> {
-        let texture = self.remap_texture(texture, palette, target)?;
+        let image = self.indexed_rgba_body(width, height, rgba, texture, palette, target)?;
         self.assets
-            .register_rgba_with_indexed(width, height, rgba, texture)
+            .register_image_body(image)
             .map_err(ResourceError::Asset)
+    }
+    fn indexed_rgba_body(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        texture: IndexedTexture,
+        palette: PaletteId,
+        target: Option<PaletteId>,
+    ) -> Result<Image, ResourceError> {
+        let texture = self.remap_texture(texture, palette, target)?;
+        Image::new(width, height, rgba, Some(texture)).map_err(ResourceError::Asset)
+    }
+
+    fn install_image(
+        &mut self,
+        key: ImageKey,
+        first_requested: NameId,
+        image: Image,
+        usage: ImageUse,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let reservation = self.state.named_range(key.name).find(|&row| {
+            let old = self.state.resolved[row];
+            !old.available
+                && (old.key == key
+                    || key
+                        .indexed_request()
+                        .is_some_and(|request| old.key.indexed_request() == Some(request)))
+        });
+        if let Some(row) = reservation {
+            let before = self.state.resolved[row];
+            let body = self
+                .assets
+                .replace_image(before.image.id, image)
+                .map_err(ResourceError::Asset)?;
+            self.state.changes.push(ImageChange {
+                before,
+                after: key,
+                body,
+            });
+            self.state.resolved[row] = ImageRecord {
+                key,
+                available: true,
+                ..before
+            };
+            return Ok(before.image);
+        }
+        let id = self
+            .assets
+            .register_image_body(image)
+            .map_err(ResourceError::Asset)?;
+        Ok(self.remember(key, first_requested, id, usage))
     }
     pub fn upload_params(&self, usage: ImageUse) -> Result<upload::UploadParams, ResourceError> {
         self.state.recipes.params(usage)

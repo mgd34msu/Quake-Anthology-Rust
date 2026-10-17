@@ -885,3 +885,69 @@ fn exact_upload_extent_uses_native_nearest_and_existing_dimension_validation() {
         );
     }
 }
+
+#[test]
+fn image_body_replacement_preserves_identity_sampler_and_exact_rollback_storage() {
+    use qa_render::{
+        Assets,
+        assets::{Image, Sampler, Wrap},
+        surface_cache::IndexedTexture,
+    };
+    let mut assets = Assets::load().unwrap();
+    let original = IndexedTexture::load_base(2, 2, &[1, 2, 3, 4], Some(4))
+        .unwrap()
+        .with_coordinate_extent([1, 2])
+        .unwrap();
+    let id = assets
+        .register_rgba_with_indexed(2, 2, &gray(&[1, 2, 3, 4]), original)
+        .unwrap();
+    let sampler = Sampler {
+        wrap: Wrap::Clamp,
+        ..Default::default()
+    };
+    assets.set_image_native_sampler(id, sampler).unwrap();
+    assets
+        .prepare_image_with_rgba(id, &gray(&[11, 12, 13, 14]), Default::default())
+        .unwrap();
+    let counts = assets.counts();
+    let raw = assets.image(id).unwrap().rgba.as_ptr();
+    let prepared = assets.image(id).unwrap().prepared.as_ref().unwrap().levels[0]
+        .rgba
+        .as_ptr();
+    let replacement = IndexedTexture::load_base(3, 1, &[8, 9, 10], None)
+        .unwrap()
+        .with_coordinate_extent([2, 1])
+        .unwrap();
+    let mut replacement = Image::new(3, 1, &gray(&[8, 9, 10]), Some(replacement)).unwrap();
+    replacement.prepare(Default::default()).unwrap();
+    replacement.native_sampler = Some(Sampler::default());
+    let receipt = assets.replace_image(id, replacement).unwrap();
+    let image = assets.image(id).unwrap();
+    assert_eq!(assets.counts(), counts);
+    assert_eq!(image.preparation_revision, 2);
+    assert_eq!(image.native_sampler, Some(sampler));
+    assert_eq!(image.logical_size(), [3, 1]);
+    assert_eq!(image.indexed.as_ref().unwrap().coordinate_extent(), [2, 1]);
+    assert_eq!(image.rgba.as_ref(), gray(&[8, 9, 10]));
+    receipt.restore(&mut assets).unwrap();
+    let image = assets.image(id).unwrap();
+    assert_eq!(assets.counts(), counts);
+    assert_eq!(image.preparation_revision, 1);
+    assert_eq!(image.native_sampler, Some(sampler));
+    assert_eq!(image.rgba.as_ptr(), raw);
+    assert_eq!(
+        image.prepared.as_ref().unwrap().levels[0].rgba.as_ptr(),
+        prepared
+    );
+    assert_eq!(image.logical_size(), [2, 2]);
+    assert_eq!(image.indexed.as_ref().unwrap().coordinate_extent(), [1, 2]);
+    assert_eq!(
+        image.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
+        [1, 2, 3, 4]
+    );
+    let mut malformed = Image::new(1, 1, &[1, 2, 3, 255], None).unwrap();
+    malformed.width = 0;
+    assert!(assets.replace_image(id, malformed).is_err());
+    assert_eq!(assets.image(id).unwrap().rgba.as_ptr(), raw);
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 1);
+}

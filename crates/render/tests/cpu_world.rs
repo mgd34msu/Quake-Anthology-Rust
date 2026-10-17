@@ -3331,3 +3331,61 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
             .any(|&pixel| pixel == u32::from_le_bytes([41, 41, 41, 255]))
     );
 }
+
+#[test]
+fn loaded_cpu_rebuilds_same_image_id_and_retains_pixels_after_rejected_replacement() {
+    let mut assets = Assets::load().unwrap();
+    let old = [20, 90, 40, 255];
+    let new = [170, 30, 210, 255];
+    let image = assets.register_image(1, 1, &old).unwrap();
+    let shader = material(&mut assets, image, false);
+    let counts = assets.counts();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.draw_2d(Draw2d {
+        rect: [0.0, 0.0, 8.0, 8.0],
+        texcoords: [0.0, 0.0, 1.0, 1.0],
+        shader: shader.into(),
+        color: [255; 4],
+    }));
+    let packet = frame.finish();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.pixels().iter().all(|&pixel| pixel.to_le_bytes() == old));
+    let receipt = assets
+        .replace_image(
+            image,
+            qa_render::assets::Image::new(1, 1, &new, None).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(assets.counts(), counts);
+    assert!(
+        cpu.prepare_assets(
+            &assets,
+            Some(Limits {
+                vertices: 1,
+                ..Default::default()
+            })
+        )
+        .is_err()
+    );
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert!(cpu.pixels().iter().all(|&pixel| pixel.to_le_bytes() == old));
+    receipt.restore(&mut assets).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.pixels().iter().all(|&pixel| pixel.to_le_bytes() == old));
+    let _committed = assets
+        .replace_image(
+            image,
+            qa_render::assets::Image::new(1, 1, &new, None).unwrap(),
+        )
+        .unwrap();
+    cpu.prepare_assets(&assets, None).unwrap();
+    assert_eq!(assets.counts(), counts);
+    assert_eq!(cpu.admitted_assets(), Some(counts));
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.pixels().iter().all(|&pixel| pixel.to_le_bytes() == new));
+    cpu.prepare_assets(&assets, None).unwrap();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(cpu.pixels().iter().all(|&pixel| pixel.to_le_bytes() == new));
+}

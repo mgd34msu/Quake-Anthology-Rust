@@ -249,6 +249,14 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
         .collect();
     let old_image = texture(owner, indexed_shader(owner, fixture.selections[0]).unwrap());
     let old_pixels = owner.assets.image(old_image).unwrap().rgba.to_vec();
+    let old_revision = owner.assets.image(old_image).unwrap().preparation_revision;
+    let old_materials = owner.catalog.skins[fixture.selections[0].skin as usize].profiles
+        [fixture.selections[0].row as usize]
+        .state
+        .ready()
+        .unwrap()
+        .0
+        .clone();
     let old_source = match &owner.catalog.skins[fixture.selections[0].skin as usize].source {
         Some(SkinSource::Indexed { source, .. }) => Arc::clone(source),
         _ => panic!("retained positive source"),
@@ -283,7 +291,11 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
                 assert!(indexed_shader(owner, selection).is_some());
             }
             let shader = indexed_shader(owner, selections[0]).unwrap();
-            assert_ne!(texture(owner, shader), old_image);
+            assert_eq!(texture(owner, shader), old_image);
+            assert_eq!(
+                owner.assets.image(old_image).unwrap().preparation_revision,
+                old_revision + 1
+            );
             assert_eq!(
                 owner
                     .assets
@@ -307,6 +319,11 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
             .contains("reject final indexed backend")
     );
     assert_eq!(owner.assets.counts(), prefix);
+    assert_eq!(
+        owner.assets.image(old_image).unwrap().preparation_revision,
+        old_revision
+    );
+    assert_eq!(&*owner.assets.image(old_image).unwrap().rgba, old_pixels);
     assert_eq!(owner.catalog.capacity(), capacity);
     assert_eq!(
         texture(owner, indexed_shader(owner, selections[0]).unwrap()),
@@ -373,7 +390,25 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
             .collect::<Vec<_>>(),
         colored
     );
-    assert_eq!(&*owner.assets.image(old_image).unwrap().rgba, old_pixels);
+    assert_ne!(&*owner.assets.image(old_image).unwrap().rgba, old_pixels);
+    assert_eq!(
+        owner.assets.image(old_image).unwrap().preparation_revision,
+        old_revision + 1
+    );
+    assert_eq!(owner.assets.counts().images, prefix.images + 2);
+    assert_eq!(owner.assets.counts().materials, prefix.materials + 8);
+    assert_eq!(
+        owner.assets.counts().shader_bindings,
+        prefix.shader_bindings + 8
+    );
+    assert_eq!(
+        owner.catalog.skins[selections[0].skin as usize].profiles[selections[0].row as usize]
+            .state
+            .ready()
+            .unwrap()
+            .0,
+        &old_materials
+    );
     let unused = selected(owner, "skins/unused.pcx");
     assert!(matches!(
         owner.catalog.skins[unused.skin as usize].profiles[unused.row as usize].state,
@@ -420,6 +455,57 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
         Err(IndexedSkinError::Missing)
     ));
     assert_eq!(files.vfs.take_lookup_count(), 0);
+    let retained_materials: Vec<_> = selections
+        .iter()
+        .map(|selection| {
+            owner.catalog.skins[selection.skin as usize].profiles[selection.row as usize]
+                .reserved
+                .clone()
+                .unwrap()
+        })
+        .collect();
+    let root = files.vfs.mounts().next().unwrap().path.clone();
+    for width in [3, 4, 2] {
+        for (name, index) in [("current", 16), ("corrupt", 32), ("missing", 48)] {
+            qa_platform::files::write(
+                root.join("replacement"),
+                support::pcx_dimensions(width, 1, index),
+            )
+            .unwrap();
+            qa_platform::files::rename(
+                root.join("replacement"),
+                root.join(format!("skins/{name}.pcx")),
+            )
+            .unwrap();
+        }
+        files.vfs.refresh_directory_prefix(mount, b"skins").unwrap();
+        owner
+            .image_transaction(
+                &files.vfs,
+                None,
+                ImageRefreshMode::IndexedSkins,
+                |owner, _| {
+                    cpu.prepare_assets(owner.assets(), None)
+                        .map_err(str::to_owned)
+                },
+            )
+            .unwrap();
+        assert_eq!(owner.assets.counts(), current);
+        for (&selection, retained) in selections.iter().zip(&retained_materials) {
+            let row =
+                &owner.catalog.skins[selection.skin as usize].profiles[selection.row as usize];
+            assert_eq!(row.state.ready().unwrap().0, retained);
+            assert!(row.reserved.is_none());
+            assert_eq!(
+                owner
+                    .assets
+                    .image(texture(owner, indexed_shader(owner, selection).unwrap()))
+                    .unwrap()
+                    .logical_size(),
+                [u32::from(width), 1]
+            );
+        }
+    }
 }
 
 #[test]

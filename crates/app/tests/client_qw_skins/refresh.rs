@@ -68,7 +68,7 @@ fn explicit_same_name_commands_rescan_replacements_new_files_and_fallbacks() {
     );
     let replaced = draw(&host, true);
     assert_eq!((replaced[0].first, replaced[1].first), (33, 65));
-    assert_ne!(replaced[0].id, original[0].id);
+    assert_eq!(replaced[0].id, original[0].id);
     assert_eq!(replaced[2], original[2]);
 
     replace(
@@ -283,4 +283,121 @@ fn skins_preserves_independent_seat_overrides_and_one_seat_clear_keeps_the_other
         draw_client_colormaps(&host, other, true, 1.0, [1, 2, 1])[0].first,
         33
     );
+}
+
+fn asset_counts(host: &FrameHost) -> qa_render::assets::AssetCounts {
+    host.runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts()
+}
+
+fn image_revisions(host: &FrameHost, images: [CapturedImage; 3]) -> [u64; 3] {
+    let assets = host.runtime.model_assets.as_ref().unwrap().assets();
+    images.map(|image| assets.image(image.id).unwrap().preparation_revision)
+}
+
+#[test]
+fn repeated_skin_edits_and_unavailable_recovery_reuse_the_registered_resources() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host, &mut source);
+    prepare(&mut host, &mut source);
+    command_frame(&mut host, &mut source, SeatId::FIRST, "allskins broken\n");
+    command_frame(&mut host, &mut source, SeatId::FIRST, "allskins base\n");
+    command_frame(&mut host, &mut source, SeatId::FIRST, "allskins local\n");
+    let original = draw(&host, true);
+    let counts = asset_counts(&host);
+    let mut previous = image_revisions(&host, original);
+    for value in [17, 18, 19, 20] {
+        replace(
+            &host,
+            "skins/local.pcx",
+            &support::pcx_dimensions(300, 196, value),
+        );
+        command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+        let current = draw(&host, true);
+        assert_eq!(
+            current.map(|image| image.id),
+            original.map(|image| image.id)
+        );
+        assert_eq!(current[0].first, 32 + value - 16);
+        assert_eq!(current[1].first, 64 + value - 16);
+        assert_eq!(current[0].size, [320, 200]);
+        assert_eq!(current[2], original[2]);
+        assert_eq!(asset_counts(&host), counts);
+        let revisions = image_revisions(&host, current);
+        assert!(revisions[0] > previous[0] && revisions[1] > previous[1]);
+        assert_eq!(revisions[2], previous[2]);
+        previous = revisions;
+    }
+
+    let root = &host
+        .runtime
+        .vfs
+        .mounts()
+        .find(|mount| mount.kind == qa_content::vfs::MountKind::Directory)
+        .unwrap()
+        .path;
+    qa_platform::files::remove_file(root.join("skins/local.pcx")).unwrap();
+    command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+    assert_eq!(
+        draw(&host, true)[0].first,
+        48,
+        "missing override uses base skin"
+    );
+    let fallback_counts = asset_counts(&host);
+    for value in [21, 22] {
+        replace(
+            &host,
+            "skins/local.pcx",
+            &support::pcx_dimensions(296, 194, value),
+        );
+        command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+        let recovered = draw(&host, true);
+        assert_eq!(
+            recovered.map(|image| image.id),
+            original.map(|image| image.id)
+        );
+        assert_eq!(recovered[0].first, 32 + value - 16);
+        assert_eq!(asset_counts(&host), fallback_counts);
+        replace(&host, "skins/local.pcx", b"malformed PCX");
+        command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+        assert_eq!(
+            draw(&host, true)[0].size,
+            [2, 1],
+            "malformed override uses embedded colors"
+        );
+        assert_eq!(asset_counts(&host), fallback_counts);
+    }
+}
+
+#[test]
+fn rejected_in_place_edit_restores_the_old_revision_and_pixels_before_retry() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host, &mut source);
+    prepare(&mut host, &mut source);
+    command_frame(&mut host, &mut source, SeatId::FIRST, "allskins local\n");
+    let live = draw(&host, true);
+    let revisions = image_revisions(&host, live);
+    let counts = asset_counts(&host);
+    replace(
+        &host,
+        "skins/local.pcx",
+        &support::pcx_dimensions(300, 196, 17),
+    );
+    source.reject_assets = true;
+    command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+    assert_eq!(draw(&host, true), live);
+    assert_eq!(image_revisions(&host, live), revisions);
+    assert_eq!(asset_counts(&host), counts);
+    source.reject_assets = false;
+    command_frame(&mut host, &mut source, SeatId::FIRST, "skins\n");
+    let recovered = draw(&host, true);
+    assert_eq!(recovered.map(|image| image.id), live.map(|image| image.id));
+    assert_eq!(recovered[0].first, 33);
+    assert_eq!(recovered[1].first, 65);
+    assert_eq!(asset_counts(&host), counts);
+    assert!(image_revisions(&host, recovered)[0] > revisions[0]);
 }

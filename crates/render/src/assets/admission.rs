@@ -1,4 +1,4 @@
-use super::{Assets, Sampler};
+use super::{Assets, ImageId, Sampler};
 
 /// Numeric resource extents admitted by a renderer, independent of filenames.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,12 +118,15 @@ impl AssetAdmission {
                 .images
                 .iter()
                 .zip(assets.images())
-                .any(|(old, image)| *old != ImageVersion::of(image))
+                .any(|(old, image)| old.sampler != image.native_sampler)
             {
                 return Err("renderer image preparation changed");
             }
             if old == counts
                 && previous.model_preparation_revision == assets.model_preparation_revision
+                && image_changes(Some(previous), assets.images().iter().map(ImageVersion::of))
+                    .next()
+                    .is_none()
             {
                 return Ok(None);
             }
@@ -138,4 +141,21 @@ impl AssetAdmission {
     pub(crate) fn counts(&self) -> AssetCounts {
         self.counts
     }
+
+    pub(crate) fn changed_images<'a>(
+        &'a self,
+        previous: Option<&'a Self>,
+    ) -> impl Iterator<Item = ImageId> + 'a {
+        image_changes(previous, self.images.iter().copied())
+    }
+}
+
+fn image_changes<'a>(
+    previous: Option<&'a AssetAdmission>,
+    current: impl Iterator<Item = ImageVersion> + 'a,
+) -> impl Iterator<Item = ImageId> + 'a {
+    current.enumerate().filter_map(move |(index, version)| {
+        (previous.and_then(|old| old.images.get(index)) != Some(&version))
+            .then_some(ImageId(index as u32))
+    })
 }

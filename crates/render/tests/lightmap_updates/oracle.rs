@@ -596,7 +596,7 @@ fn appended_presentations_preserve_style_residency_and_grow_upload_scratch() {
             })
             .unwrap()
     );
-    assert!(updates.prepare_append(&assets).unwrap().is_none());
+    assert!(updates.prepare_append(&assets, &[]).unwrap().is_none());
     let expanded = AtlasRegion {
         width: 2,
         height: 2,
@@ -609,7 +609,7 @@ fn appended_presentations_preserve_style_residency_and_grow_upload_scratch() {
         Some(LightmapConversion::Scalar(Q1GlScale::Standard)),
         [[32; 3], [16; 3]],
     );
-    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    let mut candidate = updates.prepare_append(&assets, &[]).unwrap().unwrap();
     assert!(
         !updates
             .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
@@ -644,7 +644,7 @@ fn appended_presentations_preserve_style_residency_and_grow_upload_scratch() {
             .unwrap()
     );
     assert_eq!(uploads, 1);
-    assert!(candidate.prepare_append(&assets).unwrap().is_none());
+    assert!(candidate.prepare_append(&assets, &[]).unwrap().is_none());
     assert!(
         !candidate
             .refresh(appended, 0, &styles, &assets, |_, _, _| panic!(
@@ -689,7 +689,7 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
         [[32; 3], [0; 3]],
     );
     assert!(matches!(
-        updates.prepare_append(&assets),
+        updates.prepare_append(&assets, &[]),
         Err("GL styled atlas regions overlap")
     ));
     assert!(
@@ -704,7 +704,7 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
     assert_eq!(assets.world(world).unwrap().presentations()[0], original);
     assert!(assets.world(rejected_world).is_none());
     assert!(assets.world_presentation(rejected_presentation).is_none());
-    assert!(updates.prepare_append(&assets).unwrap().is_none());
+    assert!(updates.prepare_append(&assets, &[]).unwrap().is_none());
     let (retry_world, retry_presentation) = fixture(
         &mut assets,
         image,
@@ -714,7 +714,7 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
     );
     assert_eq!(retry_world, rejected_world);
     assert_eq!(retry_presentation, rejected_presentation);
-    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    let mut candidate = updates.prepare_append(&assets, &[]).unwrap().unwrap();
     assert!(
         !candidate
             .refresh(original, 0, &styles, &assets, |_, _, _| panic!(
@@ -739,7 +739,7 @@ fn rejected_atlas_append_preserves_the_old_owner_and_allows_a_clean_retry() {
     );
     assets.discard_registration_suffix(retained).unwrap();
     assert!(matches!(
-        candidate.prepare_append(&assets),
+        candidate.prepare_append(&assets, &[]),
         Err("GL styled presentation prefix shrank")
     ));
 }
@@ -830,7 +830,7 @@ fn exact_presentation_aliases_share_the_actual_style_residency_across_appends() 
         conversion,
         [[32; 3], [16; 3]],
     );
-    let mut candidate = updates.prepare_append(&assets).unwrap().unwrap();
+    let mut candidate = updates.prepare_append(&assets, &[]).unwrap().unwrap();
     for presentation in [first, alias] {
         assert!(
             !candidate
@@ -872,7 +872,7 @@ fn exact_presentation_aliases_share_the_actual_style_residency_across_appends() 
             ))
             .unwrap()
     );
-    assert!(candidate.prepare_append(&assets).unwrap().is_none());
+    assert!(candidate.prepare_append(&assets, &[]).unwrap().is_none());
     assert_eq!(
         assets.image(image).unwrap().rgba.as_ref(),
         &[23; 64],
@@ -898,4 +898,88 @@ fn identical_rectangles_for_different_source_surfaces_are_not_aliases() {
         AtlasUpdates::load(&assets),
         Err("GL styled atlas regions overlap")
     ));
+}
+
+#[test]
+fn revised_atlas_image_invalidates_only_its_staged_shared_residency() {
+    let mut assets = qa_render::Assets::load().unwrap();
+    let image = assets.register_image(4, 4, &[0; 64]).unwrap();
+    let conversion = Some(LightmapConversion::Scalar(Q1GlScale::Standard));
+    let world = fixture_variants(
+        &mut assets,
+        &[
+            (image, region(0), conversion),
+            (image, region(0), conversion),
+        ],
+        [[16; 3], [8; 3]],
+    );
+    let presentations = assets.world(world).unwrap().presentations().to_vec();
+    let other = assets.register_image(4, 4, &[0; 64]).unwrap();
+    let (_, unaffected) = fixture(
+        &mut assets,
+        other,
+        region(0),
+        conversion,
+        [[32; 3], [16; 3]],
+    );
+    let mut updates = AtlasUpdates::load(&assets).unwrap();
+    let mut styles = [LightStyle::default(); 256];
+    styles[0].indexed_scale = 128;
+    assert!(
+        updates
+            .refresh(presentations[0], 0, &styles, &assets, |_, _, _| true)
+            .unwrap()
+    );
+    assert!(
+        !updates
+            .refresh(presentations[1], 0, &styles, &assets, |_, _, _| panic!(
+                "alias uploaded twice"
+            ))
+            .unwrap()
+    );
+    assert!(
+        updates
+            .refresh(unaffected, 0, &styles, &assets, |_, _, _| true)
+            .unwrap()
+    );
+    let _committed = assets
+        .replace_image(
+            image,
+            qa_render::assets::Image::new(4, 4, &[0; 64], None).unwrap(),
+        )
+        .unwrap();
+    let candidate = updates.prepare_append(&assets, &[image]).unwrap().unwrap();
+    drop(candidate);
+    assert!(
+        !updates
+            .refresh(presentations[0], 0, &styles, &assets, |_, _, _| panic!(
+                "rejected candidate changed residency"
+            ))
+            .unwrap()
+    );
+    let mut candidate = updates.prepare_append(&assets, &[image]).unwrap().unwrap();
+    assert!(
+        candidate
+            .refresh(presentations[1], 0, &styles, &assets, |id, _, pixels| {
+                assert_eq!(id, image);
+                assert_eq!(pixels, [16, 16, 16, 255]);
+                true
+            })
+            .unwrap()
+    );
+    assert!(
+        !candidate
+            .refresh(presentations[0], 0, &styles, &assets, |_, _, _| panic!(
+                "shared owner uploaded twice"
+            ))
+            .unwrap()
+    );
+    assert!(
+        !candidate
+            .refresh(unaffected, 0, &styles, &assets, |_, _, _| panic!(
+                "unrelated image residency reset"
+            ))
+            .unwrap()
+    );
+    assert!(candidate.prepare_append(&assets, &[]).unwrap().is_none());
 }

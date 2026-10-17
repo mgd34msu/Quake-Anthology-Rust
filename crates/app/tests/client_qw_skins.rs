@@ -1179,8 +1179,8 @@ fn translated_embedded_groups_keep_view_timing_and_survive_reload_rollback() {
     assert_eq!(source.publication_attempts, 2);
     let reloaded_first = draw_at(&host, true, 0.125);
     let reloaded_second = draw_at(&host, true, 0.25);
-    assert_ne!(reloaded_first[0].id, first[0].id);
-    assert_ne!(reloaded_second[0].id, second[0].id);
+    assert_eq!(reloaded_first[0].id, first[0].id);
+    assert_eq!(reloaded_second[0].id, second[0].id);
     assert_eq!(
         (reloaded_first[0].first, reloaded_first[0].second),
         (32, 48)

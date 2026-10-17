@@ -289,6 +289,10 @@ impl WorldImageReload {
     pub fn restore(self, assets: &mut Assets) -> Result<(), &'static str> {
         assets.restore_world_image_reload(self)
     }
+
+    pub fn commit(self, assets: &mut Assets) {
+        assets.commit_world_image_reload(self);
+    }
 }
 
 struct WorldImages {
@@ -354,14 +358,27 @@ impl WorldMaterialSource {
                 .all(|(entry, (profile, _))| entry.profile == *profile && entry.state.is_some())
     }
 
-    pub(crate) fn restore_image_reload(&mut self, states: Vec<(ImageProfile, ImageReload)>) {
+    pub(crate) fn restore_image_reload(
+        &mut self,
+        states: Vec<(ImageProfile, ImageReload)>,
+        assets: &mut Assets,
+    ) -> Result<(), &'static str> {
         let retained = states.len();
         for (entry, (_, reload)) in self.images.iter_mut().zip(states) {
             if let Some(state) = &mut entry.state {
-                state.restore_reload(reload);
+                state.restore_reload(reload, assets)?;
             }
         }
         self.images.truncate(retained);
+        Ok(())
+    }
+
+    pub(crate) fn commit_image_reload(&mut self, states: Vec<(ImageProfile, ImageReload)>) {
+        for (entry, (_, reload)) in self.images.iter_mut().zip(states) {
+            if let Some(state) = &mut entry.state {
+                state.commit_reload(reload);
+            }
+        }
     }
 
     pub(crate) fn replay_images(
@@ -406,7 +423,7 @@ impl WorldMaterialSource {
                 return false;
             }
             if let Some(state) = &mut entry.state {
-                state.rollback_registration(state.registration_mark(), images);
+                state.discard_registration_suffix(images);
                 state.clear_conflicts();
             }
             true
@@ -475,14 +492,17 @@ impl WorldMaterialSource {
         let mut images = Images::from_state(vfs, assets, state);
         let result = compile(self, &mut images);
         let mut state = images.into_state();
-        if result.is_err() {
-            state.rollback_registration(mark, retained.images);
-        }
+        let rollback = if result.is_err() {
+            state.rollback_registration(mark, retained.images, assets)
+        } else {
+            Ok(())
+        };
         state.clear_conflicts();
         self.images[index].state = Some(state);
         if result.is_err() {
             self.images.truncate(previous);
         }
+        rollback.map_err(WorldMaterialError::Boundary)?;
         result
     }
     pub(crate) fn geometry_options(&self) -> GeometryOptions {

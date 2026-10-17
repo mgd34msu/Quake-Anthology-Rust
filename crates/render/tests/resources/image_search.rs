@@ -110,7 +110,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
         Err(ResourceError::Format(_))
     ));
     let mut state = images.into_state();
-    state.restore_reload(reload);
+    state.restore_reload(reload, &mut assets).unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
     let mut images = Images::from_state(&vfs, &mut assets, state);
     vfs.take_lookup_count();
@@ -531,8 +531,10 @@ fn image_suffix_rollback_prunes_selected_recipe_and_retry_keeps_registered_peer(
         .raster("env/candidate.tga", ImageUse::pic(), None)
         .unwrap();
     let mut state = images.into_state();
+    state
+        .rollback_registration(mark, prefix.images, &mut assets)
+        .unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
-    state.rollback_registration(mark, prefix.images);
     assert!(assets.image(rejected.id).is_none());
     let mut images = Images::from_state(&vfs, &mut assets, state);
     vfs.take_lookup_count();

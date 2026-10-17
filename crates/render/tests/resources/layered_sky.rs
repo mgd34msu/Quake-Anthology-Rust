@@ -212,8 +212,10 @@ fn invalid_shapes_and_discarded_replacements_retry_without_stale_layer_ids() {
     let mut images = Images::from_state(&vfs, &mut assets, state);
     let rejected = images.layered_sky(44, &mip, palette).unwrap();
     let mut state = images.into_state();
+    state
+        .rollback_registration(mark, prefix.images, &mut assets)
+        .unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
-    state.rollback_registration(mark, prefix.images);
     assert!(rejected.iter().all(|&id| assets.image(id).is_none()));
     assert!(vfs.unmount(mount));
     root.tga(512, 256, [20, 21, 22, 128]);

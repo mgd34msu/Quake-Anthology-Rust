@@ -440,19 +440,31 @@ impl AtlasUpdates {
         })
     }
 
-    /// Stage appended presentations without changing any admitted style
-    /// residency. Scratch and atlas validation use the initial load path.
-    pub fn prepare_append(&self, assets: &crate::Assets) -> Result<Option<Self>, &'static str> {
+    /// Stage presentation growth and replaced atlas textures without changing
+    /// admitted residency. Scratch and validation use the initial load path.
+    pub fn prepare_append(
+        &self,
+        assets: &crate::Assets,
+        changed_images: &[crate::ImageId],
+    ) -> Result<Option<Self>, &'static str> {
         let presentations = assets.world_presentations().len();
         if presentations < self.offsets.len() {
             return Err("GL styled presentation prefix shrank");
         }
-        if presentations == self.offsets.len() {
+        let replaced_atlas = assets.shader_bindings().iter().any(|binding| {
+            binding.lightmap_conversion.is_some() && changed_images.contains(&binding.lightmap)
+        });
+        if presentations == self.offsets.len() && !replaced_atlas {
             return Ok(None);
         }
         let mut candidate = Self::load(assets)?;
         if candidate.offsets.get(..self.offsets.len()) != Some(self.offsets.as_ref())
-            || candidate.offsets.get(self.offsets.len()) != Some(&self.styles.len())
+            || candidate
+                .offsets
+                .get(self.offsets.len())
+                .copied()
+                .unwrap_or(candidate.styles.len())
+                != self.styles.len()
         {
             return Err("GL styled presentation prefix changed");
         }
@@ -466,6 +478,35 @@ impl AtlasUpdates {
                 (AtlasResidency::Alias(current), AtlasResidency::Alias(old)) if *current == old => {
                 }
                 _ => return Err("GL styled residency prefix changed"),
+            }
+        }
+        if replaced_atlas {
+            for (presentation_index, presentation) in
+                assets.world_presentations().iter().enumerate()
+            {
+                let world = assets
+                    .world(presentation.world())
+                    .ok_or("invalid GL styled world")?;
+                for surface in 0..world.geometry().surfaces.len() {
+                    let binding = assets
+                        .shader_binding(
+                            presentation
+                                .surface_shader(surface as u32)
+                                .ok_or("invalid GL styled binding")?,
+                        )
+                        .ok_or("invalid GL styled binding")?;
+                    if binding.lightmap_conversion.is_none()
+                        || !changed_images.contains(&binding.lightmap)
+                    {
+                        continue;
+                    }
+                    let index = candidate.offsets[presentation_index] + surface;
+                    let owner = match candidate.styles[index] {
+                        AtlasResidency::Owner(_) => index,
+                        AtlasResidency::Alias(owner) => owner,
+                    };
+                    candidate.styles[owner] = AtlasResidency::Owner(None);
+                }
             }
         }
         Ok(Some(candidate))

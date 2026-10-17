@@ -373,10 +373,10 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     let suffix = images
         .translated_skin("env/native.pcx", 0, source.view(), settings)
         .unwrap();
-    assert_ne!(suffix.id, admitted.id);
+    assert_eq!(suffix.id, admitted.id);
     assert_eq!(&*images.assets.image(suffix.id).unwrap().rgba, pixels);
     let mut state = images.into_state();
-    state.restore_reload(reload);
+    state.restore_reload(reload, &mut assets).unwrap();
     assets
         .discard_registration_suffix(qa_render::assets::AssetCounts {
             images: prefix.images + 1,
@@ -633,17 +633,17 @@ fn scoped_skin_reload_evicts_exact_external_requests_across_old_source_dimension
     let current = images
         .translated_skin("env/native.pcx", 0, changed, settings)
         .unwrap();
-    assert_ne!(current.id, a.id);
+    assert_eq!(current.id, a.id);
     assert_ne!(current.id, a_extent.id);
-    // Both prior decoded dimensions were evicted from the same retained request.
-    assert_ne!(
+    // Each admitted body retains its reservation across decoded-size changes.
+    assert_eq!(
         images
             .translated_skin("env/native.pcx", 0, prior_extent, settings)
             .unwrap(),
         a_extent
     );
     let mut state = images.into_state();
-    state.restore_reload(reload);
+    state.restore_reload(reload, &mut assets).unwrap();
     assets.discard_registration_suffix(prefix).unwrap();
     let mut images = Images::from_state(&vfs, &mut assets, state);
     assert_eq!(

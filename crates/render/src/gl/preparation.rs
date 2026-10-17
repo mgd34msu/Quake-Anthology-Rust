@@ -45,6 +45,12 @@ impl<'a> UploadBindings<'a> {
         }
         saved
     }
+
+    pub(super) fn replace_texture(&mut self, previous: u32, replacement: u32) {
+        if self.texture as u32 == previous {
+            self.texture = replacement as i32;
+        }
+    }
 }
 impl Drop for UploadBindings<'_> {
     fn drop(&mut self) {
@@ -109,7 +115,7 @@ pub(super) struct PreparedAssets<'a> {
     pub objects: StaticObjects,
     pub meshes: Box<[Mesh]>,
     pub textures: Box<[u32]>,
-    texture_prefix: usize,
+    pub(super) changed_images: Box<[crate::ImageId]>,
     pub texture_params: Box<[TextureParams]>,
     pub sky_clouds: Box<[Option<CloudGrid>]>,
     pub skies: SkyBatches,
@@ -121,6 +127,7 @@ impl<'a> PreparedAssets<'a> {
         textures: &[u32],
         texture_params: &[TextureParams],
         sky_capacity: usize,
+        changed_images: Box<[crate::ImageId]>,
     ) -> Result<Self, String> {
         let layout = MeshLayout::prepare(
             assets
@@ -143,8 +150,7 @@ impl<'a> PreparedAssets<'a> {
                 _ => Ok(None),
             })
             .collect::<Result<Box<[_]>, String>>()?;
-        let texture_count =
-            i32::try_from(assets.images().len()).map_err(|_| "GL texture table full")?;
+        i32::try_from(assets.images().len()).map_err(|_| "GL texture table full")?;
         let appended = assets
             .images()
             .get(textures.len()..)
@@ -164,7 +170,7 @@ impl<'a> PreparedAssets<'a> {
                 .copied()
                 .chain(appended.iter().map(|_| 0))
                 .collect(),
-            texture_prefix: textures.len(),
+            changed_images,
             texture_params: texture_params
                 .iter()
                 .copied()
@@ -176,6 +182,15 @@ impl<'a> PreparedAssets<'a> {
             sky_clouds,
             skies: SkyBatches::new(assets.materials().len(), sky_capacity),
         };
+        for &image in &candidate.changed_images {
+            let index = image.0 as usize;
+            candidate.textures[index] = 0;
+            let image = &assets.images()[index];
+            candidate.texture_params[index] = TextureParams {
+                inverse_intensity: image.prepared.as_ref().map_or(1.0, |p| p.inverse_intensity),
+                sampler: image.native_sampler,
+            };
+        }
         check_error(gl, "before asset upload")?;
         // SAFETY: All slices are owned for this synchronous upload; checked mesh
         // extents fit GLsizeiptr, and Assets bounds image/mip dimensions at load.
@@ -205,20 +220,18 @@ impl<'a> PreparedAssets<'a> {
             (gl.bind_buffer)(ELEMENT_ARRAY_BUFFER, candidate.objects.buffers[1]);
         }
         check_error(gl, "static mesh upload")?;
-        let suffix = &mut candidate.textures[candidate.texture_prefix..];
-        if !suffix.is_empty() {
-            // SAFETY: The complete table fits GLsizei; this disjoint suffix is
-            // owned by the candidate and is never an admitted texture prefix.
-            unsafe {
-                (gl.gen_textures)(texture_count - textures.len() as i32, suffix.as_mut_ptr());
-                (gl.pixel_store)(0x0cf5, 1);
-            }
+        if !candidate.changed_images.is_empty() {
+            // SAFETY: UploadBindings restores this context's previous alignment.
+            unsafe { (gl.pixel_store)(0x0cf5, 1) };
         }
-        for (image, &texture) in appended.iter().zip(suffix.iter()) {
+        for &id in &candidate.changed_images {
+            let image = &assets.images()[id.0 as usize];
+            let texture = &mut candidate.textures[id.0 as usize];
             // SAFETY: Assets validates the RGBA/mip spans and native dimensions.
-            // No admitted image is overwritten, preserving styled atlas state.
+            // Each new name occupies only its candidate slot until commit.
             unsafe {
-                (gl.bind_texture)(TEXTURE_2D, texture);
+                (gl.gen_textures)(1, texture);
+                (gl.bind_texture)(TEXTURE_2D, *texture);
                 if let Some(prepared) = &image.prepared {
                     for (level, pixels) in prepared.levels.iter().enumerate() {
                         (gl.texture_image)(
@@ -262,20 +275,17 @@ impl<'a> PreparedAssets<'a> {
         check_error(gl, "asset upload")?;
         Ok(candidate)
     }
-
-    pub(super) fn retain_textures(&mut self) {
-        // After commit these are the retired CPU table's retained GPU names.
-        self.texture_prefix = self.textures.len();
-    }
 }
 impl Drop for PreparedAssets<'_> {
     fn drop(&mut self) {
         self.objects.delete(self.gl);
-        let suffix = &self.textures[self.texture_prefix..];
-        if !suffix.is_empty() {
-            // SAFETY: Admission bounds the complete table by GLsizei; only this
-            // candidate's uncommitted suffix names are deleted on rejection.
-            unsafe { (self.gl.delete_textures)(suffix.len() as i32, suffix.as_ptr()) };
+        for id in &self.changed_images {
+            if let Some(texture) = self.textures.get(id.0 as usize) {
+                // SAFETY: Before commit these slots own candidate names. After
+                // the table swap they own only replaced old names; appended
+                // slots are absent. Unchanged borrowed names are never deleted.
+                unsafe { (self.gl.delete_textures)(1, texture) };
+            }
         }
     }
 }

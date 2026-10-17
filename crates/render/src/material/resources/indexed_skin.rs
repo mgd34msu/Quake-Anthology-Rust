@@ -191,7 +191,7 @@ impl Images<'_> {
                     ..Default::default()
                 },
             )?;
-            let id = images.register_indexed_rgba_to(
+            let mut image = images.indexed_rgba_body(
                 crop_width,
                 crop_height,
                 &rgba.pixels,
@@ -199,18 +199,9 @@ impl Images<'_> {
                 settings.palette,
                 settings.target,
             )?;
-            images
-                .assets
-                .prepare_image(id, params)
-                .map_err(ResourceError::Asset)?;
-            images
-                .assets
-                .set_image_native_sampler(
-                    id,
-                    images.state.recipes.effective_use(settings.usage).sampler,
-                )
-                .map_err(ResourceError::Asset)?;
-            Ok(images.remember(key, key.name, id, settings.usage))
+            image.prepare(params).map_err(ResourceError::Asset)?;
+            image.native_sampler = Some(images.state.recipes.effective_use(settings.usage).sampler);
+            images.install_image(key, key.name, image, settings.usage)
         })
     }
 }

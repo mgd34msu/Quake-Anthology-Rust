@@ -50,6 +50,19 @@ macro_rules! procedures {
                     }, )*
                 })
             }
+            #[cfg(test)]
+            fn for_tests() -> Self {
+                Self {
+                    $( $name: {
+                        unsafe extern "system" fn no_op($( _: $arg ),*) $( -> $result )? {
+                            // SAFETY: The procedure schema returns only numeric
+                            // scalars or raw pointers; zero is valid for both.
+                            $( unsafe { std::mem::zeroed::<$result>() } )?
+                        }
+                        no_op
+                    }, )*
+                }
+            }
         }
     };
 }
@@ -805,7 +818,7 @@ impl GlBackend {
         self.admission.as_ref().map(AssetAdmission::counts)
     }
 
-    /// Cold append admission. Rejected uploads retain the complete old prefix.
+    /// Cold append or image replacement. Rejected uploads retain the old prefix.
     pub fn prepare_assets(
         &mut self,
         assets: &Assets,
@@ -837,17 +850,26 @@ impl GlBackend {
             }
             return Ok(());
         };
-        let lightmap_updates = self.lightmap_updates.prepare_append(assets)?;
+        let changed_images: Box<[_]> = admission.changed_images(self.admission.as_ref()).collect();
+        let lightmap_updates = self
+            .lightmap_updates
+            .prepare_append(assets, &changed_images)?;
         self.state.vao = 0;
         self.state.texture = None;
-        let _bindings = UploadBindings::new(&self.gl);
+        let mut bindings = UploadBindings::new(&self.gl);
         let mut prepared = PreparedAssets::prepare(
             &self.gl,
             assets,
             &self.textures,
             &self.texture_params,
             sky_capacity,
+            changed_images,
         )?;
+        for id in &prepared.changed_images {
+            if let Some(&old) = self.textures.get(id.0 as usize) {
+                bindings.replace_texture(old, prepared.textures[id.0 as usize]);
+            }
+        }
         std::mem::swap(&mut self.static_vao, &mut prepared.objects.static_vao);
         std::mem::swap(&mut self.model_vao, &mut prepared.objects.model_vao);
         std::mem::swap(&mut self.static_buffers, &mut prepared.objects.buffers);
@@ -859,7 +881,6 @@ impl GlBackend {
         if let Some(lightmap_updates) = lightmap_updates {
             self.lightmap_updates = lightmap_updates;
         }
-        prepared.retain_textures();
         self.admission = Some(admission);
         Ok(())
     }

@@ -158,12 +158,123 @@ pub struct Image {
     pub native_sampler: Option<Sampler>,
 }
 impl Image {
+    pub fn new(
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        indexed: Option<IndexedTexture>,
+    ) -> Result<Self, &'static str> {
+        Self::from_rgba(width, height, rgba.into(), indexed)
+    }
+
+    fn from_rgba(
+        width: u32,
+        height: u32,
+        rgba: Box<[u8]>,
+        indexed: Option<IndexedTexture>,
+    ) -> Result<Self, &'static str> {
+        let image = Self {
+            width,
+            height,
+            rgba,
+            indexed,
+            prepared: None,
+            preparation_revision: 0,
+            native_sampler: None,
+        };
+        image.validate()?;
+        Ok(image)
+    }
+
+    fn validate_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<(), &'static str> {
+        if upload::validate_dimensions(width, height).is_err()
+            || rgba.len() != width as usize * height as usize * 4
+        {
+            return Err("invalid RGBA image dimensions");
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), &'static str> {
+        Self::validate_rgba(self.width, self.height, &self.rgba)?;
+        if self
+            .indexed
+            .as_ref()
+            .is_some_and(|texture| texture.mip(0).is_none())
+        {
+            return Err("missing indexed base mip");
+        }
+        if let Some(prepared) = &self.prepared {
+            if prepared.levels.is_empty()
+                || !prepared.inverse_intensity.is_finite()
+                || prepared.inverse_intensity <= 0.0
+            {
+                return Err("invalid image preparation");
+            }
+            for level in &prepared.levels {
+                Self::validate_rgba(level.width, level.height, &level.rgba)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn prepare(&mut self, params: upload::UploadParams) -> Result<(), &'static str> {
+        self.install_prepared(None, params)
+    }
+
+    pub fn prepare_with_rgba(
+        &mut self,
+        rgba: &[u8],
+        params: upload::UploadParams,
+    ) -> Result<(), &'static str> {
+        self.install_prepared(Some(rgba), params)
+    }
+
+    fn install_prepared(
+        &mut self,
+        rgba: Option<&[u8]>,
+        params: upload::UploadParams,
+    ) -> Result<(), &'static str> {
+        let prepared =
+            upload::prepare_rgba(self.width, self.height, rgba.unwrap_or(&self.rgba), params)
+                .map_err(|_| "invalid image preparation")?;
+        let revision = self
+            .preparation_revision
+            .checked_add(1)
+            .ok_or("image preparation revision exhausted")?;
+        self.prepared = Some(prepared);
+        self.preparation_revision = revision;
+        Ok(())
+    }
+
     /// Software/native dimensions remain independent of a GL replacement.
     pub fn logical_size(&self) -> [u32; 2] {
         self.indexed
             .as_ref()
             .and_then(|texture| texture.mip(0))
             .map_or([self.width, self.height], |mip| [mip.width, mip.height])
+    }
+}
+
+/// Owns the prior complete body until a cold image transaction commits.
+pub struct ImageReplacement {
+    id: ImageId,
+    previous: Image,
+    installed_revision: u64,
+}
+impl ImageReplacement {
+    pub fn restore(self, assets: &mut Assets) -> Result<(), &'static str> {
+        let current = assets
+            .images
+            .get_mut(self.id.0 as usize)
+            .ok_or("invalid image handle")?;
+        if current.preparation_revision != self.installed_revision
+            || current.native_sampler != self.previous.native_sampler
+        {
+            return Err("image replacement changed before rollback");
+        }
+        *current = self.previous;
+        Ok(())
     }
 }
 /// All frame-time texture choices are numeric. Lightmap is resolved from the
@@ -822,22 +933,35 @@ impl Assets {
         height: u32,
         rgba: &[u8],
     ) -> Result<ImageId, &'static str> {
-        if upload::validate_dimensions(width, height).is_err()
-            || rgba.len() != width as usize * height as usize * 4
-        {
-            return Err("invalid RGBA image dimensions");
-        }
+        self.register_image_body(Image::new(width, height, rgba, None)?)
+    }
+    pub fn register_image_body(&mut self, image: Image) -> Result<ImageId, &'static str> {
+        image.validate()?;
         let id = ImageId(u32::try_from(self.images.len()).map_err(|_| "image table full")?);
-        self.images.push(Image {
-            width,
-            height,
-            rgba: rgba.into(),
-            indexed: None,
-            prepared: None,
-            preparation_revision: 0,
-            native_sampler: None,
-        });
+        self.images.push(image);
         Ok(id)
+    }
+    pub fn replace_image(
+        &mut self,
+        id: ImageId,
+        mut replacement: Image,
+    ) -> Result<ImageReplacement, &'static str> {
+        replacement.validate()?;
+        let current = self
+            .images
+            .get_mut(id.0 as usize)
+            .ok_or("invalid image handle")?;
+        let revision = current
+            .preparation_revision
+            .checked_add(1)
+            .ok_or("image preparation revision exhausted")?;
+        replacement.preparation_revision = revision;
+        replacement.native_sampler = current.native_sampler;
+        Ok(ImageReplacement {
+            id,
+            previous: std::mem::replace(current, replacement),
+            installed_revision: revision,
+        })
     }
     pub fn register_palette(
         &mut self,
@@ -856,12 +980,7 @@ impl Assets {
         rgba: &[u8],
         indexed: IndexedTexture,
     ) -> Result<ImageId, &'static str> {
-        if indexed.mip(0).is_none() {
-            return Err("missing indexed base mip");
-        }
-        let id = self.register_image(width, height, rgba)?;
-        self.images[id.0 as usize].indexed = Some(indexed);
-        Ok(id)
+        self.register_image_body(Image::new(width, height, rgba, Some(indexed))?)
     }
     pub fn palette(&self, id: PaletteId) -> Option<&PaletteLighting> {
         self.palettes.get(id.0 as usize)
@@ -913,24 +1032,22 @@ impl Assets {
             }
             rgba.extend_from_slice(&color);
         }
-        let id = ImageId(u32::try_from(self.images.len()).map_err(|_| "image table full")?);
-        self.images.push(Image {
-            width: base.width,
-            height: base.height,
-            rgba: rgba.into_boxed_slice(),
-            indexed: Some(texture),
-            prepared: None,
-            preparation_revision: 0,
-            native_sampler: None,
-        });
-        Ok(id)
+        self.register_image_body(Image::from_rgba(
+            base.width,
+            base.height,
+            rgba.into_boxed_slice(),
+            Some(texture),
+        )?)
     }
     pub fn prepare_image(
         &mut self,
         id: ImageId,
         params: upload::UploadParams,
     ) -> Result<(), &'static str> {
-        self.install_prepared(id, None, params)
+        self.images
+            .get_mut(id.0 as usize)
+            .ok_or("invalid image handle")?
+            .prepare(params)
     }
     /// Prepare a separate native GL expansion (palette correction or alpha
     /// fringe repair), retaining the raw RGBA and original software indices.
@@ -941,32 +1058,10 @@ impl Assets {
         rgba: &[u8],
         params: upload::UploadParams,
     ) -> Result<(), &'static str> {
-        self.install_prepared(id, Some(rgba), params)
-    }
-    fn install_prepared(
-        &mut self,
-        id: ImageId,
-        rgba: Option<&[u8]>,
-        params: upload::UploadParams,
-    ) -> Result<(), &'static str> {
-        let image = self
-            .images
+        self.images
             .get_mut(id.0 as usize)
-            .ok_or("invalid image handle")?;
-        let prepared = upload::prepare_rgba(
-            image.width,
-            image.height,
-            rgba.unwrap_or(&image.rgba),
-            params,
-        )
-        .map_err(|_| "invalid image preparation")?;
-        let revision = image
-            .preparation_revision
-            .checked_add(1)
-            .ok_or("image preparation revision exhausted")?;
-        image.prepared = Some(prepared);
-        image.preparation_revision = revision;
-        Ok(())
+            .ok_or("invalid image handle")?
+            .prepare_with_rgba(rgba, params)
     }
     pub fn set_image_native_sampler(
         &mut self,
@@ -1688,11 +1783,29 @@ impl Assets {
             return Err("world image reload owner changed");
         }
         for (id, states) in reload.states {
-            if let Some(source) = self.worlds[id.0 as usize].material_source.as_mut() {
-                source.restore_image_reload(states);
-            }
+            self.with_world_material_source(id, |assets, source| {
+                source
+                    .restore_image_reload(states, assets)
+                    .map_err(crate::material::world_load::WorldMaterialError::Boundary)
+            })
+            .map_err(|_| "world image reload restoration failed")?;
         }
         Ok(())
+    }
+
+    pub(crate) fn commit_world_image_reload(
+        &mut self,
+        reload: crate::material::world_load::WorldImageReload,
+    ) {
+        for (id, states) in reload.states {
+            if let Some(source) = self
+                .worlds
+                .get_mut(id.0 as usize)
+                .and_then(|world| world.material_source.as_mut())
+            {
+                source.commit_image_reload(states);
+            }
+        }
     }
 
     pub(crate) fn replay_world_image_reload(
