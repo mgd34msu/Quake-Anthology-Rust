@@ -605,6 +605,9 @@ impl Commands {
                 crate::channel::commands::ServerOutput::ReliableCommand { sequence, text } => {
                     consume(Incoming::ReliableCommand { sequence, text });
                 }
+                crate::channel::commands::ServerOutput::Download(chunk) => {
+                    consume(Incoming::Download(chunk));
+                }
                 crate::channel::commands::ServerOutput::Gamestate(gamestate) => {
                     if let Some(history) = &mut self.history {
                         history.reset(0);
@@ -812,17 +815,26 @@ impl Commands {
                             }
                             let (chunk, count) =
                                 crate::downloads::read_chunk_service(35, &scratch[at..])?;
-                            let input = chunk.bytes.ok_or(crate::downloads::Error::Size)?;
+                            let crate::downloads::Chunk::Sequential {
+                                percent,
+                                bytes: Some(input),
+                                ..
+                            } = chunk
+                            else {
+                                return Err(crate::downloads::Error::Size);
+                            };
                             let bytes = download_stream
                                 .as_deref_mut()
                                 .ok_or(crate::downloads::Error::Compression)?
                                 .download(input)
                                 .map_err(|_| crate::downloads::Error::Compression)?;
-                            consume(Incoming::Download(Ok(crate::downloads::Chunk {
-                                percent: chunk.percent,
-                                bytes: Some(bytes),
-                                compressed: true,
-                            })));
+                            consume(Incoming::Download(Ok(
+                                crate::downloads::Chunk::Sequential {
+                                    percent,
+                                    bytes: Some(bytes),
+                                    compressed: true,
+                                },
+                            )));
                             Ok(count)
                         })();
                         match result {

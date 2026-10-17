@@ -822,7 +822,7 @@ fn rerelease_download_reconnect_checks_origin_and_loading_state_before_its_veto(
         let mut block = [0; 64];
         let length = qa_network::downloads::write_chunk(
             RR,
-            qa_network::downloads::Chunk {
+            qa_network::downloads::Chunk::Sequential {
                 compressed: false,
                 percent: 10,
                 bytes: Some(b"partial"),
@@ -875,7 +875,7 @@ fn rerelease_download_reconnect_checks_origin_and_loading_state_before_its_veto(
             );
             let length = qa_network::downloads::write_chunk(
                 RR,
-                qa_network::downloads::Chunk {
+                qa_network::downloads::Chunk::Sequential {
                     compressed: false,
                     percent: 100,
                     bytes: Some(b"done"),

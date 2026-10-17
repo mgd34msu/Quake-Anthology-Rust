@@ -256,12 +256,16 @@ fn compressed_download_retains_history_and_empty_progress_across_packets() {
         let mut wire = block(bytes, percent);
         wire.extend_from_slice(b"\x0a\x02after block\0");
         apply(&mut commands, &mut channel, &wire, |event| match event {
-            Incoming::Download(Ok(chunk)) => {
-                assert!(chunk.compressed);
-                let bytes = chunk.bytes.unwrap();
+            Incoming::Download(Ok(downloads::Chunk::Sequential {
+                percent,
+                bytes,
+                compressed,
+            })) => {
+                assert!(compressed);
+                let bytes = bytes.unwrap();
                 decoded.extend_from_slice(bytes);
                 lengths.push(bytes.len());
-                percentages.push(chunk.percent);
+                percentages.push(percent);
             }
             Incoming::Print(print) => assert_eq!(print.text, b"after block"),
             _ => panic!("unexpected service"),
@@ -285,7 +289,11 @@ fn compressed_download_retains_history_and_empty_progress_across_packets() {
         &mut channel,
         &block(DOWNLOAD, 100),
         |event| match event {
-            Incoming::Download(Ok(chunk)) => assert_eq!(chunk.bytes.unwrap(), b"abc".repeat(2000)),
+            Incoming::Download(Ok(downloads::Chunk::Sequential {
+                percent: _,
+                bytes,
+                compressed: _,
+            })) => assert_eq!(bytes.unwrap(), b"abc".repeat(2000)),
             _ => panic!("unexpected service"),
         },
     )
@@ -326,8 +334,12 @@ fn compressed_download_errors_preserve_the_cause_and_reset_the_inflater() {
             &mut channel,
             &block(DOWNLOAD, 100),
             |event| match event {
-                Incoming::Download(Ok(chunk)) => {
-                    assert_eq!(chunk.bytes.unwrap(), b"abc".repeat(2000))
+                Incoming::Download(Ok(downloads::Chunk::Sequential {
+                    percent: _,
+                    bytes,
+                    compressed: _,
+                })) => {
+                    assert_eq!(bytes.unwrap(), b"abc".repeat(2000))
                 }
                 _ => panic!("unexpected service"),
             },
@@ -340,9 +352,11 @@ fn compressed_download_errors_preserve_the_cause_and_reset_the_inflater() {
         &mut channel,
         &block(LIMIT, 100),
         |event| match event {
-            Incoming::Download(Ok(chunk)) => {
-                assert!(chunk.compressed);
-                let bytes = chunk.bytes.unwrap();
+            Incoming::Download(Ok(downloads::Chunk::Sequential {
+                bytes, compressed, ..
+            })) => {
+                assert!(compressed);
+                let bytes = bytes.unwrap();
                 exact = bytes.len();
                 assert!(bytes.iter().all(|&value| value == 6));
             }
@@ -379,7 +393,11 @@ fn download_owner_resets_on_explicit_retirement_and_validated_native_lifecycle()
             &mut channel,
             &block(&DOWNLOAD[..1], 10),
             |event| match event {
-                Incoming::Download(Ok(chunk)) => assert!(chunk.bytes.unwrap().is_empty()),
+                Incoming::Download(Ok(downloads::Chunk::Sequential {
+                    percent: _,
+                    bytes,
+                    compressed: _,
+                })) => assert!(bytes.unwrap().is_empty()),
                 _ => panic!("unexpected service"),
             },
         )
@@ -410,8 +428,12 @@ fn download_owner_resets_on_explicit_retirement_and_validated_native_lifecycle()
             &mut channel,
             &block(DOWNLOAD, 100),
             |event| match event {
-                Incoming::Download(Ok(chunk)) => {
-                    assert_eq!(chunk.bytes.unwrap(), b"abc".repeat(2000))
+                Incoming::Download(Ok(downloads::Chunk::Sequential {
+                    percent: _,
+                    bytes,
+                    compressed: _,
+                })) => {
+                    assert_eq!(bytes.unwrap(), b"abc".repeat(2000))
                 }
                 _ => panic!("unexpected service"),
             },
@@ -444,7 +466,11 @@ fn download_owner_resets_on_explicit_retirement_and_validated_native_lifecycle()
         &mut channel,
         &block(&DOWNLOAD[1..], 100),
         |event| match event {
-            Incoming::Download(Ok(chunk)) => assert_eq!(chunk.bytes.unwrap(), b"abc".repeat(2000)),
+            Incoming::Download(Ok(downloads::Chunk::Sequential {
+                percent: _,
+                bytes,
+                compressed: _,
+            })) => assert_eq!(bytes.unwrap(), b"abc".repeat(2000)),
             _ => panic!("unexpected service"),
         },
     )
@@ -456,7 +482,7 @@ fn forwarding_a_decoded_compressed_chunk_writes_only_the_ordinary_service() {
     let mut wire = [0xcc; 32];
     let length = downloads::write_chunk(
         RR,
-        Chunk {
+        Chunk::Sequential {
             percent: 100,
             bytes: Some(b"decoded"),
             compressed: true,
@@ -467,6 +493,12 @@ fn forwarding_a_decoded_compressed_chunk_writes_only_the_ordinary_service() {
     assert_eq!(&wire[..length], b"\x10\x07\x00\x64decoded");
     let (decoded, consumed) = downloads::read_chunk(RR, &wire[..length]).unwrap();
     assert_eq!(consumed, length);
-    assert!(!decoded.compressed);
-    assert_eq!(decoded.bytes, Some(b"decoded".as_slice()));
+    assert_eq!(
+        decoded,
+        downloads::Chunk::Sequential {
+            percent: 100,
+            bytes: Some(b"decoded".as_slice()),
+            compressed: false
+        }
+    );
 }

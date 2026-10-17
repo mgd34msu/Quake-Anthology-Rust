@@ -70,19 +70,78 @@ enum Transfer {
 }
 
 pub(crate) struct ClientDownload {
-    config: DownloadConfig,
+    config: Option<DownloadConfig>,
     transfer: Transfer,
     permissions: Option<DownloadViews>,
     skin_pass: Option<SkinPass>,
+    blocks: Option<BlockProgress>,
+}
+
+#[derive(Default)]
+struct BlockProgress {
+    received: i32,
+    queued: i32,
+    total: Option<u32>,
+    stop: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Pending {
+    Request,
+    Next,
+    Block(i32),
+    Stop,
+}
+impl Pending {
+    fn text(self, transfer: &Transfer) -> Option<FixedText<80>> {
+        let mut text = FixedText::default();
+        match self {
+            Self::Request => {
+                let Transfer::Active { request, .. } = transfer else {
+                    return None;
+                };
+                write!(text, "download {}", request.name.as_str()).ok()?;
+            }
+            Self::Next => text.set("nextdl").ok()?,
+            Self::Block(number) => write!(text, "nextdl {number}").ok()?,
+            Self::Stop => text.set("stopdl").ok()?,
+        }
+        Some(text)
+    }
 }
 
 struct DownloadViews {
     protocol: Protocol,
     allow: qa_console::cvars::View,
-    categories: [qa_console::cvars::View; 4],
+    categories: Option<[qa_console::cvars::View; 4]>,
 }
 
 impl ClientResources {
+    pub(crate) fn receive_download(
+        &mut self,
+        protocol: Protocol,
+        chunk: Result<Chunk<'_>, qa_network::downloads::Error>,
+        vfs: &Vfs,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<(), String> {
+        if matches!(chunk, Ok(Chunk::Block { .. })) && self.downloads.is_none() {
+            // A control-only owner needs no writable root. Its retained stopdl
+            // is flushed after ingress has restored the connection.
+            self.downloads = Some(ClientDownload::new(None, None, protocol));
+        }
+        let downloads = self
+            .downloads
+            .as_mut()
+            .ok_or("unsolicited download with no configured receiver")?;
+        match chunk {
+            Ok(chunk) => downloads.receive(protocol, chunk, vfs, cvars),
+            Err(error) => {
+                downloads.reject();
+                Err(format!("malformed native download: {error:?}"))
+            }
+        }
+    }
+
     pub(crate) fn retry_published_file(&mut self, path: &[u8]) {
         let matches = |candidate: &[u8]| {
             candidate
@@ -335,7 +394,10 @@ impl DownloadViews {
         protocol: Protocol,
         seat: SeatId,
     ) -> Result<Option<Self>, String> {
-        if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+        if !matches!(
+            protocol,
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 | Protocol::Quake3_68
+        ) {
             return Ok(None);
         }
         let context = qa_console::views::Context {
@@ -347,6 +409,13 @@ impl DownloadViews {
         let allow = cvars
             .bind("cl_allowDownload", context)
             .ok_or("missing CLIENT download permission")?;
+        if protocol == Protocol::Quake3_68 {
+            return Ok(Some(Self {
+                protocol,
+                allow,
+                categories: None,
+            }));
+        }
         let [maps, models, sounds, players] = [
             "allow_download_maps",
             "allow_download_models",
@@ -361,14 +430,17 @@ impl DownloadViews {
         Ok(Some(Self {
             protocol,
             allow,
-            categories: [maps?, models?, sounds?, players?],
+            categories: Some([maps?, models?, sounds?, players?]),
         }))
     }
     fn allows(&self, name: &[u8], cvars: &qa_console::cvars::Cvars) -> bool {
         if cvars.numeric(self.allow).unwrap_or(0.0) <= 0.0 {
             return false;
         }
-        let allowed = |index| cvars.numeric(self.categories[index]).unwrap_or(0.0) != 0.0;
+        let Some(categories) = self.categories else {
+            return true;
+        };
+        let allowed = |index| cvars.numeric(categories[index]).unwrap_or(0.0) != 0.0;
         use qa_network::downloads::AssetCategory;
         match qa_network::downloads::category(self.protocol, name) {
             AssetCategory::Package => (0..4).all(allowed),
@@ -382,15 +454,24 @@ impl DownloadViews {
 }
 
 impl ClientDownload {
+    fn configured(&self) -> bool {
+        self.config.is_some()
+    }
+
     pub(crate) fn receiving(&self) -> bool {
         matches!(self.transfer, Transfer::Active { .. })
     }
 
-    fn new(config: DownloadConfig, permissions: Option<DownloadViews>, protocol: Protocol) -> Self {
+    fn new(
+        config: Option<DownloadConfig>,
+        permissions: Option<DownloadViews>,
+        protocol: Protocol,
+    ) -> Self {
         Self {
             config,
             transfer: Transfer::Idle,
             permissions,
+            blocks: (protocol == Protocol::Quake3_68).then(BlockProgress::default),
             skin_pass: (protocol == Protocol::QuakeWorld28).then(|| SkinPass {
                 stamp: None,
                 cursor: 0,
@@ -405,6 +486,9 @@ impl ClientDownload {
 
     pub(crate) fn close(&mut self) {
         self.transfer = Transfer::Idle;
+        if let Some(blocks) = &mut self.blocks {
+            *blocks = BlockProgress::default();
+        }
         if let Some(pass) = &mut self.skin_pass {
             pass.stamp = None;
             pass.cursor = 0;
@@ -415,6 +499,7 @@ impl ClientDownload {
     }
 
     pub(crate) fn reject(&mut self) {
+        self.stop_blocks();
         let previous = std::mem::replace(&mut self.transfer, Transfer::Idle);
         self.transfer = match previous {
             Transfer::Active { request, .. } | Transfer::Paused { request, .. } => {
@@ -439,6 +524,12 @@ impl ClientDownload {
         ) {
             return Err("a download or its outstanding reply is still active".into());
         }
+        if self
+            .pending()
+            .is_some_and(|pending| matches!(pending, Pending::Block(_) | Pending::Stop))
+        {
+            return Err("download acknowledgement is still pending".into());
+        }
         qa_network::downloads::validate_path(name).map_err(|_| "invalid native download path")?;
         let text = std::str::from_utf8(name).map_err(|_| "download path is not UTF-8")?;
         let canonical = qa_core::names::canonical_path(text);
@@ -450,10 +541,13 @@ impl ClientDownload {
         if !self.allowed(name.as_bytes(), cvars) {
             return Err("download disabled by local CLIENT policy".into());
         }
+        let config = self
+            .config
+            .ok_or("downloads have no configured writable roots")?;
         let mount = if name.as_bytes().starts_with(b"skins/") {
-            self.config.skins
+            config.skins
         } else {
-            self.config.game
+            config.game
         };
         self.open(
             Request {
@@ -472,6 +566,9 @@ impl ClientDownload {
     }
 
     fn open(&mut self, request: Request, vfs: &Vfs) -> Result<(), String> {
+        let config = self
+            .config
+            .ok_or("downloads have no configured writable roots")?;
         let result = (|| {
             let root = vfs
                 .directory_path(request.mount)
@@ -479,14 +576,17 @@ impl ClientDownload {
             let file = StagedFile::create(
                 root,
                 request.name.as_str(),
-                self.config.maximum_bytes,
-                self.config.buffer_bytes,
+                config.maximum_bytes,
+                config.buffer_bytes,
             )
             .map_err(|error| format!("download staging: {error}"))?;
             Ok::<_, String>(file)
         })();
         match result {
             Ok(file) => {
+                if let Some(blocks) = &mut self.blocks {
+                    *blocks = BlockProgress::default();
+                }
                 self.transfer = Transfer::Active {
                     request,
                     file,
@@ -502,7 +602,15 @@ impl ClientDownload {
         }
     }
 
+    fn stop_blocks(&mut self) {
+        if let Some(blocks) = &mut self.blocks {
+            blocks.stop = true;
+            blocks.queued = blocks.received;
+        }
+    }
+
     fn stop(&mut self) {
+        self.stop_blocks();
         if let Some(pass) = &mut self.skin_pass {
             pass.paused = true;
         }
@@ -512,7 +620,7 @@ impl ClientDownload {
                 request, sending, ..
             } => Transfer::Paused {
                 request,
-                draining: matches!(sending, Sending::Awaiting),
+                draining: self.blocks.is_none() && matches!(sending, Sending::Awaiting),
                 retry: false,
             },
             Transfer::Paused {
@@ -676,36 +784,54 @@ impl ClientDownload {
             && self.resource_idle()
     }
     fn resource_idle(&self) -> bool {
-        matches!(
-            self.transfer,
-            Transfer::Idle
-                | Transfer::Finished { .. }
-                | Transfer::Failed(Request {
-                    purpose: Purpose::Skin | Purpose::Startup,
-                    ..
-                })
-        )
+        self.pending().is_none()
+            && matches!(
+                self.transfer,
+                Transfer::Idle
+                    | Transfer::Finished { .. }
+                    | Transfer::Failed(Request {
+                        purpose: Purpose::Skin | Purpose::Startup,
+                        ..
+                    })
+            )
     }
 
-    fn pending(&self) -> Option<FixedText<80>> {
-        let Transfer::Active {
-            request, sending, ..
-        } = &self.transfer
-        else {
+    fn pending(&self) -> Option<Pending> {
+        if let Some(blocks) = &self.blocks {
+            if blocks.stop {
+                return Some(Pending::Stop);
+            }
+            if blocks.queued < blocks.received {
+                return Some(Pending::Block(blocks.queued));
+            }
+        }
+        let Transfer::Active { sending, .. } = self.transfer else {
             return None;
         };
-        let mut command = FixedText::default();
         match sending {
-            Sending::Request => write!(command, "download {}", request.name.as_str()).ok()?,
-            Sending::Next => command.set("nextdl").ok()?,
-            Sending::Awaiting => return None,
+            Sending::Request => Some(Pending::Request),
+            Sending::Next => Some(Pending::Next),
+            Sending::Awaiting => None,
         }
-        Some(command)
     }
 
-    fn queued(&mut self) {
-        if let Transfer::Active { sending, .. } = &mut self.transfer {
-            *sending = Sending::Awaiting;
+    fn queued(&mut self, pending: Pending) {
+        match pending {
+            Pending::Block(number) => {
+                if let Some(blocks) = &mut self.blocks {
+                    blocks.queued = number + 1;
+                }
+            }
+            Pending::Stop => {
+                if let Some(blocks) = &mut self.blocks {
+                    blocks.stop = false;
+                }
+            }
+            Pending::Request | Pending::Next => {
+                if let Transfer::Active { sending, .. } = &mut self.transfer {
+                    *sending = Sending::Awaiting;
+                }
+            }
         }
     }
 
@@ -716,6 +842,13 @@ impl ClientDownload {
         vfs: &Vfs,
         cvars: &qa_console::cvars::Cvars,
     ) -> Result<(), String> {
+        // CL_ParseDownload consumes native fields before comparing the block.
+        // This includes repeated EOF after publication when its ACK was lost.
+        if let (Chunk::Block { number, .. }, Some(blocks)) = (chunk, &self.blocks)
+            && i32::from(number) != blocks.received
+        {
+            return Ok(());
+        }
         let previous = std::mem::replace(&mut self.transfer, Transfer::Idle);
         match previous {
             Transfer::Paused {
@@ -747,36 +880,84 @@ impl ClientDownload {
                     if vfs.directory_path(request.mount).is_none() {
                         return Err("download directory retired".into());
                     }
-                    let bytes = chunk
-                        .bytes
-                        .ok_or_else(|| format!("server has no {}", request.name.as_str()))?;
-                    if chunk.percent < percent || chunk.percent > 100 {
-                        return Err("download progress regressed".into());
-                    }
+                    let (bytes, received_percent, compressed, complete, sending) = match chunk {
+                        Chunk::Sequential {
+                            percent: received_percent,
+                            bytes,
+                            compressed,
+                        } if self.blocks.is_none() => {
+                            let bytes = bytes.ok_or_else(|| {
+                                format!("server has no {}", request.name.as_str())
+                            })?;
+                            if received_percent < percent || received_percent > 100 {
+                                return Err("download progress regressed".into());
+                            }
+                            let empty = qa_network::downloads::sequential(protocol)
+                                .is_some_and(|policy| policy.empty_completes())
+                                && !compressed
+                                && file.is_empty()
+                                && bytes.is_empty();
+                            (
+                                bytes,
+                                received_percent,
+                                compressed,
+                                received_percent == 100 || empty,
+                                Sending::Next,
+                            )
+                        }
+                        Chunk::Block { total, bytes, .. } => {
+                            let blocks =
+                                self.blocks.as_mut().ok_or("unexpected numbered download")?;
+                            if let Some(total) = total {
+                                blocks.total = Some(total);
+                            }
+                            let total = u64::from(blocks.total.ok_or("missing download size")?);
+                            if self
+                                .config
+                                .is_none_or(|config| total > config.maximum_bytes)
+                                || file.len() + bytes.len() as u64 > total
+                            {
+                                return Err("download exceeds declared or configured size".into());
+                            }
+                            let complete = bytes.is_empty();
+                            if complete && file.len() != total {
+                                return Err("incomplete download at EOF".into());
+                            }
+                            let percent = if complete {
+                                100
+                            } else {
+                                ((file.len() + bytes.len() as u64) * 100 / total.max(1)).min(99)
+                                    as u8
+                            };
+                            (bytes, percent, false, complete, Sending::Awaiting)
+                        }
+                        _ => return Err("unexpected download encoding".into()),
+                    };
                     file.append(bytes)
                         .map_err(|error| format!("download write: {error}"))?;
-                    let empty = qa_network::downloads::sequential(protocol)
-                        .is_some_and(|policy| policy.empty_completes())
-                        && !chunk.compressed
-                        && file.is_empty()
-                        && bytes.is_empty();
-                    if chunk.percent == 100 || empty {
+                    if complete {
                         let bytes = file
                             .publish()
                             .map_err(|error| format!("download publication: {error}"))?;
+                        if let Some(blocks) = &mut self.blocks {
+                            blocks.received += 1;
+                        }
                         return Ok(Transfer::Published {
                             request: request.clone(),
                             bytes,
                         });
                     }
-                    if bytes.is_empty() && !chunk.compressed {
+                    if bytes.is_empty() && !compressed {
                         return Err("download made no progress".into());
+                    }
+                    if let Some(blocks) = &mut self.blocks {
+                        blocks.received += 1;
                     }
                     Ok(Transfer::Active {
                         request: request.clone(),
                         file,
-                        percent: chunk.percent,
-                        sending: Sending::Next,
+                        percent: received_percent,
+                        sending,
                     })
                 })();
                 match result {
@@ -786,12 +967,14 @@ impl ClientDownload {
                     }
                     Err(error) => {
                         self.transfer = Transfer::Failed(request);
+                        self.stop_blocks();
                         Err(error)
                     }
                 }
             }
             other => {
                 self.transfer = other;
+                self.stop_blocks();
                 Err("unsolicited download block".into())
             }
         }
@@ -873,8 +1056,9 @@ impl crate::host::FrameHost {
             .as_ref()
             .ok_or("missing native CLIENT commands")?
             .protocol;
-        qa_network::downloads::sequential(protocol)
-            .ok_or("protocol has no sequential download service")?;
+        if protocol == Protocol::NetQuake15 {
+            return Err("protocol has no native download service".into());
+        }
         let resources = self
             .runtime
             .client_resources
@@ -882,7 +1066,7 @@ impl crate::host::FrameHost {
             .and_then(Option::as_mut)
             .ok_or("no CLIENT resources")?;
         if let Some(existing) = &resources.downloads {
-            if existing.config == config {
+            if existing.config == Some(config) {
                 return Ok(());
             }
             if matches!(
@@ -902,7 +1086,7 @@ impl crate::host::FrameHost {
             .and_then(|binding| binding.seat())
             .ok_or("downloads require a local CLIENT seat")?;
         let permissions = DownloadViews::bind(&self.console.cvars, protocol, seat)?;
-        resources.downloads = Some(ClientDownload::new(config, permissions, protocol));
+        resources.downloads = Some(ClientDownload::new(Some(config), permissions, protocol));
         Ok(())
     }
 
@@ -955,11 +1139,17 @@ impl crate::host::FrameHost {
             .as_ref()
             .ok_or("missing CLIENT commands")?
             .protocol;
-        qa_network::downloads::sequential(protocol)
-            .ok_or("this protocol has no sequential downloads")?;
+        if protocol == Protocol::NetQuake15 {
+            return Err("protocol has no native download service".into());
+        }
         if self.runtime.client_resources[client.0 as usize]
             .as_ref()
-            .is_some_and(|resources| resources.downloads.is_none())
+            .is_some_and(|resources| {
+                resources
+                    .downloads
+                    .as_ref()
+                    .is_none_or(|downloads| !downloads.configured())
+            })
         {
             let defaults = self
                 .download_defaults
@@ -1027,9 +1217,9 @@ impl crate::host::FrameHost {
                 downloads.close();
                 continue;
             }
-            let Some(command) = downloads.pending() else {
+            if downloads.pending().is_none() {
                 continue;
-            };
+            }
             if let Transfer::Active { request, .. } = &downloads.transfer
                 && !downloads.allowed(request.name.as_bytes(), &self.console.cvars)
             {
@@ -1045,35 +1235,34 @@ impl crate::host::FrameHost {
                 downloads.close();
                 continue;
             };
-            let starts_stream = matches!(
-                &downloads.transfer,
-                Transfer::Active {
-                    sending: Sending::Request,
-                    ..
-                }
-            );
             let Some(commands) = connection.commands.as_mut() else {
                 downloads.close();
                 continue;
             };
-            match connection
-                .channel
-                .queue_client_command(commands.protocol, command.as_bytes())
-            {
-                Ok(_) => {
-                    if starts_stream {
-                        commands.reset_download_stream();
+            while let Some(pending) = downloads.pending() {
+                let Some(command) = pending.text(&downloads.transfer) else {
+                    break;
+                };
+                match connection
+                    .channel
+                    .queue_client_command(commands.protocol, command.as_bytes())
+                {
+                    Ok(_) => {
+                        if matches!(pending, Pending::Request) {
+                            commands.reset_download_stream();
+                        }
+                        downloads.queued(pending);
                     }
-                    downloads.queued();
-                }
-                Err(TransmitError::Full) => {}
-                Err(_) => {
-                    downloads.reject();
-                    let _ = self
-                        .runtime
-                        .server
-                        .events
-                        .console_bytes(b"Download command rejected by native channel.\n");
+                    Err(TransmitError::Full) => break,
+                    Err(_) => {
+                        downloads.reject();
+                        let _ = self
+                            .runtime
+                            .server
+                            .events
+                            .console_bytes(b"Download command rejected by native channel.\n");
+                        break;
+                    }
                 }
             }
         }
@@ -1121,7 +1310,12 @@ impl crate::host::FrameHost {
                 }
                 if self.runtime.client_resources[index]
                     .as_ref()
-                    .is_some_and(|resources| resources.downloads.is_none())
+                    .is_some_and(|resources| {
+                        resources
+                            .downloads
+                            .as_ref()
+                            .is_none_or(|downloads| !downloads.configured())
+                    })
                 {
                     if let Some(config) = self.download_defaults {
                         if let Err(error) = self.configure_client_downloads(
@@ -1187,7 +1381,12 @@ impl crate::host::FrameHost {
             };
             if self.runtime.client_resources[index]
                 .as_ref()
-                .is_some_and(|resources| resources.downloads.is_none())
+                .is_some_and(|resources| {
+                    resources
+                        .downloads
+                        .as_ref()
+                        .is_none_or(|downloads| !downloads.configured())
+                })
             {
                 let Some(config) = self.download_defaults else {
                     continue;

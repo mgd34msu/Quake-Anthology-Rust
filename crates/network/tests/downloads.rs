@@ -27,7 +27,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
         };
         for (chunk, expected) in [
             (
-                Chunk {
+                Chunk::Sequential {
                     compressed: false,
                     percent: 40,
                     bytes: Some(&[0, 128, 255]),
@@ -35,7 +35,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
                 vec![opcode, 3, 0, 40, 0, 128, 255],
             ),
             (
-                Chunk {
+                Chunk::Sequential {
                     compressed: false,
                     percent: 0,
                     bytes: None,
@@ -43,7 +43,7 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
                 vec![opcode, 255, 255, 0],
             ),
             (
-                Chunk {
+                Chunk::Sequential {
                     compressed: false,
                     percent: 100,
                     bytes: Some(&[]),
@@ -57,7 +57,10 @@ fn native_sequential_golden_blocks_preserve_signed_size_progress_and_raw_bytes()
             assert!(wire[length..].iter().all(|&byte| byte == 0xcc));
             let (decoded, consumed) = downloads::read_chunk(protocol, &wire[..length]).unwrap();
             assert_eq!((decoded, consumed), (chunk, length));
-            if let Some(data) = decoded.bytes {
+            if let Chunk::Sequential {
+                bytes: Some(data), ..
+            } = decoded
+            {
                 assert_eq!(
                     data.as_ptr(),
                     wire[4..].as_ptr(),
@@ -88,7 +91,7 @@ fn malformed_or_truncated_blocks_never_borrow_beyond_the_native_service() {
         let data = vec![71; policy.block_bytes()];
         let length = downloads::write_chunk(
             protocol,
-            Chunk {
+            Chunk::Sequential {
                 compressed: false,
                 percent: 50,
                 bytes: Some(&data),
@@ -115,7 +118,7 @@ fn malformed_or_truncated_blocks_never_borrow_beyond_the_native_service() {
         assert_eq!(
             downloads::write_chunk(
                 protocol,
-                Chunk {
+                Chunk::Sequential {
                     compressed: false,
                     percent: 1,
                     bytes: Some(&vec![0; policy.block_bytes() + 1])
@@ -133,7 +136,14 @@ fn malformed_or_truncated_blocks_never_borrow_beyond_the_native_service() {
     writer.write_bits(99, 8).unwrap();
     writer.write_data(&data).unwrap();
     let (chunk, consumed) = downloads::read_chunk(Protocol::QuakeWorld28, &raw).unwrap();
-    assert_eq!(chunk.bytes, Some(data.as_slice()));
+    assert_eq!(
+        chunk,
+        Chunk::Sequential {
+            percent: 99,
+            bytes: Some(data.as_slice()),
+            compressed: false
+        }
+    );
     assert_eq!(
         consumed,
         raw.len(),
@@ -147,12 +157,12 @@ fn connection_parser_delivers_blocks_and_following_services_in_native_order() {
         let mut wire = [0; 256];
         let mut length = 0;
         for chunk in [
-            Chunk {
+            Chunk::Sequential {
                 compressed: false,
                 percent: 35,
                 bytes: Some(b"first"),
             },
-            Chunk {
+            Chunk::Sequential {
                 compressed: false,
                 percent: 100,
                 bytes: Some(b"last"),
@@ -180,8 +190,8 @@ fn connection_parser_delivers_blocks_and_following_services_in_native_order() {
                 &mut channel,
                 ResourceNamespace::Client(ClientId(0)),
                 |event| match event {
-                    Incoming::Download(Ok(chunk)) => {
-                        received.push((chunk.percent, chunk.bytes.unwrap().to_vec()))
+                    Incoming::Download(Ok(Chunk::Sequential { percent, bytes, .. })) => {
+                        received.push((percent, bytes.unwrap().to_vec()))
                     }
                     Incoming::Print(print) => {
                         assert_eq!(received, [(35, b"first".to_vec()), (100, b"last".to_vec())]);
@@ -271,4 +281,196 @@ fn shared_download_paths_and_categories_keep_native_content_boundaries() {
         downloads::category(Protocol::Quake2_34, b"sprites/a.sp2"),
         Other
     );
+}
+
+#[test]
+fn q3_downloads_share_huffman_commands_fragmentation_and_service_order() {
+    use qa_core::sys_events::EventTime;
+    use qa_network::channel::Delivery;
+    let protocol = Protocol::Quake3_68;
+    let mut client = Channel::load(
+        protocol.channel(),
+        Endpoint::Client,
+        protocol.message_bytes(),
+        16,
+    )
+    .unwrap();
+    let mut server = Channel::load(
+        protocol.channel(),
+        Endpoint::Server,
+        protocol.message_bytes(),
+        16,
+    )
+    .unwrap();
+    for channel in [&mut client, &mut server] {
+        channel.configure_snapshots(protocol).unwrap();
+        channel
+            .set_command_context(qa_network::channel::commands::CommandContext {
+                challenge: 0x12345678,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let mut commands = Commands::load(protocol, protocol.message_bytes());
+    server.queue_reliable(b"print before").unwrap();
+    let binary: Vec<u8> = (0..6144).map(|index| (index * 17) as u8).collect();
+    let mut payload = vec![0; protocol.message_bytes()];
+    let size = server
+        .encode_server_output(&mut payload, |writer, _| {
+            // Native SV_WriteDownloadToClient layout, independent of write_service.
+            for (number, data) in [(0, binary.as_slice()), (1, &[])] {
+                writer.write_bits(6, 8)?;
+                writer.write_bits(number, 16)?;
+                if number == 0 {
+                    writer.write_bits(binary.len() as u32, 32)?;
+                }
+                writer.write_bits(data.len() as u32, 16)?;
+                writer.write_data(data)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    server
+        .prepare_server_message(&payload[..size], EventTime(1))
+        .unwrap()
+        .unwrap();
+    let mut packets = 0;
+    let mut received = Vec::new();
+    loop {
+        let wire = server.pending_packet().unwrap().bytes.to_vec();
+        server.submitted(EventTime(1)).unwrap();
+        packets += 1;
+        let result = client.receive(&wire, EventTime(1)).unwrap();
+        if let Delivery::Payload(body) = result.delivery {
+            let staged = commands.stage(body).unwrap();
+            commands
+                .decode_output(
+                    staged,
+                    result.header.sequence,
+                    &mut client,
+                    ResourceNamespace::Client(ClientId(0)),
+                    |incoming| match incoming {
+                        Incoming::ReliableCommand { sequence, text } => {
+                            assert_eq!((sequence, text), (1, b"print before".as_slice()));
+                            assert!(received.is_empty());
+                        }
+                        Incoming::Download(Ok(Chunk::Block {
+                            number,
+                            total,
+                            bytes,
+                        })) => {
+                            assert_eq!(number as usize, received.len());
+                            assert_eq!(total, (number == 0).then_some(binary.len() as u32));
+                            received.push(bytes.to_vec());
+                        }
+                        _ => panic!("unexpected Q3 service"),
+                    },
+                )
+                .unwrap();
+        }
+        if !server.pending_fragments() {
+            break;
+        }
+        server.prepare_output(EventTime(1)).unwrap().unwrap();
+    }
+    assert!(packets > 1);
+    assert_eq!(received, [binary, vec![]]);
+}
+
+#[test]
+fn q3_download_rejections_sizes_and_following_services_keep_the_native_boundary() {
+    use qa_network::channel::commands::ServerOutput;
+    let protocol = Protocol::Quake3_68;
+    let data = [0, 255, 128, 1];
+    for chunk in [
+        Chunk::Block {
+            number: 0,
+            total: Some(4),
+            bytes: &data,
+        },
+        Chunk::Block {
+            number: i16::MIN,
+            total: None,
+            bytes: &data,
+        },
+        Chunk::Block {
+            number: 17,
+            total: None,
+            bytes: &[],
+        },
+        Chunk::Rejected {
+            size: -1,
+            message: b"disabled by server",
+        },
+    ] {
+        let mut client = Channel::load(
+            protocol.channel(),
+            Endpoint::Client,
+            protocol.message_bytes(),
+            8,
+        )
+        .unwrap();
+        let mut server = Channel::load(
+            protocol.channel(),
+            Endpoint::Server,
+            protocol.message_bytes(),
+            8,
+        )
+        .unwrap();
+        let mut wire = vec![0; protocol.message_bytes()];
+        let n = server
+            .encode_server_output(&mut wire, |writer, _| {
+                downloads::write_service(protocol, chunk, writer).unwrap();
+                writer.write_bits(1, 8)?; // following svc_nop
+                Ok(())
+            })
+            .unwrap();
+        let mut decoded = 0;
+        client
+            .decode_server_output(&mut wire[..n], 1, |output| match output {
+                ServerOutput::Download(Ok(actual)) => {
+                    assert_eq!(actual, chunk);
+                    decoded += 1;
+                }
+                _ => panic!("download must remain in the shared MSG stream"),
+            })
+            .unwrap();
+        assert_eq!(decoded, 1);
+    }
+    for length in [-1i16, 16385, 32767, 2] {
+        let mut client = Channel::load(
+            protocol.channel(),
+            Endpoint::Client,
+            protocol.message_bytes(),
+            8,
+        )
+        .unwrap();
+        let mut server = Channel::load(
+            protocol.channel(),
+            Endpoint::Server,
+            protocol.message_bytes(),
+            8,
+        )
+        .unwrap();
+        let mut wire = [0; 128];
+        let n = server
+            .encode_server_output(&mut wire, |writer, _| {
+                writer.write_bits(6, 8)?;
+                writer.write_bits(1, 16)?;
+                writer.write_bits(u32::from(length as u16), 16)?;
+                // Positive two-byte size is truncated, without an outer EOF byte.
+                Ok(())
+            })
+            .unwrap();
+        let mut rejected = 0;
+        assert!(
+            client
+                .decode_server_output(&mut wire[..n], 1, |output| match output {
+                    ServerOutput::Download(Err(_)) => rejected += 1,
+                    _ => panic!("malformed chunk cannot reach another service"),
+                })
+                .is_err()
+        );
+        assert_eq!(rejected, 1);
+    }
 }

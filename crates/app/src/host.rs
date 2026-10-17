@@ -3411,16 +3411,13 @@ impl FrameHost {
                                 self.receive_server_commands(id, seat, text, time, download_protocol);
                             }
                             Incoming::Download(chunk) => {
+                                if let Ok(qa_network::downloads::Chunk::Rejected { message, .. }) = chunk {
+                                    self.reject_client_startup(id, format_args!("{}", String::from_utf8_lossy(message)));
+                                    return std::ops::ControlFlow::Break(());
+                                }
                                 let result = self.runtime.client_resources[id.0 as usize].as_mut()
-                                    .and_then(|resources| resources.downloads.as_mut())
-                                    .ok_or_else(|| "unsolicited download with no configured receiver".to_owned())
-                                    .and_then(|downloads| match chunk {
-                                        Ok(chunk) => downloads.receive(download_protocol, chunk, &self.runtime.vfs, &self.console.cvars),
-                                        Err(error) => {
-                                            downloads.reject();
-                                            Err(format!("malformed native download: {error:?}"))
-                                        }
-                                    });
+                                    .ok_or_else(|| "download has no CLIENT resource owner".to_owned())
+                                    .and_then(|resources| resources.receive_download(download_protocol, chunk, &self.runtime.vfs, &self.console.cvars));
                                 if let Err(error) = result {
                                     let _ = self.runtime.server.events.console_formatted(format_args!("Download rejected: {error}\n"));
                                 }

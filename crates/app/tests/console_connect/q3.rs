@@ -1058,3 +1058,6 @@ fn q3_pure_gamestate_is_rejected_before_media_or_priming() {
     assert!(host.runtime.model_assets.is_none());
     assert!(!host.runtime.quit);
 }
+
+#[path = "q3_downloads.rs"]
+mod downloads;

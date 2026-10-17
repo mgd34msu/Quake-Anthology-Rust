@@ -382,7 +382,7 @@ fn replacement_body_with_bad_outer_tail_revokes_old_readiness() {
         gamestate(writer, 0, 0, 2, |writer| {
             config(writer, 20, b"body accepted")
         })?;
-        writer.write_bits(6, 8)?; // Unsupported trailing download; no outer commit.
+        writer.write_bits(0, 8)?; // Native svc_bad; no outer commit.
         Ok(())
     });
     let mut rows = Vec::new();

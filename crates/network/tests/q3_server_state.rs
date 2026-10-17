@@ -175,6 +175,7 @@ fn gamestate_receipt_requires_native_message_ack_and_preserves_later_commands() 
             assert_eq!(text, b"print first");
             commands += 1;
         }
+        ServerOutput::Download(_) => panic!("unexpected download"),
         ServerOutput::Gamestate(state) => {
             assert_eq!(state.server_command_sequence, 1);
             assert_eq!(state.client_num, 0);

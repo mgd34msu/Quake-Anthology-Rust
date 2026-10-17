@@ -155,7 +155,7 @@ fn download_percentage_rejects_only_the_transfer_but_framing_and_later_services_
         let mut body = [0; 32];
         let length = downloads::write_chunk(
             protocol,
-            Chunk {
+            Chunk::Sequential {
                 percent: 100,
                 bytes: Some(b"file"),
                 compressed: false,
@@ -179,7 +179,13 @@ fn download_percentage_rejects_only_the_transfer_but_framing_and_later_services_
         let mut accepted = 0;
         receive(&mut connections, 0, &bytes, |incoming| match incoming {
             Incoming::Download(Ok(chunk)) => {
-                assert_eq!(chunk.bytes, Some(b"file".as_slice()));
+                assert!(matches!(
+                    chunk,
+                    qa_network::downloads::Chunk::Sequential {
+                        bytes: Some(b"file"),
+                        ..
+                    }
+                ));
                 accepted += 1;
             }
             Incoming::PacketTiming { .. } => {}

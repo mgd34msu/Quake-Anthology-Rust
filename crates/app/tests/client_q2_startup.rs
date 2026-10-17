@@ -1178,7 +1178,7 @@ fn chunk(host: &mut FrameHost, source: &mut Source, client: usize, percent: u8, 
     let mut packet = [0; 1100];
     let length = write_chunk(
         source.servers[client].protocol,
-        Chunk {
+        Chunk::Sequential {
             percent,
             bytes: Some(bytes),
             compressed: false,

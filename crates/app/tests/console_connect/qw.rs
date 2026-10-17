@@ -342,7 +342,7 @@ fn active_qw_reconnect_drops_the_old_channel_then_repeats_oob_admission_with_the
             let mut bytes = [0; 64];
             let length = qa_network::downloads::write_chunk(
                 QW,
-                qa_network::downloads::Chunk {
+                qa_network::downloads::Chunk::Sequential {
                     compressed: false,
                     percent: 100,
                     bytes: Some(b"held bytes"),

@@ -597,7 +597,7 @@ fn missing_sound_download_finishes_before_models_are_requested() {
         let mut packet = [0; 128];
         let length = write_chunk(
             PROTOCOL,
-            Chunk {
+            Chunk::Sequential {
                 compressed: false,
                 percent,
                 bytes: Some(bytes),

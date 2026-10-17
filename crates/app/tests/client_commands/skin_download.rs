@@ -113,7 +113,7 @@ pub(crate) fn downloaded_skins(native: bool) {
     let mut block = [0; 1100];
     let length = qa_network::downloads::write_chunk(
         Protocol::Quake2_34,
-        qa_network::downloads::Chunk {
+        qa_network::downloads::Chunk::Sequential {
             percent: 100,
             bytes: Some(bytes),
             compressed: false,

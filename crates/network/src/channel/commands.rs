@@ -12,6 +12,7 @@ pub use gamestate::{Q3GameState, Q3Startup, write_gamestate};
 pub enum ServerOutput<'a> {
     ReliableCommand { sequence: u32, text: &'a [u8] },
     Gamestate(Q3GameState<'a>),
+    Download(Result<crate::downloads::Chunk<'a>, crate::downloads::Error>),
 }
 
 const SLOTS: usize = 64;
@@ -190,6 +191,7 @@ pub(super) struct CommandMessages {
     message_acknowledged: u32,
     last_executed: u32,
     startup: Option<Q3Startup>,
+    download: Option<Box<[u8]>>,
 }
 impl CommandMessages {
     pub(super) fn load(endpoint: Endpoint, maximum: usize) -> Self {
@@ -215,6 +217,8 @@ impl CommandMessages {
             message_acknowledged: 0,
             last_executed: 0,
             startup: None,
+            download: (endpoint == Endpoint::Client)
+                .then(|| vec![0; packet::Q3_MESSAGE_BYTES].into_boxed_slice()),
         }
     }
     pub(super) fn pending(&self) -> bool {
@@ -457,7 +461,7 @@ impl Channel {
         Ok(n)
     }
     /// Native commands, gamestate and snapshots share this MSG stream.
-    /// Download services remain explicitly unsupported.
+    /// Download data uses the same connection-owned decode storage and consumer.
     pub fn decode_server_output(
         &mut self,
         bytes: &mut [u8],
@@ -500,6 +504,17 @@ impl Channel {
                         c.startup = Some(startup);
                     }
                     return Ok(());
+                }
+                6 => {
+                    let scratch = c.download.as_deref_mut().ok_or(packet::Error::Context)?;
+                    let chunk = crate::downloads::read_block(&mut reader, scratch);
+                    consume(ServerOutput::Download(chunk));
+                    if let Err(error) = chunk {
+                        return Err(match error {
+                            crate::downloads::Error::Message(error) => error.into(),
+                            _ => packet::Error::Count,
+                        });
+                    }
                 }
                 5 => {
                     let seq = reader.read_bits(32)?;

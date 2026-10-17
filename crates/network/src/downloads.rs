@@ -2,16 +2,28 @@
 //! with app callers; the packet decoder retains no extra byte queue.
 use crate::{
     commands::packet::Protocol,
-    message::{Encoding, Error as MessageError, ErrorKind, Reader, Writer},
+    message::{Encoding, Error as MessageError, ErrorKind, Reader, StringPolicy, Writer},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Chunk<'a> {
-    pub percent: u8,
-    /// Native signed size -1 means unavailable; an empty slice is a real block.
-    pub bytes: Option<&'a [u8]>,
-    /// DEFLATE input can advance while producing an empty decoded block.
-    pub compressed: bool,
+pub enum Chunk<'a> {
+    Sequential {
+        percent: u8,
+        /// Native signed size -1 means unavailable; an empty slice is a real block.
+        bytes: Option<&'a [u8]>,
+        /// DEFLATE input can advance while producing an empty decoded block.
+        compressed: bool,
+    },
+    Block {
+        number: i16,
+        /// Only native block zero carries the file size.
+        total: Option<u32>,
+        bytes: &'a [u8],
+    },
+    Rejected {
+        size: i32,
+        message: &'a [u8],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,7 +89,7 @@ pub(crate) fn read_chunk_service(opcode: u8, bytes: &[u8]) -> Result<(Chunk<'_>,
     let percent = reader.read_bits(8)? as u8;
     if size == -1 {
         return Ok((
-            Chunk {
+            Chunk::Sequential {
                 percent,
                 bytes: None,
                 compressed: false,
@@ -99,7 +111,7 @@ pub(crate) fn read_chunk_service(opcode: u8, bytes: &[u8]) -> Result<(Chunk<'_>,
         return Err(Error::Percent);
     }
     Ok((
-        Chunk {
+        Chunk::Sequential {
             percent,
             bytes: Some(data),
             compressed: false,
@@ -115,26 +127,111 @@ pub fn write_chunk(
     chunk: Chunk<'_>,
     output: &mut [u8],
 ) -> Result<usize, Error> {
-    let policy = sequential(protocol).ok_or(Error::Unsupported)?;
-    let size = if let Some(bytes) = chunk.bytes {
-        if bytes.len() > policy.block_bytes {
-            return Err(Error::Size);
-        }
-        if chunk.percent > 100 {
-            return Err(Error::Percent);
-        }
-        bytes.len() as u16
+    let encoding = if protocol == Protocol::Quake3_68 {
+        Encoding::Q3
     } else {
-        u16::MAX
+        Encoding::Bytes
     };
-    let mut writer = Writer::new(output, Encoding::Bytes);
-    writer.write_bits(u32::from(policy.opcode), 8)?;
-    writer.write_bits(u32::from(size), 16)?;
-    writer.write_bits(u32::from(chunk.percent), 8)?;
-    if let Some(bytes) = chunk.bytes {
-        writer.write_data(bytes)?;
-    }
+    let mut writer = Writer::new(output, encoding);
+    write_service(protocol, chunk, &mut writer)?;
     Ok(writer.size())
+}
+
+/// Append to the connection's existing MSG stream; Q3 shares Huffman state with
+/// the surrounding server commands, snapshots and svc_EOF.
+pub fn write_service(
+    protocol: Protocol,
+    chunk: Chunk<'_>,
+    writer: &mut Writer<'_>,
+) -> Result<(), Error> {
+    match chunk {
+        Chunk::Sequential { percent, bytes, .. } => {
+            let policy = sequential(protocol).ok_or(Error::Unsupported)?;
+            let size = if let Some(bytes) = bytes {
+                if bytes.len() > policy.block_bytes {
+                    return Err(Error::Size);
+                }
+                if percent > 100 {
+                    return Err(Error::Percent);
+                }
+                bytes.len() as u16
+            } else {
+                u16::MAX
+            };
+            writer.write_bits(u32::from(policy.opcode), 8)?;
+            writer.write_bits(u32::from(size), 16)?;
+            writer.write_bits(u32::from(percent), 8)?;
+            if let Some(bytes) = bytes {
+                writer.write_data(bytes)?;
+            }
+        }
+        Chunk::Block {
+            number,
+            total,
+            bytes,
+        } => {
+            if protocol != Protocol::Quake3_68 {
+                return Err(Error::Unsupported);
+            }
+            if (number == 0) != total.is_some()
+                || total.is_some_and(|total| total > i32::MAX as u32)
+                || bytes.len() > crate::commands::packet::Q3_MESSAGE_BYTES
+            {
+                return Err(Error::Size);
+            }
+            writer.write_bits(6, 8)?;
+            writer.write_bits(u32::from(number as u16), 16)?;
+            if let Some(total) = total {
+                writer.write_bits(total, 32)?;
+            }
+            writer.write_bits(bytes.len() as u32, 16)?;
+            writer.write_data(bytes)?;
+        }
+        Chunk::Rejected { size, message } => {
+            if protocol != Protocol::Quake3_68 {
+                return Err(Error::Unsupported);
+            }
+            if size >= 0 {
+                return Err(Error::Size);
+            }
+            writer.write_bits(6, 8)?;
+            writer.write_bits(0, 16)?;
+            writer.write_bits(size as u32, 32)?;
+            writer.write_string(StringPolicy::Q3, message)?;
+        }
+    }
+    Ok(())
+}
+
+/// Q3's decoded bytes borrow the connection's load-sized scratch until the
+/// synchronous consumer returns. They never create a second packet queue.
+pub(crate) fn read_block<'a>(
+    reader: &mut Reader<'_>,
+    scratch: &'a mut [u8],
+) -> Result<Chunk<'a>, Error> {
+    let number = reader.read_signed(16)? as i16;
+    let total = if number == 0 {
+        let size = reader.read_signed(32)?;
+        if size < 0 {
+            let limit = scratch.len().min(crate::message::COMMAND_STRING_BYTES);
+            let message = reader.read_string_into(StringPolicy::Q3, &mut scratch[..limit])?;
+            return Ok(Chunk::Rejected { size, message });
+        }
+        Some(size as u32)
+    } else {
+        None
+    };
+    let length = reader.read_signed(16)?;
+    if length < 0 || length as usize > crate::commands::packet::Q3_MESSAGE_BYTES {
+        return Err(Error::Size);
+    }
+    let bytes = scratch.get_mut(..length as usize).ok_or(Error::Size)?;
+    reader.read_data(bytes)?;
+    Ok(Chunk::Block {
+        number,
+        total,
+        bytes,
+    })
 }
 
 /// Native downloads name a bounded relative content path, never an OS path.

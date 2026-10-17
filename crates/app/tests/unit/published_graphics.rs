@@ -159,7 +159,7 @@ fn download(host: &mut FrameHost, source: &mut frames::Source, path: &str, bytes
         let mut block = [0; 1100];
         let length = qa_network::downloads::write_chunk(
             Protocol::Quake2_34,
-            qa_network::downloads::Chunk {
+            qa_network::downloads::Chunk::Sequential {
                 percent: (((index * 1024 + part.len()) * 100) / bytes.len()) as u8,
                 bytes: Some(part),
                 compressed: false,
