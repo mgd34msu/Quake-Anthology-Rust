@@ -36,7 +36,31 @@ struct Source {
     time: EventTime,
     reject_connect: bool,
     rejected_connects: usize,
+    reject_assets: bool,
+    rejected_assets: usize,
+    prepare_hud: bool,
     backend: Option<asset_frames::Source>,
+}
+impl qa_app::renderer::AssetPreparer for Source {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        self.prepare_hud
+            .then(|| self.backend.as_ref().unwrap().cpu.dimensions())
+    }
+    fn prepare_assets(
+        &mut self,
+        assets: &qa_render::Assets,
+        scene: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
+        if self.reject_assets {
+            self.rejected_assets += 1;
+            return Err("owned UDP fixture backend rejection".into());
+        }
+        qa_app::renderer::AssetPreparer::prepare_assets(
+            self.backend.as_mut().unwrap(),
+            assets,
+            scene,
+        )
+    }
 }
 impl FrameSource for Source {
     fn driver(&mut self) -> Driver<'_> {
@@ -47,9 +71,8 @@ impl FrameSource for Source {
         Driver::with_connector(preparer, &mut self.pump)
     }
     fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
-        self.backend
-            .as_mut()
-            .map(|backend| backend as &mut dyn qa_app::renderer::AssetPreparer)
+        self.backend.as_ref()?;
+        Some(self)
     }
     fn begin_frame(&mut self) -> Duration {
         Duration::from_nanos(self.time.0)
@@ -128,6 +151,9 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
         time: EventTime(0),
         reject_connect: false,
         rejected_connects: 0,
+        reject_assets: false,
+        rejected_assets: 0,
+        prepare_hud: false,
         backend: None,
     };
     let mut host = host(3);
@@ -358,6 +384,9 @@ fn one_slot_replacement_waits_for_presentation_and_preserves_all_role_choices() 
             time: EventTime(0),
             reject_connect: false,
             rejected_connects: 0,
+            reject_assets: false,
+            rejected_assets: 0,
+            prepare_hud: false,
             backend: None,
         };
         let mut host = host(1);
@@ -456,6 +485,8 @@ fn one_slot_replacement_waits_for_presentation_and_preserves_all_role_choices() 
 
 #[path = "console_connect/q2.rs"]
 mod q2;
+#[path = "console_connect/q3.rs"]
+mod q3;
 #[path = "console_connect/qw.rs"]
 mod qw;
 
@@ -465,6 +496,9 @@ fn source() -> Source {
         time: EventTime::default(),
         reject_connect: false,
         rejected_connects: 0,
+        reject_assets: false,
+        rejected_assets: 0,
+        prepare_hud: false,
         backend: None,
     }
 }
@@ -502,30 +536,57 @@ struct NativePeer {
     strings: Vec<Vec<u8>>,
     userinfos: Vec<Vec<u8>>,
     moves: usize,
+    q3_moves: Vec<qa_network::commands::packet::Move>,
 }
 impl NativePeer {
     fn new(protocol: Protocol, qport: u16) -> Self {
-        let mut channel =
-            Channel::load(protocol.client_channel(qport), Endpoint::Server, 8192, 16).unwrap();
+        let mut channel = Channel::load(
+            protocol.client_channel(qport),
+            Endpoint::Server,
+            protocol.message_bytes(),
+            16,
+        )
+        .unwrap();
         channel.configure_snapshots(protocol).unwrap();
         channel.set_qport(qport);
         Self {
             channel,
-            commands: Commands::load(protocol, 8192),
+            commands: Commands::load(protocol, protocol.message_bytes()),
             strings: vec![],
             userinfos: vec![],
             moves: 0,
+            q3_moves: vec![],
         }
     }
     fn receive(&mut self, bytes: &[u8], milliseconds: u64) {
         let time = EventTime::from_milliseconds(milliseconds);
         let received = self.channel.receive(bytes, time).unwrap();
+        let sequence = received.header.sequence;
         if let Delivery::Payload(payload) = received.delivery {
+            let inspected =
+                (self.commands.protocol == Protocol::Quake3_68).then(|| payload.to_vec());
             let length = self.commands.stage(payload).unwrap();
+            if let Some(mut inspected) = inspected {
+                let ack = qa_network::commands::packet::acknowledgements(&inspected).unwrap();
+                let key = self.channel.command_key(Some(ack)).unwrap();
+                qa_network::commands::packet::read_with_commands(
+                    Protocol::Quake3_68,
+                    &mut inspected,
+                    sequence,
+                    key,
+                    |record| {
+                        if let qa_network::commands::packet::Record::Move(movement) = record {
+                            self.q3_moves.push(movement);
+                        }
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
+                .unwrap();
+            }
             self.commands
                 .decode(
                     length,
-                    received.header.sequence,
+                    sequence,
                     milliseconds as i32,
                     &mut self.channel,
                     None,

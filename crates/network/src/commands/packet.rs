@@ -32,7 +32,7 @@ impl Protocol {
             Self::NetQuake15 => Some(26000),
             Self::QuakeWorld28 => Some(27500),
             Self::Quake2_34 | Self::Quake2Repro1038 => Some(27910),
-            _ => None,
+            Self::Quake3_68 => Some(27960),
         }
     }
     /// Native wire userinfo is independent of a module ABI's input buffer.

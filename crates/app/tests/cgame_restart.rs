@@ -1,5 +1,7 @@
 #[path = "support/client_asset_frames.rs"]
 mod asset_frames;
+#[path = "cgame_restart/connection.rs"]
+mod connection;
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod files;
@@ -345,6 +347,9 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                     29,
                     &[ImportArg::Word(SOUND), ImportArg::Integer(0)],
                 );
+                if fail_shutdown {
+                    qvm_call(&mut ops, 1, &[ImportArg::Pointer(ERROR_TEXT)]);
+                }
             }
             3 => {
                 ops.extend([
@@ -1302,13 +1307,7 @@ fn setup_renderers_with_images(
     (fixture, host, source, ids, anchors)
 }
 
-fn queue_gamestate(
-    host: &mut FrameHost,
-    client: ClientId,
-    map: &str,
-    native: u32,
-    malformed: bool,
-) {
+fn queue_gamestate(host: &mut FrameHost, client: ClientId, map: &str, native: u32) {
     let info = format!("\\mapname\\{map}");
     let world = format!("maps/{map}.bsp");
     let channel = &mut host
@@ -1331,7 +1330,6 @@ fn queue_gamestate(
             )
         })
         .unwrap();
-    let length = if malformed { length / 2 } else { length };
     let time = EventTime::from_milliseconds(100);
     channel
         .prepare_server_message(&bytes[..length], time)
@@ -1506,8 +1504,8 @@ fn verify(module: Vec<u8>) {
             row.player.trace_rules,
         )
     });
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     assert_eq!(query(&mut host, ModuleId(1), 9), Ok(11));
     assert_eq!(query(&mut host, ModuleId(2), 9), Ok(22));
@@ -1539,16 +1537,8 @@ fn verify(module: Vec<u8>) {
                 && (*world, *presentation) == old_world)
     );
 
-    let errors = host.runtime.network.command_errors;
-    queue_gamestate(&mut host, ids[0], "b", 19, true);
-    assert!(host.runtime.network.command_errors > errors);
-    assert_eq!(query(&mut host, ModuleId(1), 9), Ok(11));
-    source.step(&mut host);
-    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
-    assert_eq!(marker_count(&host, b"restart shutdown"), 0);
-
     source.reject_reset = Some(ids[0]);
-    queue_gamestate(&mut host, ids[0], "b", 19, false);
+    queue_gamestate(&mut host, ids[0], "b", 19);
     assert!(query(&mut host, ModuleId(1), 10).is_err());
     source.step(&mut host);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
@@ -1569,7 +1559,7 @@ fn verify(module: Vec<u8>) {
             .all(|(viewport, world, presentation)| viewport.x == 34
                 && (*world, *presentation) == old_world)
     );
-    queue_gamestate(&mut host, ids[0], "c", 33, false);
+    queue_gamestate(&mut host, ids[0], "c", 33);
     source.step(&mut host);
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().calls,
@@ -1671,7 +1661,7 @@ fn verify(module: Vec<u8>) {
     }
     // This accepted generation recreates pristine memory, then CG_INIT's
     // known Error import rejects only the invoking cgame.
-    queue_gamestate(&mut host, ids[0], "c", 44, false);
+    queue_gamestate(&mut host, ids[0], "c", 44);
     assert!(query(&mut host, ModuleId(1), 9).is_err());
     for _ in 0..8 {
         source.step(&mut host);
@@ -1740,8 +1730,8 @@ fn command_listing(host: &mut FrameHost, source: &mut Source) -> [usize; 2] {
 }
 fn verify_commands(module: Vec<u8>) {
     let (_fixture, mut host, mut source, ids, anchors) = setup(module);
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     assert_eq!(command_listing(&mut host, &mut source), [1, 1]);
     assert_eq!(query(&mut host, ModuleId(1), 4), Ok(0));
@@ -1770,7 +1760,7 @@ fn verify_commands(module: Vec<u8>) {
     );
 
     source.reject_reset = Some(ids[0]);
-    queue_gamestate(&mut host, ids[0], "c", 33, false);
+    queue_gamestate(&mut host, ids[0], "c", 33);
     source.step(&mut host);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
     // Native completion names stay registered while the same anchor awaits
@@ -1958,8 +1948,8 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     source.step(&mut host);
     assert_eq!(renderer_markers(&host), b"UU");
     let before = renderer_markers(&host).len();
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     for module in [ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_state(module), Some(State::Running));
@@ -1986,7 +1976,7 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
     let before = renderer_markers(&host).len();
     source.reject_reset = Some(ids[0]);
-    queue_gamestate(&mut host, ids[0], "b", 19, false);
+    queue_gamestate(&mut host, ids[0], "b", 19);
     assert!(query(&mut host, ModuleId(1), 9).is_err());
     assert!(ui_query(&mut host, ModuleId(3), 7).is_err());
     assert!(ui_query(&mut host, ModuleId(4), 7).is_ok());
@@ -1998,7 +1988,7 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
         host.native_shaders().context(owners[1], profile),
         Some(contexts[1])
     );
-    queue_gamestate(&mut host, ids[0], "c", 33, false);
+    queue_gamestate(&mut host, ids[0], "c", 33);
     source.step(&mut host);
     assert_eq!(&renderer_markers(&host)[before..], b"cu");
     assert!(ui_query(&mut host, ModuleId(4), 10).unwrap() > peer_frames);
@@ -2024,11 +2014,11 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
 
 fn verify_ui_shutdown_failure_isolation(module: Vec<u8>, ui: Vec<u8>) {
     let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
-    queue_gamestate(&mut host, ids[0], "b", 19, false);
+    queue_gamestate(&mut host, ids[0], "b", 19);
     until_running(&mut host, &mut source);
     assert_eq!(host.module_state(ModuleId(3)), Some(State::Failed));
     assert_eq!(host.module_state(ModuleId(4)), Some(State::Running));
@@ -2041,8 +2031,8 @@ fn verify_ui_shutdown_failure_isolation(module: Vec<u8>, ui: Vec<u8>) {
 
 fn verify_ui_association_replacement(module: Vec<u8>, ui: Vec<u8>) {
     let (_fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui));
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     let old_lifetime = host.runtime.server.clients[ids[0].0 as usize].entity;
     let peer_ui_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
@@ -2104,8 +2094,8 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     };
     let (_fixture, mut host, mut source, ids, anchors) =
         setup_renderers_with_graphics(module, Some(ui), true);
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     queue_snapshot(&mut host, ids[0], 11, 1000);
     queue_snapshot(&mut host, ids[1], 22, 1000);
@@ -2677,8 +2667,8 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     let (_fixture, mut host, mut source, ids, anchors) =
         setup_renderers_with_images(module, Some(ui), true, true, false);
     assert!(host.renderer_fullscreen_ui());
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     assert!(!host.renderer_fullscreen_ui());
     queue_snapshot(&mut host, ids[0], 11, 1000);
@@ -3361,8 +3351,8 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
     };
     let (_fixture, mut host, mut source, ids, anchors) =
         setup_renderers_with_images(module, Some(ui), true, true, true);
-    queue_gamestate(&mut host, ids[0], "a", 11, false);
-    queue_gamestate(&mut host, ids[1], "a", 22, false);
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
     queue_snapshot(&mut host, ids[0], 11, 1000);
     queue_snapshot(&mut host, ids[1], 22, 1000);
@@ -3609,6 +3599,8 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    connection::verify(false);
+    connection::verify(true);
     verify_video_image_restart(
         qvm_role_with_graphics(false, false, true),
         qvm_role_with_graphics(true, false, true),

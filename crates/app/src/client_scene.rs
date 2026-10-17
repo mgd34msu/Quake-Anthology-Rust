@@ -473,6 +473,15 @@ impl ClientModelBindings {
         RequiredModels::Ready
     }
 
+    pub(crate) fn media_attempts_complete(&self) -> bool {
+        self.profile.is_some()
+            && self.cold.next_set(0).is_none()
+            && self
+                .players
+                .as_ref()
+                .is_none_or(|players| !players.cold_dirty)
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

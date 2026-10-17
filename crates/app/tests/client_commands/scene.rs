@@ -2105,13 +2105,6 @@ pub(super) fn inline_entities(native: bool) {
     let binding = models.resolve_inline(world, 1).unwrap();
     host.local_clients[0] = Some(ids[0]);
     host.local_worlds[0] = Some((world, presentation));
-    host.configure_native_scenes(
-        &[None, None, None, None, Some(profile)],
-        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
-        320,
-        200,
-    )
-    .unwrap();
     host.runtime.scene = Some(
         qa_app::renderer::SceneComposer::load(
             Default::default(),
@@ -2122,6 +2115,13 @@ pub(super) fn inline_entities(native: bool) {
         .0,
     );
     let _backend = admit_assets(&mut host);
+    host.configure_native_scenes(
+        &[None, None, None, None, Some(profile)],
+        &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
+        320,
+        200,
+    )
+    .unwrap();
     assert_eq!(probe(&mut host, 0, 19, 0), model);
     assert_eq!(probe(&mut host, 0, 14, model as u64), 0);
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());

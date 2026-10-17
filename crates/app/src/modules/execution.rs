@@ -229,7 +229,7 @@ enum Operation {
         waiting: bool,
     },
 }
-type ExecutionResult = Result<Option<ModuleResult>, ()>;
+pub(super) type ExecutionResult = Result<Option<ModuleResult>, ()>;
 
 #[derive(Clone, Copy)]
 enum ArgSource {

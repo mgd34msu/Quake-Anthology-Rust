@@ -470,15 +470,6 @@ fn connecting_phase_requires_native_client_socket_admission() {
         peers.bind(ClientId(0), Endpoint::Client, row),
         Err(BindError::Route)
     );
-    for protocol in [Protocol::Quake3_68] {
-        let mut row = pending(7, "127.0.0.1:26000");
-        row.channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
-        row.commands = Some(Commands::load(protocol, 8192));
-        assert_eq!(
-            peers.bind(ClientId(0), Endpoint::Client, row),
-            Err(BindError::Route)
-        );
-    }
     let mut row = pending(7, "127.0.0.1:26000");
     row.channel = Channel::load(channel::QUAKEWORLD, Endpoint::Client, 8192, 16).unwrap();
     assert_eq!(

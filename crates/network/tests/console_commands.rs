@@ -157,7 +157,11 @@ fn console_command_queue_rejects_server_endpoints_and_mismatched_protocols() {
 
 #[test]
 fn userinfo_shares_reliable_flight_with_console_text_in_native_record_order() {
-    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
         let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 8).unwrap();
         let text = b"\\name\\native\x80\\fov\\110";
         client.queue_userinfo(protocol, text).unwrap();
@@ -181,6 +185,17 @@ fn userinfo_shares_reliable_flight_with_console_text_in_native_record_order() {
             }
             ControlFlow::Continue(())
         });
+        if protocol == Protocol::Quake3_68 {
+            assert_eq!(
+                records,
+                [
+                    (4, b"userinfo \"\\name\\native.\\fov\\110\"".to_vec()),
+                    (4, b"nextserver".to_vec())
+                ]
+            );
+            assert!(client.reliable_receipts().is_empty());
+            continue;
+        }
         assert_eq!(records, [(3, text.to_vec()), (4, b"nextserver".to_vec())]);
         let mut expected = vec![3];
         expected.extend(text);
@@ -199,15 +214,23 @@ fn userinfo_rejects_foreign_framing_and_preserves_prepared_packets() {
             Err(TransmitError::PayloadReliability)
         );
         let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 8).unwrap();
-        if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+        if !matches!(
+            protocol,
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 | Protocol::Quake3_68
+        ) {
             assert_eq!(
                 client.queue_userinfo(protocol, b"\\fov\\110"),
                 Err(TransmitError::PayloadReliability)
             );
             continue;
         }
+        let foreign = if protocol == Protocol::Quake3_68 {
+            Protocol::Quake2_34
+        } else {
+            Protocol::Quake3_68
+        };
         assert_eq!(
-            client.queue_userinfo(Protocol::Quake3_68, b"\\fov\\110"),
+            client.queue_userinfo(foreign, b"\\fov\\110"),
             Err(TransmitError::PayloadReliability)
         );
         assert_eq!(
@@ -215,8 +238,13 @@ fn userinfo_rejects_foreign_framing_and_preserves_prepared_packets() {
             Err(TransmitError::MessageTooLarge)
         );
         client.queue_client_command(protocol, b"first").unwrap();
+        let mut control = [0; 1400];
+        let length = Commands::load(protocol, 8192)
+            .encode_control(&client, &mut control)
+            .unwrap();
+        let body = (protocol == Protocol::Quake3_68).then_some(&control[..length]);
         let pending = client
-            .prepare(None, EventTime(1))
+            .prepare(body, EventTime(1))
             .unwrap()
             .unwrap()
             .bytes

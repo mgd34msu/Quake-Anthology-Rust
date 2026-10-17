@@ -24,6 +24,7 @@ struct Target {
     seat: Option<SeatId>,
     world: Option<(WorldId, WorldPresentationId)>,
     presentation: qa_render::material::world_load::PresentationDefaults,
+    presentation_preset: bool,
     rails: [qa_console::cvars::View; 3],
     lighting: [qa_console::cvars::View; 2],
     software_waterwarp: qa_console::cvars::View,
@@ -94,6 +95,22 @@ impl SceneRole {
     }
     pub(crate) fn profile(&self) -> Option<ModelProfile> {
         self.target.map(|target| target.profile)
+    }
+
+    pub(crate) fn adopt_client_world(
+        &mut self,
+        profile: ModelProfile,
+        world: WorldId,
+        presentation: qa_render::material::world_load::LoadedWorldPresentation,
+    ) {
+        if let Some(target) = &mut self.target {
+            target.profile = profile;
+            target.world = Some((world, presentation.id));
+            if !target.presentation_preset {
+                target.presentation = presentation.defaults;
+            }
+            self.selected_world = Some(world);
+        }
     }
 
     pub(crate) fn world_selection(
@@ -171,6 +188,7 @@ impl SceneRole {
             seat,
             world,
             presentation,
+            presentation_preset: world.is_some() || presentation != Default::default(),
             rails,
             lighting,
             software_waterwarp,

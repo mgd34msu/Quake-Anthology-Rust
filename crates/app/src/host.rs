@@ -1732,6 +1732,7 @@ impl FrameHost {
                 .events
                 .console_formatted(format_args!("CLIENT renderer reset: {error}\n"));
         }
+        self.rebind_client_view_modules();
         self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
         self.flush_startup_replies();
@@ -1759,6 +1760,7 @@ impl FrameHost {
             scene.native_owners(native_owners);
         }
         self.initialize_modules_with_driver(crate::modules::Phase::Client, &mut source.driver());
+        self.prime_q3_clients();
         self.client_module_frames_with_driver(&mut source.driver());
         self.publish_client_feedback();
         self.publish_client_loops();
@@ -2346,6 +2348,64 @@ impl FrameHost {
         self.received_client_disconnect(client);
     }
 
+    fn prime_q3_clients(&mut self) {
+        use crate::client_resources::startup::Q3Phase;
+        for slot in 0..self.runtime.client_resources.len() {
+            let client = ClientId(slot as u32);
+            if self.runtime.snapshots[slot]
+                .as_ref()
+                .is_none_or(|binding| binding.presentation_closed())
+            {
+                continue;
+            }
+            let Some(resources) = self.runtime.client_resources[slot]
+                .as_ref()
+                .filter(|resources| resources.startup.q3() == Some(Q3Phase::Loading))
+            else {
+                continue;
+            };
+            if let Some(reason) = resources.state.q3_requirement() {
+                self.reject_client_startup(client, format_args!("{reason}"));
+                continue;
+            }
+            if !resources.state.q3_media_ready(
+                self.runtime.scene.as_ref().is_some_and(|scene| {
+                    scene.has_hud(self.runtime.server.clients[slot].client_rules)
+                }),
+            ) || self
+                .runtime
+                .model_assets
+                .as_ref()
+                .is_none_or(|assets| assets.initial_registration())
+                || self.runtime.scene.is_none()
+                || self
+                    .runtime
+                    .network
+                    .get(client, qa_core::loopback::Endpoint::Client)
+                    .is_none_or(|connection| connection.channel.q3_startup().is_none())
+            {
+                continue;
+            }
+            let Some(seat) = self.runtime.snapshots[slot]
+                .as_ref()
+                .and_then(|binding| binding.seat())
+            else {
+                continue;
+            };
+            match self.client_view_ready(client, seat) {
+                Ok(true) => {
+                    if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                        resources.startup.q3_primed();
+                    }
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    self.reject_client_startup(client, format_args!("{reason}"));
+                }
+            }
+        }
+    }
+
     fn flush_startup_replies(&mut self) {
         for slot in 0..self.runtime.client_resources.len() {
             self.flush_startup_reply(ClientId(slot as u32));
@@ -2689,7 +2749,8 @@ impl FrameHost {
             let Some(
                 protocol @ (Protocol::QuakeWorld28
                 | Protocol::Quake2_34
-                | Protocol::Quake2Repro1038),
+                | Protocol::Quake2Repro1038
+                | Protocol::Quake3_68),
             ) = connection
                 .commands
                 .as_ref()
@@ -3213,9 +3274,24 @@ impl FrameHost {
                     if self.runtime.snapshots[id.0 as usize].as_ref().is_some_and(|binding| binding.presentation_closed()) {
                         return std::ops::ControlFlow::Continue(());
                     }
+                    if let Incoming::Snapshot(qa_network::snapshots::ReceivedFrame::Quake3(frame)) = &incoming
+                        && self.runtime.client_resources[id.0 as usize].as_ref().is_some_and(|resources| {
+                            resources.startup.q3().is_some_and(|phase| {
+                                match phase {
+                                    crate::client_resources::startup::Q3Phase::Active => false,
+                                    crate::client_resources::startup::Q3Phase::Primed => frame.flags & 2 != 0,
+                                    _ => true,
+                                }
+                            })
+                        })
+                    {
+                        return std::ops::ControlFlow::Continue(());
+                    }
                     if let Incoming::Snapshot(frame) = incoming {
                         if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
-                            if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref() { resources.startup.receive_entity(binding.protocol); }
+                            if let qa_network::snapshots::ReceivedFrame::Quake3(frame) = frame {
+                                resources.startup.q3_snapshot(frame.flags);
+                            } else if let Some(binding) = self.runtime.snapshots[id.0 as usize].as_ref() { resources.startup.receive_entity(binding.protocol); }
                         }
                         self.runtime.synchronize_client_collision(id, frame);
                     }
@@ -3520,6 +3596,10 @@ impl FrameHost {
                                     self.runtime.snapshots[id.0 as usize].as_mut()
                                 {
                                     binding.receive_gamestate(&gamestate);
+                                }
+                                if let Some(reason) = self.runtime.client_resources[id.0 as usize].as_ref().filter(|resources| resources.startup.q3().is_some()).and_then(|resources| resources.state.q3_requirement()) {
+                                    self.reject_client_startup(id, format_args!("{reason}"));
+                                    return std::ops::ControlFlow::Break(());
                                 }
                             }
                             // Q3 cgame selects retained commands through the

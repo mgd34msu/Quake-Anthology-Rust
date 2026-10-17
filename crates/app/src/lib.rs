@@ -839,6 +839,7 @@ impl Runtime {
                         | qa_network::commands::packet::Protocol::QuakeWorld28
                         | qa_network::commands::packet::Protocol::Quake2_34
                         | qa_network::commands::packet::Protocol::Quake2Repro1038
+                        | qa_network::commands::packet::Protocol::Quake3_68
                 )
                 && matches!(connection.route.peer, qa_core::sys_events::Peer::Socket(_)) => {}
             _ => {
@@ -906,7 +907,7 @@ impl Runtime {
             .client_resources
             .get(id.0 as usize)
             .and_then(Option::as_ref)
-            .is_some_and(|resources| resources.awaiting_startup())
+            .is_some_and(|resources| !resources.startup.allows_commands())
             || self
                 .snapshots
                 .get(id.0 as usize)
@@ -949,9 +950,24 @@ impl Runtime {
                 time,
                 &mut (),
                 |channel, ()| {
-                    channel
-                        .prepare(None, time)
-                        .is_ok_and(|packet| packet.is_some())
+                    if commands.protocol == qa_network::commands::packet::Protocol::Quake3_68 {
+                        let Ok(maximum) = channel.native_payload_capacity() else {
+                            return false;
+                        };
+                        let Some(bytes) = self.output_native_bytes.get_mut(..maximum) else {
+                            return false;
+                        };
+                        let Ok(length) = commands.encode_control(channel, bytes) else {
+                            return false;
+                        };
+                        channel
+                            .prepare_move(&bytes[..length], time, None, None)
+                            .is_ok_and(|packet| packet.is_some())
+                    } else {
+                        channel
+                            .prepare(None, time)
+                            .is_ok_and(|packet| packet.is_some())
+                    }
                 },
                 |bytes| {
                     transport::admit_output(

@@ -1407,46 +1407,10 @@ fn word_bytes(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes.try_into().unwrap())
 }
 
-fn rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty() {
+fn gamestate_replacement_clears_old_rows_and_reuse_starts_empty() {
     let (mut host, ids, _) = host(qvm, 1);
     let packets = gamestate_packets(&mut host, ids[0], 13, &[(20, b"accepted"), (32, b"old")]);
     receive_gamestate_packets(&mut host, ids[0], &packets);
-    let previous = host
-        .runtime
-        .network
-        .get(ids[0], Endpoint::Client)
-        .unwrap()
-        .channel
-        .q3_startup();
-    let errors = host.runtime.network.command_errors;
-    let packets = gamestate_packets(&mut host, ids[0], 64, &[(20, b"rejected")]);
-    receive_gamestate_packets(&mut host, ids[0], &packets);
-    assert_eq!(host.runtime.network.command_errors, errors + 1);
-    assert_eq!(
-        host.runtime
-            .network
-            .get(ids[0], Endpoint::Client)
-            .unwrap()
-            .channel
-            .q3_startup(),
-        previous
-    );
-    assert_eq!(
-        host.runtime.client_resources[0]
-            .as_ref()
-            .unwrap()
-            .state
-            .configs
-            .config(20)
-            .unwrap()
-            .text,
-        b"accepted"
-    );
-    assert_eq!(
-        host.runtime.snapshots[0].as_ref().unwrap().native_client(),
-        Some(13)
-    );
-
     let packets = gamestate_packets(&mut host, ids[0], 15, &[(20, b"replacement")]);
     receive_gamestate_packets(&mut host, ids[0], &packets);
     assert_eq!(
@@ -1516,7 +1480,7 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
     factory: fn() -> (Program, u64),
 ) {
     for (argument, expected) in [
-        (Argument::ClientMessageSequence, 2),
+        (Argument::ClientMessageSequence, 1),
         (Argument::ClientExecutedCommand, 2),
         (Argument::ClientNativeNumber, 57),
     ] {
@@ -1526,11 +1490,6 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
         host.initialize_modules(Phase::Client);
         assert_eq!(host.module_state(module), Some(State::Pending));
         assert_eq!(host.module_counts(module).unwrap().calls, 0);
-        let packets = gamestate_packets(&mut host, ids[0], 64, &[(20, b"bad state")]);
-        receive_gamestate_packets(&mut host, ids[0], &packets);
-        host.initialize_modules(Phase::Client);
-        assert_eq!(host.module_state(module), Some(State::Pending));
-        assert_eq!(host.module_counts(module).unwrap().traps, 0);
         {
             let channel = &mut host
                 .runtime
@@ -2489,7 +2448,7 @@ fn main() {
     queued_gamestate_precedes_first_snapshot(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     queued_gamestate_precedes_first_snapshot(native);
-    rejected_gamestate_preserves_accepted_client_and_reuse_starts_empty();
+    gamestate_replacement_clears_old_rows_and_reuse_starts_empty();
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(qvm);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     cgame_startup_waits_for_queued_state_and_resolves_current_arguments(native);

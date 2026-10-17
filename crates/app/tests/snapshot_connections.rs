@@ -4915,7 +4915,7 @@ fn accepted_client_setup_preserves_owned_seats_and_requires_native_assignment_ca
     assert_eq!(commands[0].view_angles, angles);
     assert!(host.runtime.network.get(remote, Endpoint::Server).is_none());
     for (protocol, binding, allowed) in [
-        (Protocol::Quake3_68, NativePlayerBinding::Awaiting, false),
+        (Protocol::Quake3_68, NativePlayerBinding::Awaiting, true),
         (Protocol::Quake3_68, NativePlayerBinding::Supplied(63), true),
         (
             Protocol::Quake3_68,

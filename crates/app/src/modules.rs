@@ -375,6 +375,12 @@ fn renderer_client(
     })
 }
 
+pub(super) struct ClientRendererShutdown {
+    module: ModuleId,
+    next: usize,
+    pending: bool,
+}
+
 struct Module {
     request: ModuleRequest,
     geometry: Option<qa_core::primitives::GeometryId>,
@@ -1086,6 +1092,16 @@ impl FrameHost {
             let Some((client, lifetime)) = row.client_connection else {
                 continue;
             };
+            if self
+                .runtime
+                .server
+                .clients
+                .get(client.0 as usize)
+                .is_none_or(|current| current.connection.is_none() || current.entity != lifetime)
+                || self.runtime.server.entities.resolve(lifetime).is_none()
+            {
+                continue;
+            }
             let binding = self
                 .runtime
                 .snapshots
@@ -1298,6 +1314,103 @@ impl FrameHost {
         }
     }
 
+    /// A requested view provider remains selected across a socket reconnect.
+    /// Rebind only after its old instance has passed the existing shutdown fence.
+    pub(crate) fn rebind_client_view_modules(&mut self) {
+        let count = self
+            .modules
+            .as_ref()
+            .map_or(0, |modules| modules.rows.len());
+        let mut changed = false;
+        for index in 0..count {
+            let module = ModuleId(index as u16);
+            let Some(row) = self
+                .module_row(module)
+                .filter(|row| row.produces_client_view)
+            else {
+                continue;
+            };
+            let seat = row.request.context.console.seat;
+            let Some((client, current, _)) = self.local_seat(seat.index()) else {
+                continue;
+            };
+            let connection = (client, current.entity);
+            if row.client_connection == Some(connection)
+                || row.state == State::Failed
+                || row.state == State::Running
+            {
+                continue;
+            }
+            if !matches!(
+                row.renderer_generation,
+                Some(RendererGeneration::Retired(_))
+                    | Some(RendererGeneration::Uninitialized(None))
+            ) {
+                continue;
+            }
+            let Some(row) = self.module_row_mut(module) else {
+                continue;
+            };
+            row.client_connection = Some(connection);
+            row.request.frame.client = Some(client);
+            for export in row
+                .request
+                .prepare
+                .iter_mut()
+                .chain(row.request.initialize.iter_mut())
+                .chain(row.request.shutdown.iter_mut())
+            {
+                if export.client.is_some() {
+                    export.client = Some(client);
+                }
+            }
+            changed = true;
+        }
+        if changed && let Err(error) = self.bind_client_presentation() {
+            let _ = self
+                .runtime
+                .server
+                .events
+                .console_formatted(format_args!("CLIENT view rebind: {error}\n"));
+        }
+    }
+
+    pub(crate) fn client_view_ready(
+        &self,
+        client: ClientId,
+        seat: qa_core::sys_events::SeatId,
+    ) -> Result<bool, &'static str> {
+        let Some(lifetime) = self
+            .runtime
+            .server
+            .clients
+            .get(client.0 as usize)
+            .map(|row| row.entity)
+        else {
+            return Ok(false);
+        };
+        let Some(modules) = self.modules.as_ref() else {
+            return Ok(true);
+        };
+        for row in modules
+            .rows
+            .iter()
+            .flatten()
+            .filter(|row| row.produces_client_view && row.request.context.console.seat == seat)
+        {
+            if row.state == State::Failed || row.state == State::Stopped {
+                return Err("selected CLIENT view module failed");
+            }
+            if row.client_connection != Some((client, lifetime))
+                || row.state != State::Running
+                || !self.module_generation_ready(row.request.context.module)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn client_startup(
         &self,
         connection: Option<(ClientId, EntityId)>,
@@ -1312,7 +1425,16 @@ impl FrameHost {
             || self.runtime.server.entities.resolve(lifetime).is_none()
             || self.runtime.client_resources[id.0 as usize]
                 .as_ref()
-                .is_some_and(|resources| !resources.state.world_ready())
+                .is_some_and(|resources| {
+                    !resources.state.world_ready()
+                        || resources.startup.q3().is_some()
+                            && (!resources.state.q3_media_ready(
+                                self.runtime
+                                    .scene
+                                    .as_ref()
+                                    .is_some_and(|scene| scene.has_hud(client.client_rules)),
+                            ) || resources.state.q3_requirement().is_some())
+                })
         {
             return None;
         }
@@ -1377,6 +1499,10 @@ impl FrameHost {
             |client| renderer_contexts::Owner::Client(client.client, client.lifetime),
         );
         let previous = row.renderer_context;
+        let world = row
+            .scene_role
+            .selected_world()
+            .map(|world| (world, row.scene_role.presentation_for(world)));
         let reset = stamp.reset;
         let Some(assets) = self.runtime.model_assets.as_ref() else {
             return Ok(());
@@ -1414,6 +1540,10 @@ impl FrameHost {
             .renderer_context = Some(handle);
         if let Some(scene) = self.runtime.scene.as_ref() {
             scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+        }
+        if let Some((world, selected)) = world {
+            let admission = assets.world_admission(world, profile, selected)?;
+            self.renderer_contexts.stage(handle, admission)?.commit();
         }
         Ok(())
     }
@@ -1598,6 +1728,16 @@ impl FrameHost {
         driver: &mut Driver<'_>,
         scope: execution::EntryScope,
     ) -> Result<(), CallError> {
+        let call = self.module_export_call(module, export, time, command)?;
+        self.call_module_scoped(export.callback, call, driver, scope)
+    }
+    fn module_export_call<'a>(
+        &self,
+        module: ModuleId,
+        export: Export,
+        time: ThinkTime,
+        command: qa_core::primitives::CommandArgs<'a>,
+    ) -> Result<CallbackCall<'a>, CallError> {
         let row = self.module_row(module).ok_or(CallError::MissingModule)?;
         let entity = row.request.anchor;
         let slot = self
@@ -1627,18 +1767,13 @@ impl FrameHost {
                 Argument::ClientNativeNumber => u64::from(startup()?.client_num),
             };
         }
-        self.call_module_scoped(
-            export.callback,
-            CallbackCall::Export {
-                entity,
-                time,
-                arguments,
-                client: export.client,
-                command,
-            },
-            driver,
-            scope,
-        )
+        Ok(CallbackCall::Export {
+            entity,
+            time,
+            arguments,
+            client: export.client,
+            command,
+        })
     }
     pub(crate) fn video_restart_ready(&self) -> Result<bool, String> {
         let Some(modules) = self.modules.as_ref() else {
@@ -1667,6 +1802,119 @@ impl FrameHost {
             }
         }
         Ok(true)
+    }
+
+    fn reset_client_renderer_after_shutdown(
+        &mut self,
+        module: ModuleId,
+        stamp: RendererStamp,
+        reset: bool,
+    ) -> Result<(), CallError> {
+        self.modules
+            .as_mut()
+            .ok_or(CallError::MissingModule)?
+            .storage
+            .reset_instance(module)
+            .map_err(|_| CallError::Rejected)?;
+        self.retire_module_input(module);
+        let row = self
+            .module_row_mut(module)
+            .ok_or(CallError::MissingModule)?;
+        row.state = State::Pending;
+        row.renderer_generation = Some(RendererGeneration::Stopped { stamp, reset });
+        row.scene_role.reset_instance();
+        row.collision_role.reset();
+        Ok(())
+    }
+    fn retire_client_renderer_generation(&mut self, module: ModuleId) {
+        let Some(RendererGeneration::Stopped { stamp, .. }) = self
+            .module_row(module)
+            .and_then(|row| row.renderer_generation)
+        else {
+            return;
+        };
+        if let Some(client) = stamp.client
+            && let Some(binding) = self
+                .runtime
+                .snapshots
+                .get_mut(client.client.0 as usize)
+                .and_then(Option::as_mut)
+        {
+            binding.reset_module_audio(module, client.lifetime);
+        }
+        if let Some(row) = self.module_row_mut(module) {
+            row.renderer_generation = Some(RendererGeneration::Retired(stamp));
+        }
+    }
+
+    fn advance_client_renderer_shutdown(
+        &mut self,
+        connection: (ClientId, EntityId),
+        cursor: &mut Option<ClientRendererShutdown>,
+        child: &mut Option<execution::ExecutionResult>,
+        driver: &mut Driver<'_>,
+    ) -> Result<Option<ModuleDispatch>, CallError> {
+        loop {
+            if let Some(pending) = cursor.as_mut() {
+                if pending.pending {
+                    pending.pending = false;
+                    if child.take().is_none_or(|result| result.is_err()) {
+                        self.fail_renderer_restart(pending.module, driver);
+                        *cursor = None;
+                        continue;
+                    }
+                }
+            } else {
+                let module = self.modules.as_ref().and_then(|modules| modules.rows.iter().flatten().find(|row| {
+                    row.state == State::Running && matches!(row.renderer_generation, Some(RendererGeneration::Current(stamp)) if stamp.client.is_some_and(|client| client.connection() == connection))
+                })).map(|row| row.request.context.module);
+                let Some(module) = module else {
+                    return Ok(None);
+                };
+                *cursor = Some(ClientRendererShutdown {
+                    module,
+                    next: 0,
+                    pending: false,
+                });
+            }
+            let Some(pending) = cursor.as_mut() else {
+                continue;
+            };
+            let row = self
+                .module_row(pending.module)
+                .ok_or(CallError::MissingModule)?;
+            if row.request.program.is_active() {
+                return Err(CallError::Rejected);
+            }
+            if let Some(export) = row.request.shutdown.get(pending.next).copied() {
+                let time = row.time(self.time);
+                let call =
+                    self.module_export_call(pending.module, export, time, Default::default())?;
+                pending.next += 1;
+                pending.pending = true;
+                return self
+                    .dispatch_module_call(export.callback, call, execution::EntryScope::Lifecycle)
+                    .map(Some);
+            }
+            let Some(RendererGeneration::Current(stamp)) = row.renderer_generation else {
+                return Err(CallError::Rejected);
+            };
+            let module = pending.module;
+            if self
+                .reset_client_renderer_after_shutdown(module, stamp, false)
+                .is_err()
+            {
+                self.fail_renderer_restart(module, driver);
+                *cursor = None;
+                continue;
+            }
+            let handle = self
+                .module_row_mut(module)
+                .and_then(|row| row.renderer_context.take());
+            self.renderer_contexts.release(handle);
+            self.retire_client_renderer_generation(module);
+            *cursor = None;
+        }
     }
 
     /// Stop all old renderer instances before publishing their shared reset fence.
@@ -1721,24 +1969,10 @@ impl FrameHost {
                 let time = row.time(self.time);
                 let result = self
                     .module_sequence(module, LifecycleSequence::Shutdown, time, driver)
-                    .and_then(|()| {
-                        self.modules
-                            .as_mut()
-                            .ok_or(CallError::MissingModule)?
-                            .storage
-                            .reset_instance(module)
-                            .map_err(|_| CallError::Rejected)
-                    });
+                    .and_then(|()| self.reset_client_renderer_after_shutdown(module, stamp, reset));
                 if result.is_err() {
                     self.fail_renderer_restart(module, driver);
                     continue;
-                }
-                self.retire_module_input(module);
-                if let Some(row) = self.module_row_mut(module) {
-                    row.state = State::Pending;
-                    row.renderer_generation = Some(RendererGeneration::Stopped { stamp, reset });
-                    row.scene_role.reset_instance();
-                    row.collision_role.reset();
                 }
             }
         }
@@ -1792,26 +2026,7 @@ impl FrameHost {
             }
         }
         for index in 0..count {
-            let module = ModuleId(index as u16);
-            let Some(RendererGeneration::Stopped { stamp, .. }) = self
-                .module_row(module)
-                .and_then(|row| row.renderer_generation)
-            else {
-                continue;
-            };
-            if let Some(client) = stamp.client {
-                if let Some(binding) = self
-                    .runtime
-                    .snapshots
-                    .get_mut(client.client.0 as usize)
-                    .and_then(Option::as_mut)
-                {
-                    binding.reset_module_audio(module, client.lifetime);
-                }
-            }
-            if let Some(row) = self.module_row_mut(module) {
-                row.renderer_generation = Some(RendererGeneration::Retired(stamp));
-            }
+            self.retire_client_renderer_generation(ModuleId(index as u16));
         }
         Ok(())
     }
@@ -1857,6 +2072,11 @@ impl FrameHost {
         row.request.program = candidate.program;
         row.request.prepare = candidate.prepare;
         row.request.shutdown = candidate.shutdown;
+        for export in &mut row.request.shutdown {
+            if export.client.is_some() {
+                export.client = row.client_connection.map(|(client, _)| client);
+            }
+        }
         row.command = command;
         row.input = input;
         row.renderer_generation = Some(RendererGeneration::Uninitialized(None));
@@ -2291,13 +2511,12 @@ impl FrameHost {
     ) -> Result<(), CallError> {
         self.call_module_scoped(callback, call, driver, execution::EntryScope::Ordinary)
     }
-    fn call_module_scoped(
+    fn dispatch_module_call(
         &mut self,
         callback: CallbackId,
         call: CallbackCall<'_>,
-        driver: &mut Driver<'_>,
         scope: execution::EntryScope,
-    ) -> Result<(), CallError> {
+    ) -> Result<ModuleDispatch, CallError> {
         let functions = Arc::clone(
             &self
                 .modules
@@ -2305,20 +2524,29 @@ impl FrameHost {
                 .ok_or(CallError::MissingModule)?
                 .functions,
         );
-        let module = self
-            .runtime
-            .server
-            .entities
-            .resolve(call.entity())
-            .map(|slot| self.runtime.server.entities.columns.owner[slot]);
-        let dispatched = match scope {
+        match scope {
             execution::EntryScope::Ordinary => functions.dispatch(self, callback, call),
             execution::EntryScope::Lifecycle => functions
                 .resolve(&self.runtime.server.entities, callback, call.entity())
                 .map(|resolved| {
                     execution::start_scoped(self, resolved.module(), resolved.entry(), call, scope)
                 }),
-        };
+        }
+    }
+    fn call_module_scoped(
+        &mut self,
+        callback: CallbackId,
+        call: CallbackCall<'_>,
+        driver: &mut Driver<'_>,
+        scope: execution::EntryScope,
+    ) -> Result<(), CallError> {
+        let module = self
+            .runtime
+            .server
+            .entities
+            .resolve(call.entity())
+            .map(|slot| self.runtime.server.entities.columns.owner[slot]);
+        let dispatched = self.dispatch_module_call(callback, call, scope);
         let result = dispatched.and_then(|outcome| {
             driver
                 .complete(self, outcome, call)

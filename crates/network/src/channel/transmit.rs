@@ -349,23 +349,48 @@ impl Channel {
         }
         result
     }
-    /// Q2 full userinfo changes share the connection's ordinary reliable flight.
+    /// Full userinfo changes share the connection's native reliable records.
     pub fn queue_userinfo(
         &mut self,
         protocol: crate::commands::packet::Protocol,
         text: &[u8],
     ) -> Result<NativeReceipt, TransmitError> {
         use crate::commands::packet::Protocol;
-        if self.endpoint != Endpoint::Client
-            || !self.supports_protocol(protocol)
-            || !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038)
-        {
+        if self.endpoint != Endpoint::Client || !self.supports_protocol(protocol) {
             return Err(TransmitError::PayloadReliability);
         }
-        if protocol.client_string_policy().truncates(text) {
-            return Err(TransmitError::MessageTooLarge);
+        match protocol {
+            Protocol::Quake3_68 => {
+                let mut bytes = std::mem::take(&mut self.transmit.command_output);
+                let result = (|| {
+                    let prefix = b"userinfo \"";
+                    let length = prefix
+                        .len()
+                        .checked_add(text.len())
+                        .and_then(|length| length.checked_add(1))
+                        .ok_or(TransmitError::MessageTooLarge)?;
+                    let output = bytes
+                        .get_mut(..length)
+                        .ok_or(TransmitError::MessageTooLarge)?;
+                    output[..prefix.len()].copy_from_slice(prefix);
+                    output[prefix.len()..length - 1].copy_from_slice(text);
+                    output[length - 1] = b'"';
+                    if protocol.client_string_policy().truncates(output) {
+                        return Err(TransmitError::MessageTooLarge);
+                    }
+                    self.queue_client_command(protocol, output)
+                })();
+                self.transmit.command_output = bytes;
+                result
+            }
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => {
+                if protocol.client_string_policy().truncates(text) {
+                    return Err(TransmitError::MessageTooLarge);
+                }
+                self.queue_client_text(protocol, 3, text)
+            }
+            _ => Err(TransmitError::PayloadReliability),
         }
-        self.queue_client_text(protocol, 3, text)
     }
     fn queue_client_text(
         &mut self,

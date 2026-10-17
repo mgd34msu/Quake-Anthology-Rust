@@ -369,8 +369,13 @@ impl ClientResources {
     ) {
         // Both native readers validate the complete replacement before entering
         // this shared CLIENT reset and registration boundary.
+        let q3 = self.startup.q3();
         let world = self.state.models.world_binding();
         self.reset_received(world);
+        if let Some(phase) = q3 {
+            self.startup = ClientStartup::Quake3(phase);
+            self.startup.q3_gamestate();
+        }
         let result = gamestate.for_each_config(|config| self.store_received_config(config));
         self.complete_received(result.is_err(), catalog, bank);
     }
@@ -1003,6 +1008,32 @@ impl ResourceState {
         };
     }
 
+    pub(crate) fn q3_media_ready(&self, hud_ready: bool) -> bool {
+        if !hud_ready
+            || !self.world_managed()
+            || !self.world_ready()
+            || self.presentation_reset_pending()
+            || self.hud_pending
+        {
+            return false;
+        }
+        self.models.collision_world().is_some()
+            && self.models.media_attempts_complete()
+            && self.sound_dirty.next_set(1).is_none()
+    }
+    pub(crate) fn q3_requirement(&self) -> Option<&'static str> {
+        let map = self.configs.config(ConfigLayout::Q3_SERVER_INFO)?.text;
+        if qa_core::text::info_value(map, b"mapname", false).is_none_or(|range| range.is_empty()) {
+            return Some("Q3 gamestate has no world map");
+        }
+        let info = self.configs.config(ConfigLayout::Q3_SYSTEM_INFO)?.text;
+        let value = |key| qa_core::text::info_value(info, key, false).map(|range| &info[range]);
+        if value(b"sv_pure").is_some_and(|text| qa_core::text::atoi_prefix(text) != 0) {
+            Some("pure server package verification is not available")
+        } else {
+            None
+        }
+    }
     pub(crate) fn world_ready(&self) -> bool {
         matches!(
             self.world_readiness,

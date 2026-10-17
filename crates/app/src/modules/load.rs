@@ -326,7 +326,7 @@ pub fn load_q3(
                 if binding.protocol != qa_network::commands::packet::Protocol::Quake3_68 {
                     return Err("cgame needs a Q3 native client protocol".into());
                 }
-                if binding.native_client().is_none_or(|number| number >= 64) {
+                if binding.native_client().is_some_and(|number| number >= 64) {
                     return Err("cgame native client number needs 0..64".into());
                 }
                 client_binding = Some(ClientId(index as u32));

@@ -717,6 +717,7 @@ fn native_acks_traverse_the_host_queue_and_only_retire_their_peer() -> Result<()
             publish(&mut host, client)?;
             send(&mut host, client, Endpoint::Server)?;
         }
+        let published_end = host.runtime.server.events.sequence_range().end;
         host.frame(&mut clock, true);
         assert_eq!(acks(&host, clients[0])?, 0);
         assert_eq!(acks(&host, clients[1])?, 0);
@@ -730,7 +731,9 @@ fn native_acks_traverse_the_host_queue_and_only_retire_their_peer() -> Result<()
         assert_eq!(acks(&host, clients[0])?, 1);
         assert_eq!(host.runtime.network.acknowledged, 2);
         assert_eq!(clock.polls, 6);
-        assert!(host.runtime.server.events.is_empty());
+        // SERVER may have published new peer information during these frames.
+        // The records submitted above must have retired through their own ACKs.
+        assert!(host.runtime.server.events.sequence_range().start >= published_end);
     }
     Ok(())
 }
@@ -799,6 +802,10 @@ fn delayed_ack_keeps_the_original_consumer_generation_on_slot_reuse() -> Result<
     let mut clock = Clock::default();
     host.frame(&mut clock, true);
     assert!(host.runtime.server.disconnect(client));
+    // A disconnected SERVER slot stays reserved until the ordinary host pass
+    // has published its userinfo tombstone for the remaining peer.
+    assert!(host.runtime.server.available_client_slot().is_none());
+    host.frame(&mut clock, true);
     let replacement = host
         .runtime
         .server
@@ -823,6 +830,12 @@ fn delayed_ack_keeps_the_original_consumer_generation_on_slot_reuse() -> Result<
     host.frame(&mut clock, true);
     assert_eq!(host.runtime.network.acknowledged, 1);
     assert_eq!(acks(&host, client)?, 0);
-    assert_eq!(host.runtime.server.events.len(), 1);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .sequence_range()
+            .contains(&sequence)
+    );
     Ok(())
 }

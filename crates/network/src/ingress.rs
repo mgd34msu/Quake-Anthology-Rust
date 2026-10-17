@@ -4,9 +4,10 @@ use crate::commands::{
     connection::Commands,
     packet::Protocol,
     startup::{
-        NqControl, Q2_CONNECT_PACKET_LENGTH, Q2_CONNECT_USERINFO_BYTES, Q2Connectionless,
-        QwConnectionless, read_nq_control, read_q2_connectionless, read_qw_connectionless,
-        write_nq_control, write_q2_connect, write_q2_getchallenge, write_qw_connect,
+        NqControl, Q2_CONNECT_PACKET_LENGTH, Q2Connectionless, Q3_CONNECT_USERINFO_BYTES,
+        Q3Connectionless, QwConnectionless, read_nq_control, read_q2_connectionless,
+        read_q3_connectionless, read_qw_connectionless, write_nq_control, write_q2_connect,
+        write_q2_getchallenge, write_q3_connect, write_q3_getchallenge, write_qw_connect,
         write_qw_getchallenge,
     },
 };
@@ -31,7 +32,7 @@ pub struct NativeConnect {
     submitted: u8,
     last_submission: Option<EventTime>,
     pending_challenge: Option<i32>,
-    admitted_userinfo: Option<FixedText<Q2_CONNECT_USERINFO_BYTES>>,
+    admitted_userinfo: Option<FixedText<Q3_CONNECT_USERINFO_BYTES>>,
 }
 
 /// An actual connect attempt borrows current userinfo and native packet policy.
@@ -123,6 +124,29 @@ fn accept_native_connect(
         );
     }
 }
+fn q3_print(
+    text: &[u8],
+    client: ClientId,
+    endpoint: Endpoint,
+    consume: &mut impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
+) {
+    let mut scratch = [0; crate::message::COMMAND_STRING_BYTES];
+    let mut reader = crate::message::Reader::new(text, crate::message::Encoding::Bytes);
+    if let Ok(text) =
+        reader.read_string_into(crate::message::StringPolicy::Q3.allow_eof(), &mut scratch)
+    {
+        let _ = consume(
+            client,
+            endpoint,
+            Incoming::Print(crate::outputs::Print {
+                kind: qa_core::primitives::PrintKind::Console,
+                level: None,
+                text,
+            }),
+        );
+    }
+}
+
 impl Connection {
     fn matches_socket(&self, socket: u16, from: std::net::SocketAddr, bytes: &[u8]) -> bool {
         let Peer::Socket(bound) = self.route.peer else {
@@ -130,6 +154,21 @@ impl Connection {
         };
         if self.route.socket != socket {
             return false;
+        }
+        if let ConnectionPhase::Connecting(connect) = &self.phase
+            && self
+                .commands
+                .as_ref()
+                .is_some_and(|commands| commands.protocol == Protocol::Quake3_68)
+            && bytes.starts_with(&[255; 4])
+        {
+            // Stock68 challenge responses may redirect to a proxy. The owned
+            // socket identifies the pending request until the first challenge.
+            return if connect.pending_challenge.is_none() {
+                true
+            } else {
+                bound.ip() == from.ip()
+            };
         }
         if let Some(qport) = self.channel.routing_qport() {
             bound.ip() == from.ip()
@@ -162,7 +201,7 @@ pub enum BindError {
 pub enum Incoming<'a> {
     ConnectAccepted {
         port: u16,
-        /// Exact last transport-admitted QW connect info; borrowed for this call.
+        /// Exact last transport-admitted native connect info; borrowed for this call.
         userinfo: Option<&'a [u8]>,
     },
     ConnectRejected {
@@ -257,6 +296,7 @@ pub enum Incoming<'a> {
 pub struct Connections {
     clients: Box<[[Option<Connection>; 2]]>,
     history_capacity: usize,
+    connect_codec: Option<Box<crate::message::AdaptiveHuffman>>,
     pub packets: u64,
     pub bytes: u64,
     pub last_time: EventTime,
@@ -276,6 +316,7 @@ impl Connections {
         Self {
             clients: (0..clients).map(|_| [None, None]).collect(),
             history_capacity: qa_core::command_history::DEFAULT_CAPACITY,
+            connect_codec: (clients != 0).then(|| Box::new(crate::message::AdaptiveHuffman::new())),
             packets: 0,
             bytes: 0,
             last_time: EventTime::default(),
@@ -336,6 +377,7 @@ impl Connections {
                             | Protocol::QuakeWorld28
                             | Protocol::Quake2_34
                             | Protocol::Quake2Repro1038
+                            | Protocol::Quake3_68
                     ) && connection.channel.policy()
                         == commands.protocol.client_channel(connection.channel.qport())
                 }))
@@ -416,7 +458,7 @@ impl Connections {
                 Protocol::NetQuake15 => 2500,
                 Protocol::QuakeWorld28 => 5000,
                 Protocol::Quake2_34 | Protocol::Quake2Repro1038 => 3000,
-                Protocol::Quake3_68 => continue,
+                Protocol::Quake3_68 => 3000,
             };
             if connect
                 .last_submission
@@ -439,8 +481,8 @@ impl Connections {
                 }
                 continue;
             }
-            let mut bytes = [0; crate::message::COMMAND_STRING_BYTES];
-            let mut info = [0; Q2_CONNECT_USERINFO_BYTES];
+            let mut bytes = [0; crate::commands::packet::Q3_MESSAGE_BYTES];
+            let mut info = [0; Q3_CONNECT_USERINFO_BYTES];
             let mut admitted = None;
             let request = if protocol != Protocol::NetQuake15 {
                 if let Some(challenge) = connect.pending_challenge {
@@ -464,6 +506,19 @@ impl Connections {
                     admitted = Some(receipt);
                     if protocol == Protocol::QuakeWorld28 {
                         write_qw_connect(connection.channel.qport(), challenge, info, &mut bytes)
+                    } else if protocol == Protocol::Quake3_68 {
+                        self.connect_codec
+                            .as_deref_mut()
+                            .ok_or(crate::commands::packet::Error::Context)
+                            .and_then(|codec| {
+                                write_q3_connect(
+                                    codec,
+                                    connection.channel.qport(),
+                                    challenge,
+                                    info,
+                                    &mut bytes,
+                                )
+                            })
                     } else {
                         write_q2_connect(
                             protocol,
@@ -476,6 +531,8 @@ impl Connections {
                     }
                 } else if protocol == Protocol::QuakeWorld28 {
                     write_qw_getchallenge(&mut bytes)
+                } else if protocol == Protocol::Quake3_68 {
+                    write_q3_getchallenge(&mut bytes)
                 } else {
                     write_q2_getchallenge(&mut bytes)
                 }
@@ -488,7 +545,7 @@ impl Connections {
             if submit(connection.route, &bytes[..length]) {
                 if let Some(receipt) = admitted {
                     connect.admitted_userinfo = Some(receipt);
-                    if protocol != Protocol::Quake2Repro1038 {
+                    if !matches!(protocol, Protocol::Quake2Repro1038 | Protocol::Quake3_68) {
                         connect.pending_challenge = None;
                     }
                 }
@@ -564,6 +621,67 @@ impl Connections {
                 // A reply is eligible only after a request actually reached
                 // transport. Its socket and full peer already matched above.
                 if connect.submitted == 0 {
+                    return;
+                }
+                if connection
+                    .commands
+                    .as_ref()
+                    .is_some_and(|commands| commands.protocol == Protocol::Quake3_68)
+                {
+                    let reply = match read_q3_connectionless(bytes) {
+                        Ok(reply) => reply,
+                        Err(_) => {
+                            self.malformed += 1;
+                            return;
+                        }
+                    };
+                    let Some(connection) = &mut self.clients[client][endpoint] else {
+                        return;
+                    };
+                    match reply {
+                        Q3Connectionless::Challenge(challenge) => {
+                            if let ConnectionPhase::Connecting(connect) = &mut connection.phase
+                                && connect.pending_challenge.is_none()
+                            {
+                                connection.route.peer = from;
+                                connect.pending_challenge = Some(challenge);
+                                connect.last_submission = None;
+                            }
+                        }
+                        Q3Connectionless::Accepted => {
+                            let challenge = match &connection.phase {
+                                ConnectionPhase::Connecting(connect)
+                                    if connect.admitted_userinfo.is_some() =>
+                                {
+                                    connect.pending_challenge
+                                }
+                                _ => None,
+                            };
+                            if let Some(challenge) = challenge {
+                                let Ok(mut context) = connection.channel.command_context() else {
+                                    return;
+                                };
+                                context.challenge = challenge as u32;
+                                if connection.channel.set_command_context(context).is_err() {
+                                    return;
+                                }
+                                connection.route.peer = from;
+                                accept_native_connect(
+                                    connection,
+                                    ClientId(client as u32),
+                                    Endpoint::from_index(endpoint),
+                                    &mut consume,
+                                );
+                            }
+                        }
+                        Q3Connectionless::Print(text) => q3_print(
+                            text,
+                            ClientId(client as u32),
+                            Endpoint::from_index(endpoint),
+                            &mut consume,
+                        ),
+                        Q3Connectionless::Disconnect => {}
+                    }
                     return;
                 }
                 if connection
@@ -733,6 +851,36 @@ impl Connections {
         let Some(connection) = &mut self.clients[client][endpoint] else {
             return;
         };
+        if connection.channel.endpoint() == Endpoint::Client
+            && connection
+                .commands
+                .as_ref()
+                .is_some_and(|commands| commands.protocol == Protocol::Quake3_68)
+            && bytes.starts_with(&[255; 4])
+        {
+            match read_q3_connectionless(bytes) {
+                Ok(Q3Connectionless::Print(text)) => q3_print(
+                    text,
+                    ClientId(client as u32),
+                    Endpoint::from_index(endpoint),
+                    &mut consume,
+                ),
+                Ok(Q3Connectionless::Disconnect)
+                    if time.since(connection.channel.state().last_received)
+                        >= EventTime::from_milliseconds(3000).0 =>
+                {
+                    let _ = consume(
+                        ClientId(client as u32),
+                        Endpoint::from_index(endpoint),
+                        Incoming::Disconnect {
+                            output: connection.output,
+                        },
+                    );
+                }
+                _ => {}
+            }
+            return;
+        }
         // Native connectionless replies have no sequenced ACK ownership.
         // Late challenge/accept/print packets cannot touch the connected channel.
         if connection.channel.endpoint() == Endpoint::Client
@@ -843,7 +991,14 @@ impl Connections {
                                     &mut deliver,
                                 )
                             }) {
-                                Err(_) => self.command_errors += 1,
+                                Err(_) => {
+                                    self.command_errors += 1;
+                                    if commands.protocol == Protocol::Quake3_68 {
+                                        deliver(Incoming::Disconnect {
+                                            output: connection.output,
+                                        });
+                                    }
+                                }
                                 Ok(Some(sequence)) => {
                                     if let Some(frame) = connection.channel.snapshot(sequence) {
                                         deliver(Incoming::Snapshot(frame));

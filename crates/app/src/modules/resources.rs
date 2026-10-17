@@ -9,6 +9,7 @@ use qa_core::{
 struct ModelPreparer<'a> {
     scene: &'a mut Option<crate::renderer::SceneComposer>,
     backend: &'a mut dyn crate::renderer::AssetPreparer,
+    failed: bool,
 }
 impl ModelPreparer<'_> {
     fn prepare(
@@ -17,22 +18,26 @@ impl ModelPreparer<'_> {
         required: Option<qa_render::Limits>,
         choices: usize,
     ) -> Result<(), String> {
-        let capacity = self
-            .scene
-            .as_mut()
-            .map(|scene| scene.stage_model_choices(assets, required, choices))
-            .transpose()?;
-        self.backend.prepare_assets(
-            assets,
-            capacity
-                .as_ref()
-                .map(|capacity| capacity.limits())
-                .or(required),
-        )?;
-        if let Some(capacity) = capacity {
-            capacity.commit();
-        }
-        Ok(())
+        let result = (|| {
+            let capacity = self
+                .scene
+                .as_mut()
+                .map(|scene| scene.stage_model_choices(assets, required, choices))
+                .transpose()?;
+            self.backend.prepare_assets(
+                assets,
+                capacity
+                    .as_ref()
+                    .map(|capacity| capacity.limits())
+                    .or(required),
+            )?;
+            if let Some(capacity) = capacity {
+                capacity.commit();
+            }
+            Ok(())
+        })();
+        self.failed |= result.is_err();
+        result
     }
 }
 impl crate::renderer::AssetPreparer for ModelPreparer<'_> {
@@ -290,6 +295,7 @@ impl FrameHost {
                 &mut resources.state.models,
                 None,
             );
+            let mut backend_failed = false;
             let rejected = if let Some(owner) = runtime.model_assets.as_mut() {
                 if owner.initial_registration() {
                     resources.state.models.register_player_models(
@@ -303,6 +309,7 @@ impl FrameHost {
                     let mut preparer = ModelPreparer {
                         scene: &mut runtime.scene,
                         backend: preparer,
+                        failed: false,
                     };
                     let (rejected, changed) = resources.state.prepare_models(
                         owner,
@@ -311,6 +318,7 @@ impl FrameHost {
                         ui_fullscreen,
                     );
                     published |= changed;
+                    backend_failed = preparer.failed;
                     rejected
                 } else {
                     resources
@@ -322,6 +330,14 @@ impl FrameHost {
                 0
             };
             resources.state.rejected += u64::from(rejected);
+            let reject_startup =
+                backend_failed && resources.startup.q3().is_some() && resources.awaiting_startup();
+            if reject_startup {
+                self.reject_client_startup(
+                    ClientId(index as u32),
+                    format_args!("model backend admission failed"),
+                );
+            }
         }
         if published {
             self.refresh_model_consumers();
@@ -469,14 +485,23 @@ impl FrameHost {
             Ok::<_, String>(())
         })();
         if let Err(error) = result {
-            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
-                resources.state.rejected += 1;
+            if self.runtime.client_resources[slot]
+                .as_ref()
+                .is_some_and(|resources| {
+                    resources.startup.q3().is_some() && resources.awaiting_startup()
+                })
+            {
+                self.reject_client_startup(client, format_args!("HUD admission: {error}"));
+            } else {
+                if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                    resources.state.rejected += 1;
+                }
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("CLIENT {} HUD: {error}\n", client.0));
             }
-            let _ = self
-                .runtime
-                .server
-                .events
-                .console_formatted(format_args!("CLIENT {} HUD: {error}\n", client.0));
         }
         self.runtime
             .model_assets
@@ -588,30 +613,16 @@ impl FrameHost {
                 })?;
             Some((profile, world, presentation))
         })();
-        if let Some((profile, world, presentation)) = cached {
-            self.set_renderer_fullscreen_ui(false);
-            self.activate_received_world(
-                client,
-                seat,
-                profile,
-                world,
-                presentation,
-                (config_row, revision),
-            );
-            return true;
-        }
-        if self
-            .runtime
-            .scene
-            .as_mut()
-            .is_none_or(|scene| !scene.asset_stage_ready())
+        if cached.is_none()
+            && (preparer.is_none()
+                || self
+                    .runtime
+                    .scene
+                    .as_mut()
+                    .is_none_or(|scene| !scene.asset_stage_ready()))
         {
             return false;
         }
-        let Some(preparer) = preparer.as_mut() else {
-            return false;
-        };
-        let preparer = &mut **preparer;
         let trace_rules = self
             .runtime
             .server
@@ -647,6 +658,12 @@ impl FrameHost {
             .as_ref()
             .map(|owner| owner.assets().counts());
         let result = (|| {
+            if let Some(cached) = cached {
+                return Ok(cached);
+            }
+            let preparer = preparer
+                .as_deref_mut()
+                .ok_or("CLIENT world admission requires a resource preparer")?;
             let runtime = &mut self.runtime;
             let resources = runtime.client_resources[slot]
                 .as_mut()
@@ -656,7 +673,6 @@ impl FrameHost {
                 .pending_world()
                 .ok_or("CLIENT world request changed")?;
             let path = request.virtual_path();
-            resources.state.take_world_attempt();
             let path = path?;
             let owner = runtime
                 .model_assets
@@ -806,6 +822,17 @@ impl FrameHost {
                 presentation,
             ))
         })();
+        let result = result.and_then(|(profile, world, presentation)| {
+            self.prepare_client_renderer_world(
+                client,
+                lifetime,
+                profile,
+                world.render,
+                presentation,
+                preparer,
+            )
+            .map(|ready| ready.then_some((profile, world, presentation)))
+        });
         if self
             .runtime
             .model_assets
@@ -816,7 +843,7 @@ impl FrameHost {
             self.refresh_model_consumers();
         }
         match result {
-            Ok((profile, world, presentation)) => {
+            Ok(Some((profile, world, presentation))) => {
                 self.activate_received_world(
                     client,
                     seat,
@@ -827,8 +854,15 @@ impl FrameHost {
                 );
                 true
             }
+            Ok(None) => {
+                self.set_renderer_fullscreen_ui(previous_ui_fullscreen);
+                false
+            }
             Err(error) => {
                 self.set_renderer_fullscreen_ui(previous_ui_fullscreen);
+                if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                    resources.state.take_world_attempt();
+                }
                 if self.runtime.client_resources[slot]
                     .as_ref()
                     .is_some_and(|resources| resources.awaiting_startup())
@@ -848,6 +882,103 @@ impl FrameHost {
             }
         }
     }
+
+    fn prepare_client_renderer_world(
+        &mut self,
+        client: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+        profile: crate::model_assets::ModelProfile,
+        world: qa_render::world::WorldId,
+        presentation: qa_render::material::world_load::LoadedWorldPresentation,
+        preparer: &mut Option<&mut dyn crate::renderer::AssetPreparer>,
+    ) -> Result<bool, String> {
+        let count = self
+            .modules
+            .as_ref()
+            .map_or(0, |modules| modules.rows.len());
+        for index in 0..count {
+            let module = qa_core::primitives::ModuleId(index as u16);
+            let Some(row) = self.module_row(module).filter(|row| {
+                row.produces_client_view && row.client_connection == Some((client, lifetime))
+            }) else {
+                continue;
+            };
+            let Some(selected_profile) = row.scene_role.profile() else {
+                continue;
+            };
+            let selected_profile = if selected_profile.source_rules == profile.source_rules
+                && selected_profile.rules == profile.rules
+            {
+                profile
+            } else {
+                selected_profile
+            };
+            let selected = if selected_profile == profile {
+                Some(presentation)
+            } else {
+                self.runtime.model_assets.as_ref().and_then(|owner| {
+                    owner
+                        .view()
+                        .world_presentation(world, Some(selected_profile), None)
+                        .filter(|entry| {
+                            entry.compile_policy.collapse_vertex()
+                                == selected_profile.finish.compile(false).collapse_vertex()
+                        })
+                })
+            };
+            let selected = if let Some(selected) = selected {
+                selected
+            } else {
+                if self
+                    .runtime
+                    .scene
+                    .as_mut()
+                    .is_none_or(|scene| !scene.asset_stage_ready())
+                {
+                    return Ok(false);
+                }
+                let Some(preparer) = preparer.as_deref_mut() else {
+                    return Ok(false);
+                };
+                let owner = self
+                    .runtime
+                    .model_assets
+                    .as_mut()
+                    .ok_or("missing model assets")?;
+                let scene = self.runtime.scene.as_mut().ok_or("missing scene owner")?;
+                let mut policy = qa_render::material::world_load::WorldPresentationProfile::native(
+                    selected_profile.rules,
+                    selected_profile.palette,
+                );
+                policy.image_settings = selected_profile.image_settings;
+                policy.finish = selected_profile.finish;
+                let (loaded, append, _) = owner.prepare_world_presentation(
+                    &self.runtime.vfs,
+                    world,
+                    selected_profile,
+                    policy,
+                    false,
+                    |view, loaded| scene.stage_world(view.assets, loaded),
+                    |assets, append| preparer.prepare_assets(assets, Some(append.limits())),
+                )?;
+                let selected = loaded.presentations[0];
+                append.commit();
+                selected
+            };
+            let row = self.module_row(module).ok_or("missing CLIENT renderer")?;
+            if row.scene_role.profile() == Some(selected_profile)
+                && row.scene_role.presentation_for(world) == Some(selected.id)
+            {
+                continue;
+            }
+            self.module_row_mut(module)
+                .ok_or("missing CLIENT renderer")?
+                .scene_role
+                .adopt_client_world(selected_profile, world, selected);
+        }
+        Ok(true)
+    }
+
     fn activate_received_world(
         &mut self,
         client: ClientId,

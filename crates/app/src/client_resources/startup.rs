@@ -66,8 +66,17 @@ pub(crate) enum ClientStartup {
     },
     Restarting,
     Quake2(Q2Signon),
+    Quake3(Q3Phase),
     QuakeWorld(QwSignon),
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Q3Phase {
+    AwaitGamestate,
+    Loading,
+    Primed,
+    Active,
+}
+
 #[derive(Default)]
 pub(crate) struct NqSignon {
     pub(super) stage: u8,
@@ -146,13 +155,17 @@ impl ClientStartup {
     pub(crate) fn connecting(&mut self, protocol: Protocol) {
         match protocol {
             Protocol::NetQuake15 => self.begin_nq(),
+            Protocol::Quake3_68 => *self = Self::Quake3(Q3Phase::AwaitGamestate),
             Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038 => {
                 *self = Self::AwaitHeader { new_pending: false }
             }
-            _ => {}
         }
     }
     pub(crate) fn connected(&mut self, protocol: Protocol) {
+        if protocol == Protocol::Quake3_68 {
+            *self = Self::Quake3(Q3Phase::AwaitGamestate);
+            return;
+        }
         if matches!(
             protocol,
             Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake2Repro1038
@@ -168,7 +181,7 @@ impl ClientStartup {
             Self::AwaitHeader { .. } | Self::NetQuake(_) => true,
             Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
             Self::Quake2(state) => state.reconnect_in_place(),
-            Self::Unmanaged | Self::Restarting => false,
+            Self::Unmanaged | Self::Restarting | Self::Quake3(_) => false,
         }
     }
     pub(crate) fn reconnect(&mut self, protocol: Protocol) {
@@ -235,6 +248,7 @@ impl ClientStartup {
             Self::NetQuake(state) => state.stage < 4 || !state.resources_admitted,
             Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
             Self::Quake2(state) => state.waiting(),
+            Self::Quake3(phase) => *phase != Q3Phase::Active,
         }
     }
     pub(crate) fn resources_needed(&self) -> bool {
@@ -242,7 +256,9 @@ impl ClientStartup {
             Self::NetQuake(state) => !state.resources_admitted,
             Self::QuakeWorld(state) => matches!(state.phase, QwPhase::Content),
             Self::Quake2(state) => state.resources_needed(),
-            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting => false,
+            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting | Self::Quake3(_) => {
+                false
+            }
         }
     }
     pub(crate) fn allow_models(&self) -> bool {
@@ -253,6 +269,7 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
+                | Self::Quake3(Q3Phase::AwaitGamestate)
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List { .. } | QwPhase::Files { .. },
                     ..
@@ -267,6 +284,7 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
+                | Self::Quake3(Q3Phase::AwaitGamestate)
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List {
                         kind: ResourceKind::Sound,
@@ -280,8 +298,34 @@ impl ClientStartup {
         )
     }
     pub(crate) fn allow_skins(&self) -> bool {
-        !matches!(self, Self::AwaitHeader { .. } | Self::Restarting)
-            && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
+        !matches!(
+            self,
+            Self::AwaitHeader { .. } | Self::Restarting | Self::Quake3(Q3Phase::AwaitGamestate)
+        ) && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
+    }
+    pub(crate) fn q3(&self) -> Option<Q3Phase> {
+        match self {
+            Self::Quake3(phase) => Some(*phase),
+            _ => None,
+        }
+    }
+    pub(crate) fn q3_gamestate(&mut self) {
+        if matches!(self, Self::Quake3(_)) {
+            *self = Self::Quake3(Q3Phase::Loading);
+        }
+    }
+    pub(crate) fn q3_primed(&mut self) {
+        if matches!(self, Self::Quake3(Q3Phase::Loading)) {
+            *self = Self::Quake3(Q3Phase::Primed);
+        }
+    }
+    pub(crate) fn q3_snapshot(&mut self, flags: u8) {
+        if flags & 2 == 0 && matches!(self, Self::Quake3(Q3Phase::Primed)) {
+            *self = Self::Quake3(Q3Phase::Active);
+        }
+    }
+    pub(crate) fn allows_commands(&self) -> bool {
+        !self.waiting() || matches!(self, Self::Quake3(Q3Phase::Primed))
     }
     pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
         if matches!(self, Self::Unmanaged) {
@@ -431,7 +475,7 @@ impl ClientStartup {
     }
     pub(crate) fn reply(&self, skins_done: bool) -> Option<StartupReply> {
         match self {
-            Self::Unmanaged | Self::Restarting => None,
+            Self::Unmanaged | Self::Restarting | Self::Quake3(_) => None,
             Self::AwaitHeader { new_pending, .. } => new_pending.then_some(StartupReply::New),
             Self::Quake2(state) => state.reply(),
             Self::NetQuake(state) if state.observed & 2 != 0 => Some(StartupReply::Prespawn),
@@ -486,7 +530,7 @@ impl ClientStartup {
                 StartupReply::QwBegin { .. } => state.phase = QwPhase::BeginQueued,
                 _ => state.phase = QwPhase::Signon,
             },
-            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting => {}
+            Self::Unmanaged | Self::AwaitHeader { .. } | Self::Restarting | Self::Quake3(_) => {}
         }
     }
     pub(crate) fn stufftext(

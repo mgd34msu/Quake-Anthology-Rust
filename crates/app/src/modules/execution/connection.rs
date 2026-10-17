@@ -26,6 +26,7 @@ pub(super) struct Change {
     previous: Option<(ClientId, EntityId)>,
     action: Action,
     started: bool,
+    renderer_shutdown: Option<crate::modules::ClientRendererShutdown>,
     retiring: Option<(ClientId, EntityId)>,
 }
 
@@ -148,6 +149,7 @@ pub(super) fn begin(
                             peer: Some(peer),
                         },
                         started: false,
+                        renderer_shutdown: None,
                         retiring: None,
                     });
                 }
@@ -215,6 +217,7 @@ pub(super) fn begin(
         previous,
         action,
         started: false,
+        renderer_shutdown: None,
         retiring: None,
     })
 }
@@ -240,7 +243,6 @@ impl Change {
             if !context.is_live(&host.runtime) {
                 return None;
             }
-            self.started = true;
             if let Some((id, lifetime)) = self.previous {
                 if !host
                     .runtime
@@ -252,22 +254,29 @@ impl Change {
                     report(host, format_args!("Connection changed before disconnect\n"));
                     return None;
                 }
+                match host.advance_client_renderer_shutdown(
+                    (id, lifetime),
+                    &mut self.renderer_shutdown,
+                    child,
+                    driver,
+                ) {
+                    Ok(Some(outcome)) => return Some(call_step(outcome, child)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        report(host, format_args!("CLIENT renderer shutdown: {error:?}\n"));
+                        return None;
+                    }
+                }
+                self.started = true;
                 disconnect_wire(host, id, driver);
                 if let Some(OperationStep::Call(outcome)) =
                     super::disconnect(host, id, lifetime, &mut self.retiring, access)
                 {
-                    return Some(match outcome {
-                        ModuleDispatch::Completed(result) => {
-                            *child = Some(result);
-                            FrameStep::Continue
-                        }
-                        ModuleDispatch::Guest(start) => {
-                            FrameStep::Guest(Activation::new(start, false))
-                        }
-                    });
+                    return Some(call_step(outcome, child));
                 }
             }
         }
+        self.started = true;
         if owner.is_some_and(|owner| !super::valid(host, owner, true)) {
             return Some(FrameStep::Finished(Err(())));
         }
@@ -413,6 +422,16 @@ impl Change {
     }
 }
 
+fn call_step(outcome: ModuleDispatch, child: &mut Option<ExecutionResult>) -> FrameStep {
+    match outcome {
+        ModuleDispatch::Completed(result) => {
+            *child = Some(result);
+            FrameStep::Continue
+        }
+        ModuleDispatch::Guest(start) => FrameStep::Guest(Activation::new(start, false)),
+    }
+}
+
 fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) {
     let runtime = &mut host.runtime;
     let Some(connection) = runtime
@@ -481,7 +500,7 @@ fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) 
         return;
     };
     let (submissions, repeats) = match protocol {
-        Protocol::QuakeWorld28 | Protocol::Quake2_34 => (3, 1),
+        Protocol::QuakeWorld28 | Protocol::Quake2_34 | Protocol::Quake3_68 => (3, 1),
         Protocol::Quake2Repro1038 => (1, 3),
         _ => (1, 1),
     };
