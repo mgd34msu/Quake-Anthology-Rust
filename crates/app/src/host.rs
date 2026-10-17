@@ -342,8 +342,55 @@ pub struct Provider {
 }
 #[derive(Default)]
 struct ClientUserinfo {
-    revision: Option<(qa_core::primitives::EntityId, u64)>,
+    entity: Option<qa_core::primitives::EntityId>,
+    revision: Option<u64>,
     queued: qa_core::text::FixedText<{ qa_session::clients::USERINFO_BYTES }>,
+}
+impl ClientUserinfo {
+    fn queue_qw(
+        &mut self,
+        channel: &mut qa_network::channel::Channel,
+        text: &[u8],
+    ) -> Result<(), qa_network::channel::TransmitError> {
+        use qa_core::text::{FixedText, InfoUpdate, info_pairs, info_value};
+        use qa_network::{channel::TransmitError, commands::packet::Protocol};
+        let previous = self.queued.clone();
+        let rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
+        // Shrink first so individually valid replacements cannot overflow the
+        // native total while exchanging a long value for a short one.
+        for growing in [false, true] {
+            for (key, _) in info_pairs(previous.as_bytes()).chain(info_pairs(text)) {
+                let value = info_value(text, key, false).map_or(&b""[..], |range| &text[range]);
+                let before = info_value(self.queued.as_bytes(), key, false)
+                    .map_or(&b""[..], |range| &self.queued.as_bytes()[range]);
+                if key.starts_with(b"*")
+                    || value == before
+                    || (value.len() > before.len()) != growing
+                {
+                    continue;
+                }
+                let update = InfoUpdate::new(key, value, rules)
+                    .map_err(|_| TransmitError::MessageTooLarge)?;
+                let mut queued = self.queued.clone();
+                queued
+                    .update_info(update)
+                    .map_err(|_| TransmitError::MessageTooLarge)?;
+                let mut command = FixedText::<160>::default();
+                for part in [&b"setinfo \""[..], key, b"\" \"", value, b"\""] {
+                    command
+                        .append_bytes(part)
+                        .map_err(|_| TransmitError::MessageTooLarge)?;
+                }
+                channel.queue_client_command(Protocol::QuakeWorld28, command.as_bytes())?;
+                // A full reliable queue retains the first unsent field for the
+                // next frame; already queued fields are not published again.
+                self.queued = queued;
+            }
+        }
+        self.queued
+            .set_bytes(text)
+            .map_err(|_| TransmitError::MessageTooLarge)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -389,6 +436,7 @@ pub struct FrameHost {
     zombie_time: CvarHandle,
     fov: CvarHandle,
     q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
+    pub(crate) qw_highchars: qa_console::cvars::View,
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
     pub(crate) allskins_command: qa_core::primitives::NameId,
@@ -1287,6 +1335,17 @@ impl FrameHost {
             .zip(console.cvars.bind("cl_vwep", q2_context))
             .ok_or("missing player model cvars")?;
         let player_skin_views = crate::client_scene::PlayerSkinViews::bind(&console.cvars)?;
+        let qw_highchars = console
+            .cvars
+            .bind(
+                "sv_highchars",
+                qa_console::views::Context {
+                    source: RuleSetId::QuakeWorld,
+                    side: qa_console::catalog::Scope::Server,
+                    ..Default::default()
+                },
+            )
+            .ok_or("missing sv_highchars")?;
         let allskins_command = console
             .register_external("allskins")
             .ok_or("player skin command registration")?;
@@ -1414,6 +1473,7 @@ impl FrameHost {
             zombie_time,
             fov,
             q2_fov,
+            qw_highchars,
             nq_identity,
             player_model_options,
             player_skin_views,
@@ -2394,7 +2454,10 @@ impl FrameHost {
         for seat in SeatId::ALL {
             let index = seat.index();
             let Some(id) = self.local_clients[index] else {
-                self.userinfo[index].revision = None;
+                let cache = &mut self.userinfo[index];
+                cache.entity = None;
+                cache.revision = None;
+                cache.queued.clear();
                 continue;
             };
             let Some(row) = self
@@ -2406,10 +2469,15 @@ impl FrameHost {
             else {
                 continue;
             };
-            if self.userinfo[index].revision == Some((row.entity, revision)) {
+            let cache = &mut self.userinfo[index];
+            if cache.entity != Some(row.entity) {
+                cache.entity = Some(row.entity);
+                cache.revision = None;
+                cache.queued.clear();
+            }
+            if cache.revision == Some(revision) {
                 continue;
             }
-            let lifetime = row.entity;
             let Some(connection) = self
                 .runtime
                 .network
@@ -2420,7 +2488,11 @@ impl FrameHost {
             if !connection.phase.is_connected() {
                 continue;
             }
-            let Some(protocol @ (Protocol::Quake2_34 | Protocol::Quake2Repro1038)) = connection
+            let Some(
+                protocol @ (Protocol::QuakeWorld28
+                | Protocol::Quake2_34
+                | Protocol::Quake2Repro1038),
+            ) = connection
                 .commands
                 .as_ref()
                 .map(|commands| commands.protocol)
@@ -2441,19 +2513,23 @@ impl FrameHost {
                 continue;
             };
             let cache = &mut self.userinfo[index];
-            if cache.revision.is_some_and(|(old, _)| old == lifetime)
-                && cache.queued.as_bytes() == &bytes[..length]
-            {
-                cache.revision = Some((lifetime, revision));
+            if cache.queued.as_bytes() == &bytes[..length] {
+                cache.revision = Some(revision);
                 continue;
             }
-            if connection
-                .channel
-                .queue_userinfo(protocol, &bytes[..length])
-                .is_ok()
-                && cache.queued.set_bytes(&bytes[..length]).is_ok()
-            {
-                cache.revision = Some((lifetime, revision));
+            let queued = if protocol == Protocol::QuakeWorld28 {
+                cache
+                    .queue_qw(&mut connection.channel, &bytes[..length])
+                    .is_ok()
+            } else {
+                connection
+                    .channel
+                    .queue_userinfo(protocol, &bytes[..length])
+                    .is_ok()
+                    && cache.queued.set_bytes(&bytes[..length]).is_ok()
+            };
+            if queued {
+                cache.revision = Some(revision);
             }
         }
     }
@@ -3610,3 +3686,7 @@ fn event_name(kind: EventKind<'_>) -> &'static str {
         EventKind::Packet { .. } => "packet",
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/qw_userinfo.rs"]
+mod userinfo_tests;

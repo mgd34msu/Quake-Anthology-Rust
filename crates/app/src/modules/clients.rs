@@ -915,6 +915,9 @@ impl FrameHost {
                 self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
+            if quakec::setinfo(self, id, rules, args)? {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
             let Some((api, _)) = api else {
                 return Ok(std::ops::ControlFlow::Continue(()));
             };

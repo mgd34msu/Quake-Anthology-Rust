@@ -141,6 +141,23 @@ pub(super) fn connect(
     driver: &mut crate::modules::Driver<'_>,
 ) -> Result<u32, String> {
     let info = host.client_info(module).ok_or("missing client lifecycle")?;
+    let mut corrected =
+        qa_core::text::FixedText::<{ qa_compat::quakec::QW_USERINFO_BYTES }>::default();
+    let userinfo = if info.rules == RuleSetId::QuakeWorld {
+        let rules = userinfo_rules(host).map_err(|error| error.to_string())?;
+        extract_name(host, id, rules).map_err(|error| format!("client userinfo: {error:?}"))?;
+        corrected
+            .set_bytes(
+                host.runtime
+                    .server
+                    .userinfo(id)
+                    .ok_or("missing client userinfo")?,
+            )
+            .map_err(|_| "client userinfo exceeds native boundary")?;
+        corrected.as_bytes()
+    } else {
+        userinfo
+    };
     if info.rules == RuleSetId::Quake
         && !matches!(
             host.runtime
@@ -721,6 +738,256 @@ pub(super) fn text(
     _driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
     Err(ClientCommandError::Unsupported)
+}
+
+fn info_value<'a>(info: &'a [u8], key: &[u8]) -> &'a [u8] {
+    qa_core::text::info_value(info, key, false).map_or(b"", |range| &info[range])
+}
+
+fn userinfo_rules(host: &FrameHost) -> Result<qa_core::text::InfoRules, ClientCommandError> {
+    let mut rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
+    rules.filter = if host
+        .console
+        .cvars
+        .numeric(host.qw_highchars)
+        .map_err(|_| ClientCommandError::Usercmd(ServiceError::Cvar))?
+        != 0.0
+    {
+        qa_core::text::InfoBytes::AboveCarriageReturn
+    } else {
+        qa_core::text::InfoBytes::Ascii7
+    };
+    Ok(rules)
+}
+
+fn extract_name(
+    host: &mut FrameHost,
+    id: ClientId,
+    rules: qa_core::text::InfoRules,
+) -> Result<(), qa_session::clients::ClientInfoError> {
+    use qa_core::text::{FixedText, InfoUpdate};
+    // QW server.h client_t.name; the CLIENT scoreboard has a smaller name.
+    const SERVER_NAME_BYTES: usize = 32;
+    let info = host
+        .runtime
+        .server
+        .userinfo(id)
+        .ok_or(qa_session::clients::ClientInfoError::Client)?;
+    let raw = info_value(info, b"name");
+    let trim = |byte: &u8| matches!(*byte, b' ' | b'\r' | b'\n');
+    let first = raw.iter().position(|byte| !trim(byte)).unwrap_or(raw.len());
+    let last = raw
+        .iter()
+        .rposition(|byte| !trim(byte))
+        .map_or(first, |index| index + 1);
+    let mut name = FixedText::<80>::default();
+    let value = &raw[first..last];
+    name.set_bytes(
+        if value.is_empty() || qa_core::names::compare_folded(value, b"console").is_eq() {
+            b"unnamed"
+        } else {
+            value
+        },
+    )
+    .map_err(|_| qa_core::text::InfoError::Capacity)?;
+    let mut duplicate = 1;
+    loop {
+        let taken = host
+            .runtime
+            .server
+            .clients
+            .iter()
+            .enumerate()
+            .any(|(index, client)| {
+                if index == id.0 as usize || !client.is_server_active() {
+                    return false;
+                }
+                let Some(info) = host.runtime.server.userinfo(ClientId(index as u32)) else {
+                    return false;
+                };
+                let other = info_value(info, b"name");
+                qa_core::names::compare_folded(
+                    &other[..other.len().min(SERVER_NAME_BYTES - 1)],
+                    name.as_bytes(),
+                )
+                .is_eq()
+            });
+        if !taken {
+            break;
+        }
+        let mut base = FixedText::<40>::default();
+        let value = name.as_bytes();
+        let value = if value.len() > SERVER_NAME_BYTES - 1 {
+            &value[..SERVER_NAME_BYTES - 4]
+        } else {
+            value
+        };
+        let skip = if value.first() == Some(&b'(') && value.get(2) == Some(&b')') {
+            3
+        } else if value.first() == Some(&b'(') && value.get(3) == Some(&b')') {
+            4
+        } else {
+            0
+        };
+        base.set_bytes(&value[skip..value.len().min(skip + 40)])
+            .map_err(|_| qa_core::text::InfoError::Capacity)?;
+        name.clear();
+        use std::fmt::Write;
+        write!(name, "({duplicate})").map_err(|_| qa_core::text::InfoError::Capacity)?;
+        name.append_bytes(base.as_bytes())
+            .map_err(|_| qa_core::text::InfoError::Capacity)?;
+        duplicate += 1;
+    }
+    if info_value(host.runtime.server.userinfo(id).unwrap_or(b""), b"name") != name.as_bytes() {
+        // ExtractFromUserinfo uses the same native setter for corrected names.
+        let _ = host.runtime.server.update_userinfo(
+            id,
+            InfoUpdate::new(b"name", name.as_bytes(), rules)?.first_only(),
+        );
+    }
+    Ok(())
+}
+
+/// QW handles this in the SERVER host, before any game-module text callback.
+pub(super) fn setinfo(
+    host: &mut FrameHost,
+    id: ClientId,
+    source: RuleSetId,
+    args: qa_console::command_text::Arguments<'_>,
+) -> Result<bool, ClientCommandError> {
+    use qa_core::{
+        primitives::{NativeDelivery, NativeTarget},
+        text::{FixedText, InfoUpdate},
+    };
+    use qa_network::{commands::packet::Protocol, outputs::PeerUpdate};
+    if source != RuleSetId::QuakeWorld || args.get_bytes(0) != b"setinfo" {
+        return Ok(false);
+    }
+    if args.len() != 3 {
+        let _ = host
+            .runtime
+            .server
+            .events
+            .console_bytes(b"usage: setinfo [ <key> <value> ]\n");
+        return Ok(true);
+    }
+    let key = args.get_bytes(1);
+    let value = args.get_bytes(2);
+    if key.starts_with(b"*") {
+        return Ok(true);
+    }
+    let client = host
+        .runtime
+        .server
+        .clients
+        .get(id.0 as usize)
+        .filter(|client| client.is_server_active())
+        .ok_or(ClientCommandError::Inactive)?;
+    let slot = host
+        .runtime
+        .snapshots
+        .get(id.0 as usize)
+        .and_then(Option::as_ref)
+        .filter(|binding| binding.protocol == Protocol::QuakeWorld28)
+        .and_then(|binding| binding.native_client())
+        .or_else(|| {
+            let native =
+                host.runtime.server.entities.columns.native_entity[client.entity.slot as usize]?;
+            (client.connection == Some(qa_session::clients::Connection::Bot))
+                .then(|| {
+                    u32::try_from(native.slot).ok()?.checked_sub(
+                        crate::output_namespace::native_client_entity(Protocol::QuakeWorld28, 0)?,
+                    )
+                })
+                .flatten()
+        })
+        .filter(|slot| *slot < Protocol::QuakeWorld28.resource_layout().players.count)
+        .ok_or(ClientCommandError::InvalidSlot)? as u8;
+    let delivery = NativeDelivery {
+        module: client.module,
+        source,
+        target: NativeTarget::All,
+        origin: client.player.body.position,
+        reliable: true,
+        dupe_key: 0,
+        component: 0,
+        emission: None,
+        check_portals: false,
+    };
+    let rules = userinfo_rules(host)?;
+    let mutation = InfoUpdate::new(key, value, rules)
+        .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+    let mut previous = FixedText::<{ qa_compat::quakec::QW_USERINFO_BYTES }>::default();
+    previous
+        .set_bytes(
+            host.runtime
+                .server
+                .userinfo(id)
+                .ok_or(ClientCommandError::Inactive)?,
+        )
+        .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+    if previous.as_bytes().len() >= rules.bytes {
+        return Err(ClientCommandError::Usercmd(ServiceError::Text));
+    }
+    let old = info_value(previous.as_bytes(), key);
+    // Native preflights an existing nonempty value before removing its row.
+    if !old.is_empty()
+        && previous
+            .as_bytes()
+            .len()
+            .saturating_sub(old.len())
+            .saturating_add(value.len())
+            > rules.bytes
+    {
+        return Ok(true);
+    }
+    let result = (|| {
+        // A native capacity failure may remove a row, so compare the resulting
+        // effective value even when the replacement could not be appended.
+        let _ = host
+            .runtime
+            .server
+            .update_userinfo(id, mutation.first_only());
+        let current = host
+            .runtime
+            .server
+            .userinfo(id)
+            .ok_or(ClientCommandError::Inactive)?;
+        if info_value(current, key) == old {
+            return Ok(());
+        }
+        extract_name(host, id, rules)
+            .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+        let current = host
+            .runtime
+            .server
+            .userinfo(id)
+            .ok_or(ClientCommandError::Inactive)?;
+        let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES + 4];
+        let length = qa_network::outputs::peer_update(
+            Protocol::QuakeWorld28,
+            PeerUpdate::SetInfo {
+                slot,
+                key,
+                value: info_value(current, key),
+            },
+            &mut bytes,
+        )
+        .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+        host.runtime
+            .server
+            .events
+            .native_message(delivery, &bytes[..length])
+            .map_err(|_| ClientCommandError::Usercmd(ServiceError::Capacity))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = host
+            .runtime
+            .server
+            .replace_userinfo_raw(id, previous.as_bytes(), rules.bytes);
+    }
+    result.map(|()| true)
 }
 pub(super) fn userinfo(
     _: &mut FrameHost,

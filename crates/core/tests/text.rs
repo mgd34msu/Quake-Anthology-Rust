@@ -2,6 +2,40 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn borrowed_info_iteration_and_fixed_mutation_preserve_native_duplicates() {
+    use qa_core::text::{InfoBytes, InfoRules, InfoUpdate, info_pairs, info_value};
+    let raw = b"name\\first\\name\\later\\skin\\raw\x80\\incomplete";
+    assert_eq!(
+        info_pairs(raw).collect::<Vec<_>>(),
+        [
+            (b"name".as_slice(), b"first".as_slice()),
+            (b"name", b"later"),
+            (b"skin", b"raw\x80")
+        ]
+    );
+    let mut text = FixedText::<64>::default();
+    text.set_bytes(b"\\name\\first\\name\\later\\skin\\base")
+        .unwrap();
+    let rules = InfoRules {
+        bytes: 64,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::AboveCarriageReturn,
+    };
+    text.update_info(
+        InfoUpdate::new(b"name", b"new\x80", rules)
+            .unwrap()
+            .first_only(),
+    )
+    .unwrap();
+    assert_eq!(text.as_bytes(), b"\\name\\later\\skin\\base\\name\\new\x80");
+    assert_eq!(
+        &text.as_bytes()[info_value(text.as_bytes(), b"name", false).unwrap()],
+        b"later"
+    );
+}
+
+#[test]
 fn inline_model_ordinals_keep_native_atoi_prefix_and_width() {
     use qa_core::text::inline_model_index;
     assert_eq!(inline_model_index(b"model.md3"), None);

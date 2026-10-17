@@ -4,6 +4,48 @@ use qa_core::primitives::{
 use qa_session::clients::{Connection, Server};
 
 #[test]
+fn userinfo_updates_share_native_mutation_and_reject_retired_clients() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, InfoUpdate};
+    use qa_session::clients::ClientInfoError;
+    let mut server = Server::load(1, 8, 2, 2, 2, 0).unwrap();
+    let id = server
+        .connect(Connection::Local, ModuleId(1), None)
+        .unwrap();
+    let rules = InfoRules {
+        bytes: 196,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::AboveCarriageReturn,
+    };
+    server
+        .replace_userinfo(id, b"\\a\\first\\a\\second", rules)
+        .unwrap();
+    server
+        .update_userinfo(
+            id,
+            InfoUpdate::new(b"a", b"third", rules).unwrap().first_only(),
+        )
+        .unwrap();
+    assert_eq!(server.userinfo(id).unwrap(), b"\\a\\second\\a\\third");
+    let tiny = InfoRules { bytes: 12, ..rules };
+    assert_eq!(
+        server.update_userinfo(
+            id,
+            InfoUpdate::new(b"a", b"too long", tiny)
+                .unwrap()
+                .first_only()
+        ),
+        Err(ClientInfoError::Info(InfoError::Capacity))
+    );
+    assert_eq!(server.userinfo(id).unwrap(), b"\\a\\third");
+    assert!(server.disconnect(id));
+    assert_eq!(
+        server.update_userinfo(id, InfoUpdate::new(b"a", b"live", rules).unwrap()),
+        Err(ClientInfoError::Client)
+    );
+}
+
+#[test]
 fn client_only_reservation_keeps_its_lifetime_without_server_admission() {
     use qa_core::primitives::{CommandExecution, UserCmd};
     let mut server = Server::load(3, 8, 2, 2, 2, 0).unwrap();

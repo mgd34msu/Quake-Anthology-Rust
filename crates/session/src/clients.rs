@@ -362,6 +362,24 @@ impl Server {
             .then(|| client.userinfo.as_bytes())
     }
 
+    /// Mutate the existing native record with a boundary-validated update.
+    /// The shared info writer retains native removal on capacity failure.
+    pub fn update_userinfo(
+        &mut self,
+        id: ClientId,
+        update: InfoUpdate<'_>,
+    ) -> Result<(), ClientInfoError> {
+        let client = self
+            .clients
+            .get_mut(id.0 as usize)
+            .filter(|client| {
+                client.connection.is_some() && self.entities.resolve(client.entity).is_some()
+            })
+            .ok_or(ClientInfoError::Client)?;
+        client.userinfo.update_info(update)?;
+        Ok(())
+    }
+
     /// Input admission checks the complete record before replacing its raw
     /// bytes. Exact spelling, duplicates and the optional leading slash remain.
     pub fn replace_userinfo(

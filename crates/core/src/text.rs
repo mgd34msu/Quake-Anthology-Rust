@@ -74,6 +74,17 @@ fn info_pair(info: &[u8], start: usize) -> Option<InfoPair> {
     })
 }
 
+/// Borrow native info fields in their original order, using the same parser
+/// as lookup and removal. A trailing incomplete field ends iteration.
+pub fn info_pairs(info: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let mut cursor = 0;
+    std::iter::from_fn(move || {
+        let pair = info_pair(info, cursor)?;
+        cursor = pair.value.end;
+        Some((&info[pair.key], &info[pair.value]))
+    })
+}
+
 /// The first matching value in a native backslash-separated info string.
 /// Callers select native key comparison; returned spans never own or alter text.
 pub fn info_value(info: &[u8], key: &[u8], folded: bool) -> Option<std::ops::Range<usize>> {
@@ -163,6 +174,10 @@ impl<const N: usize> FixedText<N> {
         self.bytes[self.len..end].copy_from_slice(text);
         self.len = end;
         Ok(())
+    }
+    /// Apply the common native info-string mutation within this fixed storage.
+    pub fn update_info(&mut self, update: InfoUpdate<'_>) -> Result<(), InfoError> {
+        update.apply(&mut self.bytes, &mut self.len)
     }
 }
 impl<const N: usize> Write for FixedText<N> {

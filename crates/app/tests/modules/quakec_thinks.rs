@@ -3,6 +3,9 @@ use super::*;
 #[path = "quakec_client_physics.rs"]
 mod client_physics;
 
+#[path = "quakec_userinfo.rs"]
+mod userinfo;
+
 #[path = "../model_assets/support.rs"]
 mod model_support;
 
