@@ -181,7 +181,8 @@ fn setup(files: &[(&str, Vec<u8>)], clients: usize) -> (support::Fixture, FrameH
     let profile = ModelRequest::native("", RULES, Some(palette)).profile();
     let (scene, _) =
         qa_app::renderer::SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

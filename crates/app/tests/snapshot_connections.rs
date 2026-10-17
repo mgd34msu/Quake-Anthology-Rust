@@ -1679,7 +1679,14 @@ fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> Geomet
     let world = assets_support::world(&mut assets, 0.);
     let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = ModelRequest::native("", RuleSetId::QuakeWorld, None).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &host.runtime.vfs,
+        assets,
+        [profile],
+        [world],
+        ModelLimits::default(),
+    )
+    .unwrap();
     owner
         .bind_loaded_world(
             &host.runtime.vfs,
@@ -3228,7 +3235,14 @@ fn install_received_world_owner(
         vec![loaded],
     )
     .unwrap();
-    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &host.runtime.vfs,
+        assets,
+        [profile],
+        [world],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

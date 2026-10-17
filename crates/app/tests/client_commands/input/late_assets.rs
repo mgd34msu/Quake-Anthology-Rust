@@ -219,8 +219,14 @@ pub(super) fn run(native: bool) {
     let mut files = model_support::Fixture::surfaces();
     host.runtime.vfs = std::mem::take(&mut files.vfs);
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &host.runtime.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     host.runtime.scene = Some(
         SceneComposer::load(qa_render::Limits::default(), owner.assets_mut(), vec![])
             .unwrap()

@@ -123,7 +123,7 @@ fn model_colors_keep_every_native_group_and_independent_skeletal_sidecars() {
     let fixture = from_owned_files(&files);
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
         .unwrap();
@@ -262,7 +262,7 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
     let mut fixture = from_owned_files(&files);
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
         .unwrap();

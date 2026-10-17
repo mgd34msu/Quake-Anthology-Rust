@@ -35,7 +35,14 @@ fn setup(
     let profile = ModelRequest::native("", source, Some(palette)).profile();
     let mut failed = profile;
     failed.image_settings.max_dimension = 0;
-    let owner = ModelAssets::new(assets, [failed, profile], [], Default::default()).unwrap();
+    let owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [failed, profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     runtime.model_assets = Some(owner);

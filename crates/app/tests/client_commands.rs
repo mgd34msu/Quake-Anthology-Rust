@@ -535,6 +535,7 @@ fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
     };
     host.runtime.model_assets = Some(
         qa_app::model_assets::ModelAssets::new(
+            &host.runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [],
             [],

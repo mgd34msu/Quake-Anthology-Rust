@@ -97,8 +97,14 @@ fn same_profile_reload_reselects_formats_and_rolls_back_late_rejection_without_d
     ]);
     let mut profile = profile(RuleSetId::Quake3);
     profile.image_settings.override_textures = 2;
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     owner.set_image_search_order(ImageSearchOrder::parse(b"tga").unwrap());
     let shader = owner
         .register_shader(
@@ -326,7 +332,8 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
         .unwrap();
     let world = loaded.render.world;
     let previous = loaded.render.presentations[0];
-    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let retained = owner.assets().counts();
     let mesh = owner.assets().world(world).unwrap().mesh();
@@ -446,7 +453,8 @@ fn finish_refresh_reuses_world_images_after_backend_rejection() {
         .unwrap();
     let world = loaded.render.world;
     let previous = loaded.render.presentations[0];
-    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let retained = owner.assets().counts();
     let finish = MaterialFinishPolicy {
@@ -568,6 +576,7 @@ fn initial_worlds_keep_their_own_default_image_when_the_catalog_adopts_a_peer() 
         .map(|world| default_image(&assets, world.presentations[0].id));
     assert_ne!(images[0], images[1]);
     let owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [profile],
         worlds.each_ref().map(|world| world.world),
@@ -609,8 +618,14 @@ fn initial_worlds_keep_their_own_default_image_when_the_catalog_adopts_a_peer() 
 fn pair_publishes_once_then_uses_both_cached_handles_without_io() {
     let fixture = shader_fixture();
     let profile = profile(RuleSetId::Quake3);
-    let owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let before = owner.assets().counts();
     let kind = RendererRegistration::Shader {
@@ -676,6 +691,7 @@ fn pair_backend_rejection_restores_both_existing_shaders_and_admitted_peer() {
     let peer = profile(RuleSetId::Quake);
     let target = profile(RuleSetId::Quake2);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [peer, target],
         [],
@@ -784,6 +800,7 @@ fn pair_source_failure_keeps_only_negative_metadata_and_does_not_load_on_cached_
     let peer = profile(RuleSetId::Quake);
     let profile = profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [peer, profile],
         [],
@@ -931,6 +948,7 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
     let peer = profile(RuleSetId::Quake);
     let target = profile(RuleSetId::Quake2);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [peer, target],
         [],
@@ -1007,8 +1025,14 @@ fn duplicate_folded_shader_requests_preserve_first_flags_after_atomic_retry() {
 fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
     let fixture = support::Fixture::surfaces();
     let profile = profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let retained = owner
         .register_shader(
             &fixture.vfs,
@@ -1202,7 +1226,8 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assets
         .register_world_presentation_metadata(world, &entries)
         .unwrap();
-    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();
     let (mut owner, mut cpu) = publish(owner);
     let ordinary = request(
         b"textures/lit",
@@ -1520,7 +1545,8 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", RuleSetId::Quake3, Some(palette)).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
     let handle = owner
         .register_model(&fixture.vfs, b"progs/two.mdl", profile.source_rules)
         .unwrap();
@@ -1639,7 +1665,8 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let original = ModelRequest::native("", RuleSetId::Quake, Some(palette)).profile();
-    let mut owner = ModelAssets::new(assets, [original], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [original], [], Default::default()).unwrap();
     owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
     owner
         .adopt_palettes(
@@ -2029,7 +2056,8 @@ fn grouped_spr_keeps_one_mesh_and_authored_frames_through_source_unlink_and_refr
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", RuleSetId::Quake, Some(palette)).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
     owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
     owner
         .adopt_palettes(

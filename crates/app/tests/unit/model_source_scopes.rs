@@ -12,7 +12,14 @@ fn model_dependencies_and_cached_sources_keep_their_selected_mounts() {
     let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
     let low = files.vfs.search_view([low_mount]).unwrap();
     let high = files.vfs.search_view([high_mount]).unwrap();
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     for (view, expected) in [
         (&low, b"skins/low.pcx".as_slice()),
         (&high, b"skins/high.pcx"),
@@ -109,7 +116,14 @@ fn every_model_lod_uses_the_same_source_selection() {
     let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
     let low = files.vfs.search_view([low_mount]).unwrap();
     let high = files.vfs.search_view([high_mount]).unwrap();
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let low_lods = owner
         .model_lods(files.vfs.read_view(Some(&low)), "models/test.md3")
         .map_err(|e| e.message)
@@ -185,8 +199,14 @@ fn scoped_source_capacity_and_invalidation_preserve_healthy_records() {
 fn warm_renderer_resources_reject_a_different_vfs_before_cached_admission() {
     let files = support::Fixture::surfaces();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let model = owner
         .register_model(&files.vfs, b"models/test.md3", profile.source_rules)
         .unwrap();
@@ -282,6 +302,7 @@ fn shader_catalog_cache_keeps_selected_definitions_and_bounds_new_scopes() {
     let high = files.vfs.search_view([high_mount]).unwrap();
     let empty = files.vfs.search_view([]).unwrap();
     let mut owner = ModelAssets::new(
+        &files.vfs,
         Assets::load().unwrap(),
         [],
         [],
@@ -349,4 +370,109 @@ fn shader_catalog_cache_keeps_selected_definitions_and_bounds_new_scopes() {
             .find_canonical("low_only")
             .is_some()
     );
+}
+
+#[test]
+fn constructed_resources_reject_first_access_through_a_foreign_vfs() {
+    let files = support::Fixture::surfaces();
+    let other = support::Fixture::surfaces();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let counts = owner.assets.counts();
+    assert_eq!(
+        owner.register_model(&other.vfs, b"models/test.md3", profile.source_rules),
+        Err(CallError::File)
+    );
+    assert_eq!(
+        owner.register_shader(
+            &other.vfs,
+            b"textures/body",
+            profile.source_rules,
+            false,
+            ShaderLighting::TwoDimensional
+        ),
+        Err(CallError::File)
+    );
+    assert_eq!(
+        owner.register_skin(&other.vfs, b"models/test.skin", profile.source_rules),
+        Err(CallError::File)
+    );
+    assert!(
+        owner
+            .model_source(other.vfs.read_view(None), "models/test.md3")
+            .is_err()
+    );
+    assert!(
+        owner
+            .source_image(other.vfs.read_view(None), b"models/test.md3", 0)
+            .is_err()
+    );
+    assert_eq!(owner.assets.counts(), counts);
+    assert_eq!(owner.catalog.names.len(), 1);
+    assert!(
+        owner
+            .register_model(&files.vfs, b"models/test.md3", profile.source_rules)
+            .unwrap()
+            > 0
+    );
+    let row = &owner.catalog.profiles[0];
+    assert!(row.source.same_selection(&files.vfs.default_view()));
+}
+
+#[test]
+fn image_policy_sharing_keeps_source_selection_independent_of_presentation() {
+    let mut files = support::Fixture::new(&[(
+        "textures/pic.tga",
+        support::tga(4, 4, &[[255, 0, 0, 255]; 16]),
+    )]);
+    let high = support::Fixture::new(&[(
+        "textures/pic.tga",
+        support::tga(4, 4, &[[0, 0, 255, 255]; 16]),
+    )]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut assets = Assets::load().unwrap();
+    let mut policies = Vec::new();
+    let catalog = qa_render::shader::parse_sources(&[]);
+    for (view, expected) in [
+        (&low, [255, 0, 0, 255]),
+        (&high, [0, 0, 255, 255]),
+        (&low, [255, 0, 0, 255]),
+    ] {
+        let (entry, _) = ProfileImages::new(profile, view.clone(), &policies, &mut assets).unwrap();
+        let index = policies.len();
+        policies.push(entry);
+        let registered = with_image_owner(&mut policies, index, |images| {
+            images.compile(
+                &files.vfs,
+                &mut assets,
+                Ok(&catalog),
+                b"textures/pic.tga",
+                false,
+                NamedShaderLighting {
+                    source: LightSource::None,
+                    lightmap: ImageId(0),
+                },
+                false,
+            )
+        })
+        .unwrap();
+        let binding = assets.shader_binding(registered.shader).unwrap();
+        let material = assets.material(binding.material).unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("source image");
+        };
+        assert_eq!(&assets.image(image).unwrap().rgba[..4], &expected);
+    }
 }

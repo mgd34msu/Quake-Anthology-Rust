@@ -117,7 +117,8 @@ fn rejected_source_palette_and_translation_are_rebuilt_by_the_same_registration(
     let target = support::palette(&mut assets);
     let mut profile = shader_profile(RuleSetId::Quake3);
     profile.palette = Some(target);
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&first.vfs, assets, [profile], [], Default::default()).unwrap();
     let limits = CpuLimits {
         cache_bytes: 1_048_576,
         ..Default::default()

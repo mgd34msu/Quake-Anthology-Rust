@@ -1123,7 +1123,8 @@ fn setup_renderers_with_images(
     if override_all {
         profile.image_settings.override_textures = 2;
     }
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&runtime.vfs, assets, [profile], [], Default::default()).unwrap();
     if override_all {
         owner.set_image_search_order(
             qa_render::material::resources::ImageSearchOrder::parse(b"tga").unwrap(),

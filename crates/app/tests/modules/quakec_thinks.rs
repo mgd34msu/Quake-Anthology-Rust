@@ -959,8 +959,9 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         vm.image.globals[99] = spawn;
         let mut runtime = Runtime::load(1, []).unwrap();
         runtime.vfs = std::mem::take(&mut files.vfs);
-        runtime.model_assets =
-            Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
+        runtime.model_assets = Some(
+            ModelAssets::new(&runtime.vfs, assets, [profile], [], Default::default()).unwrap(),
+        );
         let module = ModuleId(1);
         let client = runtime
             .connect_local(
@@ -1190,8 +1191,9 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
         write_vector(&mut vm, 2, b"maxs", Vec3([3.0; 3]));
         let mut runtime = Runtime::load(1, []).unwrap();
         runtime.vfs = std::mem::take(&mut files.vfs);
-        runtime.model_assets =
-            Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
+        runtime.model_assets = Some(
+            ModelAssets::new(&runtime.vfs, assets, [profile], [], Default::default()).unwrap(),
+        );
         let module = ModuleId(1);
         let (mut request, entities) = request(
             &mut runtime,

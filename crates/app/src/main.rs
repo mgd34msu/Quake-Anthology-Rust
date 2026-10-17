@@ -795,6 +795,7 @@ fn run() -> Result<(), String> {
         }
     }
     host.runtime.model_assets = Some(qa_app::model_assets::ModelAssets::new(
+        &host.runtime.vfs,
         assets,
         configured_profiles,
         render_world,

@@ -99,6 +99,7 @@ fn model_tag_calls_keep_ui_void_result_and_ignore_names_without_tag_storage() {
     let fixture = model_support::Fixture::surfaces();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut builder = ModelAssets::new(
+        &fixture.vfs,
         qa_render::Assets::load().unwrap(),
         [profile],
         [],

@@ -317,7 +317,8 @@ fn loading_model(
         .unwrap();
     let world = loaded.render.world;
     let presentation = loaded.render.presentations[0];
-    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&runtime.vfs, assets, [profile], [world], Default::default()).unwrap();
     owner
         .bind_loaded_world(
             &runtime.vfs,

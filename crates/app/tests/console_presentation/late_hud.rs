@@ -113,7 +113,8 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
     shades.push(0);
     root.write("gfx/colormap.lmp", &shades);
     let vfs = root.vfs();
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&vfs, Assets::load().unwrap(), [], [], Default::default()).unwrap();
     let (mut scene, initial_limits) =
         SceneComposer::load(tiny_limits(), owner.assets_mut(), vec![]).unwrap();
     let mut cpu = CpuBackend::load_with_limits(
@@ -205,7 +206,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
     let vfs = root.vfs();
     let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets);
-    let mut owner = ModelAssets::new(assets, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(&vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -313,7 +314,8 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
 fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
     let root = Fixture::new();
     let vfs = root.vfs();
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&vfs, Assets::load().unwrap(), [], [], Default::default()).unwrap();
     let (mut scene, limits) =
         SceneComposer::load(tiny_limits(), owner.assets_mut(), vec![]).unwrap();
     let mut cpu = CpuBackend::load_with_limits(

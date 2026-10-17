@@ -25,7 +25,7 @@ fn assets(rules: RuleSetId, width: u32) -> (ModelAssets, HudAssets) {
     )]);
     let mut render = Assets::load().unwrap();
     let palette = image_support::palette(&mut render);
-    let mut owner = ModelAssets::new(render, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(&fixture.vfs, render, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -471,7 +471,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
     ]);
     let mut render = Assets::load().unwrap();
     let palette = image_support::palette(&mut render);
-    let mut owner = ModelAssets::new(render, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(&fixture.vfs, render, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

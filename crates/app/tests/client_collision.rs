@@ -97,7 +97,7 @@ impl Fixture {
         let presentation = assets.world(world).unwrap().presentations()[0];
         let profile = ModelRequest::native("", protocol.rule_set(), None).profile();
         let mut builder =
-            ModelAssets::new(assets, [profile], [world], ModelLimits::default()).unwrap();
+            ModelAssets::new(&vfs, assets, [profile], [world], ModelLimits::default()).unwrap();
         builder
             .bind_loaded_world(
                 &vfs,

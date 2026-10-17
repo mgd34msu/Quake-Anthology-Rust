@@ -1548,7 +1548,8 @@ fn install_cgame_world_assets(
     let (scene, _) =
         SceneComposer::load(qa_render::Limits::default(), &mut assets, vec![]).unwrap();
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&host.runtime.vfs, assets, [profile], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -2169,6 +2170,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     };
     host.runtime.model_assets = Some(
         ModelAssets::new(
+            &host.runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [profile],
             [],
@@ -2239,6 +2241,7 @@ fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_resul
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     host.runtime.model_assets = Some(
         ModelAssets::new(
+            &host.runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [profile],
             [],

@@ -267,8 +267,14 @@ fn requested_extension_prefers_its_format_and_missing_lod_alternates_preserve_sp
         });
         let fixture = support::Fixture::new(&files);
         let profile = shader_profile(RuleSetId::Quake3);
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let handle = owner
             .register_model(&fixture.vfs, requested.as_bytes(), profile.source_rules)
             .unwrap();
@@ -361,8 +367,14 @@ fn present_invalid_preferred_lod_never_uses_the_valid_alternate() {
         }
         let fixture = support::Fixture::new(&files);
         let profile = shader_profile(RuleSetId::Quake3);
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let result = owner.register_model(&fixture.vfs, b"models/packed.mdc", profile.source_rules);
         if failure == Some(true) {
             assert_eq!(result, Err(qa_compat::services::CallError::File));
@@ -408,8 +420,14 @@ fn retained_mdc_profile_rebuild_rolls_back_and_retries_after_model_and_skin_file
     files.push(("models/packed.mdc", mdc(b"textures/base")));
     let mut fixture = support::Fixture::new(&files);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_model(&fixture.vfs, b"models/packed.mdc", profile.source_rules)
         .unwrap();

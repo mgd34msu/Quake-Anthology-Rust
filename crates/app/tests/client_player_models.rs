@@ -99,8 +99,14 @@ fn loading_with_connection(
             false,
         )
         .unwrap();
-    let mut builder =
-        ModelAssets::new(assets, [profile], [loaded.render.world], Default::default()).unwrap();
+    let mut builder = ModelAssets::new(
+        &runtime.vfs,
+        assets,
+        [profile],
+        [loaded.render.world],
+        Default::default(),
+    )
+    .unwrap();
     builder
         .bind_loaded_world(
             &runtime.vfs,

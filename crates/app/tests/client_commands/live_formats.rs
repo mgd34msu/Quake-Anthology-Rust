@@ -38,6 +38,7 @@ pub(crate) fn live_formats(native: bool, ui: bool) {
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     runtime.model_assets = Some(
         ModelAssets::new(
+            &runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [profile],
             [],

@@ -286,6 +286,7 @@ fn scene_survives_parent_resume(native: bool) {
     );
     host.runtime.model_assets = Some(
         qa_app::model_assets::ModelAssets::new(
+            &host.runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [],
             [],

@@ -362,6 +362,7 @@ fn required_md5_pair_failure_never_publishes_a_bind_pose_only_model() {
         }
         let fixture = support::Fixture::new(&files);
         let mut owner = ModelAssets::new(
+            &fixture.vfs,
             Assets::load().unwrap(),
             [first.profile()],
             [],
@@ -644,8 +645,8 @@ fn replacement_profile(assets: &mut Assets, rules: RuleSetId) -> ModelProfile {
     ModelRequest::native("", rules, Some(support::palette(assets))).profile()
 }
 
-fn replacement_owner(assets: Assets, profile: ModelProfile) -> ModelAssets {
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+fn replacement_owner(vfs: &Vfs, assets: Assets, profile: ModelProfile) -> ModelAssets {
+    let mut owner = ModelAssets::new(vfs, assets, [profile], [], Default::default()).unwrap();
     owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
     owner
         .adopt_palettes(
@@ -721,7 +722,7 @@ fn native_mdl_replacement_retains_parent_groups_and_requires_every_mesh_skin_mem
     let fixture = from_owned_files(&files);
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
         .unwrap();
@@ -829,7 +830,7 @@ fn native_mdl_replacement_retains_parent_groups_and_requires_every_mesh_skin_mem
     let fixture = from_owned_files(&incomplete);
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
         .unwrap();
@@ -852,7 +853,7 @@ fn native_md2_replacement_uses_inserted_skin_directory_and_one_native_public_han
     let fixture = from_owned_files(&replacement_files(RuleSetId::Quake2));
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
         .unwrap();
@@ -957,6 +958,7 @@ fn optional_replacement_pair_failure_and_load_controls_keep_native_registration_
         let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
         let mut owner = if failure == "surface_names" {
             let mut owner = ModelAssets::new(
+                &fixture.vfs,
                 assets,
                 [profile],
                 [],
@@ -984,7 +986,7 @@ fn optional_replacement_pair_failure_and_load_controls_keep_native_registration_
                 .unwrap();
             owner
         } else {
-            replacement_owner(assets, profile)
+            replacement_owner(&fixture.vfs, assets, profile)
         };
         if failure == "disabled" {
             owner.set_model_replacement_load(true, false);
@@ -1064,7 +1066,7 @@ fn replacement_discovery_compares_actual_mount_precedence_without_public_candida
             .unwrap();
         let mut assets = Assets::load().unwrap();
         let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
-        let mut owner = replacement_owner(assets, profile);
+        let mut owner = replacement_owner(&fixture.vfs, assets, profile);
         let handle = owner
             .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
             .unwrap();
@@ -1097,7 +1099,7 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
     let mut fixture = from_owned_files(&replacement_files(RuleSetId::Quake2));
     let mut assets = Assets::load().unwrap();
     let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
-    let mut owner = replacement_owner(assets, profile);
+    let mut owner = replacement_owner(&fixture.vfs, assets, profile);
     let handle = owner
         .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
         .unwrap();
@@ -1310,7 +1312,14 @@ fn selected_md5_source_keeps_animation_and_scale_companions_together() {
     let low_mount = files.vfs.mounts().next().unwrap().id;
     let high_root = high.vfs.mounts().next().unwrap().path.clone();
     let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut ids = Vec::new();
     let mut handles = Vec::new();
     for (mount, expected_animation, expected_scale, max_y) in [

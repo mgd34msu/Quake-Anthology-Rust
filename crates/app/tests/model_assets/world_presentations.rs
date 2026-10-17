@@ -98,8 +98,14 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         vec![first.render, second.render],
     )
     .unwrap();
-    let mut owner =
-        ModelAssets::new(assets, [profile], [world, other_world], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [profile],
+        [world, other_world],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -386,8 +392,14 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
     let mut view = WorldView::load(assets.world(world).unwrap());
     let (mut scene, _) =
         SceneComposer::load(Default::default(), &mut assets, vec![loaded.render]).unwrap();
-    let mut owner =
-        ModelAssets::new(assets, [original_profile], [world], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [original_profile],
+        [world],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

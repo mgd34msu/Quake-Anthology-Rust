@@ -58,8 +58,14 @@ fn precreated_profiles_follow_first_published_source_request_not_profile_order()
         } else {
             [foreign, native]
         };
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), profiles, [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            profiles,
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let mut cpu = cpu(&mut owner);
         let kind = |mipmaps| RendererRegistration::Shader {
             mipmaps,
@@ -177,8 +183,14 @@ fn positive_skin_source_survives_unlink_and_new_finish_backend_rejection() {
     use qa_app::model_assets::RegistrationVariant;
     let mut fixture = support::Fixture::surfaces();
     let first = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [first],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let model = owner
         .register_model(&fixture.vfs, b"models/test.md3", first.source_rules)
         .unwrap();
@@ -375,7 +387,14 @@ fn native_palettes() -> Vec<(&'static str, Vec<u8>)> {
 #[test]
 fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_backend_success() {
     let fixture = support::Fixture::new(&native_palettes());
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut cpu = cpu(&mut owner);
     let before = owner.assets().counts();
     let capacity = owner.catalog().capacity();
@@ -495,6 +514,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     let palette = support::palette(&mut assets);
     let first = native_profile(RuleSetId::Quake2, palette);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [first],
         [],
@@ -749,8 +769,14 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
     ]);
     let fixture = support::Fixture::new(&entries);
     let first = ModelRequest::native("", RuleSetId::Quake3, None).profile();
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [first],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let shader = owner
         .register_shader(
             &fixture.vfs,
@@ -933,7 +959,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
     let fixture = support::Fixture::new(&[("progs/test.mdl", support::mdl())]);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
-    let mut owner = ModelAssets::new(assets, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(&fixture.vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -1007,7 +1033,14 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
     let mut entries = native_palettes();
     entries.push(("maps/cold.bsp", support::world_map(8.0)));
     let fixture = support::Fixture::new(&entries);
-    let mut owner = ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let (mut scene, _) =
         SceneComposer::load(Default::default(), owner.assets_mut(), vec![]).unwrap();
     let mut cpu = cpu(&mut owner);
@@ -1077,8 +1110,14 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
 fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_peer() {
     let fixture = support::Fixture::new(&[]);
     let first = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [first],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut cpu = cpu(&mut owner);
     let original = owner.catalog().native_default(first).unwrap();
     let original_image = match owner
@@ -1194,8 +1233,14 @@ fn finish_profiles_share_image_storage_and_guard_variants_publish_atomically() {
         ),
     ]);
     let first = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [first], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [first],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut cpu = cpu(&mut owner);
     let request = renderer_request(
         "textures/first",
@@ -1446,8 +1491,14 @@ fn first_fullscreen_shader_and_skin_remain_visible_to_frozen_source_lookup() {
     let fixture = support::Fixture::surfaces();
     let mut profile = shader_profile(RuleSetId::Quake3);
     profile.finish.vertex_light = true;
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut cpu = cpu(&mut owner);
     let shader_request = renderer_request(
         "textures/glow",

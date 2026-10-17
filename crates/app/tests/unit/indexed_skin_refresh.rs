@@ -72,7 +72,8 @@ impl IndexedFixture {
         let palette = support::palette(&mut assets);
         let world = support::world(&mut assets, 0.0);
         let profile = ModelRequest::native("", RuleSetId::QuakeWorld, Some(palette)).profile();
-        let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+        let mut owner =
+            ModelAssets::new(&files.vfs, assets, [profile], [], Default::default()).unwrap();
         let model = owner
             .register_model(&files.vfs, b"progs/player.mdl", profile.source_rules)
             .unwrap();

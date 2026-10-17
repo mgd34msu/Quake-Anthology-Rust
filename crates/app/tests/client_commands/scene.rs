@@ -661,7 +661,14 @@ pub(super) fn submissions(native: bool, ui: bool) {
     peer_profile.image_settings =
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
     host.runtime.model_assets = Some(
-        ModelAssets::new(assets, [profile, peer_profile], [world], Default::default()).unwrap(),
+        ModelAssets::new(
+            &host.runtime.vfs,
+            assets,
+            [profile, peer_profile],
+            [world],
+            Default::default(),
+        )
+        .unwrap(),
     );
     host.runtime
         .model_assets
@@ -1089,6 +1096,7 @@ fn sun_contexts(native: bool) {
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);
     host.runtime.model_assets = Some(
         ModelAssets::new(
+            &host.runtime.vfs,
             qa_render::Assets::load().unwrap(),
             [profile, peer_profile],
             [],
@@ -1271,7 +1279,8 @@ pub(super) fn ownership() {
         200,
     )
     .unwrap();
-    let mut owner = ModelAssets::new(assets, [], [world], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&host.runtime.vfs, assets, [], [world], Default::default()).unwrap();
     let console = qa_app::renderer::console::ConsoleAssets::load(
         &host.runtime.vfs,
         &mut owner,
@@ -1563,8 +1572,9 @@ fn entity_host_program(
         200,
     )
     .unwrap();
-    host.runtime.model_assets =
-        Some(ModelAssets::new(assets, [profile], [], Default::default()).unwrap());
+    host.runtime.model_assets = Some(
+        ModelAssets::new(&host.runtime.vfs, assets, [profile], [], Default::default()).unwrap(),
+    );
     (host, profile)
 }
 
@@ -2083,7 +2093,14 @@ pub(super) fn inline_entities(native: bool) {
     .unwrap();
     assets.set_light_grid(world, Some(grid)).unwrap();
     let meshes = assets.models().len();
-    let mut builder = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut builder = ModelAssets::new(
+        &host.runtime.vfs,
+        assets,
+        [profile],
+        [world],
+        Default::default(),
+    )
+    .unwrap();
     builder
         .bind_loaded_world(
             &host.runtime.vfs,
@@ -2269,8 +2286,16 @@ fn mark_fragments(native: bool) {
     .unwrap();
     host.local_clients[0] = Some(ids[0]);
     host.local_worlds[0] = Some((world, presentation));
-    host.runtime.model_assets =
-        Some(ModelAssets::new(assets, [profile], [world], Default::default()).unwrap());
+    host.runtime.model_assets = Some(
+        ModelAssets::new(
+            &host.runtime.vfs,
+            assets,
+            [profile],
+            [world],
+            Default::default(),
+        )
+        .unwrap(),
+    );
     host.configure_native_scenes(
         &[None, None, None, None, Some(profile)],
         &[[None, None, None, None, Some(profile)]; SeatId::COUNT],
@@ -2460,6 +2485,7 @@ pub(super) fn remaps(native: bool) {
     host.local_clients[..2].copy_from_slice(&[Some(clients[0]), Some(clients[1])]);
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut owner = ModelAssets::new(
+        &host.runtime.vfs,
         qa_render::Assets::load().unwrap(),
         [profile],
         [],

@@ -191,6 +191,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
     let presentation = assets.world(world).unwrap().presentations()[0];
     let profile = qa_app::model_assets::ModelRequest::native("", RuleSetId::Quake2, None).profile();
     let mut builder = qa_app::model_assets::ModelAssets::new(
+        &host.runtime.vfs,
         assets,
         [profile],
         [world],

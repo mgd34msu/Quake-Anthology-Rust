@@ -242,8 +242,14 @@ fn setup(
         .collect();
     let (scene, _) =
         qa_app::renderer::SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
-    let mut owner =
-        ModelAssets::new(assets, profiles.iter().copied(), [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        profiles.iter().copied(),
+        [],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

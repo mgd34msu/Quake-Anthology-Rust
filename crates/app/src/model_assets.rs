@@ -1181,6 +1181,7 @@ impl ModelFile {
 }
 struct ProfileImages {
     profile: ModelProfile,
+    source: SearchView,
     image_owner: Option<usize>,
     model_policy: ModelPolicy,
     // Temporarily taken only while Images borrows the separately owned Assets.
@@ -1223,15 +1224,19 @@ fn model_policy(profile: ModelProfile) -> ModelPolicy {
 impl ProfileImages {
     fn new(
         profile: ModelProfile,
+        source: SearchView,
         previous: &[Self],
         assets: &mut Assets,
     ) -> Result<(Self, Option<qa_render::assets::PreparedPaletteTranslucency>), String> {
         if let Some((index, owner)) = previous.iter().enumerate().find(|(_, owner)| {
-            owner.image_owner.is_none() && owner.profile.image_profile() == profile.image_profile()
+            owner.image_owner.is_none()
+                && owner.profile.image_profile() == profile.image_profile()
+                && owner.source.same_selection(&source)
         }) {
             return Ok((
                 Self {
                     profile,
+                    source,
                     image_owner: Some(index),
                     model_policy: model_policy(profile),
                     state: None,
@@ -1261,7 +1266,7 @@ impl ProfileImages {
             profile.rules,
             profile.image_settings,
             profile.source_palette.zip(profile.palette),
-            None,
+            Some(source.clone()),
         )
         .map_err(|error| format!("model images: {error:?}"));
         let native_default = if profile.source_rules == RuleSetId::Quake3 {
@@ -1301,6 +1306,7 @@ impl ProfileImages {
         Ok((
             Self {
                 profile,
+                source,
                 model_policy: model_policy(profile),
                 image_owner: None,
                 state: Some(state),
@@ -1361,7 +1367,7 @@ pub struct ModelCatalog {
     reader: ArchiveReader,
     names: NameTable,
     files: ModelFiles,
-    registration_vfs: Option<SearchView>,
+    registration_vfs: SearchView,
     sources: ModelSources,
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
@@ -2296,7 +2302,7 @@ impl ModelAssets {
         stage: impl FnOnce(&mut Self, bool) -> Result<Option<T>, String>,
         prepare: impl FnOnce(&Assets, Option<&T>) -> Result<(), String>,
     ) -> Result<(bool, Option<T>), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let image = std::str::from_utf8(path)
             .ok()
@@ -2540,7 +2546,7 @@ impl ModelAssets {
         settings: ImageSettings,
         finish: MaterialFinishPolicy,
     ) -> Result<ModelProfile, String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let palette = match crate::render_settings::palette_resource(
             vfs,
@@ -2605,7 +2611,7 @@ impl ModelAssets {
         profile: ModelProfile,
         compile: impl FnOnce(&mut Images<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let index = self
             .catalog
@@ -2673,8 +2679,12 @@ impl ModelAssets {
             .checked_add(self.catalog.shaders.len())
             .filter(|&count| count <= shader_maximum)
             .ok_or("shader registration capacity")?;
-        let (images, blend) =
-            ProfileImages::new(profile, &self.catalog.profiles, &mut self.assets)?;
+        let (images, blend) = ProfileImages::new(
+            profile,
+            self.catalog.registration_vfs.clone(),
+            &self.catalog.profiles,
+            &mut self.assets,
+        )?;
         if let Some(Err(error)) = &images.state {
             return Err(error.clone());
         }
@@ -2725,7 +2735,7 @@ impl ModelAssets {
         finish: MaterialFinishPolicy,
         prepare: impl FnOnce(&Assets) -> Result<(), String>,
     ) -> Result<(ModelProfile, AssetCounts), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("profile registration requires a published resource prefix".to_owned());
@@ -2799,7 +2809,7 @@ impl ModelAssets {
         mode: ImageRefreshMode,
         operation: impl FnOnce(&mut Self, &[WorldId]) -> Result<T, String>,
     ) -> Result<T, String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.image_transaction_active.is_some() {
             return Err("image refresh is already active".to_owned());
@@ -3114,6 +3124,7 @@ impl ModelAssets {
     }
 
     pub fn new(
+        vfs: &Vfs,
         mut assets: Assets,
         profiles: impl IntoIterator<Item = ModelProfile>,
         worlds: impl IntoIterator<Item = WorldId>,
@@ -3129,7 +3140,8 @@ impl ModelAssets {
             if unique.len() == limits.models {
                 return Err("model registration capacity".to_owned());
             }
-            let (entry, blend) = ProfileImages::new(profile, &unique, &mut assets)?;
+            let (entry, blend) =
+                ProfileImages::new(profile, vfs.default_view(), &unique, &mut assets)?;
             if let Some(blend) = blend {
                 assets.install_palette_translucency(blend);
             }
@@ -3153,7 +3165,7 @@ impl ModelAssets {
                 reader: ArchiveReader::default(),
                 names,
                 files,
-                registration_vfs: None,
+                registration_vfs: vfs.default_view(),
                 sources,
                 shader_indices: vec![None],
                 shaders: Vec::new(),
@@ -3201,6 +3213,7 @@ impl ModelAssets {
         }
         pending.sort_by(|left, right| left.path.cmp(&right.path));
         let mut owner = Self::new(
+            vfs,
             assets,
             pending.iter().map(|entry| entry.profile),
             worlds,
@@ -3502,7 +3515,7 @@ impl ModelAssets {
         stage: impl FnOnce([RendererAdmission<'_>; N]) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<([i32; N], T, AssetCounts), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let initial = self.initial_registration;
         if !initial && self.catalog.admitted_assets != Some(self.assets.counts()) {
@@ -3685,7 +3698,7 @@ impl ModelAssets {
         stage: impl FnOnce(ModelView<'_>, crate::renderer::hud::HudAssets) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(T, AssetCounts), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("HUD registration requires a published resource prefix".to_owned());
@@ -3792,7 +3805,7 @@ impl ModelAssets {
         ) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(qa_render::material::world_load::LoadedWorld, T, AssetCounts), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world presentation requires a published resource prefix".to_owned());
@@ -3857,7 +3870,7 @@ impl ModelAssets {
         ) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(crate::map::LoadedMap, T, AssetCounts), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world registration requires a published resource prefix".to_owned());
@@ -4009,24 +4022,15 @@ impl ModelAssets {
         Ok(name)
     }
 
-    fn bind_registration_vfs(&mut self, vfs: &Vfs) -> Result<(), CallError> {
-        if let Some(view) = &self.catalog.registration_vfs {
-            if !vfs.accepts_search(view) {
-                return Err(CallError::File);
-            }
-        } else {
-            self.catalog.registration_vfs = Some(vfs.default_view());
-        }
-        Ok(())
+    fn check_registration_vfs(&self, vfs: &Vfs) -> Result<(), CallError> {
+        vfs.accepts_search(&self.catalog.registration_vfs)
+            .then_some(())
+            .ok_or(CallError::File)
     }
 
     fn admit_file(&mut self, path: &[u8]) -> Result<ModelFileId, CallError> {
         let name = self.admit_name(path)?;
-        let view = self
-            .catalog
-            .registration_vfs
-            .clone()
-            .ok_or(CallError::File)?;
+        let view = self.catalog.registration_vfs.clone();
         self.catalog.files.admit(Some((name, view)))
     }
     /// Admit the already-loaded world as native model metadata. Its surface
@@ -4040,7 +4044,7 @@ impl ModelAssets {
         native_bounds: Bounds,
         native_checksums: Option<qa_formats::bsp::NativeMapChecksums>,
     ) -> Result<(), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if path.is_empty() || path.starts_with('*') {
             return Err("loaded world filename".to_owned());
@@ -4083,7 +4087,7 @@ impl ModelAssets {
     /// Static optional requests and native synchronous requests share exactly
     /// one file admission, decode and registration path.
     pub fn register_request(&mut self, vfs: &Vfs, request: ModelRequest<'_>) -> Result<(), String> {
-        self.bind_registration_vfs(vfs)
+        self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if request.path.is_empty() || request.path.starts_with('*') {
             return Ok(());
@@ -4234,6 +4238,16 @@ impl ModelAssets {
         ))
     }
 
+    fn model_source_view(&self, vfs: ReadView<'_>) -> Result<SearchView, FileError> {
+        if !vfs.accepts_search(&self.catalog.registration_vfs) {
+            return Err(FileError::file(
+                "model source VFS owner mismatch".to_owned(),
+            ));
+        }
+        vfs.retain()
+            .map_err(|_| FileError::file("model source selection".to_owned()))
+    }
+
     fn cached_model_source(&self, view: &SearchView, path: &[u8]) -> Option<ModelSourceId> {
         let name = self.catalog.names.find_path_bytes(path)?;
         let source = self.catalog.sources.find(view, name)?;
@@ -4244,9 +4258,7 @@ impl ModelAssets {
         vfs: ReadView<'_>,
         path: &str,
     ) -> Result<Option<ModelSourceId>, FileError> {
-        let view = vfs
-            .retain()
-            .map_err(|_| FileError::file("model source selection".to_owned()))?;
+        let view = self.model_source_view(vfs)?;
         if let Some(name) = self.cached_model_source(&view, path.as_bytes()) {
             return Ok(Some(name));
         }
@@ -4376,9 +4388,7 @@ impl ModelAssets {
         path: &[u8],
         ordinal: u32,
     ) -> Result<Option<&[u8]>, String> {
-        let view = vfs
-            .retain()
-            .map_err(|error| format!("model dependency source: {error}"))?;
+        let view = self.model_source_view(vfs).map_err(|error| error.message)?;
         let name = if let Some(name) = self.cached_model_source(&view, path) {
             name
         } else {
@@ -4657,7 +4667,7 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<Bounds, FileError> {
-        self.bind_registration_vfs(vfs).map_err(|kind| FileError {
+        self.check_registration_vfs(vfs).map_err(|kind| FileError {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
@@ -4677,7 +4687,7 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<Bounds, FileError> {
-        self.bind_registration_vfs(vfs).map_err(|kind| FileError {
+        self.check_registration_vfs(vfs).map_err(|kind| FileError {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
@@ -5296,7 +5306,7 @@ impl ModelAssets {
         vfs: &Vfs,
         search: Option<&SearchView>,
     ) -> Result<scopes::SelectionId, CallError> {
-        self.bind_registration_vfs(vfs)?;
+        self.check_registration_vfs(vfs)?;
         let view = vfs
             .read_view(search)
             .retain()
@@ -5416,7 +5426,7 @@ impl ModelAssets {
         exact: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
-        self.bind_registration_vfs(vfs)?;
+        self.check_registration_vfs(vfs)?;
         if raw.is_empty() {
             return Ok(0);
         }
@@ -5722,7 +5732,7 @@ impl ModelAssets {
         source: RuleSetId,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
-        self.bind_registration_vfs(vfs)?;
+        self.check_registration_vfs(vfs)?;
         let variant = RegistrationVariant::Guard(ui_fullscreen);
         if let Some(handle) = self.catalog.model_source_cached(name, source, variant) {
             return Ok(handle);
@@ -5848,7 +5858,7 @@ impl ModelAssets {
         request: SkinRequest,
         prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
     ) -> Result<SkinSelection, IndexedSkinError> {
-        self.bind_registration_vfs(vfs).map_err(|error| {
+        self.check_registration_vfs(vfs).map_err(|error| {
             IndexedSkinError::Rejected(format!("renderer VFS owner: {error:?}"))
         })?;
         let path = canonical_path(name);
@@ -6409,7 +6419,7 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
-        self.bind_registration_vfs(vfs)?;
+        self.check_registration_vfs(vfs)?;
         if raw.is_empty() {
             return Ok(0);
         }
@@ -6891,7 +6901,7 @@ impl ModelLoader for ModelAssets {
         path: &[u8],
         _source: RuleSetId,
     ) -> Result<Bounds, CallError> {
-        self.bind_registration_vfs(vfs)?;
+        self.check_registration_vfs(vfs)?;
         let path = std::str::from_utf8(path).map_err(|_| CallError::Text)?;
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);
@@ -6900,7 +6910,7 @@ impl ModelLoader for ModelAssets {
             &self.catalog.names,
             &self.catalog.files,
             path.as_bytes(),
-            self.catalog.registration_vfs.as_ref(),
+            Some(&self.catalog.registration_vfs),
         )
         .and_then(|file| file.bounds(&self.catalog.sources))
         {
@@ -6950,7 +6960,7 @@ impl ModelLookup for ModelCatalog {
             &self.files,
             path,
             None,
-            self.registration_vfs.as_ref(),
+            Some(&self.registration_vfs),
         )
     }
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
@@ -6960,12 +6970,7 @@ impl ModelLookup for ModelCatalog {
         model_tags(&self.files, &self.sources, handle).is_some()
     }
     fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
-        loaded_world(
-            &self.names,
-            &self.files,
-            name,
-            self.registration_vfs.as_ref(),
-        )
+        loaded_world(&self.names, &self.files, name, Some(&self.registration_vfs))
     }
     fn lerp_tag(
         &self,
@@ -6988,13 +6993,8 @@ impl ModelLookup for ModelCatalog {
         )
     }
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        file_lookup(
-            &self.names,
-            &self.files,
-            path,
-            self.registration_vfs.as_ref(),
-        )?
-        .bounds(&self.sources)
+        file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))?
+            .bounds(&self.sources)
     }
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
         skin_handle(self, name, source)
@@ -7008,7 +7008,7 @@ impl ModelLookup for ModelCatalog {
             &self.files,
             path,
             Some(source),
-            self.registration_vfs.as_ref(),
+            Some(&self.registration_vfs),
         )
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
@@ -7020,12 +7020,7 @@ impl ModelCatalog {
         &self,
         path: &[u8],
     ) -> Option<qa_formats::bsp::NativeMapChecksums> {
-        match file_lookup(
-            &self.names,
-            &self.files,
-            path,
-            self.registration_vfs.as_ref(),
-        )? {
+        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
             ModelFile::LoadedWorld {
                 native_checksums, ..
             } => *native_checksums,
@@ -7464,12 +7459,7 @@ impl ModelCatalog {
         self.names.get(self.shaders.get(index)?.name)
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
-        match file_lookup(
-            &self.names,
-            &self.files,
-            path,
-            self.registration_vfs.as_ref(),
-        )? {
+        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
             ModelFile::Ready { lods, .. } => self.sources.get(lods.source(0)?)?.metadata(),
             ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
         }
@@ -7649,10 +7639,8 @@ impl ModelCatalog {
             .map(|index| ModelRegistrationId(index as u32))
     }
     fn file_id(&self, path: &[u8]) -> Option<ModelFileId> {
-        self.files.find(
-            self.registration_vfs.as_ref()?,
-            self.names.find_path_bytes(path)?,
-        )
+        self.files
+            .find(&self.registration_vfs, self.names.find_path_bytes(path)?)
     }
     fn file_name(&self, file: ModelFileId) -> Option<&str> {
         self.name(self.files.name(file)?)
@@ -7819,12 +7807,7 @@ impl ModelCatalog {
         &self,
         path: &[u8],
     ) -> Option<(InlineBinding, Option<qa_core::primitives::GeometryId>)> {
-        match file_lookup(
-            &self.names,
-            &self.files,
-            path,
-            self.registration_vfs.as_ref(),
-        )? {
+        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
             ModelFile::LoadedWorld {
                 binding, collision, ..
             } => Some((*binding, *collision)),

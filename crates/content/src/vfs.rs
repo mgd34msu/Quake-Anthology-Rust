@@ -54,6 +54,9 @@ pub struct ReadView<'a> {
     search: Option<&'a SearchView>,
 }
 impl ReadView<'_> {
+    pub fn accepts_search(self, view: &SearchView) -> bool {
+        self.vfs.accepts_search(view)
+    }
     /// Retain the same selection after checking its VFS owner at this boundary.
     pub fn retain(self) -> Result<SearchView, VfsError> {
         match self.search {

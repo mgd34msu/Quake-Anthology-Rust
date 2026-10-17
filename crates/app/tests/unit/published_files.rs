@@ -40,7 +40,8 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", RuleSetId::Quake2, Some(palette)).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&files.vfs, assets, [profile], [], Default::default()).unwrap();
     let ready = owner
         .register_model(&files.vfs, b"models/ready.md2", profile.source_rules)
         .unwrap();
@@ -206,7 +207,8 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", RuleSetId::Quake2, Some(palette)).profile();
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&files.vfs, assets, [profile], [], Default::default()).unwrap();
     let initial_skin_capacity = owner.catalog.capacity.skins;
     owner.catalog.limits.skins = initial_skin_capacity + 1;
     for _ in 0..2 {
@@ -331,7 +333,14 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
         rules: RuleSetId::Quake3,
         ..native
     };
-    let mut owner = ModelAssets::new(assets, [native, converted], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        assets,
+        [native, converted],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_model(&files.vfs, b"models/test/tris.md2", native.source_rules)
         .unwrap();

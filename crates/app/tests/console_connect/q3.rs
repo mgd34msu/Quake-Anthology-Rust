@@ -345,8 +345,14 @@ fn media_assets(runtime: &mut Runtime) -> (Source, qa_app::model_assets::ModelPr
         qa_app::model_assets::ModelRequest::native("", RuleSetId::Quake3, Some(palette)).profile();
     let (scene, _) =
         qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![]).unwrap();
-    let mut owner =
-        qa_app::model_assets::ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner = qa_app::model_assets::ModelAssets::new(
+        &runtime.vfs,
+        assets,
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([Some(palette); 5]),

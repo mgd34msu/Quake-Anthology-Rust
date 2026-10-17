@@ -470,8 +470,14 @@ impl RendererSource {
             model_assets::ModelAssets,
             renderer::{Context, Renderer, console::ConsoleAssets},
         };
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), [], [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &host.runtime.vfs,
+            Assets::load().unwrap(),
+            [],
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let console = ConsoleAssets::load(
             &host.runtime.vfs,
             &mut owner,

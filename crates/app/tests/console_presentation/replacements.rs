@@ -14,10 +14,11 @@ use qa_render::{
 };
 use qa_ui::values::ValueLayout;
 
-fn owner() -> ModelAssets {
+fn owner(vfs: &Vfs) -> ModelAssets {
     let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets);
     registered_assets(
+        vfs,
         assets,
         qa_app::render_settings::PaletteRegistrations::from_registered([
             None,
@@ -49,7 +50,7 @@ fn replacement_only_rerelease_font_uses_native_identity_indexed_palette_and_frac
     root.tga("pics/conchars.tga", 128, 128, &pixels);
     let vfs = root.vfs();
     assert!(vfs.open(b"pics/conchars.pcx").is_none());
-    let mut owner = owner();
+    let mut owner = owner(&vfs);
     let font = FontAssets::load(
         &vfs,
         &mut owner,
@@ -99,7 +100,7 @@ fn rerelease_font_mask_zero_keeps_binary_pcx_despite_present_truecolor_replaceme
         &[13, 37, 91, 128].repeat(256 * 256),
     );
     let vfs = root.vfs();
-    let mut owner = owner();
+    let mut owner = owner(&vfs);
     let settings = ImageSettings {
         override_textures: 2,
         texture_overrides: 0,
@@ -139,7 +140,7 @@ fn rerelease_hud_discovers_replacement_only_picture_and_keeps_original_logical_e
             root.pcx("pics/health.pcx", 2, 1, &[2, 2]);
         }
         let vfs = root.vfs();
-        let mut owner = owner();
+        let mut owner = owner(&vfs);
         let font = FontAssets::load(
             &vfs,
             &mut owner,

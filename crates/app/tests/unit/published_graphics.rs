@@ -24,7 +24,7 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
     let mut files = support::Fixture::new(&[]);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
-    let mut owner = ModelAssets::new(assets, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(&files.vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
             crate::render_settings::PaletteRegistrations::from_registered([

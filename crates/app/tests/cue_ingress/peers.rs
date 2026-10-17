@@ -298,6 +298,7 @@ fn received_peer_metadata_survives_real_model_binding_profiles_and_connection_re
         ..profile
     };
     let mut owner = qa_app::model_assets::ModelAssets::new(
+        &host.runtime.vfs,
         qa_render::Assets::load().unwrap(),
         [profile, second],
         [],

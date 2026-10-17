@@ -103,7 +103,14 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     let (mut scene, _) =
         qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![first.render])
             .unwrap();
-    let mut owner = ModelAssets::new(assets, [profile], [first_world], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [profile],
+        [first_world],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -339,6 +346,7 @@ fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
     let profile = native_profile(RuleSetId::Quake2, palette);
     let old = support::world(&mut assets, 0.0);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [profile],
         [old],
@@ -905,6 +913,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
     failed_profile.image_settings.max_dimension = 0;
     let shader_profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [profile, failed_profile, shader_profile],
         [],
@@ -1107,7 +1116,8 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
             }],
         )
         .unwrap();
-    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();
     owner
         .register_model(&fixture.vfs, b"models/test.md3", profile.source_rules)
         .unwrap();
@@ -1289,6 +1299,7 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
     failed_profile.image_settings.max_dimension = 0;
     assert_eq!(failed_profile.source_rules, profile.source_rules);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [failed_profile, profile],
         [],
@@ -1540,6 +1551,7 @@ fn foreign_presentation_colors_bind_and_generate_missing_blends_at_load() {
     assert!(assets.palette(target).unwrap().translucency_map().is_none());
     let uncolored = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         [uncolored, foreign.profile()],
         [],
@@ -1765,8 +1777,14 @@ fn native_skins_resolve_once_for_each_profile_and_preserve_first_mapping() {
             shader_profile(RuleSetId::Quake3),
             shader_profile(RuleSetId::Quake2),
         ];
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), profiles, [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            profiles,
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let before = skin_first.then(|| {
             owner
                 .register_skin(&fixture.vfs, b"models/test.skin", RuleSetId::Quake3)
@@ -1879,8 +1897,14 @@ fn failed_skin_slots_stay_failed_and_unmatched_surfaces_use_the_default_shader()
         ),
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(
         owner.register_skin(&fixture.vfs, b"models/empty.skin", RuleSetId::Quake3),
         Err(qa_compat::services::CallError::File)
@@ -1941,6 +1965,7 @@ fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
             ..foreign.profile()
         };
         let mut owner = ModelAssets::new(
+            &fixture.vfs,
             assets,
             profiles.into_iter().chain([unavailable, other_source]),
             [],
@@ -2090,7 +2115,8 @@ fn missing_authored_md2_skins_keep_the_mesh_and_allow_custom_skin_override() {
         let mut assets = Assets::load().unwrap();
         let palette = support::palette(&mut assets);
         let profile = native_profile(RuleSetId::Quake2, palette);
-        let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+        let mut owner =
+            ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
         let model = owner
             .register_model(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
             .unwrap();
@@ -2167,7 +2193,8 @@ fn native_software_missing_md2_skins_skip_only_the_unskinned_draw() {
         let mut assets = Assets::load().unwrap();
         let palette = support::palette(&mut assets);
         let profile = native_profile(source, palette);
-        let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+        let mut owner =
+            ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
         let model = owner
             .register_model(&fixture.vfs, b"players/male/tris.md2", source)
             .unwrap();
@@ -2224,6 +2251,7 @@ fn native_model_handles_share_file_registration_and_bounds() {
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -2282,6 +2310,7 @@ fn md3_surfaces_share_geometry_and_keep_per_surface_shader_selection() {
         shader_profile(RuleSetId::Quake2),
     ];
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         profiles,
         [],
@@ -2380,6 +2409,7 @@ fn md3_tag_only_models_register_without_a_mesh_placeholder() {
     let fixture = support::Fixture::new(&[("models/hand.md3", bytes)]);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -2412,6 +2442,7 @@ fn model_tags_keep_exact_names_native_frame_clamps_and_frozen_poses() {
     let fixture = support::Fixture::surfaces();
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -2471,6 +2502,7 @@ fn tag_lookup_does_not_fold_names_between_frames() {
     let fixture = support::Fixture::with_surfaces(bytes);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -2523,6 +2555,7 @@ fn tag_name_index_preserves_the_first_duplicate_in_each_frame() {
     let parsed = qa_formats::model::Model::parse(&original).unwrap();
     let fixture = support::Fixture::with_surfaces(bytes);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [shader_profile(RuleSetId::Quake3)],
         [],
@@ -2546,6 +2579,7 @@ fn tag_name_index_preserves_the_first_duplicate_in_each_frame() {
 fn native_model_admission_rejects_exhausted_tag_storage() {
     let fixture = support::Fixture::surfaces();
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [shader_profile(RuleSetId::Quake3)],
         [],
@@ -2736,6 +2770,7 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
     assert_ne!(bounds, first_frame);
     let fixture = support::Fixture::new(&[("models/test.md3", bytes)]);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [shader_profile(RuleSetId::Quake3)],
         [],
@@ -2809,6 +2844,7 @@ fn cached_native_model_admission_keeps_failed_source_profiles_separate() {
     failed.source_rules = RuleSetId::Quake2;
     failed.image_settings.gamma_exponent = f32::NAN;
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [failed, healthy],
         [],
@@ -2847,6 +2883,7 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
         let q3 = shader_profile(RuleSetId::Quake3);
         let q2 = shader_profile(RuleSetId::Quake2);
         let mut owner = ModelAssets::new(
+            &fixture.vfs,
             Assets::load().unwrap(),
             [q3, q2],
             [],
@@ -2964,6 +3001,7 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
         let profiles = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
             .map(|source| ModelRequest::native("", source, None).profile());
         let mut owner = ModelAssets::new(
+            &fixture.vfs,
             Assets::load().unwrap(),
             profiles,
             [],
@@ -3043,6 +3081,7 @@ fn native_shader_profile_rows_preserve_the_configured_name_budget() {
     let profiles = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
         .map(|source| ModelRequest::native("", source, None).profile());
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         profiles,
         [],
@@ -3102,6 +3141,7 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -3165,6 +3205,7 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
     let first = ModelRequest::native("", RuleSetId::Quake, None).profile();
     let second = ModelRequest::native("", RuleSetId::Quake2, None).profile();
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [first, second],
         [],
@@ -3234,6 +3275,7 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     let first = ModelRequest::native("", RuleSetId::Quake, None).profile();
     let second = ModelRequest::native("", RuleSetId::Quake2, None).profile();
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [first, second],
         [],
@@ -3381,6 +3423,7 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
     let mut failed = second;
     failed.image_settings.max_dimension = 0;
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [first, second, failed, foreign],
         [],
@@ -3556,7 +3599,8 @@ fn late_model_and_skin_failures_keep_negative_metadata_without_repeating_io() {
     let palette = support::palette(&mut assets);
     let q2 = ModelRequest::native("", RuleSetId::Quake2, Some(palette)).profile();
     let q3 = shader_profile(RuleSetId::Quake3);
-    let mut owner = ModelAssets::new(assets, [q2, q3], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [q2, q3], [], Default::default()).unwrap();
     let cpu = CpuBackend::load_with_limits(
         8,
         8,
@@ -3656,7 +3700,14 @@ fn late_skin_profile_failure_does_not_poison_other_presentations() {
     let healthy = native_profile(RuleSetId::Quake2, palette);
     let mut failed = healthy;
     failed.image_settings.max_dimension = 0;
-    let mut owner = ModelAssets::new(assets, [failed, healthy], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [failed, healthy],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let mut cpu = CpuBackend::load_with_limits(
         8,
         8,
@@ -3774,6 +3825,7 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     let [first, second, third] = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
         .map(|source| ModelRequest::native("", source, None).profile());
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [first, second, third],
         [],
@@ -3937,6 +3989,7 @@ fn native_shader_explicit_stages_use_the_shared_cached_catalog_and_compiler() {
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -4005,6 +4058,7 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         Assets::load().unwrap(),
         [profile],
         [],
@@ -4116,7 +4170,14 @@ fn shader_admitted_names_do_not_block_later_model_admission() {
     let palette = support::palette(&mut assets);
     let shader = shader_profile(RuleSetId::Quake3);
     let model = native_profile(RuleSetId::Quake, palette);
-    let mut owner = ModelAssets::new(assets, [shader, model], [], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [shader, model],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_shader(
             &fixture.vfs,
@@ -4872,6 +4933,7 @@ fn surface_name_capacity_failure_keeps_registration_transactional() {
     // The first surface fits, but the second does not. A failed batch must
     // leave those first-surface bytes available to the later healthy model.
     let mut owner = ModelAssets::new(
+        &fixture.vfs,
         assets,
         profiles,
         [],
@@ -4961,8 +5023,14 @@ fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_call
         ..native
     };
     let initial_meshes = assets.models().len();
-    let mut owner =
-        ModelAssets::new(assets, [native, foreign], [], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [native, foreign],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
     let bounds = owner
         .precache(&fixture.vfs, b"models/first.md2", RuleSetId::Quake2)
         .unwrap();
@@ -5032,7 +5100,8 @@ fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake, palette);
     let initial_meshes = assets.models().len();
-    let mut owner = ModelAssets::new(assets, [profile], [], ModelLimits::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [], ModelLimits::default()).unwrap();
     let alias = owner
         .precache(&fixture.vfs, b"progs/group.mdl", RuleSetId::Quake)
         .unwrap();
@@ -5329,6 +5398,7 @@ fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry(
 
 #[test]
 fn native_inline_handles_share_the_metadata_table_and_keep_world_namespaces() {
+    let vfs = qa_content::vfs::Vfs::default();
     let mut assets = Assets::load().unwrap();
     let first = world(&mut assets, 0.0);
     let second = world(&mut assets, 100.0);
@@ -5336,6 +5406,7 @@ fn native_inline_handles_share_the_metadata_table_and_keep_world_namespaces() {
     let first_bounds = assets.world(first).unwrap().geometry().models[1].bounds;
     let second_bounds = assets.world(second).unwrap().geometry().models[1].bounds;
     let mut owner = ModelAssets::new(
+        &vfs,
         assets,
         [],
         [first, second],
@@ -5419,7 +5490,14 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         native_bounds,
         assets.world(first).unwrap().geometry().models[0].bounds
     );
-    let mut owner = ModelAssets::new(assets, [], [first, second], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [],
+        [first, second],
+        ModelLimits::default(),
+    )
+    .unwrap();
     owner
         .bind_loaded_world(
             &fixture.vfs,
@@ -5640,6 +5718,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
         maxs: Vec3([2.0; 3]),
     };
     let mut owner = ModelAssets::new(
+        &vfs,
         assets,
         [],
         [first, second],
@@ -5756,7 +5835,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
     ] {
         let mut assets = Assets::load().unwrap();
         let id = world(&mut assets, 0.0);
-        let mut owner = ModelAssets::new(assets, [], [id], limits).unwrap();
+        let mut owner = ModelAssets::new(&vfs, assets, [], [id], limits).unwrap();
         assert!(
             owner
                 .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
@@ -5772,7 +5851,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
     }
     let mut assets = Assets::load().unwrap();
     let id = world(&mut assets, 0.0);
-    let mut owner = ModelAssets::new(assets, [], [], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(&vfs, assets, [], [], ModelLimits::default()).unwrap();
     assert!(
         owner
             .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
@@ -5794,7 +5873,14 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     let profile = native_profile(RuleSetId::Quake2, palette);
     let id = world(&mut assets, 0.0);
     let meshes = assets.models().len();
-    let mut owner = ModelAssets::new(assets, [profile], [id], ModelLimits::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        assets,
+        [profile],
+        [id],
+        ModelLimits::default(),
+    )
+    .unwrap();
     let mesh_bounds = owner
         .precache(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
         .unwrap();
@@ -5876,8 +5962,14 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     assert_eq!(assets.world(first).unwrap().presentations().len(), 2);
     let world_meshes = assets.models().len();
     let profile = native_profile(RuleSetId::Quake2, palette);
-    let owner =
-        ModelAssets::new(assets, [profile], [first, second], ModelLimits::default()).unwrap();
+    let owner = ModelAssets::new(
+        &_fixture.vfs,
+        assets,
+        [profile],
+        [first, second],
+        ModelLimits::default(),
+    )
+    .unwrap();
     let ModelView { assets, catalog } = owner.view();
     assert_eq!(assets.models().len(), world_meshes);
     assert_eq!(catalog.capacity().inline_bindings, 4);

@@ -60,8 +60,14 @@ fn md3_lod_family_keeps_native_discovery_order_and_independent_surface_skin_list
     let parsed = qa_formats::model::Model::parse(&files[0].1).unwrap();
     let fixture = support::Fixture::new(&files);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_model(&fixture.vfs, b"models/family.md3", profile.source_rules)
         .unwrap();
@@ -199,8 +205,14 @@ fn md3_missing_lods_preserve_holes_and_known_invalid_lod_stops_before_base() {
         }
         let fixture = support::Fixture::new(&files);
         let profile = shader_profile(RuleSetId::Quake3);
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap();
         let handle = owner
             .register_model(&fixture.vfs, b"models/family.md3", profile.source_rules)
             .unwrap();
@@ -251,8 +263,14 @@ fn md3_unknown_magic_and_invalid_base_fail_the_family_without_publishing_suffix_
         }
         let fixture = support::Fixture::new(&files);
         let profile = shader_profile(RuleSetId::Quake3);
-        let mut owner =
-            ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+        let mut owner = ModelAssets::new(
+            &fixture.vfs,
+            Assets::load().unwrap(),
+            [profile],
+            [],
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(
             owner.register_model(&fixture.vfs, b"models/family.md3", profile.source_rules),
             Err(qa_compat::services::CallError::File)
@@ -282,8 +300,14 @@ fn md3_unknown_magic_and_invalid_base_fail_the_family_without_publishing_suffix_
 fn md3_profile_rebuild_retains_lod_sources_and_rolls_back_backend_rejection() {
     let fixture = support::Fixture::new(&family_files());
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_model(&fixture.vfs, b"models/family.md3", profile.source_rules)
         .unwrap();

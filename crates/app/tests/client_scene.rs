@@ -2277,7 +2277,8 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
         let first = ModelRequest::native("models/a.md2", RuleSetId::Quake2, Some(palette));
         let second = ModelRequest::native("models/b.md2", RuleSetId::Quake2, Some(palette));
         let profile = first.profile();
-        let mut builder = ModelAssets::new(assets, [profile], [], ModelLimits::default()).unwrap();
+        let mut builder =
+            ModelAssets::new(&fixture.vfs, assets, [profile], [], ModelLimits::default()).unwrap();
         let mut backend = pending_at_receipt.then(|| {
             let backend = qa_render::cpu::CpuBackend::load_with_limits(
                 8,
@@ -2432,10 +2433,11 @@ fn static_model_captures_survive_alias_rewrite_before_and_after_initial_registra
 
 #[test]
 fn native_inline_config_names_use_common_prefix_parser_and_integer_limits() {
+    let vfs = qa_content::vfs::Vfs::default();
     let mut assets = Assets::load().unwrap();
     let world = support::world(&mut assets, 0.0);
     let profile = ModelRequest::native("", RuleSetId::Quake2, None).profile();
-    let owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let owner = ModelAssets::new(&vfs, assets, [profile], [world], Default::default()).unwrap();
     let mut rows = configs();
     let mut bindings = ClientModelBindings::load(ClientId(0), ConfigLayout::QUAKE2);
     bindings.bind_all(

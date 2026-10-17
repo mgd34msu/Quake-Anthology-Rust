@@ -431,7 +431,14 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
             )
             .unwrap();
     }
-    let mut catalog = ModelAssets::new(assets, [profile], [a, b], Default::default()).unwrap();
+    let mut catalog = ModelAssets::new(
+        &host.runtime.vfs,
+        assets,
+        [profile],
+        [a, b],
+        Default::default(),
+    )
+    .unwrap();
     for (name, world, geometry) in [("maps/q2.bsp", a, q2), ("maps/q3.bsp", b, q3)] {
         let bounds = host.runtime.geometry.model_bounds(geometry, 0).unwrap();
         catalog

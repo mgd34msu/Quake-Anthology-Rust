@@ -36,7 +36,7 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     assert!(vfs.open(b"pics/conchars.png").is_some());
     assert!(vfs.open(b"pics/conchars.pcx").is_none());
     let assets = Assets::load().unwrap();
-    let mut owner = registered_assets(assets, Default::default());
+    let mut owner = registered_assets(&vfs, assets, Default::default());
     let font = qa_app::renderer::console::FontAssets::load(
         &vfs,
         &mut owner,
@@ -188,10 +188,11 @@ fn palette(assets: &mut Assets) -> qa_render::PaletteId {
 }
 
 fn registered_assets(
+    vfs: &Vfs,
     assets: Assets,
     palettes: qa_app::render_settings::PaletteRegistrations,
 ) -> ModelAssets {
-    let mut owner = ModelAssets::new(assets, [], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(vfs, assets, [], [], Default::default()).unwrap();
     owner.adopt_palettes(palettes).unwrap();
     owner
 }
@@ -201,14 +202,15 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
     for rules in RuleSetId::ALL {
         let root = Fixture::new();
         root.native(rules);
+        let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = (rules != RuleSetId::Quake3).then(|| palette(&mut assets));
         let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
             palette, palette, palette, palette, None,
         ]);
-        let mut owner = registered_assets(assets, palettes);
+        let mut owner = registered_assets(&vfs, assets, palettes);
         let mut console = ConsoleAssets::load(
-            &root.vfs(),
+            &vfs,
             &mut owner,
             rules,
             ImageSettings::native(rules),
@@ -297,7 +299,7 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
             None,
         ]);
         let settings = ImageSettings::native(rules);
-        let mut owner = registered_assets(assets, palettes);
+        let mut owner = registered_assets(&vfs, assets, palettes);
         let console = ConsoleAssets::load(
             &vfs,
             &mut owner,
@@ -383,8 +385,8 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
 
 #[test]
 fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
-    let mut owner = registered_assets(Assets::load().unwrap(), Default::default());
     let vfs = Vfs::default();
+    let mut owner = registered_assets(&vfs, Assets::load().unwrap(), Default::default());
     let mut console = ConsoleAssets::load(
         &vfs,
         &mut owner,
@@ -516,6 +518,7 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let root = Fixture::new();
         root.native(rules);
+        let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
         let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
@@ -525,9 +528,9 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
             Some(palette),
             None,
         ]);
-        let mut owner = registered_assets(assets, palettes);
+        let mut owner = registered_assets(&vfs, assets, palettes);
         let mut console = ConsoleAssets::load(
-            &root.vfs(),
+            &vfs,
             &mut owner,
             rules,
             ImageSettings::native(rules),
@@ -687,6 +690,7 @@ fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent()
     let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets);
     let mut owner = registered_assets(
+        &vfs,
         assets,
         qa_app::render_settings::PaletteRegistrations::from_registered([
             None,

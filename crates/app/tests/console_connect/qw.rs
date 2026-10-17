@@ -80,8 +80,14 @@ fn model_owner(
             .profile();
     let (scene, _) =
         qa_app::renderer::SceneComposer::load(Default::default(), &mut assets, vec![]).unwrap();
-    let mut owner =
-        qa_app::model_assets::ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner = qa_app::model_assets::ModelAssets::new(
+        &host.runtime.vfs,
+        assets,
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     owner
         .adopt_palettes(
             qa_app::render_settings::PaletteRegistrations::from_registered([

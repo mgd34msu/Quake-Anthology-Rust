@@ -10,7 +10,8 @@ fn native_membership_keeps_all_model_shaders_and_skin_declaration_order() {
         .intern_resource_name(b"renderer-only-prefix")
         .unwrap();
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
     let model = owner
         .register_model(&fixture.vfs, b"models/test.md3", profile.source_rules)
         .unwrap();
@@ -63,8 +64,14 @@ fn ordinary_registration_keys_keep_raw_separator_identity_and_fold_only_ascii_ca
     let fixture =
         support::Fixture::new(&[("ui/pic.tga", support::tga(1, 1, &[[31, 43, 59, 255]]))]);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let kind = RendererRegistration::Shader {
         mipmaps: false,
         lighting: ShaderLighting::TwoDimensional,
@@ -118,7 +125,8 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
             }],
         )
         .unwrap();
-    let mut owner = ModelAssets::new(assets, [profile], [world], Default::default()).unwrap();
+    let mut owner =
+        ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();
     let retained = owner
         .register_shader(
             &fixture.vfs,
@@ -302,8 +310,14 @@ fn optional_missing_md3_shader_keeps_model_and_skin_pointer_body_without_white_a
         ),
     ]);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let model = owner
         .register_model(&fixture.vfs, b"models/test.md3", profile.source_rules)
         .unwrap();
@@ -392,8 +406,14 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
     let mut fixture =
         support::Fixture::new(&[("ui/sibling.tga", support::tga(1, 1, &[[31, 43, 59, 255]]))]);
     let profile = shader_profile(RuleSetId::Quake3);
-    let mut owner =
-        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        &fixture.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
     let handle = owner
         .register_shader(
             &fixture.vfs,
@@ -537,7 +557,8 @@ fn indexed_native_builtin_and_shaderless_md3_share_profile_default_image_and_kee
         let mut profile = shader_profile(RuleSetId::Quake);
         profile.palette = Some(palette);
         profile.image_settings.picmip = 2;
-        let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+        let mut owner =
+            ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
         let before = owner.assets().counts();
         let handle = owner
             .register_model(&fixture.vfs, b"models/default.md3", RuleSetId::Quake3)
