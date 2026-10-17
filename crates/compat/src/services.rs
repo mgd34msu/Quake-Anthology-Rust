@@ -398,7 +398,12 @@ impl ServiceStorage {
     pub fn prepare_files(&mut self, vfs: &Vfs) -> Result<(), CallError> {
         self.file_listing
             .prepare(vfs)
-            .map_err(|_| CallError::Capacity)
+            .map_err(|_| CallError::Capacity)?;
+        let default = vfs.default_view();
+        for range in &mut self.ranges {
+            range.file_search.get_or_insert_with(|| default.clone());
+        }
+        Ok(())
     }
 
     fn file_search(&self, module: ModuleId) -> Option<&qa_content::vfs::SearchView> {
@@ -413,15 +418,16 @@ impl ServiceStorage {
         view: Option<qa_content::vfs::SearchView>,
         vfs: &Vfs,
     ) -> Result<(), CallError> {
-        if view.as_ref().is_some_and(|view| !vfs.accepts_search(view)) {
-            return Err(CallError::File);
-        }
+        let view = vfs
+            .read_view(view.as_ref())
+            .retain()
+            .map_err(|_| CallError::File)?;
         let range = self
             .ranges
             .iter_mut()
             .find(|range| range.module == module)
             .ok_or(CallError::File)?;
-        range.file_search = view;
+        range.file_search = Some(view);
         for file in self
             .files
             .iter_mut()

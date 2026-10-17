@@ -18,16 +18,29 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MountId(pub u32);
-/// Immutable caller-selected mount order over this VFS's one file index.
-/// New mounts stay outside a retained view until its caller explicitly rebuilds it.
+/// Owned VFS selection: live default order or an explicit fixed mount order.
+/// New mounts stay outside a fixed view until its caller rebuilds it.
 #[derive(Clone)]
 pub struct SearchView {
     owner: Arc<()>,
-    ranks: Arc<[u32]>,
+    ranks: Option<Arc<[u32]>>,
 }
 impl SearchView {
+    /// Selection identity uses only VFS ownership and ordered mount metadata.
+    pub fn same_selection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
+            && match (&self.ranks, &other.ranks) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+                _ => false,
+            }
+    }
+    fn fixed(&self) -> Option<&Self> {
+        self.ranks.as_ref().map(|_| self)
+    }
     fn rank(&self, mount: MountId) -> Option<u32> {
         self.ranks
+            .as_ref()?
             .get(mount.0 as usize)
             .copied()
             .filter(|rank| *rank != u32::MAX)
@@ -41,6 +54,14 @@ pub struct ReadView<'a> {
     search: Option<&'a SearchView>,
 }
 impl ReadView<'_> {
+    /// Retain the same selection after checking its VFS owner at this boundary.
+    pub fn retain(self) -> Result<SearchView, VfsError> {
+        match self.search {
+            Some(view) if !self.vfs.accepts_search(view) => Err(VfsError::Handle),
+            Some(view) => Ok(view.clone()),
+            None => Ok(self.vfs.default_view()),
+        }
+    }
     pub fn open(self, path: &[u8]) -> Option<FileRef> {
         self.vfs.open_with(path, self.search)
     }
@@ -325,6 +346,12 @@ fn normalize_into(path: &[u8], normalized: &mut [u8; MAX_PATH_BYTES]) -> Result<
 }
 
 impl Vfs {
+    pub fn default_view(&self) -> SearchView {
+        SearchView {
+            owner: Arc::clone(&self.owner),
+            ranks: None,
+        }
+    }
     pub fn read_view<'a>(&'a self, search: Option<&'a SearchView>) -> ReadView<'a> {
         ReadView { vfs: self, search }
     }
@@ -691,9 +718,15 @@ impl Vfs {
                 next += 1;
             }
         }
+        // Trailing exclusions do not change the fixed selection's identity.
+        let length = ranks
+            .iter()
+            .rposition(|rank| *rank != u32::MAX)
+            .map_or(0, |last| last + 1);
+        ranks.truncate(length);
         Ok(SearchView {
             owner: Arc::clone(&self.owner),
-            ranks: ranks.into(),
+            ranks: Some(ranks.into()),
         })
     }
     pub fn accepts_search(&self, view: &SearchView) -> bool {
@@ -710,7 +743,7 @@ impl Vfs {
     }
 
     fn select_candidate(&self, candidates: &[u32], view: Option<&SearchView>) -> Option<u32> {
-        if let Some(view) = view {
+        if let Some(view) = view.and_then(SearchView::fixed) {
             candidates
                 .iter()
                 .filter_map(|&slot| {

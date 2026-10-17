@@ -944,10 +944,22 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
         mounts.push(vfs.mount_directory(&path, mounts.len() as i32).unwrap());
     }
     let default = vfs.open(b"same.dat").unwrap();
+    let live = vfs.read_view(None).retain().unwrap();
+    assert!(live.same_selection(&vfs.default_view()));
+    assert!(live.same_selection(&live.clone()));
     let first = vfs.search_view([mounts[0]]).unwrap();
     let peer = vfs.search_view([mounts[1], mounts[0], mounts[1]]).unwrap();
     let reversed = vfs.search_view([mounts[0], mounts[1]]).unwrap();
     let empty = vfs.search_view([]).unwrap();
+    assert!(first.same_selection(&vfs.read_view(Some(&first)).retain().unwrap()));
+    assert!(first.same_selection(&vfs.search_view([mounts[0]]).unwrap()));
+    assert!(!first.same_selection(&reversed));
+    assert!(!live.same_selection(&peer));
+    assert!(!live.same_selection(&empty));
+    assert_eq!(
+        vfs.open_with(b"same.dat", Some(&live)),
+        Some(default.clone())
+    );
     let mut reader = Default::default();
     for (view, expected) in [
         (&first, b"first".as_slice()),
@@ -972,6 +984,11 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
     assert_eq!(vfs.open(b"same.dat"), Some(default.clone()));
     let other = Vfs::default();
     let foreign = other.search_view([]).unwrap();
+    assert!(!live.same_selection(&other.default_view()));
+    assert!(matches!(
+        vfs.read_view(Some(&foreign)).retain(),
+        Err(VfsError::Handle)
+    ));
     assert!(!vfs.accepts_search(&foreign));
     assert!(vfs.open_with(b"same.dat", Some(&foreign)).is_none());
     assert_eq!(vfs.files_with(Some(&foreign)).count(), 0);
@@ -981,6 +998,9 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
     qa_platform::files::write(path.join("same.dat"), b"late").unwrap();
     qa_platform::files::write(path.join("late.dat"), b"new").unwrap();
     let late = vfs.mount_directory(&path, 99).unwrap();
+    assert!(vfs.open_with(b"late.dat", Some(&live)).is_some());
+    assert_eq!(vfs.files_with(Some(&live)).count(), 3);
+    assert!(first.same_selection(&vfs.search_view([mounts[0]]).unwrap()));
     assert!(vfs.open(b"late.dat").is_some());
     assert!(vfs.open_with(b"late.dat", Some(&peer)).is_none());
     assert_eq!(vfs.files_with(Some(&peer)).count(), 2);
@@ -1282,6 +1302,11 @@ fn loaded_listing_keeps_source_order_scopes_empty_directories_and_explicit_refre
             b"b.bsp",
             b"z.bsp"
         ]
+    );
+    let live = vfs.default_view();
+    assert_eq!(
+        list(&mut listing, &vfs, Some(&live), b"maps", b".bsp"),
+        list(&mut listing, &vfs, None, b"maps", b".bsp")
     );
     qa_platform::files::create_dir_all(low.join("models/players/arrived")).unwrap();
     assert_eq!(

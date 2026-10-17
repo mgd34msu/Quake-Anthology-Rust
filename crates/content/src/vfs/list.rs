@@ -62,6 +62,7 @@ impl FileListing {
         {
             return Err(VfsError::Capacity);
         }
+        let view = view.and_then(SearchView::fixed);
         self.seen.begin();
         self.mounts.clear();
         self.mounts.extend(

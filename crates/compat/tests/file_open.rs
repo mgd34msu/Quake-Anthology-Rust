@@ -723,3 +723,32 @@ fn mounted_mod_list_keeps_description_bytes_and_native_pair_capacity() {
         }
     }
 }
+
+#[test]
+fn default_module_search_keeps_its_vfs_owner_until_explicit_rebinding() {
+    let mut fixture = Fixture::new("default-owner");
+    assert_eq!(
+        fixture.engine().file_length(ModuleId(1), b"data.dat"),
+        Ok(3)
+    );
+    let mut replacement = qa_content::vfs::Vfs::default();
+    replacement.mount_directory(&fixture.root, 0).unwrap();
+    fixture.vfs = replacement;
+    assert_eq!(
+        fixture.engine().file_length(ModuleId(1), b"data.dat"),
+        Err(CallError::File)
+    );
+    fixture.storage.prepare_files(&fixture.vfs).unwrap();
+    assert_eq!(
+        fixture.engine().file_length(ModuleId(1), b"data.dat"),
+        Err(CallError::File)
+    );
+    fixture
+        .storage
+        .set_file_search(ModuleId(1), None, &fixture.vfs)
+        .unwrap();
+    assert_eq!(
+        fixture.engine().file_length(ModuleId(1), b"data.dat"),
+        Ok(3)
+    );
+}
