@@ -134,6 +134,10 @@ impl DownloadViews {
 }
 
 impl ClientDownload {
+    pub(crate) fn receiving(&self) -> bool {
+        matches!(self.transfer, Transfer::Active { .. })
+    }
+
     fn new(config: DownloadConfig, permissions: Option<DownloadViews>, protocol: Protocol) -> Self {
         Self {
             config,

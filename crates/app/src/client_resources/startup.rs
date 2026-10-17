@@ -39,11 +39,21 @@ pub(crate) enum StartupReply {
     New,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ServerControl {
+    Skins,
+    Changing,
+    Reconnect,
+}
+
 #[derive(Default)]
 pub(crate) enum ClientStartup {
     #[default]
     Unmanaged,
     NetQuake(NqSignon),
+    AwaitQwHeader {
+        new_pending: bool,
+    },
     QuakeWorld(QwSignon),
 }
 #[derive(Default)]
@@ -76,7 +86,6 @@ enum QwPhase {
     Content,
     Reply(StartupReply),
     Signon,
-    AwaitServer,
     Skins {
         prepared: bool,
     },
@@ -85,6 +94,28 @@ enum QwPhase {
 }
 
 impl ClientStartup {
+    pub(crate) fn connecting(&mut self, protocol: Protocol) {
+        match protocol {
+            Protocol::NetQuake15 => self.begin_nq(),
+            Protocol::QuakeWorld28 => *self = Self::AwaitQwHeader { new_pending: false },
+            _ => {}
+        }
+    }
+    pub(crate) fn connected(&mut self, protocol: Protocol) {
+        if protocol == Protocol::QuakeWorld28 {
+            *self = Self::AwaitQwHeader { new_pending: true };
+        }
+    }
+    pub(crate) fn active(&self) -> bool {
+        !self.waiting()
+    }
+    pub(crate) fn reconnect(&mut self, protocol: Protocol) {
+        self.connecting(protocol);
+        self.connected(protocol);
+    }
+    pub(crate) fn changing(&mut self) {
+        self.connecting(Protocol::QuakeWorld28);
+    }
     pub(crate) fn begin_nq(&mut self) {
         *self = Self::NetQuake(NqSignon::default());
     }
@@ -137,6 +168,7 @@ impl ClientStartup {
     pub(crate) fn waiting(&self) -> bool {
         match self {
             Self::Unmanaged => false,
+            Self::AwaitQwHeader { .. } => true,
             Self::NetQuake(state) => state.stage < 4 || !state.resources_admitted,
             Self::QuakeWorld(state) => !matches!(state.phase, QwPhase::Active),
         }
@@ -145,35 +177,38 @@ impl ClientStartup {
         match self {
             Self::NetQuake(state) => !state.resources_admitted,
             Self::QuakeWorld(state) => matches!(state.phase, QwPhase::Content),
-            Self::Unmanaged => false,
+            Self::Unmanaged | Self::AwaitQwHeader { .. } => false,
         }
     }
     pub(crate) fn allow_models(&self) -> bool {
         !matches!(
             self,
-            Self::QuakeWorld(QwSignon {
-                phase: QwPhase::List { .. } | QwPhase::Files { .. },
-                ..
-            })
+            Self::AwaitQwHeader { .. }
+                | Self::QuakeWorld(QwSignon {
+                    phase: QwPhase::List { .. } | QwPhase::Files { .. },
+                    ..
+                })
         )
     }
     pub(crate) fn allow_sounds(&self) -> bool {
         !matches!(
             self,
-            Self::QuakeWorld(QwSignon {
-                phase: QwPhase::List {
-                    kind: ResourceKind::Sound,
+            Self::AwaitQwHeader { .. }
+                | Self::QuakeWorld(QwSignon {
+                    phase: QwPhase::List {
+                        kind: ResourceKind::Sound,
+                        ..
+                    } | QwPhase::Files {
+                        kind: ResourceKind::Sound,
+                        ..
+                    },
                     ..
-                } | QwPhase::Files {
-                    kind: ResourceKind::Sound,
-                    ..
-                },
-                ..
-            })
+                })
         )
     }
     pub(crate) fn allow_skins(&self) -> bool {
-        !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
+        !matches!(self, Self::AwaitQwHeader { .. })
+            && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
     }
     pub(crate) fn receive_nq_stage(&mut self, stage: u8) -> bool {
         if matches!(self, Self::Unmanaged) {
@@ -318,6 +353,7 @@ impl ClientStartup {
     pub(crate) fn reply(&self, skins_done: bool) -> Option<StartupReply> {
         match self {
             Self::Unmanaged => None,
+            Self::AwaitQwHeader { new_pending } => new_pending.then_some(StartupReply::New),
             Self::NetQuake(state) if state.observed & 2 != 0 => Some(StartupReply::Prespawn),
             Self::NetQuake(state) if state.observed & 4 != 0 => Some(match state.stage2_step {
                 0 => StartupReply::Name,
@@ -345,6 +381,10 @@ impl ClientStartup {
         }
     }
     pub(crate) fn queued(&mut self, reply: StartupReply) {
+        if matches!(reply, StartupReply::New) {
+            *self = Self::AwaitQwHeader { new_pending: false };
+            return;
+        }
         match self {
             Self::NetQuake(state) => match reply {
                 StartupReply::Prespawn => state.observed &= !2,
@@ -361,16 +401,25 @@ impl ClientStartup {
                     }
                 }
                 StartupReply::QwBegin { .. } => state.phase = QwPhase::BeginQueued,
-                StartupReply::New => state.phase = QwPhase::AwaitServer,
                 _ => state.phase = QwPhase::Signon,
             },
-            Self::Unmanaged => {}
+            Self::Unmanaged | Self::AwaitQwHeader { .. } => {}
         }
     }
     pub(crate) fn stufftext(
         &mut self,
         args: qa_console::command_text::Arguments<'_>,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<Option<ServerControl>, &'static str> {
+        if args.len() == 1 {
+            match args.get_bytes(0) {
+                b"changing" => return Ok(Some(ServerControl::Changing)),
+                b"reconnect" => return Ok(Some(ServerControl::Reconnect)),
+                _ => {}
+            }
+        }
+        if args.is_empty() {
+            return Ok(None);
+        }
         let Self::QuakeWorld(state) = self else {
             return Err("QW command before serverdata");
         };
@@ -417,11 +466,10 @@ impl ClientStartup {
                 if !matches!(state.phase, QwPhase::Active) {
                     state.phase = QwPhase::Skins { prepared: false };
                 }
-                return Ok(true);
+                return Ok(Some(ServerControl::Skins));
             }
-            b"reconnect" if args.len() == 1 => state.phase = QwPhase::Reply(StartupReply::New),
             _ => return Err("unsupported QW server command"),
         }
-        Ok(false)
+        Ok(None)
     }
 }

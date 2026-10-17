@@ -11,7 +11,9 @@ use qa_network::{
         startup::{NqControl, read_nq_control, write_nq_control},
     },
     headers::{self, Direction, Header},
-    ingress::{BindError, Connection, ConnectionPhase, Connections, Incoming, NqConnect, Route},
+    ingress::{
+        BindError, Connection, ConnectionPhase, Connections, Incoming, NativeConnect, Route,
+    },
 };
 use std::{net::SocketAddr, ops::ControlFlow};
 
@@ -20,7 +22,7 @@ const ACCEPT: &[u8] = b"\x80\0\0\x09\x81\x91\x65\0\0";
 
 fn pending(socket: u16, address: &str) -> Connection {
     Connection {
-        phase: ConnectionPhase::Connecting(NqConnect::new()),
+        phase: ConnectionPhase::Connecting(NativeConnect::new()),
         route: Route {
             socket,
             peer: Peer::Socket(address.parse().unwrap()),
@@ -36,6 +38,7 @@ fn start(peers: &mut Connections, time: u64) -> usize {
     let mut submitted = 0;
     peers.send_connect_requests(
         EventTime::from_milliseconds(time),
+        |_, _, _, _| panic!("NQ has no userinfo request"),
         |_, bytes| {
             assert_eq!(bytes, REQUEST);
             submitted += 1;
@@ -125,6 +128,7 @@ fn retries_wait_for_admission_and_three_complete_native_reply_windows() {
         let mut calls = 0;
         peers.send_connect_requests(
             EventTime::from_milliseconds(time),
+            |_, _, _, _| panic!("NQ has no userinfo request"),
             |route, bytes| {
                 assert_eq!(route.socket, 7);
                 assert_eq!(bytes, REQUEST);
@@ -149,6 +153,7 @@ fn retries_wait_for_admission_and_three_complete_native_reply_windows() {
     for time in [16501, 20000] {
         peers.send_connect_requests(
             EventTime::from_milliseconds(time),
+            |_, _, _, _| panic!("NQ has no userinfo request"),
             |_, _| panic!("at most three requests"),
             |id, endpoint, incoming| {
                 assert_eq!((id, endpoint), (ClientId(0), Endpoint::Client));
@@ -248,7 +253,10 @@ fn acceptance_requires_the_requested_peer_and_preserves_the_same_native_channel(
             assert_eq!((id, endpoint), (ClientId(0), Endpoint::Client));
             assert!(matches!(
                 incoming,
-                Incoming::ConnectAccepted { port: 26001 }
+                Incoming::ConnectAccepted {
+                    port: 26001,
+                    userinfo: None
+                }
             ));
             accepted += 1;
             ControlFlow::Continue(())
@@ -317,7 +325,11 @@ fn malformed_replies_are_atomic_and_complete_rejection_is_terminal() {
     }
     assert_eq!(start(&mut peers, 0), 2);
     let route = peers.get(ClientId(0), Endpoint::Client).unwrap().route;
-    let phase = peers.get(ClientId(0), Endpoint::Client).unwrap().phase;
+    let phase = peers
+        .get(ClientId(0), Endpoint::Client)
+        .unwrap()
+        .phase
+        .clone();
     for packet in [
         b"\x80\0\0\x08\x81\x91\x65\0".as_slice(),
         b"\x80\0\0\x09\x81\0\0\x01\0",
@@ -332,7 +344,7 @@ fn malformed_replies_are_atomic_and_complete_rejection_is_terminal() {
             panic!("malformed reply delivered")
         });
         let row = peers.get(ClientId(0), Endpoint::Client).unwrap();
-        assert_eq!((row.route, row.phase), (route, phase));
+        assert_eq!((row.route, &row.phase), (route, &phase));
     }
     let mut rejections = 0;
     peers.receive(
@@ -368,7 +380,10 @@ fn malformed_replies_are_atomic_and_complete_rejection_is_terminal() {
             assert_eq!(id, ClientId(1));
             assert!(matches!(
                 incoming,
-                Incoming::ConnectAccepted { port: 65535 }
+                Incoming::ConnectAccepted {
+                    port: 65535,
+                    userinfo: None
+                }
             ));
             ControlFlow::Continue(())
         },
@@ -393,7 +408,11 @@ fn returned_port_conflict_is_rejected_before_changing_the_pending_route() {
         .unwrap();
     assert_eq!(start(&mut peers, 0), 1);
     let route = peers.get(ClientId(1), Endpoint::Client).unwrap().route;
-    let phase = peers.get(ClientId(1), Endpoint::Client).unwrap().phase;
+    let phase = peers
+        .get(ClientId(1), Endpoint::Client)
+        .unwrap()
+        .phase
+        .clone();
     peers.receive(7, route.peer, ACCEPT, EventTime(1), |_, _, _| {
         panic!("ambiguous accepted route")
     });
@@ -411,7 +430,10 @@ fn returned_port_conflict_is_rejected_before_changing_the_pending_route() {
         assert_eq!(id, ClientId(1));
         assert!(matches!(
             incoming,
-            Incoming::ConnectAccepted { port: 26001 }
+            Incoming::ConnectAccepted {
+                port: 26001,
+                userinfo: None
+            }
         ));
         ControlFlow::Break(())
     });
@@ -449,7 +471,6 @@ fn connecting_phase_requires_native_client_socket_admission() {
         Err(BindError::Route)
     );
     for protocol in [
-        Protocol::QuakeWorld28,
         Protocol::Quake2_34,
         Protocol::Quake2Repro1038,
         Protocol::Quake3_68,

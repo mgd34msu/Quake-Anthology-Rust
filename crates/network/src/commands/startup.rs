@@ -84,6 +84,65 @@ pub fn write_nq_control(control: NqControl<'_>, output: &mut [u8]) -> Result<usi
     Ok(writer.size())
 }
 
+/// MAX_INFO_STRING includes its native NUL terminator.
+pub const QW_CONNECT_USERINFO_BYTES: usize = 196;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QwConnectionless<'a> {
+    Challenge(i32),
+    Accepted,
+    Print(&'a [u8]),
+}
+
+pub fn read_qw_connectionless(bytes: &[u8]) -> Result<QwConnectionless<'_>, packet::Error> {
+    let mut reader = Reader::out_of_band(bytes)?;
+    let code = reader.read_bits(8)?;
+    let text = Protocol::QuakeWorld28
+        .string_policy()
+        .tail(&bytes[reader.byte_position()..]);
+    match code as u8 {
+        b'c' => Ok(QwConnectionless::Challenge(qa_core::text::atoi_prefix(
+            text,
+        ))),
+        b'j' => Ok(QwConnectionless::Accepted),
+        b'n' => Ok(QwConnectionless::Print(text)),
+        _ => Err(packet::Error::Context),
+    }
+}
+
+pub fn write_qw_getchallenge(output: &mut [u8]) -> Result<usize, packet::Error> {
+    let mut writer = Writer::out_of_band(output)?;
+    writer.write_data(b"getchallenge\n")?;
+    Ok(writer.size())
+}
+
+pub fn write_qw_connect(
+    qport: u16,
+    challenge: i32,
+    userinfo: &[u8],
+    output: &mut [u8],
+) -> Result<usize, packet::Error> {
+    use std::fmt::Write;
+    if userinfo.len() >= QW_CONNECT_USERINFO_BYTES
+        || userinfo
+            .iter()
+            .any(|byte| matches!(byte, 0 | 255 | b'"' | b'\r' | b'\n'))
+    {
+        return Err(packet::Error::Context);
+    }
+    let mut prefix = qa_core::text::FixedText::<64>::default();
+    write!(prefix, "connect 28 {qport} {challenge} \"").map_err(|_| packet::Error::Count)?;
+    let length = 4 + prefix.as_bytes().len() + userinfo.len() + 2;
+    if length > output.len() {
+        return Err(packet::Error::Count);
+    }
+    let mut writer = Writer::out_of_band(output)?;
+    writer.write_data(prefix.as_bytes())?;
+    writer.write_data(userinfo)?;
+    writer.write_data(b"\"\n")?;
+    Ok(writer.size())
+}
+
 #[derive(Clone)]
 pub struct NqServerInfo<'a> {
     reader: Reader<'a>,

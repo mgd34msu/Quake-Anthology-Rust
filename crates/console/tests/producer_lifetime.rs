@@ -1,12 +1,14 @@
 use qa_console::{
     command_buffer::{CAPACITY, CommandBuffer},
-    command_text::TextError,
-    commands::{BindOutput, Console, Host, ScriptError},
+    command_text::{ParsedCommand, TextError},
+    commands::{
+        BindOutput, CommandError, CommandReply, CommandRun, CommandStep, Console, Host, ScriptError,
+    },
     cvars::Cvars,
     views::{CommandProducer, Context, RuleSetId},
 };
 use qa_core::{
-    primitives::{EntityId, ModuleId},
+    primitives::{ClientId, EntityId, ModuleId, NameId},
     sys_events::{DeviceId, EventKind, EventTime, KeySource, SeatId, SysEvent},
     text::FixedText,
 };
@@ -15,6 +17,7 @@ use std::fmt::Arguments;
 #[derive(Default)]
 struct Capture {
     live: Vec<CommandProducer>,
+    clients: Vec<(ClientId, EntityId)>,
     output: Vec<u8>,
     input: qa_input::Input,
     quit: bool,
@@ -49,6 +52,9 @@ impl Host for Capture {
     fn command_producer_live(&self, producer: CommandProducer) -> bool {
         self.live.contains(&producer)
     }
+    fn client_command_live(&self, client: ClientId, lifetime: EntityId) -> bool {
+        self.clients.contains(&(client, lifetime))
+    }
     fn reject_input(&mut self, count: u64) {
         self.rejected += count;
     }
@@ -68,6 +74,136 @@ fn context(producer: CommandProducer) -> Context {
         source: RuleSetId::Quake2,
         producer: Some(producer),
         ..Context::default()
+    }
+}
+fn client_context(generation: u32) -> Context {
+    Context {
+        source: RuleSetId::QuakeWorld,
+        client_lifetime: Some((
+            ClientId(2),
+            EntityId {
+                slot: 9,
+                generation,
+            },
+        )),
+        ..Context::default()
+    }
+}
+
+#[test]
+fn reused_client_cannot_resume_alias_wait_or_queued_registered_command() {
+    let old = client_context(4);
+    let replacement = client_context(5);
+    let mut console = Console::new(Context::default()).unwrap();
+    let command = console.register_external("server_restart").unwrap();
+    let mut host = Capture {
+        clients: vec![old.client_lifetime.unwrap()],
+        ..Default::default()
+    };
+    console
+        .append(
+            "alias deferred \"wait 100; quit\"; deferred; echo stale-tail\n",
+            old,
+        )
+        .unwrap();
+    console.append_registered(command, old).unwrap();
+    console.execute_frame(&mut host);
+    assert!(host.output.is_empty());
+    assert!(!host.quit);
+
+    // Same numeric client slot now belongs to a different entity generation.
+    host.clients[0] = replacement.client_lifetime.unwrap();
+    console
+        .append("echo healthy\n", Context::default())
+        .unwrap();
+    console.append_registered(command, replacement).unwrap();
+    let mut run = CommandRun::drain();
+    let mut parser = ParsedCommand::default();
+    let mut dispatched = 0;
+    loop {
+        match console.step(&mut host, &mut run, &mut parser) {
+            CommandStep::Continue => {}
+            CommandStep::External(id) => {
+                assert_eq!(id, command);
+                assert_eq!(parser.arguments().get_bytes(0), b"server_restart");
+                assert_eq!(run.context(), replacement);
+                dispatched += 1;
+                assert!(run.reply(CommandReply::Handled));
+            }
+            CommandStep::Fallback => panic!("known commands"),
+            CommandStep::Done => break,
+        }
+    }
+    assert_eq!(dispatched, 1);
+    assert_eq!(host.output, b"healthy \n");
+    assert!(!host.quit);
+    assert!(console.idle());
+    assert!(matches!(
+        console.append_registered(NameId(u32::MAX), replacement),
+        Err(CommandError::Usage)
+    ));
+    assert!(console.idle());
+}
+
+#[test]
+fn retired_client_frame_wait_does_not_block_unrelated_commands() {
+    let old = client_context(1);
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut host = Capture::default();
+    {
+        let (_, buffer, _) = console.module_parts();
+        buffer.wait_next_frame(old);
+    }
+    console.append("echo ready\n", Context::default()).unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(host.output, b"ready \n");
+    assert!(console.idle());
+}
+
+#[test]
+fn client_lifetime_is_rechecked_after_external_reply_and_combines_with_producer() {
+    let old = client_context(8);
+    let replacement = client_context(9);
+    let module = producer(2, 3);
+    let combined = Context {
+        producer: Some(module),
+        ..old
+    };
+    let mut host = Capture {
+        clients: vec![old.client_lifetime.unwrap()],
+        live: vec![module],
+        ..Default::default()
+    };
+    assert!(combined.is_live(&host));
+    host.live.clear();
+    assert!(!combined.is_live(&host));
+    assert!(old.is_live(&host));
+    host.live.push(module);
+
+    for replied in [false, true] {
+        let mut console = Console::new(Context::default()).unwrap();
+        let command = console.register_external("server_restart").unwrap();
+        let mut parser = ParsedCommand::default();
+        parser.set_raw(b"server_restart").unwrap();
+        let mut run = CommandRun::single(combined);
+        host.clients[0] = old.client_lifetime.unwrap();
+        assert_eq!(
+            console.step(&mut host, &mut run, &mut parser),
+            CommandStep::External(command)
+        );
+        if replied {
+            assert!(run.reply(CommandReply::Unhandled));
+        }
+        host.clients[0] = replacement.client_lifetime.unwrap();
+        assert!(!combined.is_live(&host));
+        assert_eq!(
+            console.step(&mut host, &mut run, &mut parser),
+            CommandStep::Done
+        );
+        assert!(!run.reply(CommandReply::Handled));
+        assert!(host.output.is_empty());
+        // A stale connection does not retire the still-live module producer.
+        assert!(host.command_producer_live(module));
     }
 }
 fn line(buffer: &mut CommandBuffer, expected: &[u8], context: Context) {

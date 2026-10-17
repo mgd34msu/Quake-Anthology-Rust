@@ -134,19 +134,24 @@ impl StringPolicy {
     fn terminates(self, byte: u8) -> bool {
         byte == 0 || (self.signed_terminator && byte == 255)
     }
-    /// Generated strings leave room for the terminator in a native reader
-    /// that stops at its fixed buffer limit. Raw native packets are not mapped.
-    pub(crate) fn payload(self, text: &[u8]) -> &[u8] {
+    /// Connectionless native strings may end at the packet's EOF.
+    pub(crate) fn tail(self, text: &[u8]) -> &[u8] {
         let length = text
             .iter()
             .position(|&byte| self.terminates(byte))
             .unwrap_or(text.len());
+        &text[..length.min(self.maximum)]
+    }
+    /// Generated strings leave room for the terminator in a native reader
+    /// that stops at its fixed buffer limit. Raw native packets are not mapped.
+    pub(crate) fn payload(self, text: &[u8]) -> &[u8] {
+        let text = self.tail(text);
         let maximum = if self.stop_at_limit {
             self.maximum.saturating_sub(1)
         } else {
             self.maximum
         };
-        &text[..length.min(maximum)]
+        &text[..text.len().min(maximum)]
     }
     pub fn truncates(self, text: &[u8]) -> bool {
         text.get(self.payload(text).len())

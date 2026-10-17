@@ -18,23 +18,36 @@ pub enum Protocol {
     Quake3_68,
 }
 impl Protocol {
-    /// Only NetQuake's native connection control is admitted currently.
+    /// Native connection controls with a CLIENT handshake owner.
     pub const fn default_connect_port(self) -> Option<u16> {
         match self {
             Self::NetQuake15 => Some(26000),
+            Self::QuakeWorld28 => Some(27500),
             _ => None,
         }
     }
     /// Q2/Q3 disconnect through their existing string-command queue instead.
     pub fn write_disconnect(self, out: &mut [u8]) -> Result<usize, Error> {
         match self {
-            Self::NetQuake15 | Self::QuakeWorld28 => {
+            Self::NetQuake15 => {
                 let mut writer = Writer::new(out, Encoding::Bytes);
                 writer.write_bits(2, 8)?;
                 Ok(writer.size())
             }
+            Self::QuakeWorld28 => self.write_client_text(4, b"drop", out),
             _ => Err(Error::Context),
         }
+    }
+    pub(crate) fn write_client_text(
+        self,
+        opcode: u32,
+        text: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let mut writer = Writer::new(out, Encoding::Bytes);
+        writer.write_bits(opcode, 8)?;
+        writer.write_string(self.client_string_policy(), text)?;
+        Ok(writer.size())
     }
     pub const fn native(rules: qa_core::primitives::RuleSetId) -> Self {
         use qa_core::primitives::RuleSetId;

@@ -18,11 +18,15 @@ use std::{
 #[must_use]
 pub struct UdpLease {
     token: u16,
+    local_port: u16,
     _socket: Arc<UdpSocket>,
 }
 impl UdpLease {
     pub fn socket(&self) -> u16 {
         self.token
+    }
+    pub fn local_port(&self) -> u16 {
+        self.local_port
     }
 }
 
@@ -137,10 +141,12 @@ impl EventPump {
                     continue;
                 }
             };
+            let local_port = socket.local_addr()?.port();
             let token = self.install_socket(SocketOwner::Leased(Arc::downgrade(&socket)))?;
             return Ok((
                 UdpLease {
                     token,
+                    local_port,
                     _socket: socket,
                 },
                 peer,

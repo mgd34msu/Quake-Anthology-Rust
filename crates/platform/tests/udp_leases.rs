@@ -171,3 +171,28 @@ fn dropping_the_event_source_does_not_invalidate_a_retained_lease() {
     let released = UdpSocket::bind(local).unwrap();
     assert_eq!(released.local_addr().unwrap(), local);
 }
+
+#[test]
+fn client_leases_cache_their_distinct_native_ports_at_the_actual_socket_boundary() {
+    let remote = receiver("127.0.0.1:0").unwrap();
+    let peer = remote.local_addr().unwrap();
+    let mut pump = EventPump::new();
+    let first = pump.open_udp_client(&peer.to_string(), 27500).unwrap().0;
+    let second = pump.open_udp_client(&peer.to_string(), 27500).unwrap().0;
+    assert_ne!(first.socket(), second.socket());
+    assert_ne!(first.local_port(), 0);
+    assert_ne!(second.local_port(), 0);
+    assert_ne!(first.local_port(), second.local_port());
+    let ports = [first.local_port(), second.local_port()];
+    for (index, lease) in [&first, &second].into_iter().enumerate() {
+        pump.send_udp(lease.socket(), peer, b"native qport")
+            .unwrap();
+        let mut bytes = [0; 32];
+        let (length, source) = remote.recv_from(&mut bytes).unwrap();
+        assert_eq!(&bytes[..length], b"native qport");
+        assert_eq!(source.port(), ports[index]);
+        assert_eq!(lease.local_port(), ports[index]);
+    }
+    drop(pump);
+    assert_eq!([first.local_port(), second.local_port()], ports);
+}

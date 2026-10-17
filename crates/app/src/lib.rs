@@ -1189,6 +1189,18 @@ impl Host for Runtime {
             .resolve(producer.anchor)
             .is_some_and(|slot| self.server.entities.columns.owner[slot] == producer.module)
     }
+    fn client_command_live(&self, id: ClientId, lifetime: qa_core::primitives::EntityId) -> bool {
+        self.server.clients.get(id.0 as usize).is_some_and(|row| {
+            row.connection == Some(qa_session::clients::Connection::Local)
+                && row.entity == lifetime
+                && self.server.entities.resolve(lifetime).is_some()
+                && self
+                    .snapshots
+                    .get(id.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|binding| !binding.presentation_closed())
+        })
+    }
     fn input(&mut self) -> &mut qa_input::Input {
         &mut self.input
     }

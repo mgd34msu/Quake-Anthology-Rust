@@ -244,9 +244,7 @@ impl ClientResources {
         self.udp_lease.as_ref().map(qa_platform::UdpLease::socket)
     }
     pub(crate) fn begin_startup(&mut self, protocol: Protocol) {
-        if protocol == Protocol::NetQuake15 {
-            self.startup.begin_nq();
-        }
+        self.startup.connecting(protocol);
     }
     pub(crate) fn nq_assignment_max_clients(&self) -> Option<u8> {
         (self.startup.nq_stage()? == 0).then_some(self.state.server_info.as_ref()?.max_clients)
@@ -274,15 +272,19 @@ impl ClientResources {
         });
         Ok(())
     }
-    pub(crate) fn receive_stufftext(&mut self, text: &[u8]) -> Result<bool, &'static str> {
-        let mut skins = false;
-        for line in text.split(|&byte| byte == b'\n') {
-            self.selected
-                .parse(line, RuleSetId::QuakeWorld)
-                .map_err(|_| "QW server command syntax")?;
-            skins |= self.startup.stufftext(self.selected.arguments())?;
-        }
-        Ok(skins)
+    pub(crate) fn receive_server_command(
+        &mut self,
+        line: &[u8],
+    ) -> Result<Option<startup::ServerControl>, &'static str> {
+        self.selected
+            .parse(line, RuleSetId::QuakeWorld)
+            .map_err(|_| "QW server command syntax")?;
+        self.startup.stufftext(self.selected.arguments())
+    }
+    pub(crate) fn receiving_download(&self) -> bool {
+        self.downloads
+            .as_ref()
+            .is_some_and(downloads::ClientDownload::receiving)
     }
 
     pub(crate) fn prepare_sounds(

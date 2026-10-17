@@ -194,7 +194,7 @@ impl CommandBuffer {
             context.producer.is_some_and(|producer| !retained(producer))
         });
     }
-    fn discard_contexts(&mut self, mut retired: impl FnMut(Context) -> bool) {
+    pub(crate) fn discard_contexts(&mut self, mut retired: impl FnMut(Context) -> bool) {
         if let Some(wait) = &mut self.wait {
             if wait.executions != 0 && retired(wait.context) {
                 wait.executions = 0;

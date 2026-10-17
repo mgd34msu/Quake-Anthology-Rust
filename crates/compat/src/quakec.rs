@@ -205,7 +205,7 @@ pub(crate) fn definition(image: &Image, fields: bool, name: &[u8], kind: u16) ->
 }
 pub const TEMP_STRING_BYTES: usize = 128;
 /// Original QuakeWorld MAX_INFO_STRING, including its terminating byte.
-pub const QW_USERINFO_BYTES: usize = 196;
+pub use qa_network::commands::startup::QW_CONNECT_USERINFO_BYTES as QW_USERINFO_BYTES;
 
 pub(super) fn temporary_string(memory: &mut ModuleMemory<'_>, text: &[u8]) -> Result<u32, Trap> {
     if text.len() >= TEMP_STRING_BYTES {

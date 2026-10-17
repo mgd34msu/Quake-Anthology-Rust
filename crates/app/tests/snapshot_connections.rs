@@ -20,7 +20,7 @@ use qa_core::{loopback::Endpoint, primitives::*, sys_events::*};
 use qa_network::{
     channel::Channel,
     commands::{connection::Commands, packet::Protocol},
-    ingress::{Connection as NativeConnection, ConnectionPhase, Connections, NqConnect, Route},
+    ingress::{Connection as NativeConnection, ConnectionPhase, Connections, NativeConnect, Route},
     snapshots::ReceivedFrame,
 };
 use qa_session::{clients::Connection, timing::TickRate};
@@ -5195,7 +5195,7 @@ fn connect_frame(
 fn pending_socket_connect_keeps_one_client_and_uses_the_accepted_port_for_signon() {
     let (mut host, healthy, client, mut server) = socket_netquake_host(
         NativePlayerBinding::Supplied(5),
-        ConnectionPhase::Connecting(NqConnect::new()),
+        ConnectionPhase::Connecting(NativeConnect::new()),
     );
     let lifetime = host.runtime.server.clients[client.0 as usize].entity;
     let output = host.runtime.server.clients[client.0 as usize].output;
@@ -5356,7 +5356,7 @@ fn connecting_client_timeout_and_reject_retire_only_that_client() {
     for reject in [false, true] {
         let (mut host, healthy, client, _) = socket_netquake_host(
             NativePlayerBinding::Awaiting,
-            ConnectionPhase::Connecting(NqConnect::new()),
+            ConnectionPhase::Connecting(NativeConnect::new()),
         );
         let healthy_lifetime = host.runtime.server.clients[healthy.0 as usize].entity;
         let route = host

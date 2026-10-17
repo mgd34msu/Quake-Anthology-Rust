@@ -1878,7 +1878,7 @@ fn verify_standalone_ui(ui: Vec<u8>) {
             qa_app::snapshots::NativePlayerBinding::Awaiting,
             qa_network::ingress::Connection {
                 phase: qa_network::ingress::ConnectionPhase::Connecting(
-                    qa_network::ingress::NqConnect::new(),
+                    qa_network::ingress::NativeConnect::new(),
                 ),
                 route: qa_network::ingress::Route {
                     socket: 27,
@@ -2147,7 +2147,12 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     });
     let connections = ids.map(|id| {
         let row = host.runtime.network.get(id, Endpoint::Client).unwrap();
-        (row.phase, row.route, row.output, row.channel.endpoint())
+        (
+            row.phase.clone(),
+            row.route,
+            row.output,
+            row.channel.endpoint(),
+        )
     });
     let font = host
         .runtime
@@ -2467,7 +2472,12 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
             .get(ids[seat], Endpoint::Client)
             .unwrap();
         assert_eq!(
-            (row.phase, row.route, row.output, row.channel.endpoint()),
+            (
+                row.phase.clone(),
+                row.route,
+                row.output,
+                row.channel.endpoint()
+            ),
             connections[seat]
         );
         assert!(
@@ -3439,7 +3449,12 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
     });
     let connections = ids.map(|id| {
         let row = host.runtime.network.get(id, Endpoint::Client).unwrap();
-        (row.phase, row.route, row.output, row.channel.endpoint())
+        (
+            row.phase.clone(),
+            row.route,
+            row.output,
+            row.channel.endpoint(),
+        )
     });
     let prefix = host
         .runtime
@@ -3539,7 +3554,7 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
             .unwrap();
         assert_eq!(
             (
-                connection.phase,
+                connection.phase.clone(),
                 connection.route,
                 connection.output,
                 connection.channel.endpoint()

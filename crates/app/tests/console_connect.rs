@@ -23,13 +23,28 @@ use qa_platform::EventPump;
 use qa_session::timing::TickRate;
 use std::{net::SocketAddr, time::Duration};
 
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
+
 struct Source {
     pump: EventPump,
     time: EventTime,
+    reject_connect: bool,
+    rejected_connects: usize,
+    backend: Option<asset_frames::Source>,
 }
 impl FrameSource for Source {
     fn driver(&mut self) -> Driver<'_> {
-        Driver::with_connector(None, &mut self.pump)
+        let preparer = self
+            .backend
+            .as_mut()
+            .map(|backend| backend as &mut dyn qa_app::renderer::AssetPreparer);
+        Driver::with_connector(preparer, &mut self.pump)
+    }
+    fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
+        self.backend
+            .as_mut()
+            .map(|backend| backend as &mut dyn qa_app::renderer::AssetPreparer)
     }
     fn begin_frame(&mut self) -> Duration {
         Duration::from_nanos(self.time.0)
@@ -54,6 +69,10 @@ impl FrameSource for Source {
         true
     }
     fn send_packet(&mut self, socket: u16, to: SocketAddr, bytes: &[u8]) -> bool {
+        if self.reject_connect && bytes.starts_with(b"\xff\xff\xff\xffconnect ") {
+            self.rejected_connects += 1;
+            return false;
+        }
         self.pump.send_udp(socket, to, bytes).is_ok()
     }
 }
@@ -102,6 +121,9 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
     let mut source = Source {
         pump: EventPump::new(),
         time: EventTime(0),
+        reject_connect: false,
+        rejected_connects: 0,
+        backend: None,
     };
     let mut host = host(3);
     let healthy = host
@@ -329,6 +351,9 @@ fn one_slot_replacement_waits_for_presentation_and_preserves_all_role_choices() 
         let mut source = Source {
             pump: EventPump::new(),
             time: EventTime(0),
+            reject_connect: false,
+            rejected_connects: 0,
+            backend: None,
         };
         let mut host = host(1);
         let policy = ClientPolicy {
@@ -423,3 +448,6 @@ fn one_slot_replacement_waits_for_presentation_and_preserves_all_role_choices() 
         assert!(host.console.idle());
     }
 }
+
+#[path = "console_connect/qw.rs"]
+mod qw;

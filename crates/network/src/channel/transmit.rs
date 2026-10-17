@@ -311,6 +311,9 @@ impl Channel {
     pub fn set_qport(&mut self, qport: u16) {
         self.transmit.qport = qport;
     }
+    pub fn qport(&self) -> u16 {
+        self.transmit.qport
+    }
     pub(crate) fn routing_qport(&self) -> Option<u16> {
         match self
             .policy
@@ -374,13 +377,9 @@ impl Channel {
     ) -> Result<NativeReceipt, TransmitError> {
         let mut bytes = std::mem::take(&mut self.transmit.command_output);
         let result = (|| {
-            let mut writer =
-                crate::message::Writer::new(&mut bytes, crate::message::Encoding::Bytes);
-            writer
-                .write_bits(opcode, 8)
-                .and_then(|_| writer.write_string(protocol.client_string_policy(), text))
+            let length = protocol
+                .write_client_text(opcode, text, &mut bytes)
                 .map_err(|_| TransmitError::MessageTooLarge)?;
-            let length = writer.bytes().len();
             self.queue_reliable(&bytes[..length])
         })();
         self.transmit.command_output = bytes;

@@ -1780,6 +1780,7 @@ impl Cvars {
                     event_time: None,
                     key_source: None,
                     producer: None,
+                    client_lifetime: None,
                     client_policy: None,
                 };
                 let view = View {

@@ -8,7 +8,7 @@ use qa_core::{
 use qa_network::{
     channel::{Channel, Unreliable},
     commands::{connection::Commands, packet::Protocol},
-    ingress::{Connection, ConnectionPhase, NqConnect, Route},
+    ingress::{Connection, ConnectionPhase, NativeConnect, Route},
 };
 
 #[derive(Clone, Copy)]
@@ -17,6 +17,7 @@ enum Action {
     Connect {
         protocol: Protocol,
         policy: crate::client_policy::ClientPolicy,
+        peer: Option<std::net::SocketAddr>,
     },
 }
 
@@ -45,6 +46,36 @@ fn connect_target(scratch: &ParsedCommand) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
+fn client_policy(
+    host: &FrameHost,
+    context: ConsoleContext,
+    previous: Option<(ClientId, EntityId)>,
+) -> crate::client_policy::ClientPolicy {
+    context.client_policy.unwrap_or_else(|| {
+        previous.map_or(
+            crate::client_policy::ClientPolicy {
+                client: context.source,
+                input: context.source,
+                movement: context.source,
+                trace: context.source,
+            },
+            |(id, _)| {
+                let row = &host.runtime.server.clients[id.0 as usize];
+                crate::client_policy::ClientPolicy {
+                    client: row.client_rules,
+                    input: row.input_rules,
+                    movement: host.runtime.prediction[context.seat.index()]
+                        .player
+                        .movement_rules,
+                    trace: host.runtime.prediction[context.seat.index()]
+                        .player
+                        .trace_rules,
+                }
+            },
+        )
+    })
+}
+
 pub(super) fn begin(
     host: &mut FrameHost,
     command: NameId,
@@ -52,6 +83,9 @@ pub(super) fn begin(
     context: ConsoleContext,
     driver: &Driver<'_>,
 ) -> Option<Change> {
+    if !context.is_live(&host.runtime) {
+        return None;
+    }
     let args = scratch.arguments();
     let previous = host.local_clients[context.seat.index()].and_then(|id| {
         let row = host.runtime.server.clients.get(id.0 as usize)?;
@@ -62,25 +96,72 @@ pub(super) fn begin(
         if args.len() != 1 {
             report(host, format_args!("Usage: reconnect\n"));
         } else if let Some((id, _)) = previous {
-            let native = host
+            let protocol = host
                 .runtime
                 .network
                 .get(id, Endpoint::Client)
-                .is_some_and(|connection| {
-                    connection.phase.is_connected()
-                        && connection
-                            .commands
-                            .as_ref()
-                            .is_some_and(|commands| commands.protocol == Protocol::NetQuake15)
+                .filter(|connection| connection.phase.is_connected())
+                .and_then(|connection| connection.commands.as_ref())
+                .map(|commands| commands.protocol)
+                .filter(|protocol| {
+                    matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28)
                 });
-            if native {
+            if let Some(protocol) = protocol {
+                if protocol == Protocol::QuakeWorld28
+                    && host.runtime.client_resources[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|resources| resources.receiving_download())
+                {
+                    return None;
+                }
+                if protocol == Protocol::QuakeWorld28
+                    && host.runtime.client_resources[id.0 as usize]
+                        .as_ref()
+                        .is_some_and(|resources| resources.startup.active())
+                {
+                    if driver.connector.is_none() {
+                        report(
+                            host,
+                            format_args!(
+                                "Network connection setup is unavailable in this context\n"
+                            ),
+                        );
+                        return None;
+                    }
+                    let peer =
+                        host.runtime
+                            .network
+                            .get(id, Endpoint::Client)
+                            .and_then(|connection| match connection.route.peer {
+                                Peer::Socket(peer) => Some(peer),
+                                _ => None,
+                            });
+                    let Some(peer) = peer else {
+                        report(host, format_args!("Reconnect requires a socket peer\n"));
+                        return None;
+                    };
+                    return Some(Change {
+                        seat: context.seat,
+                        previous,
+                        action: Action::Connect {
+                            protocol,
+                            policy: client_policy(host, context, previous),
+                            peer: Some(peer),
+                        },
+                        started: false,
+                        retiring: None,
+                    });
+                }
+                if protocol == Protocol::QuakeWorld28 {
+                    host.begin_client_map_change(id);
+                }
                 if let Some(resources) = host.runtime.client_resources[id.0 as usize].as_mut() {
-                    resources.begin_startup(qa_network::commands::packet::Protocol::NetQuake15);
+                    resources.startup.reconnect(protocol);
                 }
             } else {
                 report(
                     host,
-                    format_args!("Reconnect requires a connected NetQuake peer\n"),
+                    format_args!("Reconnect requires a connected NetQuake or QuakeWorld peer\n"),
                 );
             }
         } else {
@@ -117,30 +198,12 @@ pub(super) fn begin(
             );
             return None;
         }
-        let policy = context.client_policy.unwrap_or_else(|| {
-            previous.map_or(
-                crate::client_policy::ClientPolicy {
-                    client: context.source,
-                    input: context.source,
-                    movement: context.source,
-                    trace: context.source,
-                },
-                |(id, _)| {
-                    let row = &host.runtime.server.clients[id.0 as usize];
-                    crate::client_policy::ClientPolicy {
-                        client: row.client_rules,
-                        input: row.input_rules,
-                        movement: host.runtime.prediction[context.seat.index()]
-                            .player
-                            .movement_rules,
-                        trace: host.runtime.prediction[context.seat.index()]
-                            .player
-                            .trace_rules,
-                    }
-                },
-            )
-        });
-        Action::Connect { protocol, policy }
+        let policy = client_policy(host, context, previous);
+        Action::Connect {
+            protocol,
+            policy,
+            peer: None,
+        }
     } else {
         report(
             host,
@@ -175,6 +238,9 @@ impl Change {
             host.finish_client_disconnect(id, lifetime, access);
         }
         if !self.started {
+            if !context.is_live(&host.runtime) {
+                return None;
+            }
             self.started = true;
             if let Some((id, lifetime)) = self.previous {
                 if !host
@@ -206,12 +272,20 @@ impl Change {
         if owner.is_some_and(|owner| !super::valid(host, owner, true)) {
             return Some(FrameStep::Finished(Err(())));
         }
-        if context.producer.is_some_and(|producer| {
-            !qa_console::commands::Host::command_producer_live(&host.runtime, producer)
-        }) {
+        // The admitted change owns the captured target after disconnecting it.
+        let context = ConsoleContext {
+            client_lifetime: None,
+            ..context
+        };
+        if !context.is_live(&host.runtime) {
             return None;
         }
-        let Action::Connect { protocol, policy } = self.action else {
+        let Action::Connect {
+            protocol,
+            policy,
+            peer,
+        } = self.action
+        else {
             return None;
         };
         if host.local_clients[self.seat.index()].is_some() {
@@ -235,10 +309,22 @@ impl Change {
             if awaiting_retirement && context.client_policy.is_none() {
                 let retry = ConsoleContext {
                     client_policy: Some(policy),
+                    source: protocol.rule_set(),
                     ..context
                 };
                 let (_, buffer, _) = host.console.module_parts();
-                match buffer.insert_line_bytes(scratch.raw_bytes(), retry) {
+                let mut reconnect = qa_core::text::FixedText::<96>::default();
+                let text = if let Some(peer) = peer {
+                    use std::fmt::Write;
+                    if write!(reconnect, "connect {peer}").is_err() {
+                        report(host, format_args!("Reconnect address capacity\n"));
+                        return None;
+                    }
+                    reconnect.as_bytes()
+                } else {
+                    scratch.raw_bytes()
+                };
+                match buffer.insert_line_bytes(text, retry) {
                     Ok(()) => buffer.wait_next_frame(retry),
                     Err(error) => report(host, format_args!("Connect retry rejected: {error:?}\n")),
                 }
@@ -251,7 +337,14 @@ impl Change {
             return None;
         }
         let result = (|| {
-            let target = connect_target(scratch).ok_or("invalid server address")?;
+            let mut resolved = qa_core::text::FixedText::<64>::default();
+            let target = if let Some(peer) = peer {
+                use std::fmt::Write;
+                write!(resolved, "{peer}").map_err(|_| "reconnect address capacity")?;
+                resolved.as_str()
+            } else {
+                connect_target(scratch).ok_or("invalid server address")?
+            };
             let connector = driver
                 .connector
                 .as_deref_mut()
@@ -264,10 +357,22 @@ impl Change {
                         .ok_or("native connection setup unavailable")?,
                 )
                 .map_err(|error| format!("server {target}: {error}"))?;
-            let channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
+            let mut channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
                 .map_err(|error| format!("native channel: {error:?}"))?;
+            if protocol == Protocol::QuakeWorld28 {
+                let configured =
+                    host.console
+                        .cvars
+                        .numeric(host.qport)
+                        .map_err(|_| "invalid native qport")? as i32 as u16;
+                channel.set_qport(if configured == 0 {
+                    lease.local_port()
+                } else {
+                    configured
+                });
+            }
             let connection = Connection {
-                phase: ConnectionPhase::Connecting(NqConnect::new()),
+                phase: ConnectionPhase::Connecting(NativeConnect::new()),
                 route: Route {
                     socket: lease.socket(),
                     peer: Peer::Socket(peer),
@@ -359,23 +464,31 @@ fn disconnect_wire(host: &mut FrameHost, id: ClientId, driver: &mut Driver<'_>) 
         report(host, format_args!("Disconnect command was not admitted\n"));
         return;
     };
-    let submitted = crate::transport::send(
-        &mut connection.channel,
-        host.time,
-        &mut false,
-        |channel, _| {
-            channel
-                .prepare_move(&bytes[..length], host.time, None, None)
-                .is_ok_and(|packet| packet.is_some())
-        },
-        &mut admit,
-        |channel, included, disposition| {
-            *included |= disposition == Unreliable::Included;
-            *included && !channel.pending_fragments()
-        },
-    );
-    if !submitted.complete {
-        runtime.server.events.reject_publication();
-        report(host, format_args!("Disconnect packet was not admitted\n"));
+    let submissions = if protocol == Protocol::QuakeWorld28 {
+        3
+    } else {
+        1
+    };
+    for _ in 0..submissions {
+        let submitted = crate::transport::send(
+            &mut connection.channel,
+            host.time,
+            &mut false,
+            |channel, _| {
+                channel
+                    .prepare_move(&bytes[..length], host.time, None, None)
+                    .is_ok_and(|packet| packet.is_some())
+            },
+            &mut admit,
+            |channel, included, disposition| {
+                *included |= disposition == Unreliable::Included;
+                *included && !channel.pending_fragments()
+            },
+        );
+        if !submitted.complete {
+            runtime.server.events.reject_publication();
+            report(host, format_args!("Disconnect packet was not admitted\n"));
+            return;
+        }
     }
 }

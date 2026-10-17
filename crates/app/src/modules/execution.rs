@@ -1248,11 +1248,7 @@ fn console_step(
     if host.runtime.quit {
         return FrameStep::Finished(Ok(None));
     }
-    if frame.fallback.is_some()
-        && frame.run.context().producer.is_some_and(|producer| {
-            !qa_console::commands::Host::command_producer_live(&host.runtime, producer)
-        })
-    {
+    if frame.fallback.is_some() && !frame.run.context().is_live(&host.runtime) {
         frame.fallback = None;
         frame.child = None;
     }

@@ -347,6 +347,42 @@ struct ClientUserinfo {
     queued: qa_core::text::FixedText<{ qa_session::clients::USERINFO_BYTES }>,
 }
 impl ClientUserinfo {
+    fn serialize(
+        cvars: &qa_console::cvars::Cvars,
+        protocol: qa_network::commands::packet::Protocol,
+        seat: SeatId,
+        peer: qa_core::sys_events::Peer,
+        output: &mut [u8],
+    ) -> Result<usize, qa_console::cvars::WriteError> {
+        let context = qa_console::views::Context {
+            source: protocol.rule_set(),
+            seat,
+            ..Default::default()
+        };
+        let capacity = qa_compat::services::userinfo_rules(protocol.rule_set()).bytes;
+        let output = output
+            .get_mut(..capacity)
+            .ok_or(qa_console::cvars::WriteError::Capacity)?;
+        let mut length = cvars.info_string(context, 2, output)?;
+        if protocol == qa_network::commands::packet::Protocol::QuakeWorld28
+            && let qa_core::sys_events::Peer::Socket(address) = peer
+        {
+            use std::fmt::Write;
+            let mut text = qa_core::text::FixedText::<64>::default();
+            if write!(text, "{address}").is_ok()
+                && let Ok(update) = qa_core::text::InfoUpdate::new(
+                    b"*ip",
+                    text.as_bytes(),
+                    qa_compat::services::userinfo_rules(protocol.rule_set()),
+                )
+            {
+                // Native Info_SetValueForStarKey leaves usable userinfo when
+                // this optional address cannot fit its total native budget.
+                let _ = update.first_only().apply(output, &mut length);
+            }
+        }
+        Ok(length)
+    }
     fn queue_qw(
         &mut self,
         channel: &mut qa_network::channel::Channel,
@@ -436,6 +472,7 @@ pub struct FrameHost {
     fov: CvarHandle,
     q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) qw_highchars: qa_console::cvars::View,
+    pub(crate) qport: qa_console::cvars::View,
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
     pub(crate) allskins_command: qa_core::primitives::NameId,
@@ -1348,6 +1385,17 @@ impl FrameHost {
                 },
             )
             .ok_or("missing sv_highchars")?;
+        let qport = console
+            .cvars
+            .bind(
+                "net_qport",
+                qa_console::views::Context {
+                    source: RuleSetId::QuakeWorld,
+                    side: qa_console::catalog::Scope::Client,
+                    ..Default::default()
+                },
+            )
+            .ok_or("missing native qport")?;
         let allskins_command = console
             .register_external("allskins")
             .ok_or("player skin command registration")?;
@@ -1491,6 +1539,7 @@ impl FrameHost {
             fov,
             q2_fov,
             qw_highchars,
+            qport,
             nq_identity,
             player_model_options,
             player_skin_views,
@@ -2203,7 +2252,11 @@ impl FrameHost {
             {
                 continue;
             }
-            if snapshot.owns_client_audio() {
+            if snapshot.owns_client_audio()
+                || runtime.client_resources[snapshot.client.0 as usize]
+                    .as_ref()
+                    .is_some_and(|resources| resources.awaiting_startup())
+            {
                 snapshot.maintain_client_audio(
                     client.entity,
                     server.presentation,
@@ -2327,8 +2380,13 @@ impl FrameHost {
     fn flush_client_connect_requests(&mut self, source: &mut impl FrameSource) {
         self.retire_unconnected_clients(source);
         let runtime = &mut self.runtime;
+        let cvars = &self.console.cvars;
         runtime.network.send_connect_requests(
             self.time,
+            |id, protocol, route, output| {
+                let seat = runtime.snapshots.get(id.0 as usize)?.as_ref()?.seat()?;
+                ClientUserinfo::serialize(cvars, protocol, seat, route.peer, output).ok()
+            },
             |route, bytes| {
                 crate::transport::admit_output(
                     &mut runtime.loopback,
@@ -2583,17 +2641,13 @@ impl FrameHost {
             else {
                 continue;
             };
-            let context = qa_console::views::Context {
-                source: protocol.rule_set(),
+            let Ok(length) = ClientUserinfo::serialize(
+                &self.console.cvars,
+                protocol,
                 seat,
-                ..Default::default()
-            };
-            let capacity = qa_compat::services::userinfo_rules(protocol.rule_set()).bytes;
-            let Ok(length) = self
-                .console
-                .cvars
-                .info_string(context, 2, &mut bytes[..capacity])
-            else {
+                connection.route.peer,
+                &mut bytes,
+            ) else {
                 continue;
             };
             let cache = &mut self.userinfo[index];
@@ -2684,6 +2738,90 @@ impl FrameHost {
         prediction.player.clear_received();
         if let Some(collision) = self.runtime.client_collision[client.0 as usize].as_mut() {
             collision.reset();
+        }
+    }
+
+    pub(crate) fn begin_client_map_change(&mut self, client: ClientId) {
+        let lifetime = self.runtime.server.clients[client.0 as usize].entity;
+        if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
+            resources.startup.changing();
+            resources.state.request_presentation_reset(lifetime);
+        }
+        if let Some(binding) = self.runtime.snapshots[client.0 as usize].as_mut() {
+            binding.begin_map_change();
+            if let Some(seat) = binding.seat() {
+                let mode = &mut self.runtime.prediction[seat.index()].player.movement.mode;
+                if matches!(
+                    mode,
+                    qa_core::primitives::MovementMode::Intermission
+                        | qa_core::primitives::MovementMode::SinglePlayerIntermission
+                ) {
+                    *mode = if binding.spectator() {
+                        qa_core::primitives::MovementMode::Spectator
+                    } else {
+                        qa_core::primitives::MovementMode::Walk
+                    };
+                }
+            }
+        }
+        let _ = self.runtime.ensure_client_presentation_reset(client);
+    }
+
+    fn receive_server_commands(
+        &mut self,
+        client: ClientId,
+        seat: SeatId,
+        text: &[u8],
+        time: EventTime,
+    ) {
+        use crate::client_resources::startup::ServerControl;
+        for line in text.split(|&byte| byte == b'\n') {
+            let result = self.runtime.client_resources[client.0 as usize]
+                .as_mut()
+                .ok_or("missing QW CLIENT resource owner")
+                .and_then(|resources| resources.receive_server_command(line));
+            match result {
+                Ok(Some(control)) => {
+                    if matches!(control, ServerControl::Changing | ServerControl::Reconnect)
+                        && self.runtime.client_resources[client.0 as usize]
+                            .as_ref()
+                            .is_some_and(|resources| resources.receiving_download())
+                    {
+                        continue;
+                    }
+                    match control {
+                        ServerControl::Changing => self.begin_client_map_change(client),
+                        ServerControl::Reconnect => {
+                            let context = qa_console::views::Context {
+                                source: RuleSetId::QuakeWorld,
+                                seat,
+                                event_time: Some(time),
+                                client_lifetime: Some((
+                                    client,
+                                    self.runtime.server.clients[client.0 as usize].entity,
+                                )),
+                                ..Default::default()
+                            };
+                            if let Err(error) = self
+                                .console
+                                .append_registered(self.connection_commands[2], context)
+                            {
+                                let _ = self.runtime.server.events.console_formatted(format_args!(
+                                    "QW reconnect rejected: {error:?}\n"
+                                ));
+                            }
+                        }
+                        ServerControl::Skins => self.player_skin_views.request_refresh(),
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ =
+                        self.runtime.server.events.console_formatted(format_args!(
+                            "QW server command rejected: {error}\n"
+                        ));
+                }
+            }
         }
     }
 
@@ -3008,6 +3146,21 @@ impl FrameHost {
                             return std::ops::ControlFlow::Break(());
                         }
                         match incoming {
+                            Incoming::ConnectAccepted { userinfo, .. } => {
+                                signon_client = Some(id);
+                                if let Some(text) = userinfo {
+                                    let cache = &mut self.userinfo[seat.index()];
+                                    cache.entity = Some(self.runtime.server.clients[id.0 as usize].entity);
+                                    cache.revision = None;
+                                    if cache.queued.set_bytes(text).is_err() {
+                                        self.reject_client_startup(id, format_args!("accepted userinfo capacity"));
+                                        return std::ops::ControlFlow::Break(());
+                                    }
+                                }
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.startup.connected(download_protocol);
+                                }
+                            }
                             Incoming::MaxSpeed(value) => {
                                 self.runtime.prediction[seat.index()].player.movement.tuning.max_speed = Some(qa_core::primitives::MovementMagnitude::Base(value));
                             }
@@ -3047,14 +3200,7 @@ impl FrameHost {
                             }
                             Incoming::StuffText(text) => {
                                 signon_client = Some(id);
-                                let result = self.runtime.client_resources[id.0 as usize].as_mut()
-                                    .ok_or("missing QW CLIENT resource owner")
-                                    .and_then(|resources| resources.receive_stufftext(text));
-                                match result {
-                                    Ok(true) => self.player_skin_views.request_refresh(),
-                                    Ok(false) => {},
-                                    Err(error) => { let _ = self.runtime.server.events.console_formatted(format_args!("QW server command rejected: {error}\n")); }
-                                }
+                                self.receive_server_commands(id, seat, text, time);
                             }
                             Incoming::Download(chunk) => {
                                 let result = self.runtime.client_resources[id.0 as usize].as_mut()

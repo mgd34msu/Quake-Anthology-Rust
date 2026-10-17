@@ -3,7 +3,10 @@ use crate::channel::{Channel, Delivery};
 use crate::commands::{
     connection::Commands,
     packet::Protocol,
-    startup::{NqControl, read_nq_control, write_nq_control},
+    startup::{
+        NqControl, QW_CONNECT_USERINFO_BYTES, QwConnectionless, read_nq_control,
+        read_qw_connectionless, write_nq_control, write_qw_connect, write_qw_getchallenge,
+    },
 };
 pub use qa_core::sys_events::Peer;
 use qa_core::{
@@ -11,6 +14,7 @@ use qa_core::{
     loopback::Endpoint,
     primitives::ClientId,
     sys_events::EventTime,
+    text::FixedText,
 };
 use std::ops::ControlFlow;
 
@@ -20,33 +24,47 @@ pub struct Route {
     pub peer: Peer,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NqConnect {
+#[derive(Clone, Debug)]
+pub struct NativeConnect {
     submitted: u8,
     last_submission: Option<EventTime>,
+    pending_challenge: Option<i32>,
+    admitted_userinfo: Option<FixedText<QW_CONNECT_USERINFO_BYTES>>,
 }
-impl NqConnect {
+impl NativeConnect {
     pub const fn new() -> Self {
         Self {
             submitted: 0,
             last_submission: None,
+            pending_challenge: None,
+            admitted_userinfo: None,
         }
     }
 }
-impl Default for NqConnect {
+impl PartialEq for NativeConnect {
+    fn eq(&self, other: &Self) -> bool {
+        self.submitted == other.submitted
+            && self.last_submission == other.last_submission
+            && self.pending_challenge == other.pending_challenge
+            && self.admitted_userinfo.as_ref().map(FixedText::as_bytes)
+                == other.admitted_userinfo.as_ref().map(FixedText::as_bytes)
+    }
+}
+impl Eq for NativeConnect {}
+impl Default for NativeConnect {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionPhase {
-    Connecting(NqConnect),
+    Connecting(NativeConnect),
     Connected,
     Rejected,
 }
 impl ConnectionPhase {
-    pub const fn is_connected(self) -> bool {
+    pub const fn is_connected(&self) -> bool {
         matches!(self, Self::Connected)
     }
 }
@@ -101,6 +119,8 @@ pub enum BindError {
 pub enum Incoming<'a> {
     ConnectAccepted {
         port: u16,
+        /// Exact last transport-admitted QW connect info; borrowed for this call.
+        userinfo: Option<&'a [u8]>,
     },
     ConnectRejected {
         reason: &'a [u8],
@@ -263,11 +283,12 @@ impl Connections {
         if !connection.phase.is_connected()
             && (endpoint != Endpoint::Client
                 || !matches!(connection.route.peer, Peer::Socket(_))
-                || connection
-                    .commands
-                    .as_ref()
-                    .map(|commands| commands.protocol)
-                    != Some(Protocol::NetQuake15))
+                || !connection.commands.as_ref().is_some_and(|commands| {
+                    matches!(
+                        commands.protocol,
+                        Protocol::NetQuake15 | Protocol::QuakeWorld28
+                    ) && connection.channel.policy() == commands.protocol.channel()
+                }))
         {
             return Err(BindError::Route);
         }
@@ -318,18 +339,15 @@ impl Connections {
             *endpoints = [None, None];
         }
     }
-    /// Regenerate native requests from the existing row. Only admitted sends
-    /// consume one of the three attempts or start its 2500ms reply window.
+    /// Regenerate due native requests from the existing row. Only transport
+    /// admission commits attempt time or the exact pending QW userinfo receipt.
     pub fn send_connect_requests(
         &mut self,
         time: EventTime,
+        mut userinfo: impl FnMut(ClientId, Protocol, Route, &mut [u8]) -> Option<usize>,
         mut submit: impl FnMut(Route, &[u8]) -> bool,
         mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
     ) {
-        let mut bytes = [0; 12];
-        let Ok(length) = write_nq_control(NqControl::Connect, &mut bytes) else {
-            return;
-        };
         for (slot, endpoints) in self.clients.iter_mut().enumerate() {
             let Some(connection) = &mut endpoints[Endpoint::Client.index()] else {
                 continue;
@@ -337,13 +355,23 @@ impl Connections {
             let ConnectionPhase::Connecting(connect) = &mut connection.phase else {
                 continue;
             };
-            if connect
-                .last_submission
-                .is_some_and(|last| time.since(last) < EventTime::from_milliseconds(2500).0)
+            let Some(protocol) = connection
+                .commands
+                .as_ref()
+                .map(|commands| commands.protocol)
+            else {
+                continue;
+            };
+            let qw = protocol == Protocol::QuakeWorld28;
+            let interval = if qw { 5000 } else { 2500 };
+            if connect.pending_challenge.is_none()
+                && connect
+                    .last_submission
+                    .is_some_and(|last| time.since(last) < EventTime::from_milliseconds(interval).0)
             {
                 continue;
             }
-            if connect.submitted == 3 {
+            if !qw && connect.submitted == 3 {
                 connection.phase = ConnectionPhase::Rejected;
                 if consume(
                     ClientId(slot as u32),
@@ -356,8 +384,45 @@ impl Connections {
                 {
                     return;
                 }
-            } else if submit(connection.route, &bytes[..length]) {
-                connect.submitted += 1;
+                continue;
+            }
+            let mut bytes = [0; 256];
+            let mut info = [0; QW_CONNECT_USERINFO_BYTES];
+            let mut admitted = None;
+            let request = if qw {
+                if let Some(challenge) = connect.pending_challenge {
+                    let Some(length) =
+                        userinfo(ClientId(slot as u32), protocol, connection.route, &mut info)
+                            .filter(|&length| length < info.len())
+                    else {
+                        continue;
+                    };
+                    let mut receipt = FixedText::default();
+                    if receipt.set_bytes(&info[..length]).is_err() {
+                        continue;
+                    }
+                    admitted = Some(receipt);
+                    write_qw_connect(
+                        connection.channel.qport(),
+                        challenge,
+                        &info[..length],
+                        &mut bytes,
+                    )
+                } else {
+                    write_qw_getchallenge(&mut bytes)
+                }
+            } else {
+                write_nq_control(NqControl::Connect, &mut bytes)
+            };
+            let Ok(length) = request else {
+                continue;
+            };
+            if submit(connection.route, &bytes[..length]) {
+                if let Some(receipt) = admitted {
+                    connect.admitted_userinfo = Some(receipt);
+                    connect.pending_challenge = None;
+                }
+                connect.submitted = connect.submitted.saturating_add(1);
                 connect.last_submission = Some(time);
             }
         }
@@ -423,12 +488,73 @@ impl Connections {
         let Some(connection) = &self.clients[client][endpoint] else {
             return;
         };
-        match connection.phase {
+        match &connection.phase {
             ConnectionPhase::Rejected => return,
             ConnectionPhase::Connecting(connect) => {
                 // A reply is eligible only after a request actually reached
                 // transport. Its socket and full peer already matched above.
                 if connect.submitted == 0 {
+                    return;
+                }
+                if connection
+                    .commands
+                    .as_ref()
+                    .is_some_and(|commands| commands.protocol == Protocol::QuakeWorld28)
+                {
+                    let reply = match read_qw_connectionless(bytes) {
+                        Ok(reply) => reply,
+                        Err(_) => {
+                            self.malformed += 1;
+                            return;
+                        }
+                    };
+                    let Some(connection) = &mut self.clients[client][endpoint] else {
+                        return;
+                    };
+                    match reply {
+                        QwConnectionless::Challenge(challenge) => {
+                            if let ConnectionPhase::Connecting(connect) = &mut connection.phase {
+                                connect.pending_challenge = Some(challenge);
+                            }
+                        }
+                        QwConnectionless::Accepted => {
+                            if !matches!(&connection.phase, ConnectionPhase::Connecting(connect) if connect.admitted_userinfo.is_some())
+                            {
+                                return;
+                            }
+                            let Peer::Socket(address) = connection.route.peer else {
+                                return;
+                            };
+                            let previous = std::mem::replace(
+                                &mut connection.phase,
+                                ConnectionPhase::Connected,
+                            );
+                            if let ConnectionPhase::Connecting(connect) = previous {
+                                let _ = consume(
+                                    ClientId(client as u32),
+                                    Endpoint::from_index(endpoint),
+                                    Incoming::ConnectAccepted {
+                                        port: address.port(),
+                                        userinfo: connect
+                                            .admitted_userinfo
+                                            .as_ref()
+                                            .map(FixedText::as_bytes),
+                                    },
+                                );
+                            }
+                        }
+                        QwConnectionless::Print(text) => {
+                            let _ = consume(
+                                ClientId(client as u32),
+                                Endpoint::from_index(endpoint),
+                                Incoming::Print(crate::outputs::Print {
+                                    kind: qa_core::primitives::PrintKind::Console,
+                                    level: None,
+                                    text,
+                                }),
+                            );
+                        }
+                    }
                     return;
                 }
                 let control = match read_nq_control(bytes) {
@@ -469,7 +595,10 @@ impl Connections {
                         };
                         connection.route = route;
                         connection.phase = ConnectionPhase::Connected;
-                        Incoming::ConnectAccepted { port }
+                        Incoming::ConnectAccepted {
+                            port,
+                            userinfo: None,
+                        }
                     }
                     NqControl::Reject { reason } => {
                         let Some(connection) = &mut self.clients[client][endpoint] else {
@@ -495,6 +624,17 @@ impl Connections {
         let Some(connection) = &mut self.clients[client][endpoint] else {
             return;
         };
+        // Native QW connectionless replies have no sequenced ACK ownership.
+        // Late challenge/accept/print packets cannot touch the connected channel.
+        if connection.channel.endpoint() == Endpoint::Client
+            && connection
+                .commands
+                .as_ref()
+                .is_some_and(|commands| commands.protocol == Protocol::QuakeWorld28)
+            && bytes.starts_with(&[255; 4])
+        {
+            return;
+        }
         if let (Peer::Socket(bound), Peer::Socket(received)) = (&mut connection.route.peer, from) {
             bound.set_port(received.port());
         }

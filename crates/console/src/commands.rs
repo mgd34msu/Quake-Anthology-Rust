@@ -10,7 +10,7 @@ use qa_core::sys_events::{EventTime, KeySource, SeatId, key_catchers};
 use qa_core::text::FixedText;
 use qa_core::{
     names::{NameTable, NamesError, compare_folded},
-    primitives::NameId,
+    primitives::{ClientId, EntityId, NameId},
 };
 use qa_input::{BindError, Input, Target, bindings, keys};
 use std::{
@@ -40,6 +40,18 @@ pub trait Host {
     fn input_time(&self) -> EventTime;
     fn command_producer_live(&self, _producer: CommandProducer) -> bool {
         false
+    }
+    fn client_command_live(&self, _client: ClientId, _lifetime: EntityId) -> bool {
+        false
+    }
+}
+impl Context {
+    pub fn is_live(&self, host: &impl Host) -> bool {
+        self.producer
+            .is_none_or(|producer| host.command_producer_live(producer))
+            && self
+                .client_lifetime
+                .is_none_or(|(client, lifetime)| host.client_command_live(client, lifetime))
     }
 }
 #[derive(Debug)]
@@ -460,6 +472,23 @@ impl<H: Host> Console<H> {
     pub fn append_line_bytes(&mut self, text: &[u8], context: Context) -> Result<(), TextError> {
         self.buffer.append_line_bytes(text, context)
     }
+    pub fn append_registered(
+        &mut self,
+        name: NameId,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        let folded = self.cvars.names.folded(name).ok_or(CommandError::Usage)?;
+        if self
+            .command_by_name
+            .get(folded.0 as usize)
+            .is_none_or(|slot| slot.command.is_none())
+        {
+            return Err(CommandError::Usage);
+        }
+        let spelling = self.cvars.names.get(name).ok_or(CommandError::Usage)?;
+        self.buffer.append_line_bytes(spelling, context)?;
+        Ok(())
+    }
     pub fn discard_acquisition(&mut self, source: KeySource, producer: Option<CommandProducer>) {
         self.buffer.discard_acquisition(source, producer);
     }
@@ -497,6 +526,15 @@ impl<H: Host> Console<H> {
         );
         self.retain_command_names();
         result
+    }
+    fn discard_stale_context(&mut self, host: &mut H, context: Context) {
+        if let Some(producer) = context.producer
+            && !host.command_producer_live(producer)
+        {
+            let _ = self.discard_producer(host, producer);
+        }
+        self.buffer
+            .discard_contexts(|context| !context.is_live(host));
     }
     fn alias_index(&self, name: NameId, producer: Option<CommandProducer>) -> Option<usize> {
         self.aliases
@@ -610,10 +648,9 @@ impl<H: Host> Console<H> {
         if matches!(
             run.phase,
             CommandPhase::AwaitFallback | CommandPhase::AwaitExternal(_) | CommandPhase::Replied(_)
-        ) && let Some(producer) = run.context.producer
-            && !host.command_producer_live(producer)
+        ) && !run.context.is_live(host)
         {
-            let _ = self.discard_producer(host, producer);
+            self.discard_stale_context(host, run.context);
             return run.complete_command();
         }
         match run.phase {
@@ -636,13 +673,10 @@ impl<H: Host> Console<H> {
                 run.phase = CommandPhase::Done;
                 return CommandStep::Done;
             }
-            if let Some(producer) = self
-                .buffer
-                .wait_context()
-                .and_then(|context| context.producer)
-                && !host.command_producer_live(producer)
+            if let Some(context) = self.buffer.wait_context()
+                && !context.is_live(host)
             {
-                let _ = self.discard_producer(host, producer);
+                self.discard_stale_context(host, context);
                 return CommandStep::Continue;
             }
             if !self.buffer.ready() {
@@ -661,10 +695,8 @@ impl<H: Host> Console<H> {
             };
             run.executed += 1;
             run.context = context;
-            if let Some(producer) = context.producer
-                && !host.command_producer_live(producer)
-            {
-                let _ = self.discard_producer(host, producer);
+            if !context.is_live(host) {
+                self.discard_stale_context(host, context);
                 return CommandStep::Continue;
             }
             if let Err(error) = result {
@@ -675,10 +707,8 @@ impl<H: Host> Console<H> {
             context
         } else {
             run.executed += 1;
-            if let Some(producer) = run.context.producer
-                && !host.command_producer_live(producer)
-            {
-                let _ = self.discard_producer(host, producer);
+            if !run.context.is_live(host) {
+                self.discard_stale_context(host, run.context);
                 return run.complete_command();
             }
             run.context

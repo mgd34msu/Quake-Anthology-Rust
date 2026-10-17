@@ -234,6 +234,9 @@ impl SnapshotBinding {
         }
         self.reset_received();
     }
+    pub(crate) fn begin_map_change(&mut self) {
+        self.reset_received();
+    }
     fn reset_received(&mut self) {
         self.view_entity_override = None;
         if let Some(client) = self.presentation.as_mut() {

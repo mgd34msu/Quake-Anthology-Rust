@@ -92,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 key_source: None,
                 producer: None,
+                client_lifetime: None,
                 client_policy: None,
             };
             let detail = (header[3] != 0).then_some(detail.as_str());
