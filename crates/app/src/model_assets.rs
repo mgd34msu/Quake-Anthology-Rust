@@ -37,6 +37,9 @@ use qa_render::{
 };
 use std::sync::Arc;
 
+mod sources;
+use sources::{ModelSourceId, ModelSources};
+
 #[cfg(test)]
 #[path = "../tests/unit/renderer_registrations.rs"]
 mod registration_tests;
@@ -906,7 +909,7 @@ enum RegistrationRollback {
 }
 #[derive(Clone)]
 enum SkinSource {
-    AliasModel(NameId),
+    AliasModel(ModelSourceId),
     Script(Arc<[u8]>),
     Indexed {
         layout: IndexedSkinLayout,
@@ -1048,7 +1051,7 @@ enum ModelFile {
 enum ModelLodSlot {
     Missing,
     Invalid,
-    Source(NameId),
+    Source(ModelSourceId),
     Alias(u8),
 }
 #[derive(Clone, Copy)]
@@ -1058,7 +1061,7 @@ struct ModelLods {
     supports_lods: bool,
 }
 impl ModelLods {
-    fn source(self, mut slot: usize) -> Option<NameId> {
+    fn source(self, mut slot: usize) -> Option<ModelSourceId> {
         for _ in 0..self.slots.len() {
             match *self.slots.get(slot)? {
                 ModelLodSlot::Source(name) => return Some(name),
@@ -1079,7 +1082,7 @@ struct Md5Source {
 }
 #[derive(Clone)]
 struct ReplacementSource {
-    source: NameId,
+    source: ModelSourceId,
     skins: Arc<[Box<[NameId]>]>,
 }
 #[derive(Clone)]
@@ -1158,10 +1161,10 @@ struct TaggedOrientation {
     orientation: Orientation,
 }
 impl ModelFile {
-    fn bounds(&self, sources: &[ModelSourceFile]) -> Option<Bounds> {
+    fn bounds(&self, sources: &ModelSources) -> Option<Bounds> {
         match self {
             Self::Ready { lods, .. } => sources
-                .get(lods.source(0)?.0 as usize)?
+                .get(lods.source(0)?)?
                 .metadata()
                 .map(|metadata| metadata.bounds),
             Self::LoadedWorld { bounds, .. } => Some(*bounds),
@@ -1345,7 +1348,7 @@ pub struct ModelCatalog {
     reader: ArchiveReader,
     names: NameTable,
     files: Vec<ModelFile>,
-    sources: Vec<ModelSourceFile>,
+    sources: ModelSources,
     models: Vec<Vec<usize>>,
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
@@ -1515,7 +1518,7 @@ struct RegistrationCheckpoint {
     worlds: usize,
     inline_count: usize,
     files: Vec<ModelCheckpoint>,
-    sources: Vec<ModelSourceFile>,
+    sources: ModelSources,
     shader_indices: Vec<(NameId, Option<u32>)>,
     shaders_before: Vec<ShaderCheckpoint>,
     skins_before: Vec<SkinCheckpoint>,
@@ -2135,21 +2138,9 @@ impl RegistrationCheckpoint {
         owner.assets.discard_registration_suffix(self.assets)?;
         owner.palettes.restore(self.palettes);
         let catalog = &mut owner.catalog;
-        if matches!(mode, RegistrationRollback::Retry) {
-            catalog.sources = self.sources;
-            catalog
-                .sources
-                .resize(catalog.names.len(), ModelSourceFile::Empty);
-        } else {
-            for (source, previous) in catalog.sources.iter_mut().zip(self.sources) {
-                if !matches!(previous, ModelSourceFile::Empty) {
-                    *source = previous;
-                }
-            }
-            for source in &mut catalog.sources {
-                source.rollback_resources(self.assets, self.tags);
-            }
-        }
+        catalog
+            .sources
+            .rollback(self.sources, mode, self.assets, self.tags);
         catalog.bindings.truncate(self.bindings);
         catalog.surfaces.truncate(self.surfaces);
         catalog.tags.truncate(self.tags);
@@ -2446,13 +2437,7 @@ impl ModelAssets {
             self.catalog.files[name.0 as usize] = ModelFile::Empty;
             changed = true;
         }
-        if matches!(
-            self.catalog.sources[name.0 as usize],
-            ModelSourceFile::Invalid { .. }
-        ) {
-            self.catalog.sources[name.0 as usize] = ModelSourceFile::Empty;
-            changed = true;
-        }
+        changed |= self.catalog.sources.invalidate(name);
         for &index in &self.catalog.models[name.0 as usize] {
             let state = &mut self.catalog.registrations[index].state;
             if matches!(state, RegistrationState::Failed(_)) {
@@ -3148,7 +3133,7 @@ impl ModelAssets {
                 reader: ArchiveReader::default(),
                 names,
                 files: vec![ModelFile::Empty],
-                sources: vec![ModelSourceFile::Empty],
+                sources: ModelSources::default(),
                 models: vec![Vec::new()],
                 shader_indices: vec![None],
                 shaders: Vec::new(),
@@ -3989,7 +3974,6 @@ impl ModelAssets {
             .map_err(|_| CallError::Capacity)?;
         if self.catalog.names.len() != previous {
             self.catalog.files.push(ModelFile::Empty);
-            self.catalog.sources.push(ModelSourceFile::Empty);
             self.catalog.models.push(Vec::new());
             self.catalog.shader_indices.push(None);
             self.catalog.skin_indices.push(None);
@@ -4196,15 +4180,12 @@ impl ModelAssets {
         ))
     }
 
-    fn cached_model_source(&self, path: &[u8]) -> Option<NameId> {
+    fn cached_model_source(&self, path: &[u8]) -> Option<ModelSourceId> {
         let name = self.catalog.names.find_path_bytes(path)?;
-        (!matches!(
-            self.catalog.sources.get(name.0 as usize)?,
-            ModelSourceFile::Empty
-        ))
-        .then_some(name)
+        let source = self.catalog.sources.find(name)?;
+        (!matches!(self.catalog.sources[source], ModelSourceFile::Empty)).then_some(source)
     }
-    fn model_source(&mut self, vfs: &Vfs, path: &str) -> Result<Option<NameId>, FileError> {
+    fn model_source(&mut self, vfs: &Vfs, path: &str) -> Result<Option<ModelSourceId>, FileError> {
         if let Some(name) = self.cached_model_source(path.as_bytes()) {
             return Ok(Some(name));
         }
@@ -4220,11 +4201,12 @@ impl ModelAssets {
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model source name capacity"))?;
+        let name = self.catalog.sources.intern(name)?;
         let bytes = self.model_bytes_at(vfs, path, &reference)?;
         let model = match Model::parse(&bytes) {
             Ok(model) => model,
             Err(error) => {
-                self.catalog.sources[name.0 as usize] = ModelSourceFile::Invalid {
+                self.catalog.sources[name] = ModelSourceFile::Invalid {
                     supports_lods: bytes.starts_with(b"IDP3") || bytes.starts_with(b"IDPC"),
                     error: FileError {
                         kind: CallError::File,
@@ -4238,7 +4220,7 @@ impl ModelAssets {
             match self.md5_source(vfs, path, &model) {
                 Ok((skeletal, bounds, radii)) => (Some(skeletal), bounds, radii),
                 Err(error) => {
-                    self.catalog.sources[name.0 as usize] = ModelSourceFile::Invalid {
+                    self.catalog.sources[name] = ModelSourceFile::Invalid {
                         supports_lods: false,
                         error,
                     };
@@ -4310,7 +4292,7 @@ impl ModelAssets {
             .map(|image| retained_model_span(&bytes, image))
             .collect::<Result<Arc<[_]>, FileError>>()?;
         drop(model);
-        self.catalog.sources[name.0 as usize] = ModelSourceFile::Ready {
+        self.catalog.sources[name] = ModelSourceFile::Ready {
             bytes,
             precedence,
             metadata,
@@ -4347,7 +4329,7 @@ impl ModelAssets {
             };
             name
         };
-        match &self.catalog.sources[name.0 as usize] {
+        match &self.catalog.sources[name] {
             ModelSourceFile::Ready {
                 bytes,
                 source_images,
@@ -4370,7 +4352,7 @@ impl ModelAssets {
                     kind: CallError::File,
                     message: format!("missing model {path}"),
                 })?;
-                match &self.catalog.sources[name.0 as usize] {
+                match &self.catalog.sources[name] {
                     ModelSourceFile::Ready { metadata, .. } if supports_lods(metadata.format) => {
                         if metadata.format == ModelFormat::Mdc {
                             "mdc"
@@ -4422,7 +4404,7 @@ impl ModelAssets {
             let Some(name) = name else {
                 continue;
             };
-            match &self.catalog.sources[name.0 as usize] {
+            match &self.catalog.sources[name] {
                 ModelSourceFile::Ready { metadata, .. } if supports_lods(metadata.format) => {
                     lods.slots[slot] = ModelLodSlot::Source(name);
                     lods.native_count += 1;
@@ -4447,7 +4429,7 @@ impl ModelAssets {
                         kind: CallError::File,
                         message: format!(
                             "unknown vertex model identifier: {}",
-                            self.catalog.name(name).unwrap_or(&filename)
+                            self.catalog.source_name(name).unwrap_or(&filename)
                         ),
                     });
                 }
@@ -4462,14 +4444,18 @@ impl ModelAssets {
         Ok(lods)
     }
 
-    fn replacement_source(&mut self, vfs: &Vfs, source: NameId) -> Option<ReplacementSource> {
+    fn replacement_source(
+        &mut self,
+        vfs: &Vfs,
+        source: ModelSourceId,
+    ) -> Option<ReplacementSource> {
         let ModelSourceFile::Ready {
             bytes,
             metadata,
             precedence,
             replacement,
             ..
-        } = &self.catalog.sources[source.0 as usize]
+        } = &self.catalog.sources[source]
         else {
             return None;
         };
@@ -4491,7 +4477,7 @@ impl ModelAssets {
                 Model::parse(&bytes).map_err(|error| format!("replacement source: {error:?}"))?;
             let path = self
                 .catalog
-                .name(source)
+                .source_name(source)
                 .ok_or("replacement source name")?
                 .to_owned();
             let stem = file_stem(&path);
@@ -4514,9 +4500,9 @@ impl ModelAssets {
                 precedence: candidate_rank,
                 metadata,
                 ..
-            } = &self.catalog.sources[candidate.0 as usize]
+            } = &self.catalog.sources[candidate]
             else {
-                return Err(match &self.catalog.sources[candidate.0 as usize] {
+                return Err(match &self.catalog.sources[candidate] {
                     ModelSourceFile::Invalid { error, .. } => error.message.clone(),
                     _ => "replacement source unavailable".to_owned(),
                 });
@@ -4593,7 +4579,7 @@ impl ModelAssets {
         if let ModelSourceFile::Ready {
             replacement: current,
             ..
-        } = &mut self.catalog.sources[source.0 as usize]
+        } = &mut self.catalog.sources[source]
         {
             *current = replacement;
         }
@@ -4700,7 +4686,7 @@ impl ModelAssets {
             .source(0)
             .and_then(|source| self.replacement_source(vfs, source));
         let replacement_frames = replacement.as_ref().and_then(|replacement| {
-            let original = &self.catalog.sources[lods.source(0)?.0 as usize];
+            let original = &self.catalog.sources[lods.source(0)?];
             let ModelSourceFile::Ready {
                 metadata,
                 radii,
@@ -4719,7 +4705,7 @@ impl ModelAssets {
             let ModelSourceFile::Ready {
                 skeletal: Some(skeletal),
                 ..
-            } = &self.catalog.sources[replacement.source.0 as usize]
+            } = &self.catalog.sources[replacement.source]
             else {
                 return None;
             };
@@ -4746,7 +4732,7 @@ impl ModelAssets {
                     animation,
                     skeletal,
                     ..
-                } = &self.catalog.sources[source.0 as usize]
+                } = &self.catalog.sources[source]
                 else {
                     return Err(FileError::capacity("model source unavailable"));
                 };
@@ -4788,7 +4774,7 @@ impl ModelAssets {
                 };
                 if model.tags_per_frame != 0
                     && matches!(
-                        self.catalog.sources[source.0 as usize],
+                        self.catalog.sources[source],
                         ModelSourceFile::Ready { tags: None, .. }
                     )
                 {
@@ -4798,9 +4784,7 @@ impl ModelAssets {
                             return Err(FileError::file(message));
                         }
                     };
-                    if let ModelSourceFile::Ready { tags, .. } =
-                        &mut self.catalog.sources[source.0 as usize]
-                    {
+                    if let ModelSourceFile::Ready { tags, .. } = &mut self.catalog.sources[source] {
                         *tags = restored;
                     }
                 }
@@ -4821,7 +4805,7 @@ impl ModelAssets {
                 Err(error) if slot == 3 => {
                     if let Some(native) = lods.source(0)
                         && let ModelSourceFile::Ready { replacement, .. } =
-                            &mut self.catalog.sources[native.0 as usize]
+                            &mut self.catalog.sources[native]
                     {
                         *replacement = ReplacementState::Unavailable(Some(error.message));
                     }
@@ -4832,7 +4816,7 @@ impl ModelAssets {
         if inputs.iter().any(|input| {
             let source = input.1;
             input.7.is_none()
-                && self.catalog.sources[source.0 as usize]
+                && self.catalog.sources[source]
                     .metadata()
                     .is_some_and(|metadata| named_model_shaders(metadata.format))
         }) {
@@ -4876,7 +4860,7 @@ impl ModelAssets {
                 && let ModelSourceFile::Ready {
                     replacement: ReplacementState::Unavailable(Some(error)),
                     ..
-                } = &self.catalog.sources[source.0 as usize]
+                } = &self.catalog.sources[source]
             {
                 self.catalog.diagnostics.push(ModelDiagnostic {
                     name,
@@ -4886,7 +4870,7 @@ impl ModelAssets {
             }
             let indexed_palette = if entry.profile.source_palette.is_none()
                 && inputs.iter().any(|(_, source, ..)| {
-                    self.catalog.sources[source.0 as usize]
+                    self.catalog.sources[*source]
                         .metadata()
                         .is_some_and(|metadata| {
                             matches!(metadata.format, ModelFormat::Mdl | ModelFormat::Spr)
@@ -4939,9 +4923,7 @@ impl ModelAssets {
                                     skeletal.as_ref().map(|source| &source.skeleton),
                                     replacement_skins.as_deref(),
                                     lods.source(0)
-                                        .and_then(|source| {
-                                            self.catalog.sources[source.0 as usize].metadata()
-                                        })
+                                        .and_then(|source| self.catalog.sources[source].metadata())
                                         .is_some_and(|metadata| {
                                             metadata.format == ModelFormat::Md2
                                         }),
@@ -5027,23 +5009,21 @@ impl ModelAssets {
                                 },
                                 wrap_skins: slot != 3 && lods.supports_lods,
                                 sprite_frames: !lods.supports_lods
-                                    && self.catalog.sources[inputs[0].1.0 as usize]
-                                        .metadata()
-                                        .is_some_and(|metadata| {
+                                    && self.catalog.sources[inputs[0].1].metadata().is_some_and(
+                                        |metadata| {
                                             matches!(
                                                 metadata.format,
                                                 ModelFormat::Spr | ModelFormat::Sp2
                                             )
-                                        }),
+                                        },
+                                    ),
                             });
                             self.catalog.bindings.extend(skins);
                         }
                         if slot == 3 {
                             let native_format = lods
                                 .source(0)
-                                .and_then(|source| {
-                                    self.catalog.sources[source.0 as usize].metadata()
-                                })
+                                .and_then(|source| self.catalog.sources[source].metadata())
                                 .ok_or_else(|| FileError::capacity("replacement source metadata"))?
                                 .format;
                             let rules = match native_format {
@@ -5099,7 +5079,7 @@ impl ModelAssets {
         for (_, source, _, _, meshes, _, _, _) in inputs {
             if let ModelSourceFile::Ready {
                 meshes: current, ..
-            } = &mut self.catalog.sources[source.0 as usize]
+            } = &mut self.catalog.sources[source]
             {
                 *current = meshes;
             }
@@ -6036,7 +6016,7 @@ impl ModelAssets {
             indexed_skins,
             replacement,
             ..
-        } = &self.catalog.sources[source_name.0 as usize]
+        } = &self.catalog.sources[source_name]
         else {
             return Err("model colors require native indexed MDL skins".to_owned());
         };
@@ -6718,22 +6698,22 @@ fn renderer_file(
         _ => None,
     }
 }
-fn model_bounds(files: &[ModelFile], sources: &[ModelSourceFile], handle: i32) -> Option<Bounds> {
+fn model_bounds(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Option<Bounds> {
     match renderer_file(files, handle, None)? {
         ModelFile::Ready { lods, .. } => Some(
             lods.source(0)
-                .and_then(|source| sources.get(source.0 as usize))
+                .and_then(|source| sources.get(source))
                 .and_then(ModelSourceFile::metadata)
                 .map_or_else(Bounds::default, |metadata| metadata.renderer_bounds),
         ),
         file => file.bounds(sources),
     }
 }
-fn model_tags(files: &[ModelFile], sources: &[ModelSourceFile], handle: i32) -> Option<TagLayout> {
+fn model_tags(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Option<TagLayout> {
     let ModelFile::Ready { lods, .. } = renderer_file(files, handle, None)? else {
         return None;
     };
-    match sources.get(lods.source(0)?.0 as usize)? {
+    match sources.get(lods.source(0)?)? {
         ModelSourceFile::Ready { tags, .. } => *tags,
         _ => None,
     }
@@ -6741,7 +6721,7 @@ fn model_tags(files: &[ModelFile], sources: &[ModelSourceFile], handle: i32) -> 
 fn lerp_tag(
     names: &NameTable,
     files: &[ModelFile],
-    sources: &[ModelSourceFile],
+    sources: &ModelSources,
     tags: &[TaggedOrientation],
     handle: i32,
     start: i32,
@@ -6902,7 +6882,7 @@ impl ModelCatalog {
                 };
                 let groups = lods
                     .source(0)
-                    .and_then(|source| self.sources.get(source.0 as usize))
+                    .and_then(|source| self.sources.get(source))
                     .and_then(|source| match source {
                         ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
                         _ => None,
@@ -6973,7 +6953,7 @@ impl ModelCatalog {
         let sync = match self.files.get(row.file.0 as usize)? {
             ModelFile::Ready { lods, .. } => lods
                 .source(0)
-                .and_then(|source| self.sources.get(source.0 as usize))
+                .and_then(|source| self.sources.get(source))
                 .and_then(|source| match source {
                     ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
                     _ => None,
@@ -7315,9 +7295,7 @@ impl ModelCatalog {
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
         match file_lookup(&self.names, &self.files, path)? {
-            ModelFile::Ready { lods, .. } => {
-                self.sources.get(lods.source(0)?.0 as usize)?.metadata()
-            }
+            ModelFile::Ready { lods, .. } => self.sources.get(lods.source(0)?)?.metadata(),
             ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
         }
     }
@@ -7371,7 +7349,7 @@ impl ModelCatalog {
         let ModelFile::Ready { lods, .. } = self.files.get(row.file.0 as usize)? else {
             return None;
         };
-        match self.sources.get(lods.source(0)?.0 as usize)? {
+        match self.sources.get(lods.source(0)?)? {
             ModelSourceFile::Ready {
                 skin_extent: Some(extent),
                 ..
@@ -7494,6 +7472,9 @@ impl ModelCatalog {
             })
             .map(|index| ModelRegistrationId(index as u32))
     }
+    fn source_name(&self, source: ModelSourceId) -> Option<&str> {
+        self.name(self.sources.name(source)?)
+    }
     pub fn name(&self, name: NameId) -> Option<&str> {
         std::str::from_utf8(self.names.get(name)?).ok()
     }
@@ -7521,7 +7502,7 @@ impl ModelCatalog {
         };
         let radii = lods
             .source(0)
-            .and_then(|source| self.sources.get(source.0 as usize))
+            .and_then(|source| self.sources.get(source))
             .and_then(|source| match source {
                 ModelSourceFile::Ready { radii, .. } => Some(radii.as_ref()),
                 _ => None,
@@ -7591,7 +7572,7 @@ impl ModelCatalog {
         {
             ModelFile::Ready { lods, .. } => lods
                 .source(if slot == 3 { 0 } else { slot })
-                .and_then(|source| self.sources.get(source.0 as usize))
+                .and_then(|source| self.sources.get(source))
                 .and_then(|source| match source {
                     ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
                     _ => None,

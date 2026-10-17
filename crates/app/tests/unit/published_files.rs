@@ -54,8 +54,8 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
         .names
         .find_path_bytes(b"models/later.md2")
         .unwrap();
-    let ready_name = NameId(ready as u32);
-    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[ready_name.0 as usize] else {
+    let ready_name = owner.cached_model_source(b"models/ready.md2").unwrap();
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[ready_name] else {
         panic!("retained ready source");
     };
     let ready_source = Arc::clone(bytes);
@@ -179,7 +179,7 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             .model,
         ready_mesh
     );
-    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[ready_name.0 as usize] else {
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[ready_name] else {
         panic!("retained ready source");
     };
     assert!(Arc::ptr_eq(bytes, &ready_source));
@@ -378,7 +378,8 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
         panic!("generated missing image");
     };
     let missing_rgba = owner.assets.image(missing_image).unwrap().rgba.to_vec();
-    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[handle as usize] else {
+    let retained_id = owner.cached_model_source(b"models/test/tris.md2").unwrap();
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[retained_id] else {
         panic!("retained MD2 source");
     };
     let source = Arc::clone(bytes);
@@ -485,7 +486,7 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
         owner.assets.image(missing_image).unwrap().rgba.as_ref(),
         missing_rgba
     );
-    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[handle as usize] else {
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[retained_id] else {
         panic!("retained MD2 source");
     };
     assert!(Arc::ptr_eq(bytes, &source));

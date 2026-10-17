@@ -292,7 +292,7 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
         panic!()
     };
     let source = lods.source(0).unwrap();
-    let (raw, spans) = match &owner.catalog.sources[source.0 as usize] {
+    let (raw, spans) = match &owner.catalog.sources[source] {
         ModelSourceFile::Ready {
             bytes,
             indexed_skins,
@@ -415,7 +415,7 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
             bytes,
             indexed_skins,
             ..
-        } = &owner.catalog.sources[source.0 as usize]
+        } = &owner.catalog.sources[source]
         else {
             panic!()
         };
