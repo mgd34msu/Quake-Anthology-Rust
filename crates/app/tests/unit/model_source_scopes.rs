@@ -476,3 +476,113 @@ fn image_policy_sharing_keeps_source_selection_independent_of_presentation() {
         assert_eq!(&assets.image(image).unwrap().rgba[..4], &expected);
     }
 }
+
+#[test]
+fn retained_model_records_compile_and_paint_their_own_source_images() {
+    let model = support::md3_named_surfaces(&[(b"body", &[b"textures/body"])]);
+    let script = b"textures/body { cull none { map textures/pic.tga rgbGen identity } }";
+    let mut files = support::Fixture::new(&[
+        ("models/player.md3", model.clone()),
+        ("scripts/player.shader", script.to_vec()),
+        (
+            "textures/pic.tga",
+            support::tga(4, 4, &[[255, 0, 0, 255]; 16]),
+        ),
+    ]);
+    let high = support::Fixture::new(&[
+        ("models/player.md3", model),
+        ("scripts/player.shader", script.to_vec()),
+        (
+            "textures/pic.tga",
+            support::tga(4, 4, &[[0, 0, 255, 255]; 16]),
+        ),
+    ]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let name = owner.admit_name(b"models/player.md3").unwrap();
+    let mut records = Vec::new();
+    for (view, expected) in [(&low, [255, 0, 0, 255]), (&high, [0, 0, 255, 255])] {
+        let file = owner
+            .catalog
+            .files
+            .admit(Some((name, view.clone())))
+            .unwrap();
+        owner
+            .ensure_file_record(&files.vfs, file, Some(profile), false)
+            .map_err(|error| error.message)
+            .unwrap();
+        records.push((file, expected));
+    }
+    let default_model = owner
+        .register_model(&files.vfs, b"models/player.md3", RuleSetId::Quake3)
+        .unwrap();
+    assert!(
+        records
+            .iter()
+            .all(|(file, _)| file.0 as i32 != default_model)
+    );
+    let default_shader = owner
+        .register_shader(
+            &files.vfs,
+            b"textures/body",
+            RuleSetId::Quake3,
+            true,
+            ShaderLighting::TwoDimensional,
+        )
+        .unwrap();
+    assert_eq!(owner.catalog.profiles().collect::<Vec<_>>(), [profile]);
+    let counts = owner.assets.counts();
+    files.vfs.take_lookup_count();
+    for &(file, _) in &records {
+        owner
+            .ensure_file_record(&files.vfs, file, Some(profile), false)
+            .map_err(|error| error.message)
+            .unwrap();
+    }
+    assert_eq!(files.vfs.take_lookup_count(), 0);
+    assert_eq!(owner.assets.counts(), counts);
+    records.push((ModelFileId(default_model as u32), [0, 0, 255, 255]));
+    let (owner, mut cpu) = super::registration_tests::publish(owner);
+    for (file, expected) in records {
+        let registration = owner
+            .catalog
+            .renderer_registration(file.0 as i32, profile)
+            .unwrap();
+        let binding = owner
+            .catalog
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .next()
+            .unwrap();
+        let pixels =
+            super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding.shader);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected)),
+            "selected model source image {expected:?}"
+        );
+    }
+    let shader = owner
+        .catalog
+        .shader_binding(default_shader, profile)
+        .unwrap();
+    let pixels = super::registration_tests::paint_shader(&mut cpu, owner.assets(), shader);
+    assert!(
+        pixels
+            .iter()
+            .all(|pixel| *pixel == u32::from_le_bytes([0, 0, 255, 255]))
+    );
+}

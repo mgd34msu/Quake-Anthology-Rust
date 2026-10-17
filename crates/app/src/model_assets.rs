@@ -124,6 +124,16 @@ impl RegistrationVariant {
     }
 }
 
+fn image_profile_index(
+    profiles: &[ProfileImages],
+    profile: ModelProfile,
+    source: &SearchView,
+) -> Option<usize> {
+    profiles
+        .iter()
+        .position(|entry| entry.profile == profile && entry.source.same_selection(source))
+}
+
 fn with_image_owner<T>(
     profiles: &mut [ProfileImages],
     index: usize,
@@ -2364,11 +2374,12 @@ impl ModelAssets {
                     .file_name(entry.file)
                     .ok_or("model filename")?
                     .to_owned();
-                let image_index = self
+                let source = self
                     .catalog
-                    .profiles
-                    .iter()
-                    .position(|images| images.profile == profile)
+                    .files
+                    .source_view(self.catalog.registrations[registration].file)
+                    .ok_or("model image source")?;
+                let image_index = image_profile_index(&self.catalog.profiles, profile, source)
                     .ok_or("model image profile")?;
                 let (variants, receipt) =
                     with_image_owner(&mut self.catalog.profiles, image_index, |owner| {
@@ -2613,12 +2624,12 @@ impl ModelAssets {
     ) -> Result<T, String> {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
-        let index = self
-            .catalog
-            .profiles
-            .iter()
-            .position(|entry| entry.profile == profile)
-            .ok_or("graphic profile unavailable")?;
+        let index = image_profile_index(
+            &self.catalog.profiles,
+            profile,
+            &self.catalog.registration_vfs,
+        )
+        .ok_or("graphic profile unavailable")?;
         with_image_owner(&mut self.catalog.profiles, index, |images| {
             images.with_images(vfs, &mut self.assets, compile)
         })
@@ -2631,16 +2642,75 @@ impl ModelAssets {
             .native_default
             .map(|(id, _)| id)
     }
+    fn append_image_policy(
+        &mut self,
+        profile: ModelProfile,
+        source: SearchView,
+    ) -> Result<Option<qa_render::assets::PreparedPaletteTranslucency>, String> {
+        let maximum = self
+            .catalog
+            .limits
+            .models
+            .checked_add(1)
+            .and_then(|views| views.checked_mul(self.catalog.limits.models))
+            .filter(|&count| count <= u32::MAX as usize)
+            .ok_or("image source policy capacity")?;
+        if self.catalog.profiles.len() >= maximum {
+            return Err("image source policy capacity".to_owned());
+        }
+        self.catalog
+            .profiles
+            .try_reserve(1)
+            .map_err(|_| "image source policy capacity")?;
+        let (images, blend) =
+            ProfileImages::new(profile, source, &self.catalog.profiles, &mut self.assets)?;
+        if let Some(Err(error)) = &images.state {
+            return Err(error.clone());
+        }
+        self.catalog.profiles.push(images);
+        Ok(blend)
+    }
+
+    fn ensure_source_profiles(
+        &mut self,
+        source: &SearchView,
+        selected: Option<ModelProfile>,
+    ) -> Result<(), FileError> {
+        let previous = self.catalog.profiles.len();
+        for index in 0..previous {
+            let profile = self.catalog.profiles[index].profile;
+            if selected.is_some_and(|selected| selected != profile)
+                || self.catalog.profiles[..index]
+                    .iter()
+                    .any(|entry| entry.profile == profile)
+                || image_profile_index(&self.catalog.profiles, profile, source).is_some()
+            {
+                continue;
+            }
+            if let Some(blend) = self
+                .append_image_policy(profile, source.clone())
+                .map_err(FileError::file)?
+            {
+                self.assets.install_palette_translucency(blend);
+            }
+        }
+        Ok(())
+    }
+
     fn append_profile(
         &mut self,
         profile: ModelProfile,
     ) -> Result<Option<qa_render::assets::PreparedPaletteTranslucency>, String> {
+        if !self.catalog.profiles().any(|current| current == profile)
+            && self.catalog.profiles().count() >= self.catalog.limits.models
+        {
+            return Err("model profile capacity".to_owned());
+        }
         let count = self
             .catalog
             .profiles
             .len()
             .checked_add(1)
-            .filter(|&count| count <= self.catalog.limits.models)
             .ok_or("model profile capacity")?;
         let maximum = self
             .catalog
@@ -2679,15 +2749,7 @@ impl ModelAssets {
             .checked_add(self.catalog.shaders.len())
             .filter(|&count| count <= shader_maximum)
             .ok_or("shader registration capacity")?;
-        let (images, blend) = ProfileImages::new(
-            profile,
-            self.catalog.registration_vfs.clone(),
-            &self.catalog.profiles,
-            &mut self.assets,
-        )?;
-        if let Some(Err(error)) = &images.state {
-            return Err(error.clone());
-        }
+        let blend = self.append_image_policy(profile, self.catalog.registration_vfs.clone())?;
         for (name, file, rows) in self.catalog.files.entries_mut() {
             if rows.is_empty() && !matches!(file, ModelFile::Ready { .. }) {
                 continue;
@@ -2719,7 +2781,6 @@ impl ModelAssets {
                 reserved: None,
             });
         }
-        self.catalog.profiles.push(images);
         self.catalog.capacity.registrations = self.catalog.registrations.len();
         Ok(blend)
     }
@@ -4691,11 +4752,24 @@ impl ModelAssets {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
+        let source_view = self.catalog.files.source_view(name).cloned();
+        if matches!(
+            self.catalog.files[name],
+            ModelFile::Empty | ModelFile::Ready { .. }
+        ) && let Some(source) = &source_view
+        {
+            self.ensure_source_profiles(source, selected)?;
+        }
         let file = &self.catalog.files[name];
         let unattempted = !self
             .catalog
             .profiles
             .iter()
+            .filter(|images| {
+                source_view
+                    .as_ref()
+                    .is_none_or(|source| images.source.same_selection(source))
+            })
             .filter(|images| selected.is_none_or(|profile| images.profile == profile))
             .all(|images| {
                 self.catalog.files.rows(name).iter().any(|&row| {
@@ -4740,15 +4814,16 @@ impl ModelAssets {
             .name(file_name)
             .ok_or_else(|| FileError::capacity("model file name encoding"))?
             .to_owned();
-        let source_view = self
-            .catalog
-            .files
-            .source_view(name)
-            .ok_or_else(|| FileError::capacity("model source selection"))?
-            .clone();
+        let source_view =
+            source_view.ok_or_else(|| FileError::capacity("model source selection"))?;
         let mut rows = self.catalog.files.rows(name).clone();
         let fresh_profiles = rows.is_empty();
-        for images in &self.catalog.profiles {
+        for images in self
+            .catalog
+            .profiles
+            .iter()
+            .filter(|images| images.source.same_selection(&source_view))
+        {
             if !rows.iter().any(|&row| {
                 let row = &self.catalog.registrations[row];
                 row.profile == images.profile
@@ -4947,13 +5022,13 @@ impl ModelAssets {
             _ => 0,
         };
         for &row in &rows {
+            let profile_index = image_profile_index(
+                &self.catalog.profiles,
+                self.catalog.registrations[row].profile,
+                &source_view,
+            )
+            .ok_or_else(|| FileError::capacity("model profile"))?;
             let entry = &mut self.catalog.registrations[row];
-            let profile_index = self
-                .catalog
-                .profiles
-                .iter()
-                .position(|images| images.profile == entry.profile)
-                .ok_or_else(|| FileError::capacity("model profile"))?;
             if !entry.state.pending()
                 || entry.vertex_collapse
                     != entry
@@ -5502,7 +5577,15 @@ impl ModelAssets {
                     .catalog
                     .shader_bindings
                     .len()
-                    .checked_add(self.catalog.profiles.len())
+                    .checked_add(
+                        self.catalog
+                            .profiles
+                            .iter()
+                            .filter(|images| {
+                                images.source.same_selection(&self.catalog.registration_vfs)
+                            })
+                            .count(),
+                    )
                     .filter(|&n| n <= maximum)
                     .ok_or(CallError::Capacity)?;
                 if self.catalog.shaders.len() >= self.catalog.limits.models
@@ -5519,10 +5602,14 @@ impl ModelAssets {
                     profiles: (self.catalog.shader_bindings.len()..next).collect(),
                     first_request_rows: [None; 5],
                 });
-                self.catalog
-                    .shader_bindings
-                    .extend(self.catalog.profiles.iter().map(|images| {
-                        ShaderProfileBinding {
+                self.catalog.shader_bindings.extend(
+                    self.catalog
+                        .profiles
+                        .iter()
+                        .filter(|images| {
+                            images.source.same_selection(&self.catalog.registration_vfs)
+                        })
+                        .map(|images| ShaderProfileBinding {
                             vertex_collapse: images
                                 .profile
                                 .finish
@@ -5532,13 +5619,18 @@ impl ModelAssets {
                             lighting: ShaderLighting::TwoDimensional,
                             request: None,
                             state: RegistrationState::Unattempted,
-                        }
-                    }));
+                        }),
+                );
                 index
             }
         };
         {
-            for images in &self.catalog.profiles {
+            for images in self
+                .catalog
+                .profiles
+                .iter()
+                .filter(|images| images.source.same_selection(&self.catalog.registration_vfs))
+            {
                 if matches_profile(images.profile)
                     && !self.catalog.shaders[index].profiles.iter().any(|&row| {
                         let binding = &self.catalog.shader_bindings[row];
@@ -5648,12 +5740,12 @@ impl ModelAssets {
                 };
                 continue;
             }
-            let image_index = self
-                .catalog
-                .profiles
-                .iter()
-                .position(|images| images.profile == binding.profile)
-                .ok_or(CallError::Aborted)?;
+            let image_index = image_profile_index(
+                &self.catalog.profiles,
+                binding.profile,
+                &self.catalog.registration_vfs,
+            )
+            .ok_or(CallError::Aborted)?;
             let compiled = with_image_owner(&mut self.catalog.profiles, image_index, |images| {
                 images.compile(
                     vfs,
@@ -5779,6 +5871,7 @@ impl ModelAssets {
                 .catalog
                 .profiles
                 .iter()
+                .filter(|images| images.source.same_selection(&self.catalog.registration_vfs))
                 .map(|images| SkinProfile {
                     request: SkinRequest::Named,
                     profile: images.profile,
@@ -6018,14 +6111,12 @@ impl ModelAssets {
         ui_fullscreen: bool,
         request: IndexedSkinRequest,
     ) -> Result<SkinSelection, IndexedSkinError> {
-        let image_index = self
-            .catalog
-            .profiles
-            .iter()
-            .position(|entry| entry.profile == profile)
-            .ok_or_else(|| {
-                IndexedSkinError::Rejected("indexed skin profile unavailable".to_owned())
-            })?;
+        let image_index = image_profile_index(
+            &self.catalog.profiles,
+            profile,
+            &self.catalog.registration_vfs,
+        )
+        .ok_or_else(|| IndexedSkinError::Rejected("indexed skin profile unavailable".to_owned()))?;
         let index = self
             .ensure_skin_row(path, ui_fullscreen)
             .map_err(|error| IndexedSkinError::Rejected(format!("indexed skin row: {error:?}")))?;
@@ -6455,7 +6546,12 @@ impl ModelAssets {
         }
         let index = self.ensure_skin_row(&path, ui_fullscreen)?;
         let name = self.catalog.skins[index].name;
-        for images in &self.catalog.profiles {
+        for images in self
+            .catalog
+            .profiles
+            .iter()
+            .filter(|images| images.source.same_selection(&self.catalog.registration_vfs))
+        {
             if !self.catalog.skins[index].profiles.iter().any(|row| {
                 row.request == SkinRequest::Named
                     && row.profile == images.profile
@@ -6588,12 +6684,12 @@ impl ModelAssets {
             {
                 continue;
             }
-            let image_index = self
-                .catalog
-                .profiles
-                .iter()
-                .position(|images| images.profile == profile.profile)
-                .ok_or(CallError::Aborted)?;
+            let image_index = image_profile_index(
+                &self.catalog.profiles,
+                profile.profile,
+                &self.catalog.registration_vfs,
+            )
+            .ok_or(CallError::Aborted)?;
             let registered = with_image_owner(
                 &mut self.catalog.profiles,
                 image_index,
@@ -7099,7 +7195,15 @@ impl ModelCatalog {
             .unwrap_or(0)
     }
     pub fn profiles(&self) -> impl Iterator<Item = ModelProfile> + '_ {
-        self.profiles.iter().map(|entry| entry.profile)
+        self.profiles
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| {
+                !self.profiles[..*index]
+                    .iter()
+                    .any(|previous| previous.profile == entry.profile)
+            })
+            .map(|(_, entry)| entry.profile)
     }
     pub(crate) fn registration_profile(&self, id: ModelRegistrationId) -> Option<ModelProfile> {
         self.registrations
@@ -7275,10 +7379,7 @@ impl ModelCatalog {
     }
 
     pub fn color_binding(&self, profile: ModelProfile) -> Option<ModelColorId> {
-        let index = self
-            .profiles
-            .iter()
-            .position(|entry| entry.profile == profile)?;
+        let index = image_profile_index(&self.profiles, profile, &self.registration_vfs)?;
         let owner = self.profiles[index].image_owner.unwrap_or(index);
         self.profiles[owner].colors.as_ref()?;
         Some(ModelColorId(owner as u32))

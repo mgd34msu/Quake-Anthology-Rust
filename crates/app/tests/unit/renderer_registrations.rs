@@ -19,7 +19,7 @@ fn request(name: &[u8], source: RuleSetId, kind: RendererRegistration) -> Render
     }
 }
 
-fn publish(mut owner: ModelAssets) -> (ModelAssets, CpuBackend) {
+pub(super) fn publish(mut owner: ModelAssets) -> (ModelAssets, CpuBackend) {
     let cpu = CpuBackend::load_with_limits(
         8,
         8,
@@ -55,7 +55,11 @@ fn shader_fixture() -> support::Fixture {
     ])
 }
 
-fn paint_shader(cpu: &mut CpuBackend, assets: &Assets, shader: ShaderBindingId) -> Vec<u32> {
+pub(super) fn paint_shader(
+    cpu: &mut CpuBackend,
+    assets: &Assets,
+    shader: ShaderBindingId,
+) -> Vec<u32> {
     let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
     let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
     assert!(frame.draw_2d(qa_render::Draw2d {
