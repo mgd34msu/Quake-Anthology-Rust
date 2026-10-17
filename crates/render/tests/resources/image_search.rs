@@ -32,7 +32,7 @@ fn load(
 ) -> Result<([u8; 4], [u32; 2], [u32; 2]), ResourceError> {
     let mut assets = Assets::load().unwrap();
     let palette = assets.register_palette(palette()).unwrap();
-    let mut images = Images::new(vfs, &mut assets, rules, rules, settings, None).unwrap();
+    let mut images = Images::new(vfs, &mut assets, rules, rules, settings, None, None).unwrap();
     images.set_search_order(order(formats));
     let resolved = images.raster(
         name,
@@ -82,8 +82,16 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
         transparent_index: None,
     });
     let rules = RuleSetId::Quake2Rerelease;
-    let mut images =
-        Images::new(&vfs, &mut assets, rules, rules, settings(2, u32::MAX), None).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        rules,
+        rules,
+        settings(2, u32::MAX),
+        None,
+        None,
+    )
+    .unwrap();
     images.set_search_order(order(b"tga"));
     let usage = bitmap_use();
     let first = images.raster("env/native.pcx", usage, target).unwrap();
@@ -380,6 +388,7 @@ fn mutable_order_changes_future_misses_but_cached_rr_type_and_q3_first_flags_rem
         RuleSetId::Quake3,
         settings(2, u32::MAX),
         None,
+        None,
     )
     .unwrap();
     images.set_search_order(order(b"tga jpeg"));
@@ -423,6 +432,7 @@ fn mutable_order_changes_future_misses_but_cached_rr_type_and_q3_first_flags_rem
         RuleSetId::Quake2Rerelease,
         RuleSetId::Quake2Rerelease,
         settings(0, 0),
+        None,
         None,
     )
     .unwrap();
@@ -475,6 +485,7 @@ fn native_pcx_and_wal_keep_original_indices_and_logical_size_with_larger_rgba_re
         RuleSetId::Quake2Rerelease,
         settings(1, u32::MAX),
         None,
+        None,
     )
     .unwrap();
     images.set_search_order(order(b"tga"));
@@ -516,6 +527,7 @@ fn image_suffix_rollback_prunes_selected_recipe_and_retry_keeps_registered_peer(
         RuleSetId::Quake3,
         RuleSetId::Quake3,
         settings(2, u32::MAX),
+        None,
         None,
     )
     .unwrap();
@@ -577,6 +589,7 @@ fn raster_native_pcx_and_forced_fallback_translate_from_source_palette_once() {
             RuleSetId::Quake2Rerelease,
             settings(level, u32::MAX),
             Some((source, target)),
+            None,
         )
         .unwrap();
         // The forced branch omits the existing TGA and reaches native PCX.
@@ -648,6 +661,7 @@ fn embedded_and_wad_replacements_keep_authored_software_data_and_obey_override_c
                 ..ImageSettings::native(RuleSetId::Quake)
             },
             None,
+            None,
         )
         .unwrap();
         images.set_search_order(order(b"tga"));
@@ -700,4 +714,124 @@ fn embedded_and_wad_replacements_keep_authored_software_data_and_obey_override_c
         );
         assert_eq!(vfs.take_lookup_count(), 0);
     }
+}
+
+#[test]
+fn immutable_image_sources_keep_aliases_reload_and_missing_fallbacks_in_the_selected_view() {
+    let low = Fixture::new();
+    let high = Fixture::new();
+    low.tga("env/scoped.tga", 2, 2, [90, 20, 10]);
+    high.tga("env/scoped.tga", 4, 4, [10, 70, 100]);
+    high.tga("env/private.tga", 1, 1, [1, 2, 3]);
+    let mut vfs = Vfs::default();
+    let low_mount = vfs.mount_directory(&low.0, 0).unwrap();
+    vfs.mount_directory(&high.0, 10).unwrap();
+    let view = vfs.search_view([low_mount]).unwrap();
+    let rules = RuleSetId::Quake3;
+    let mut assets = Assets::load().unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        rules,
+        rules,
+        ImageSettings::native(rules),
+        None,
+        Some(view),
+    )
+    .unwrap();
+    let usage = ImageUse::pic();
+    let scoped = images.raster("env/scoped.tga", usage, None).unwrap();
+    assert_eq!(
+        images.assets.image(scoped.id).unwrap().rgba[..4],
+        [90, 20, 10, 255]
+    );
+    assert_eq!(
+        images.assets.image(scoped.id).unwrap().logical_size(),
+        [2, 2]
+    );
+    assert!(matches!(
+        images.raster("env/private.tga", usage, None),
+        Err(ResourceError::Missing(_))
+    ));
+    let mut state = images.into_state();
+    let mut default = Images::new(
+        &vfs,
+        &mut assets,
+        rules,
+        rules,
+        ImageSettings::native(rules),
+        None,
+        None,
+    )
+    .unwrap();
+    let broad = default.raster("ENV\\SCOPED.TGA", usage, None).unwrap();
+    assert_ne!(broad.id, scoped.id);
+    assert_eq!(
+        default.assets.image(broad.id).unwrap().rgba[..4],
+        [10, 70, 100, 255]
+    );
+    drop(default);
+    let later = Fixture::new();
+    later.tga("env/scoped.tga", 1, 1, [200, 100, 50]);
+    later.tga("env/private.tga", 1, 1, [100, 0, 0]);
+    vfs.mount_directory(&later.0, 20).unwrap();
+    let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    images.replay_reload(&reload).unwrap();
+    let reloaded = images.raster("env/scoped.tga", usage, None).unwrap();
+    assert_eq!(
+        images.assets.image(reloaded.id).unwrap().rgba[..4],
+        [90, 20, 10, 255]
+    );
+    assert_eq!(
+        images.assets.image(scoped.id).unwrap().rgba[..4],
+        [90, 20, 10, 255]
+    );
+    assert_eq!(
+        images.assets.image(broad.id).unwrap().rgba[..4],
+        [10, 70, 100, 255]
+    );
+    vfs.take_lookup_count();
+    assert_eq!(
+        images.raster("ENV\\SCOPED.TGA", usage, None).unwrap(),
+        reloaded
+    );
+    assert_eq!(vfs.take_lookup_count(), 0);
+    assert!(matches!(
+        images.raster("env/private.tga", usage, None),
+        Err(ResourceError::Missing(_))
+    ));
+    let mut state = images.into_state();
+    state.commit_reload(reload);
+    let foreign = Vfs::default().search_view([]).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        rules,
+        rules,
+        ImageSettings::native(rules),
+        None,
+        Some(foreign),
+    )
+    .unwrap();
+    assert!(matches!(
+        images.raster("env/scoped.tga", usage, None),
+        Err(ResourceError::Missing(_))
+    ));
+    drop(images);
+    let empty = vfs.search_view([]).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        rules,
+        rules,
+        ImageSettings::native(rules),
+        None,
+        Some(empty),
+    )
+    .unwrap();
+    assert!(matches!(
+        images.raster("env/scoped.tga", usage, None),
+        Err(ResourceError::Missing(_))
+    ));
 }

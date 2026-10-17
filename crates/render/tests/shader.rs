@@ -20,6 +20,7 @@ fn compile(catalog: &ShaderCatalog, name: &str) -> (qa_render::Assets, qa_render
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
             None,
+            None,
         )
         .unwrap();
         let registration = compile_named_shader(

@@ -30,14 +30,14 @@ fn load_native_world(
 ) -> Result<LoadedWorld, qa_render::material::world_load::WorldMaterialError> {
     let source = PaletteSource::native(map.bsp.format.rule_set());
     let source_palette = source
-        .map(|source| load_palette(vfs, assets, source))
+        .map(|source| load_palette((vfs).read_view(None), assets, source))
         .transpose()?;
     let target = PaletteSource::native(rules);
     let target_palette = if target == source {
         source_palette
     } else {
         target
-            .map(|source| load_palette(vfs, assets, source))
+            .map(|source| load_palette((vfs).read_view(None), assets, source))
             .transpose()?
     };
     load_world(
@@ -725,7 +725,7 @@ fn one_world_registers_exact_profiles_once_without_mutating_previous_assets() ->
     let map = legacy_map(&bytes, 1)?;
     let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
     let palette = load_palette(
-        &vfs,
+        (&vfs).read_view(None),
         &mut assets,
         PaletteSource::native(RuleSetId::Quake).unwrap(),
     )
@@ -869,13 +869,13 @@ fn one_geometry_presents_explicit_palette_variants_in_both_seat_orders() -> Resu
     for reversed in [false, true] {
         let mut assets = Assets::load().map_err(|e| e.to_string())?;
         let source = load_palette(
-            &vfs,
+            (&vfs).read_view(None),
             &mut assets,
             PaletteSource::native(RuleSetId::Quake).unwrap(),
         )
         .map_err(|e| format!("source palette: {e:?}"))?;
         let target = load_palette(
-            &vfs,
+            (&vfs).read_view(None),
             &mut assets,
             PaletteSource::native(RuleSetId::Quake2).unwrap(),
         )
@@ -1202,13 +1202,13 @@ fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), S
     let vfs = mount(&root)?;
     let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
     let source = load_palette(
-        &vfs,
+        (&vfs).read_view(None),
         &mut assets,
         PaletteSource::native(RuleSetId::Quake).unwrap(),
     )
     .map_err(|e| format!("source palette: {e:?}"))?;
     let target = load_palette(
-        &vfs,
+        (&vfs).read_view(None),
         &mut assets,
         PaletteSource::native(RuleSetId::Quake2).unwrap(),
     )
@@ -1221,6 +1221,7 @@ fn palette_translation_preserves_cutout_and_cloud_mask_indices() -> Result<(), S
             presentation,
             ImageSettings::native(presentation),
             Some((source, selected)),
+            None,
         )
         .map_err(|e| format!("images: {e:?}"))?;
         for mask in [None, Some(0), Some(255)] {
@@ -1607,6 +1608,7 @@ fn named_outcomes_keep_requested_finished_modes_and_typed_native_defaults() -> R
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .map_err(|error| format!("{error:?}"))?;
     let mut registrations = Vec::new();
@@ -1847,7 +1849,7 @@ fn q3_default_world_uses_independent_indexed_presentation_without_dropping_nativ
     map.shaders[0].name = b"textures/missing_indexed";
     let mut assets = Assets::load().map_err(|error| format!("{error:?}"))?;
     let palette = load_palette(
-        &vfs,
+        (&vfs).read_view(None),
         &mut assets,
         PaletteSource::native(RuleSetId::Quake).unwrap(),
     )
@@ -2296,6 +2298,7 @@ fn world_profiles_normalize_lighting_before_the_fullscreen_finish_guard() -> Res
         RuleSetId::Quake3,
         profiles[0].image_settings,
         None,
+        None,
     )
     .map_err(|error| format!("{error:?}"))?;
     for profile in profiles {
@@ -2684,6 +2687,7 @@ fn vertex_world_omits_native_pages_but_fullbright_keeps_real_generic_page_zero()
         RuleSetId::Quake3,
         fullbright.image_settings,
         None,
+        None,
     )
     .map_err(|error| format!("{error:?}"))?;
     let generic = compile_named_shader(
@@ -2815,7 +2819,7 @@ fn physical_lightmap_recipes_ignore_raster_finish_and_palette_policies() -> Resu
         let pixels = assets.image(first.lightmap).unwrap().rgba.to_vec();
         let revision = assets.image(first.lightmap).unwrap().preparation_revision;
         let target_palette = load_palette(
-            &vfs,
+            (&vfs).read_view(None),
             &mut assets,
             PaletteSource::native(RuleSetId::Quake).unwrap(),
         )

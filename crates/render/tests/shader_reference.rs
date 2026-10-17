@@ -69,6 +69,7 @@ fn fixture() -> (Assets, Reader, [ShaderRef; 3]) {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let mut compile = |name| {
@@ -963,6 +964,7 @@ fn sky_batches_keep_distinct_resolved_offsets_for_the_same_physical_body() {
         RuleSetId::Quake3,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        None,
         None,
     )
     .unwrap();

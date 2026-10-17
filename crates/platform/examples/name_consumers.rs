@@ -87,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Lineage::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
         None,
+        None,
     )
     .map_err(|e| format!("{e:?}"))?;
     let image = images

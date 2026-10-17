@@ -391,6 +391,7 @@ fn named_zero_pass_body_is_safe_as_a_generic_world_draw_without_cpu_rejection() 
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
             None,
+            None,
         )
         .unwrap();
         compile_named_shader(
@@ -570,6 +571,7 @@ fn explicit_native_default_reason_cannot_be_transplanted_to_another_material() {
             RuleSetId::Quake3,
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
+            None,
             None,
         )
         .unwrap();

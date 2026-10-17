@@ -1,7 +1,7 @@
 //! Cold VFS image/palette resolution. Frames retain numeric asset handles.
 use crate::assets::{Assets, Image, ImageId, ImageReplacement, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
-use qa_content::vfs::{Vfs, VfsError};
+use qa_content::vfs::{ReadView, SearchView, Vfs, VfsError};
 use qa_core::names::file_stem;
 use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
@@ -420,14 +420,14 @@ impl ImageRecipes {
 }
 
 pub fn read_file(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     name: &[u8],
     reader: &mut ArchiveReader,
 ) -> Result<Vec<u8>, ResourceError> {
     read_file_with_limit(vfs, name, 256 * 1024 * 1024, reader)
 }
 fn read_file_with_limit(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     name: &[u8],
     limit: usize,
     reader: &mut ArchiveReader,
@@ -470,7 +470,7 @@ impl PaletteSource {
     }
 }
 pub fn load_palette(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     assets: &mut Assets,
     source: PaletteSource,
 ) -> Result<PaletteId, ResourceError> {
@@ -589,7 +589,9 @@ pub struct ImageReload {
 /// Canonical file names form a sorted load index. No content fingerprints or
 /// strings participate in a frame lookup. Different palettes stay distinct.
 /// The existing recipe cache can outlive a temporary borrow of cold Assets.
+/// Its source view is immutable; a different selection needs its own state.
 pub struct ImagesState {
+    search: Option<SearchView>,
     reader: ArchiveReader,
     recipes: ImageRecipes,
     source_rules: RuleSetId,
@@ -702,8 +704,10 @@ impl ImagesState {
         presentation_rules: RuleSetId,
         settings: ImageSettings,
         indexed_palettes: Option<(PaletteId, PaletteId)>,
+        search: Option<SearchView>,
     ) -> Result<Self, ResourceError> {
         Ok(Self {
+            search,
             reader: ArchiveReader::default(),
             recipes: ImageRecipes::new(presentation_rules, settings)?,
             source_rules,
@@ -1048,7 +1052,7 @@ impl<'a> Images<'a> {
         let name = qa_core::names::canonical_path(name);
         let rgba_override = rgba_override.map(qa_core::names::canonical_path);
         self.assets.image_search_order().select(
-            self.vfs,
+            self.vfs.read_view(self.state.search.as_ref()),
             &name,
             self.state.source_rules,
             self.state.recipes.settings,
@@ -1065,13 +1069,17 @@ impl<'a> Images<'a> {
     ) -> Result<IndexedTexture, ResourceError> {
         let bytes = if format == SourceFormat::Raster(ImageFormat::Lmp) {
             read_file_with_limit(
-                self.vfs,
+                self.vfs.read_view(self.state.search.as_ref()),
                 name.as_bytes(),
                 INDEXED_PIC_FILE_LIMIT,
                 &mut self.state.reader,
             )?
         } else {
-            read_file(self.vfs, name.as_bytes(), &mut self.state.reader)?
+            read_file(
+                self.vfs.read_view(self.state.search.as_ref()),
+                name.as_bytes(),
+                &mut self.state.reader,
+            )?
         };
         if format == SourceFormat::Wal {
             let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
@@ -1097,7 +1105,11 @@ impl<'a> Images<'a> {
         selected: &SelectedFile,
         palette: Option<PaletteId>,
     ) -> Result<RgbaImage, ResourceError> {
-        let bytes = read_file(self.vfs, selected.path.as_bytes(), &mut self.state.reader)?;
+        let bytes = read_file(
+            self.vfs.read_view(self.state.search.as_ref()),
+            selected.path.as_bytes(),
+            &mut self.state.reader,
+        )?;
         let indexed;
         let image = match selected.format {
             SourceFormat::Wal => {
@@ -1186,7 +1198,11 @@ impl<'a> Images<'a> {
         let original_selected = selected.path == original && selected.format == format;
         let texture = if original_selected {
             Some(self.native_texture(&original, format, transparent)?)
-        } else if self.vfs.open(original.as_bytes()).is_some() {
+        } else if self
+            .vfs
+            .open_with(original.as_bytes(), self.state.search.as_ref())
+            .is_some()
+        {
             // An unselected original is only optional software/dimension data.
             // A broken original cannot invalidate a valid replacement.
             self.native_texture(&original, format, transparent).ok()
@@ -1280,11 +1296,18 @@ impl<'a> Images<'a> {
         presentation_rules: RuleSetId,
         settings: ImageSettings,
         indexed_palettes: Option<(PaletteId, PaletteId)>,
+        search: Option<SearchView>,
     ) -> Result<Self, ResourceError> {
         Ok(Self::from_state(
             vfs,
             assets,
-            ImagesState::new(source_rules, presentation_rules, settings, indexed_palettes)?,
+            ImagesState::new(
+                source_rules,
+                presentation_rules,
+                settings,
+                indexed_palettes,
+                search,
+            )?,
         ))
     }
     pub fn from_state(vfs: &'a Vfs, assets: &'a mut Assets, state: ImagesState) -> Self {
@@ -1855,7 +1878,7 @@ impl<'a> Images<'a> {
         };
         let texture = (|| {
             let bytes = read_file_with_limit(
-                self.vfs,
+                self.vfs.read_view(self.state.search.as_ref()),
                 name.as_bytes(),
                 INDEXED_PIC_FILE_LIMIT,
                 &mut self.state.reader,

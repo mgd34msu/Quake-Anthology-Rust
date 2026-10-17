@@ -30,6 +30,7 @@ fn detached_image_state_keeps_recipe_ids_native_flags_and_conflict_history() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let usage = ImageUse::pic();
@@ -80,6 +81,7 @@ fn shared_rule_selection_preserves_native_uploads_for_all_five_sources() {
             rules,
             rules,
             ImageSettings::native(rules),
+            None,
             None,
         )
         .unwrap();
@@ -228,6 +230,7 @@ fn indexed_qpic_and_wad_share_native_registration_upload_and_detached_recipe_cac
             rules,
             ImageSettings::native(rules),
             None,
+            None,
         )
         .unwrap();
         let usage = bitmap_use();
@@ -319,6 +322,7 @@ fn wad_recipe_keeps_exact_lump_names_masks_and_samplers_separate() {
         RuleSetId::Quake,
         ImageSettings::native(RuleSetId::Quake),
         None,
+        None,
     )
     .unwrap();
     let usage = bitmap_use();
@@ -389,6 +393,7 @@ fn indexed_qpic_and_wad_use_shared_palette_remap_without_changing_source_rgba() 
         RuleSetId::Quake2,
         ImageSettings::native(RuleSetId::Quake2),
         Some((source, target)),
+        None,
     )
     .unwrap();
     let usage = bitmap_use();
@@ -429,6 +434,7 @@ fn indexed_resource_admission_preserves_file_limits_and_decoder_errors() {
         RuleSetId::Quake,
         RuleSetId::Quake,
         ImageSettings::native(RuleSetId::Quake),
+        None,
         None,
     )
     .unwrap();
@@ -479,6 +485,7 @@ fn raster_target_recipe_shares_images_and_preserves_gl_pixels_with_explicit_mask
         RuleSetId::Quake3,
         RuleSetId::Quake2,
         ImageSettings::native(RuleSetId::Quake2),
+        None,
         None,
     )
     .unwrap();
@@ -541,6 +548,7 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
             ..ImageSettings::native(RuleSetId::Quake2)
         },
         None,
+        None,
     )
     .unwrap();
     let opaque = images
@@ -583,6 +591,7 @@ fn sky_resource_keeps_distinct_native_tga_pixels_and_pcx_dimensions() {
         RuleSetId::Quake2,
         RuleSetId::Quake2,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
+        None,
         None,
     )
     .unwrap();
@@ -634,6 +643,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         RuleSetId::Quake2,
         settings,
         None,
+        None,
     )
     .unwrap();
     let surface = images
@@ -659,6 +669,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         RuleSetId::Quake2,
         RuleSetId::Quake2,
         settings,
+        None,
         None,
     )
     .unwrap();
@@ -705,6 +716,7 @@ fn tga_only_q2_sky_keeps_truecolor_gl_and_selected_palette_cpu_pixels() {
             rules,
             rules,
             ImageSettings::native(rules),
+            None,
             None,
         )
         .unwrap();
@@ -762,6 +774,7 @@ fn q2_sky_uses_existing_pcx_when_the_truecolor_alternate_is_missing() {
         RuleSetId::Quake2,
         ImageSettings::native(RuleSetId::Quake2),
         None,
+        None,
     )
     .unwrap();
     let id = images
@@ -812,6 +825,7 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
         RuleSetId::Quake3,
         RuleSetId::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
+        None,
         None,
     )
     .unwrap();
@@ -876,6 +890,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
         RuleSetId::Quake3,
         settings,
         None,
+        None,
     )
     .unwrap();
     let mipped = images
@@ -938,6 +953,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
             ..settings
         },
         None,
+        None,
     )
     .unwrap();
     let weighted = images
@@ -971,7 +987,8 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
             .unwrap();
         let mut settings = ImageSettings::native(presentation);
         settings.picmip = 2;
-        let mut state = ImagesState::new(RuleSetId::Quake3, presentation, settings, None).unwrap();
+        let mut state =
+            ImagesState::new(RuleSetId::Quake3, presentation, settings, None, None).unwrap();
         let target = Some(IndexedTarget {
             palette,
             transparent_index: None,
@@ -1030,7 +1047,8 @@ fn generated_native_default_keeps_pixels_first_sampler_and_indexed_profile_capab
             assert_eq!(images.conflicts().len(), 1);
         }
         // A seeded capability also survives a foreign geometry-source borrow.
-        let mut state = ImagesState::new(RuleSetId::Quake2, presentation, settings, None).unwrap();
+        let mut state =
+            ImagesState::new(RuleSetId::Quake2, presentation, settings, None, None).unwrap();
         assert_eq!(
             native_default_shader(
                 &mut state,

@@ -1251,6 +1251,7 @@ impl ProfileImages {
             profile.rules,
             profile.image_settings,
             profile.source_palette.zip(profile.palette),
+            None,
         )
         .map_err(|error| format!("model images: {error:?}"));
         let native_default = if profile.source_rules == RuleSetId::Quake3 {

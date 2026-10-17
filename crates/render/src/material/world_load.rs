@@ -467,6 +467,7 @@ impl WorldMaterialSource {
                 profile.rules,
                 profile.image_settings,
                 self.palette.zip(profile.indexed_palette),
+                None,
             )?;
             state.set_raster_target(
                 assets,

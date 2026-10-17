@@ -116,6 +116,7 @@ fn layered_replacements_preserve_authored_cpu_layers_and_first_recipe_without_mo
             RuleSetId::Quake,
             settings,
             None,
+            None,
         )
         .unwrap();
         images.set_search_order(ImageSearchOrder::parse(b"tga").unwrap());
@@ -195,6 +196,7 @@ fn invalid_shapes_and_discarded_replacements_retry_without_stale_layer_ids() {
         RuleSetId::Quake,
         RuleSetId::Quake,
         ImageSettings::native(RuleSetId::Quake),
+        None,
         None,
     )
     .unwrap();

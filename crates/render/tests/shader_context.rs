@@ -49,6 +49,7 @@ fn registrations() -> Registrations {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let mut compile = |name: &[u8], source| {

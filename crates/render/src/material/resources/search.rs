@@ -1,5 +1,5 @@
 use super::{ImageRole, ImageSettings, ImageUse, ResourceError};
-use qa_content::vfs::Vfs;
+use qa_content::vfs::ReadView;
 use qa_core::{names::file_stem, primitives::RuleSetId};
 use qa_formats::{FormatError, image::ImageFormat, text::Tokens};
 
@@ -112,7 +112,7 @@ impl ImageSearchOrder {
     }
     pub(super) fn select(
         self,
-        vfs: &Vfs,
+        vfs: ReadView<'_>,
         name: &str,
         source: RuleSetId,
         settings: ImageSettings,

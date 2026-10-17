@@ -23,6 +23,27 @@ pub struct SearchView {
     ranks: Arc<[u32]>,
 }
 
+/// Borrow the shared file table through one caller-selected search view.
+#[derive(Clone, Copy)]
+pub struct ReadView<'a> {
+    vfs: &'a Vfs,
+    search: Option<&'a SearchView>,
+}
+impl ReadView<'_> {
+    pub fn open(self, path: &[u8]) -> Option<FileRef> {
+        self.vfs.open_with(path, self.search)
+    }
+    pub fn read_file(
+        self,
+        path: &[u8],
+        limit: usize,
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<Vec<u8>, VfsError> {
+        let file = self.open(path).ok_or(VfsError::Missing)?;
+        self.vfs.read_to_vec(&file, limit, reader)
+    }
+}
+
 /// One parsed package with VFS member paths admitted before publication.
 /// The retained reader can still name an unpublished staging inode.
 pub struct PreparedArchive {
@@ -263,6 +284,9 @@ fn normalize_into(path: &[u8], normalized: &mut [u8; MAX_PATH_BYTES]) -> Result<
 }
 
 impl Vfs {
+    pub fn read_view<'a>(&'a self, search: Option<&'a SearchView>) -> ReadView<'a> {
+        ReadView { vfs: self, search }
+    }
     /// Higher-ranked products/mods choose a larger base priority. Inside each
     /// product, loose files are below numerically ordered PAKs and alphabetic PK3s.
     pub fn mount_product(&mut self, path: &Path, priority: i32) -> Result<Vec<MountId>, VfsError> {
@@ -737,8 +761,7 @@ impl Vfs {
         limit: usize,
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<Vec<u8>, VfsError> {
-        let file = self.open(path).ok_or(VfsError::Missing)?;
-        self.read_to_vec(&file, limit, reader)
+        self.read_view(None).read_file(path, limit, reader)
     }
 
     pub fn read_into_reusing(

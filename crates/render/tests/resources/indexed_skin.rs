@@ -67,6 +67,7 @@ fn borrowed_native_members_keep_distinct_ordinals_in_the_shared_image_cache() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let mut settings = request(palette, target);
@@ -149,6 +150,7 @@ fn lmp_skin_source_uses_the_existing_indexed_reader_and_translation_path() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let source = images
@@ -196,6 +198,7 @@ fn translated_indexed_skin_retains_padding_dual_colors_palette_mapping_and_cropp
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         Some((palette, target)),
+        None,
     )
     .unwrap();
     let source = images
@@ -266,6 +269,7 @@ fn translated_skin_cache_keys_keep_each_consumed_crop_color_coordinate_and_uploa
         RuleSetId::QuakeWorld,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        None,
         None,
     )
     .unwrap();
@@ -339,6 +343,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         None,
+        None,
     )
     .unwrap();
     let source = images
@@ -407,6 +412,7 @@ fn indexed_skin_invalid_layout_and_derived_inputs_leave_resource_prefix_unchange
         RuleSetId::QuakeWorld,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        None,
         None,
     )
     .unwrap();
@@ -481,6 +487,7 @@ fn qw_storage_crop_and_coordinate_domains_stay_independent_of_exact_upload_size(
         RuleSetId::QuakeWorld,
         RuleSetId::QuakeWorld,
         ImageSettings::native(RuleSetId::QuakeWorld),
+        None,
         None,
     )
     .unwrap();
@@ -561,6 +568,7 @@ fn scoped_skin_reload_evicts_exact_external_requests_across_old_source_dimension
         RuleSetId::QuakeWorld,
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
+        None,
         None,
     )
     .unwrap();

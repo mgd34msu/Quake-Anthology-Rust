@@ -53,6 +53,7 @@ fn compile(
         RuleSetId::Quake3,
         settings,
         None,
+        None,
     )
     .unwrap();
     let rows = names

@@ -42,7 +42,7 @@ fn retail_base1_decoupled_samples_reach_the_indexed_surface_cache() {
     );
     let mut assets = Assets::load().unwrap();
     let palette = load_palette(
-        &vfs,
+        (&vfs).read_view(None),
         &mut assets,
         PaletteSource::native(RuleSetId::Quake2Rerelease).unwrap(),
     )

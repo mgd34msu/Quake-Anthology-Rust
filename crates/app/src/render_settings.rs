@@ -69,7 +69,7 @@ pub(crate) fn palette_resource(
     if let Some(id) = registered.get(rules) {
         return Ok(Some(id));
     }
-    let id = load_palette(vfs, assets, source)?;
+    let id = load_palette((vfs).read_view(None), assets, source)?;
     for rule in RuleSetId::ALL {
         if PaletteSource::native(rule) == Some(source) {
             registered.ids[rule as usize] = Some(id);
