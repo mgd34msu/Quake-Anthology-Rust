@@ -29,6 +29,7 @@ pub struct ClientView {
     pub lighting_scales: [f32; 2],
     pub curve_error: f32,
     pub model_lod: qa_render::scene::ModelLodSettings,
+    pub model_replacements: [qa_render::scene::ModelReplacementSettings; 5],
     pub policy: qa_render::scene::ViewPolicy,
     pub near: f32,
 }
@@ -392,6 +393,7 @@ pub struct FrameHost {
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
+    pub(crate) model_controls: qa_console::model::ModelHandles,
     view_policy: [crate::renderer::ViewPolicyViews; 5],
     pub(crate) image_search: qa_console::cvars::View,
     image_search_generation: Option<u64>,
@@ -799,7 +801,7 @@ impl FrameHost {
             {
                 return Err("CPU band setting changed during restart".into());
             }
-            self.refresh_image_search()?;
+            self.refresh_resource_settings()?;
             // The sole asset owner is moved only across this cold, callback-free
             // transaction. Restore it before any CLIENT can execute again.
             let mut owner = self
@@ -888,7 +890,12 @@ impl FrameHost {
                         .scene
                         .as_mut()
                         .ok_or("missing scene composer")?;
-                    let staged = scene.stage_video_graphics(owner.assets(), graphics, &refresh)?;
+                    let staged = scene.stage_video_graphics(
+                        owner.assets(),
+                        graphics,
+                        &refresh,
+                        owner.catalog().max_choice_nodes(),
+                    )?;
                     if staged.limits() != limits {
                         candidate
                             .as_mut()
@@ -1128,10 +1135,15 @@ impl FrameHost {
 
     /// The current global search list is parsed once per cvar change. Retained
     /// image bodies keep their first resolution until an explicit reload.
-    pub(crate) fn refresh_image_search(&mut self) -> Result<(), &'static str> {
+    pub fn refresh_resource_settings(&mut self) -> Result<(), &'static str> {
         let Some(owner) = self.runtime.model_assets.as_mut() else {
             return Ok(());
         };
+        let (q1, q2) = self
+            .model_controls
+            .replacement_load(&self.console.cvars)
+            .map_err(|_| "model load setting conversion")?;
+        owner.set_model_replacement_load(q1, q2);
         let generation = self.console.cvars.view_generation(self.image_search);
         if self.image_search_generation == Some(generation) {
             return Ok(());
@@ -1278,6 +1290,7 @@ impl FrameHost {
             .ok_or("missing software water warp cvar")?;
         let curve_error = crate::render_settings::curve_error_view(&console.cvars)?;
         let model_lod = crate::render_settings::model_lod_views(&console.cvars)?;
+        let model_controls = qa_console::model::ModelHandles::bind(&console.cvars)?;
         let [q1, qw, q2, rr, q3] = RuleSetId::ALL
             .map(|source| crate::renderer::ViewPolicyViews::bind(&console.cvars, source));
         let view_policy = [q1?, qw?, q2?, rr?, q3?];
@@ -1400,6 +1413,7 @@ impl FrameHost {
             software_waterwarp,
             curve_error,
             model_lod,
+            model_controls,
             view_policy,
             image_search,
             image_search_generation: None,
@@ -1663,6 +1677,9 @@ impl FrameHost {
         let curve_error =
             crate::render_settings::curve_error(&self.console.cvars, self.curve_error);
         let model_lod = crate::render_settings::model_lod(&self.console.cvars, self.model_lod);
+        let model_replacements =
+            crate::render_settings::model_replacements(&self.console.cvars, self.model_controls)
+                .ok();
         std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
@@ -1724,6 +1741,7 @@ impl FrameHost {
                     .map(|handle| self.console.cvars.value(handle)),
                 curve_error,
                 model_lod,
+                model_replacements: model_replacements?,
                 policy,
                 near,
             })

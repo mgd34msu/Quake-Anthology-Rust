@@ -753,6 +753,7 @@ fn run() -> Result<(), String> {
         render_world,
         Default::default(),
     )?);
+    host.refresh_resource_settings()?;
     host.runtime
         .model_assets
         .as_mut()
@@ -1009,6 +1010,13 @@ fn run() -> Result<(), String> {
         host.runtime.server.clients.len(),
         &effect_bindings,
     )?;
+    let model_choices = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .ok_or("missing model assets")?
+        .catalog()
+        .max_choice_nodes();
     let (assets, graphics) = host.stage_engine_graphics(&console_assets, &hud_assets)?;
     let (mut renderer, scene) = Renderer::load(
         renderer_context,
@@ -1020,6 +1028,7 @@ fn run() -> Result<(), String> {
         console_assets,
         hud_assets,
         effects,
+        model_choices,
     )?;
     graphics.commit();
     host.publish_model_admission(

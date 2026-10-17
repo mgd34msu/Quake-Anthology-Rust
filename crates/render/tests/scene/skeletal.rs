@@ -5,7 +5,7 @@ use qa_render::shader::reference::ShaderView;
 use qa_render::{CommandList, ModelId, SkeletalMesh, Skeleton};
 use std::sync::Arc;
 
-fn skeleton(joints: u32) -> Arc<Skeleton> {
+pub(super) fn skeleton(joints: u32) -> Arc<Skeleton> {
     Arc::new(
         Skeleton::new(
             joints,
@@ -28,7 +28,7 @@ fn skeleton(joints: u32) -> Arc<Skeleton> {
     )
 }
 
-fn mesh(assets: &mut Assets, skeleton: Arc<Skeleton>) -> ModelId {
+pub(super) fn mesh(assets: &mut Assets, skeleton: Arc<Skeleton>) -> ModelId {
     let shader = assets
         .register_material(
             "skeleton/red",
@@ -79,7 +79,7 @@ fn mesh(assets: &mut Assets, skeleton: Arc<Skeleton>) -> ModelId {
     model
 }
 
-fn view(x: u32) -> Refdef {
+pub(super) fn view(x: u32) -> Refdef {
     Refdef {
         viewport: qa_render::Viewport {
             x,
@@ -92,7 +92,7 @@ fn view(x: u32) -> Refdef {
         ..Default::default()
     }
 }
-fn draws(packet: &CommandList) -> Vec<qa_render::DrawItem> {
+pub(super) fn draws(packet: &CommandList) -> Vec<qa_render::DrawItem> {
     packet
         .commands()
         .iter()

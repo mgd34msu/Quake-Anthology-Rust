@@ -957,6 +957,8 @@ struct Models {
     loaded: Vec<(Vec<u8>, RuleSetId)>,
     order: qa_render::material::resources::ImageSearchOrder,
     loaded_orders: Vec<qa_render::material::resources::ImageSearchOrder>,
+    replacement_load: (bool, bool),
+    loaded_replacements: Vec<(bool, bool)>,
     fail: bool,
 }
 impl ModelLookup for Models {
@@ -1005,6 +1007,10 @@ impl ModelLoader for Models {
         self.order = order;
     }
 
+    fn set_model_replacement_load(&mut self, enhanced: bool, skeletal: bool) {
+        self.replacement_load = (enhanced, skeletal);
+    }
+
     fn register_shader(
         &mut self,
         _: &qa_content::vfs::Vfs,
@@ -1023,6 +1029,7 @@ impl ModelLoader for Models {
     ) -> Result<Bounds, CallError> {
         self.loaded.push((path.to_vec(), source));
         self.loaded_orders.push(self.order);
+        self.loaded_replacements.push(self.replacement_load);
         if self.fail {
             Err(CallError::File)
         } else {
@@ -1205,6 +1212,33 @@ fn synchronous_quakec_precache_samples_formats_after_cvar_set_in_the_same_servic
         ]
     );
     assert_eq!(models.order, ImageSearchOrder::parse(b"jpeg").unwrap());
+}
+
+#[test]
+fn synchronous_precache_reads_updated_replacement_controls_with_native_numeric_truth() {
+    let mut models = Models::default();
+    with_model_services(RuleSetId::Quake, Some(&mut models), |calls| {
+        let mut vm = vm(1);
+        let enhanced = vm.insert_string(b"r_enhancedmodels").unwrap() as u32;
+        let load = vm.insert_string(b"gl_md5_load").unwrap() as u32;
+        for (index, value) in [b"0".as_slice(), b"0.5", b"-1"].into_iter().enumerate() {
+            let value = vm.insert_string(value).unwrap() as u32;
+            for name in [enhanced, load] {
+                parameters(&mut vm, &[&[name], &[value]]);
+                calls.call(&mut vm, 72, 2).unwrap();
+            }
+            let path = format!("progs/policy{index}.mdl");
+            let model = vm.insert_string(path.as_bytes()).unwrap() as u32;
+            parameters(&mut vm, &[&[model]]);
+            calls.call(&mut vm, 20, 1).unwrap();
+            assert_eq!(vm.image.globals[1], model);
+        }
+    });
+    assert_eq!(models.loaded.len(), 3);
+    assert_eq!(
+        models.loaded_replacements,
+        [(false, false), (true, false), (true, true)]
+    );
 }
 
 #[test]

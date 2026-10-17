@@ -1,7 +1,7 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{
-    InlineBinding, ModelBinding, ModelBindings, ModelCatalog, ModelLodBindings, ModelLodInfo,
-    ModelMaterialPolicy, ModelProfile, ModelRegistrationId, SelectedModelChoice,
+    InlineBinding, ModelBindings, ModelCatalog, ModelLodBindings, ModelMaterialPolicy,
+    ModelProfile, ModelRegistrationId,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
@@ -86,31 +86,23 @@ impl std::ops::Deref for StaticEntity {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum SceneBinding<'a> {
-    Mesh {
-        choices: [Option<SelectedModelChoice<'a>>; 3],
-        info: ModelLodInfo<'a>,
-    },
+    Mesh(ModelLodBindings<'a>),
     Inline {
         binding: InlineBinding,
         presentation: WorldPresentationId,
     },
 }
 enum SceneBindings<'a> {
-    Mesh(ModelLodBindings<'a>),
+    Mesh(Option<ModelLodBindings<'a>>),
     Inline(Option<(InlineBinding, WorldPresentationId)>),
 }
 impl<'a> Iterator for SceneBindings<'a> {
     type Item = SceneBinding<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Mesh(bindings) => {
-                let info = bindings.info();
-                bindings
-                    .next()
-                    .map(|choices| SceneBinding::Mesh { choices, info })
-            }
+            Self::Mesh(bindings) => bindings.take().map(SceneBinding::Mesh),
             Self::Inline(binding) => {
                 binding
                     .take()
@@ -716,7 +708,7 @@ impl ClientModelBindings {
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBindings<'a>> {
         match self.resolve_scene(reference, skin, models, policy)? {
-            SceneBindings::Mesh(bindings) => bindings.base(),
+            SceneBindings::Mesh(bindings) => bindings?.base(),
             SceneBindings::Inline(_) => None,
         }
     }
@@ -748,7 +740,7 @@ impl ClientModelBindings {
         match registration {
             ClientModel::Mesh(registration) => models
                 .lod_bindings(registration, u32::try_from(skin).unwrap_or(0), policy)
-                .map(SceneBindings::Mesh),
+                .map(|bindings| SceneBindings::Mesh(Some(bindings))),
             ClientModel::Inline {
                 binding,
                 presentation,
@@ -1690,6 +1682,7 @@ impl ClientSceneInput<'_> {
                     alpha: Some(capabilities.alpha),
                     depth_hack: capabilities.depth_hack,
                     infrared_visible: capabilities.infrared_visible,
+                    no_model_lod: capabilities.no_model_lod,
                     ..SceneEntity::default()
                 };
                 let mut model_lods = None;
@@ -1714,8 +1707,9 @@ impl ClientSceneInput<'_> {
                         };
                         pose.angles
                     }
-                    SceneBinding::Mesh { choices, info } => {
-                        let Some(binding) = choices.iter().flatten().next().copied() else {
+                    SceneBinding::Mesh(choices) => {
+                        let info = choices.info();
+                        let Some(binding) = choices.first_choice() else {
                             counts.missing_models += 1;
                             continue;
                         };
@@ -1748,20 +1742,28 @@ impl ClientSceneInput<'_> {
                         entity.old_frame = old_frame;
                         entity.back_lerp = 1.0 - fraction;
                         entity.lighting = Some(native_lighting(binding.pose, angles));
-                        model_lods =
-                            Some((choices, info.radius(current_frame), info.native_count()));
+                        model_lods = Some(choices);
                         angles
                     }
                 };
                 entity.axes = angle_vectors(angles)
                     .axes()
                     .map(|axis| axis * capabilities.scale);
-                let added = if let Some((choices, radius, count)) = model_lods {
-                    append_model_choices(frame, entity, choices, radius, count)
+                let parts = model_lods
+                    .as_ref()
+                    .map_or(1, |choices| choices.len() as u32);
+                let added = if let Some(choices) = model_lods {
+                    choices.capture(
+                        frame,
+                        entity,
+                        qa_render::shader::reference::ShaderView::direct(),
+                        None,
+                        None,
+                    )
                 } else {
                     frame.add_entity(entity)
                 };
-                counts.models += u32::from(added);
+                counts.models += if added { parts } else { 0 };
                 counts.rejected += u32::from(!added);
             }
         }
@@ -1782,7 +1784,7 @@ impl ClientSceneInput<'_> {
         let Some(reference) = weapon.model else {
             return;
         };
-        let Some(SceneBindings::Mesh(bindings)) = self.bindings.resolve_scene(
+        let Some(SceneBindings::Mesh(Some(bindings))) = self.bindings.resolve_scene(
             reference,
             weapon.skin,
             self.models,
@@ -1838,19 +1840,19 @@ impl ClientSceneInput<'_> {
             }))
         });
         let info = bindings.info();
-        for choices in bindings {
-            let Some(binding) = choices.iter().flatten().next().copied() else {
+        {
+            let Some(binding) = bindings.first_choice() else {
                 counts.missing_models += 1;
-                continue;
+                return;
             };
             let Some(model) = assets.model(binding.model) else {
                 counts.missing_models += 1;
-                continue;
+                return;
             };
             let frames = info.frame_count(model.native_frame_count());
             if frames == 0 {
                 counts.missing_models += 1;
-                continue;
+                return;
             }
             let angles = self.weapon_view_angles + angles;
             let sprite_roll = angles.0[2];
@@ -1902,14 +1904,15 @@ impl ClientSceneInput<'_> {
                 lighting: Some(native_lighting(binding.pose, angles)),
                 ..SceneEntity::default()
             };
-            let added = append_model_choices(
+            let parts = bindings.len() as u32;
+            let added = bindings.capture(
                 frame,
                 entity,
-                choices,
-                info.radius(current_frame),
-                info.native_count(),
+                qa_render::shader::reference::ShaderView::direct(),
+                None,
+                None,
             );
-            counts.models += u32::from(added);
+            counts.models += if added { parts } else { 0 };
             counts.rejected += u32::from(!added);
         }
     }
@@ -1920,41 +1923,6 @@ impl ClientSceneInput<'_> {
             ResourceNamespace::Client(self.client),
         )
     }
-}
-
-fn append_model_choices(
-    frame: &mut Frame,
-    entity: SceneEntity,
-    choices: [Option<SelectedModelChoice<'_>>; 3],
-    radius: Option<f32>,
-    count: usize,
-) -> bool {
-    if let Some(choice) = choices.iter().flatten().next().copied()
-        && let Some((selector, members)) = choice.shader.deferred()
-    {
-        let view = qa_render::shader::reference::ShaderView::direct();
-        if !members
-            .clone()
-            .all(|shader| choice.resolve_shader(shader, view, None).is_some())
-        {
-            return frame.reject_submission();
-        }
-        return frame.add_model_choices(
-            entity,
-            choice.model,
-            selector,
-            members.filter_map(|shader| choice.resolve_shader(shader, view, None)),
-        );
-    }
-    frame.add_model_lods(
-        entity,
-        radius,
-        std::iter::once(choices.into_iter().take(count).map(|choice| {
-            choice
-                .and_then(|choice| choice.physical_binding())
-                .map(ModelBinding::scene_part)
-        })),
-    )
 }
 
 /// The selected native view entity can invalidate both camera and weapon

@@ -1229,6 +1229,13 @@ fn setup_renderers_with_images(
                 .unwrap(),
             );
         }
+        let model_choices = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .max_choice_nodes();
         let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
         let (renderer, scene) = Renderer::load(
             qa_app::renderer::Context::Cpu(configuration),
@@ -1240,6 +1247,7 @@ fn setup_renderers_with_images(
             console,
             huds,
             effects,
+            model_choices,
         )
         .unwrap();
         staged.commit();

@@ -1317,6 +1317,13 @@ pub(super) fn ownership() {
     };
     host.runtime.model_assets = Some(owner);
     let huds = std::array::from_fn(|_| None);
+    let model_choices = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .catalog()
+        .max_choice_nodes();
     let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
     let (renderer, scene) = Renderer::load(
         RenderContext::Cpu(configuration),
@@ -1328,6 +1335,7 @@ pub(super) fn ownership() {
         console,
         huds,
         effects,
+        model_choices,
     )
     .unwrap();
     staged.commit();
@@ -1395,6 +1403,7 @@ pub(super) fn ownership() {
         lighting_scales: [0.6, 1.],
         curve_error: qa_render::scene::DEFAULT_CURVE_ERROR,
         model_lod: Default::default(),
+        model_replacements: Default::default(),
         policy: Default::default(),
         near: 4.,
     };
@@ -1777,14 +1786,18 @@ pub(super) fn sprite_entities(native: bool, ui: bool) {
     assert_eq!((view.scene.entities.count, view.scene.polys.count), (1, 2));
     assert!(matches!(
         packet.entity(0).model,
-        qa_render::SceneModel::Timed {
-            selector: qa_render::scene::ModelChoiceSelector::Frame,
-            ..
-        }
+        qa_render::SceneModel::Choice { .. }
     ));
     for draw in packet.draws(view.scene.draws) {
         assert_eq!(draw.mesh, Some(model));
-        assert_eq!(draw.frames, Some([0, 0]));
+        assert_eq!(
+            draw.frames,
+            Some(qa_render::scene::ModelFramePose {
+                current: 0,
+                previous: 0,
+                back_lerp: 0.,
+            })
+        );
         assert_eq!(
             draw.shader.unwrap().source(host.native_shaders()),
             Some(expected)

@@ -1,3 +1,6 @@
+#[path = "../../render/tests/support/model_choices.rs"]
+mod model_choices;
+
 #[path = "model_assets/lods.rs"]
 mod lods;
 #[path = "model_assets/mdc.rs"]
@@ -1600,14 +1603,14 @@ fn sp2_frames_register_once_and_feed_shared_billboards_with_authored_offsets() {
         };
         assert_eq!(geometry.extents, expected);
         let mut frame = front.begin_frame([0, 0, 0, 255]).unwrap();
-        assert!(frame.add_model_choices(
+        assert!(model_choices::sprite(
+            &mut frame,
             SceneEntity {
                 frame: frame_number,
                 origin: Vec3([16., 0., 0.]),
                 ..Default::default()
             },
             binding.model,
-            qa_render::scene::ModelChoiceSelector::Frame,
             binding.shaders().map(|shader| {
                 binding
                     .resolve_shader(
@@ -2642,7 +2645,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
         .unwrap()
         .collect::<Vec<_>>();
     for software in [false, true] {
-        for limit in [3, 4] {
+        for (limit, accepted, rejected) in [(3, 2, 1), (4, 4, 0)] {
             let mut front = qa_render::FrontEnd::load(qa_render::Limits {
                 entities: limit,
                 ..Default::default()
@@ -2657,12 +2660,39 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
                 None,
             );
             assert_eq!(counts.entities, 1);
-            assert_eq!(counts.models, limit as u32);
-            assert_eq!(counts.rejected, (4 - limit) as u32);
+            assert_eq!(counts.models, accepted);
+            assert_eq!(counts.rejected, rejected);
             assert_eq!(counts.missing_models, 0);
+            assert!(frame.render_scene(
+                qa_render::Refdef {
+                    viewport: qa_render::Viewport {
+                        width: 8,
+                        height: 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &[],
+                &assets,
+                qa_render::shader::reference::ShaderView::direct(),
+            ));
             let packet = frame.finish();
-            for index in 0..limit {
-                let entity = packet.entity(index as u32);
+            assert_eq!(packet.rejected, u64::from(rejected));
+            let view = packet
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    qa_render::scene::Command::View(view) => Some(view),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(view.scene.entities.count, accepted);
+            let entities = packet.entities(view.scene.entities);
+            assert_eq!(
+                entities.iter().filter(|entity| entity.depth_hack).count(),
+                if limit == 3 { 0 } else { 2 }
+            );
+            for (index, entity) in entities.iter().enumerate() {
                 assert_eq!(entity.model, expected[index % 2].model.into());
                 assert_eq!(
                     entity.shader.map(|shader| shader.source(&()).unwrap()),

@@ -57,6 +57,7 @@ pub struct AppearanceCapabilities {
     pub depth_hack: bool,
     pub fullbright: bool,
     pub infrared_visible: bool,
+    pub no_model_lod: bool,
     /// Use the current origin/old_origin frame path instead of interpolating
     /// origins: Q2 RF_FRAMELERP and rerelease RF_NO_ORIGIN_LERP.
     pub frame_lerp: bool,
@@ -102,6 +103,7 @@ struct NativeRules {
     depth: u32,
     fullbright: u32,
     infrared_visible: u32,
+    no_model_lod: u32,
     translucent: u32,
     inline_translucent_alpha: Option<f32>,
     frame_lerp: u32,
@@ -143,6 +145,7 @@ const NEUTRAL: NativeRules = NativeRules {
     depth: 0,
     fullbright: 0,
     infrared_visible: 0,
+    no_model_lod: 0,
     translucent: 0,
     inline_translucent_alpha: None,
     frame_lerp: 0,
@@ -246,6 +249,7 @@ const RULES: [NativeRules; 5] = [
         linked_shell: Some(b"models/items/shell/tris.md2"),
         linked_models: LinkedModels::CustomAlpha,
         old_frame: 1 << 22,
+        no_model_lod: 1 << 25,
         alias_motion: false,
         beam_integer_half: false,
         beam_interpolate: true,
@@ -573,6 +577,7 @@ impl AppearancePolicy {
             | rules.depth
             | rules.fullbright
             | rules.infrared_visible
+            | rules.no_model_lod
             | rules.translucent
             | rules.frame_lerp
             | rules.old_frame;
@@ -588,6 +593,7 @@ impl AppearancePolicy {
             depth_hack: flags & rules.depth != 0,
             fullbright: flags & rules.fullbright != 0,
             infrared_visible: flags & rules.infrared_visible != 0,
+            no_model_lod: flags & rules.no_model_lod != 0,
             frame_lerp: flags & rules.frame_lerp != 0,
             alias_motion: flags & rules.frame_lerp != 0 && rules.alias_motion,
             beam_radius: (flags & rules.beam != 0).then(|| {

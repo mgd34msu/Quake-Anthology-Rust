@@ -581,3 +581,714 @@ fn optional_md5_scale_diagnostics_and_retained_pair_survive_reload_rollback() {
         );
     }
 }
+
+fn replacement_files(rules: RuleSetId) -> Vec<(String, Vec<u8>)> {
+    let mut entries = Vec::new();
+    if rules == RuleSetId::Quake {
+        entries.push((
+            "models/paired.mdl".to_owned(),
+            super::registration_tests::interleaved_mdl_frames(),
+        ));
+        entries.push(("models/paired.md5mesh".to_owned(), mesh()));
+        entries.push(("models/paired.md5anim".to_owned(), ANIMATION.to_vec()));
+        for (mesh, shader) in ["first", "second"].into_iter().enumerate() {
+            for (group, count) in [1u8, 2, 3, 6].into_iter().enumerate() {
+                for member in 0..count {
+                    let index = 20 + mesh as u8 * 40 + group as u8 * 6 + member;
+                    entries.push((
+                        format!("progs/textures/{shader}_{group:02}_{member:02}.lmp"),
+                        [
+                            2u32.to_le_bytes().as_slice(),
+                            &1u32.to_le_bytes(),
+                            &[index; 2],
+                        ]
+                        .concat(),
+                    ));
+                }
+            }
+        }
+    } else {
+        let mut original = support::md2();
+        let skin = b"MoDeLs\\TeSt\\SkIn1.PcX";
+        original[132..196].fill(0);
+        original[132..132 + skin.len()].copy_from_slice(skin);
+        entries.extend([
+            ("models/test/tris.md2".to_owned(), original),
+            ("models/test/skin0.pcx".to_owned(), support::pcx(11)),
+            ("models/test/skin1.pcx".to_owned(), support::pcx(22)),
+            ("models/test/md5/tris.md5mesh".to_owned(), mesh()),
+            (
+                "models/test/md5/tris.md5anim".to_owned(),
+                ANIMATION.to_vec(),
+            ),
+            ("models/test/md5/skin0.pcx".to_owned(), support::pcx(71)),
+            ("models/test/md5/skin1.pcx".to_owned(), support::pcx(83)),
+        ]);
+    }
+    entries
+}
+
+fn from_owned_files(entries: &[(String, Vec<u8>)]) -> support::Fixture {
+    support::Fixture::new(
+        &entries
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.clone()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn replacement_profile(assets: &mut Assets, rules: RuleSetId) -> ModelProfile {
+    ModelRequest::native("", rules, Some(support::palette(assets))).profile()
+}
+
+fn replacement_owner(assets: Assets, profile: ModelProfile) -> ModelAssets {
+    let mut owner = ModelAssets::new(assets, [profile], [], Default::default()).unwrap();
+    owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
+    owner
+        .adopt_palettes(
+            crate::render_settings::PaletteRegistrations::from_registered(
+                [profile.source_palette; 5],
+            ),
+        )
+        .unwrap();
+    owner
+}
+
+fn captured_replacement(
+    owner: &ModelAssets,
+    handle: i32,
+    profile: ModelProfile,
+    skin: u32,
+    pose: qa_render::SceneEntity,
+    mut view: qa_render::Refdef,
+) -> qa_render::scene::CommandList {
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let selected = owner
+        .catalog()
+        .lod_bindings(
+            registration,
+            skin,
+            ModelMaterialPolicy {
+                fullbright: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut frontend = qa_render::FrontEnd::load(
+        qa_render::Limits::default()
+            .for_assets(owner.assets())
+            .unwrap()
+            .for_model_choices(owner.catalog().max_choice_nodes())
+            .unwrap(),
+    )
+    .unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    assert!(selected.capture(&mut frame, pose, ShaderView::direct(), None, None));
+    view.viewport = qa_render::Viewport {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    view.origin = Vec3([-8., 0., 0.]);
+    view.near = 1.;
+    view.fov = [90.; 2];
+    assert!(frame.render_scene(view, &[], owner.assets(), ShaderView::direct()));
+    frame.finish()
+}
+
+fn captured_draws(packet: &qa_render::scene::CommandList) -> &[qa_render::scene::DrawItem] {
+    let view = packet
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            qa_render::scene::Command::View(view) => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    packet.draws(view.scene.draws)
+}
+
+#[test]
+fn native_mdl_replacement_retains_parent_groups_and_requires_every_mesh_skin_member() {
+    use qa_render::scene::{FrameTiming, SkeletalFrameMap};
+    let files = replacement_files(RuleSetId::Quake);
+    let fixture = from_owned_files(&files);
+    let mut assets = Assets::load().unwrap();
+    let profile = replacement_profile(&mut assets, RuleSetId::Quake);
+    let mut owner = replacement_owner(assets, profile);
+    let handle = owner
+        .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
+        .unwrap();
+    let mut raster = cpu(&mut owner);
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let lods = owner
+        .catalog()
+        .lod_bindings(registration, 3, Default::default())
+        .unwrap();
+    assert_eq!(lods.base_frames(), 7);
+    assert_eq!(lods.base().unwrap().len(), 1);
+    assert_eq!(lods.len(), 2);
+    let (replacement, mapping, rules) = lods.replacement().unwrap();
+    assert_eq!(mapping, Some(SkeletalFrameMap::Elapsed { rate: 2. }));
+    assert_eq!(rules, RuleSetId::Quake);
+    assert_eq!(replacement.len(), 2);
+    let native = lods.base().unwrap().choices().next().unwrap();
+    let native_model = owner.assets().model(native.model).unwrap();
+    assert_eq!(
+        (
+            native_model.native_frame_count(),
+            native_model.frame_count()
+        ),
+        (4, 7)
+    );
+    assert_eq!(native_model.native_skin_count(), 4);
+    assert_eq!(
+        lods.info().frame_count(native_model.native_frame_count()),
+        4
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .metadata(b"models/paired.mdl")
+            .unwrap()
+            .format,
+        ModelFormat::Mdl
+    );
+    assert!(
+        owner
+            .catalog()
+            .model_handle(b"models/paired.md5mesh", profile.source_rules)
+            .is_none()
+    );
+    let replacement_meshes = replacement
+        .choices()
+        .map(|part| part.model)
+        .collect::<Vec<_>>();
+    for timing in [FrameTiming::Cumulative, FrameTiming::UniformFirst] {
+        let packet = captured_replacement(
+            &owner,
+            handle,
+            profile,
+            3,
+            qa_render::SceneEntity {
+                frame: 1,
+                old_frame: 3,
+                back_lerp: 0.75,
+                sync_base: 0.125,
+                ..Default::default()
+            },
+            qa_render::Refdef {
+                model_time: Some(qa_core::primitives::ThinkTime::Seconds(0.125)),
+                frame_timing: timing,
+                ..Default::default()
+            },
+        );
+        let draws = captured_draws(&packet);
+        assert_eq!(draws.len(), 2);
+        for draw in draws {
+            assert!(replacement_meshes.contains(&draw.mesh.unwrap()));
+            assert_eq!(
+                draw.frames,
+                Some(qa_render::scene::ModelFramePose {
+                    current: 0,
+                    previous: 0,
+                    back_lerp: 0.
+                })
+            );
+        }
+        assert_eq!(raster.render(&packet, owner.assets()).rejected, 0);
+        assert!(raster.inverse_depth().iter().any(|&depth| depth > 0.));
+    }
+    let fallback = owner
+        .catalog()
+        .lod_bindings(registration, u32::MAX, Default::default())
+        .unwrap();
+    assert_eq!(
+        fallback
+            .replacement()
+            .unwrap()
+            .0
+            .choices()
+            .next()
+            .unwrap()
+            .shaders()
+            .count(),
+        1
+    );
+    let mut incomplete = files;
+    incomplete.retain(|(path, _)| path != "progs/textures/second_03_05.lmp");
+    let fixture = from_owned_files(&incomplete);
+    let mut assets = Assets::load().unwrap();
+    let profile = replacement_profile(&mut assets, RuleSetId::Quake);
+    let mut owner = replacement_owner(assets, profile);
+    let handle = owner
+        .register_model(&fixture.vfs, b"models/paired.mdl", profile.source_rules)
+        .unwrap();
+    let _cpu = cpu(&mut owner);
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let lods = owner
+        .catalog()
+        .lod_bindings(registration, 0, Default::default())
+        .unwrap();
+    assert!(lods.replacement().is_none());
+    assert_eq!(lods.base().unwrap().len(), 1);
+}
+
+#[test]
+fn native_md2_replacement_uses_inserted_skin_directory_and_one_native_public_handle() {
+    use qa_render::scene::{ModelFramePose, SkeletalFrameMap};
+    let fixture = from_owned_files(&replacement_files(RuleSetId::Quake2));
+    let mut assets = Assets::load().unwrap();
+    let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
+    let mut owner = replacement_owner(assets, profile);
+    let handle = owner
+        .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+        .unwrap();
+    let mut cpu = cpu(&mut owner);
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let lods = owner
+        .catalog()
+        .lod_bindings(registration, 1, Default::default())
+        .unwrap();
+    assert_eq!(lods.base().unwrap().len(), 1);
+    assert_eq!(lods.len(), 2);
+    let (replacement, mapping, rules) = lods.replacement().unwrap();
+    assert_eq!(
+        (mapping, rules),
+        (Some(SkeletalFrameMap::Wrap), RuleSetId::Quake2)
+    );
+    assert_eq!(replacement.len(), 2);
+    assert!(
+        owner
+            .catalog()
+            .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules)
+            .is_none()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .metadata(b"models/test/tris.md2")
+            .unwrap()
+            .format,
+        ModelFormat::Md2
+    );
+    let receipt = owner
+        .catalog()
+        .renderer_registrations(RendererRegistration::Model, handle, profile)
+        .unwrap();
+    let names = receipt
+        .iter()
+        .map(|entry| owner.assets().name(entry.key).unwrap())
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| *name == "models/test/md5/skin1"));
+    assert!(!names.iter().any(|name| *name == "textures/first"));
+    let mut pixels = Vec::new();
+    for skin in [0, 1] {
+        let packet = captured_replacement(
+            &owner,
+            handle,
+            profile,
+            skin,
+            qa_render::SceneEntity {
+                frame: 1,
+                old_frame: 0,
+                back_lerp: 0.25,
+                ..Default::default()
+            },
+            qa_render::Refdef::default(),
+        );
+        assert_eq!(captured_draws(&packet).len(), 2);
+        assert!(captured_draws(&packet).iter().all(|draw| draw.frames
+            == Some(ModelFramePose {
+                current: 1,
+                previous: 0,
+                back_lerp: 0.25
+            })));
+        assert_eq!(cpu.render(&packet, owner.assets()).rejected, 0);
+        assert!(cpu.inverse_depth().iter().any(|&depth| depth > 0.));
+        pixels.push(cpu.pixels().to_vec());
+    }
+    assert_ne!(pixels[0], pixels[1]);
+}
+
+#[test]
+fn optional_replacement_pair_failure_and_load_controls_keep_native_registration_healthy() {
+    let mut native_prefix = None;
+    for failure in [
+        "disabled",
+        "missing",
+        "malformed",
+        "surface_names",
+        "skin_image",
+    ] {
+        let mut files = replacement_files(RuleSetId::Quake2);
+        if failure == "missing" {
+            files.retain(|(path, _)| path != "models/test/md5/tris.md5anim");
+        } else if failure == "malformed" {
+            files
+                .iter_mut()
+                .find(|(path, _)| path == "models/test/md5/tris.md5mesh")
+                .unwrap()
+                .1 = b"not an MD5 model".to_vec();
+        } else if failure == "skin_image" {
+            files
+                .iter_mut()
+                .find(|(path, _)| path == "models/test/md5/skin1.pcx")
+                .unwrap()
+                .1 = b"invalid PCX image".to_vec();
+        }
+        let fixture = from_owned_files(&files);
+        let mut assets = Assets::load().unwrap();
+        let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
+        let mut owner = if failure == "surface_names" {
+            let mut owner = ModelAssets::new(
+                assets,
+                [profile],
+                [],
+                ModelLimits {
+                    name_bytes: [
+                        "models/test/tris.md2",
+                        "models/test/md5/tris.md5mesh",
+                        "models/test/md5/skin0.pcx",
+                        "models/test/md5/skin1.pcx",
+                    ]
+                    .iter()
+                    .map(|path| path.len())
+                    .sum(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
+            owner
+                .adopt_palettes(
+                    crate::render_settings::PaletteRegistrations::from_registered(
+                        [profile.source_palette; 5],
+                    ),
+                )
+                .unwrap();
+            owner
+        } else {
+            replacement_owner(assets, profile)
+        };
+        if failure == "disabled" {
+            owner.set_model_replacement_load(true, false);
+        }
+        let handle = owner
+            .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+            .unwrap();
+        let _cpu = cpu(&mut owner);
+        let registration = owner
+            .catalog()
+            .renderer_registration(handle, profile)
+            .unwrap();
+        let lods = owner
+            .catalog()
+            .lod_bindings(registration, 0, Default::default())
+            .unwrap();
+        assert_eq!(lods.base().unwrap().len(), 1, "{failure}");
+        assert!(lods.replacement().is_none(), "{failure}");
+        assert_eq!(
+            owner
+                .catalog()
+                .metadata(b"models/test/tris.md2")
+                .unwrap()
+                .format,
+            ModelFormat::Md2
+        );
+        let capacity = owner.catalog().capacity();
+        let prefix = (
+            owner.assets().counts(),
+            capacity.surfaces,
+            capacity.bindings,
+            capacity.frame_vertices,
+            capacity.indices,
+        );
+        assert_eq!(prefix, *native_prefix.get_or_insert(prefix), "{failure}");
+        if failure == "surface_names" {
+            assert!(
+                owner
+                    .catalog()
+                    .diagnostics
+                    .iter()
+                    .any(|entry| entry.error.contains("model surface names"))
+            );
+        } else if failure == "skin_image" {
+            assert!(
+                owner
+                    .catalog()
+                    .diagnostics
+                    .iter()
+                    .any(|entry| entry.error.contains("replacement material"))
+            );
+        }
+        fixture.vfs.take_lookup_count();
+        assert_eq!(
+            owner
+                .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+                .unwrap(),
+            handle
+        );
+        assert_eq!(fixture.vfs.take_lookup_count(), 0, "{failure}");
+    }
+}
+
+#[test]
+fn replacement_discovery_compares_actual_mount_precedence_without_public_candidate_handles() {
+    for priority in [-1, 0, 1] {
+        let files = replacement_files(RuleSetId::Quake2);
+        let (replacement, original): (Vec<_>, Vec<_>) = files
+            .into_iter()
+            .partition(|(path, _)| path.contains("/md5/"));
+        let mut fixture = from_owned_files(&original);
+        let candidate = from_owned_files(&replacement);
+        let candidate_path = candidate.vfs.mounts().next().unwrap().path.clone();
+        fixture
+            .vfs
+            .mount_directory(&candidate_path, priority)
+            .unwrap();
+        let mut assets = Assets::load().unwrap();
+        let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
+        let mut owner = replacement_owner(assets, profile);
+        let handle = owner
+            .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+            .unwrap();
+        let _cpu = cpu(&mut owner);
+        let registration = owner
+            .catalog()
+            .renderer_registration(handle, profile)
+            .unwrap();
+        let lods = owner
+            .catalog()
+            .lod_bindings(registration, 0, Default::default())
+            .unwrap();
+        assert_eq!(
+            lods.replacement().is_some(),
+            priority >= 0,
+            "priority={priority}"
+        );
+        assert_eq!(lods.base().unwrap().len(), 1);
+        assert!(
+            owner
+                .catalog()
+                .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejection() {
+    let mut fixture = from_owned_files(&replacement_files(RuleSetId::Quake2));
+    let mut assets = Assets::load().unwrap();
+    let profile = replacement_profile(&mut assets, RuleSetId::Quake2);
+    let mut owner = replacement_owner(assets, profile);
+    let handle = owner
+        .register_model(&fixture.vfs, b"models/test/tris.md2", profile.source_rules)
+        .unwrap();
+    let mut raster = cpu(&mut owner);
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let lods = owner
+        .catalog()
+        .lod_bindings(registration, 0, Default::default())
+        .unwrap();
+    let native_mesh = lods.base().unwrap().choices().next().unwrap().model;
+    let replacement_meshes = lods
+        .replacement()
+        .unwrap()
+        .0
+        .choices()
+        .map(|part| part.model)
+        .collect::<Vec<_>>();
+    let skeleton = Arc::clone(
+        owner
+            .assets()
+            .model(replacement_meshes[0])
+            .unwrap()
+            .skeleton()
+            .unwrap(),
+    );
+    let packet = captured_replacement(
+        &owner,
+        handle,
+        profile,
+        0,
+        Default::default(),
+        Default::default(),
+    );
+    assert_eq!(raster.render(&packet, owner.assets()).rejected, 0);
+    let pixels = raster.pixels().to_vec();
+    let metadata = owner.catalog().metadata(b"models/test/tris.md2").unwrap();
+    for path in [
+        "models/test/tris.md2",
+        "models/test/md5/tris.md5mesh",
+        "models/test/md5/tris.md5anim",
+    ] {
+        fixture.remove(path);
+    }
+    let (mount, path) = {
+        let mount = fixture.vfs.mounts().next().unwrap();
+        (mount.id, mount.path.clone())
+    };
+    assert!(fixture.vfs.unmount(mount));
+    fixture.vfs.mount_directory(&path, 0).unwrap();
+    let mut finish = profile.finish;
+    finish.detail_textures = false;
+    let (next, _) = owner
+        .prepare_profile(
+            &fixture.vfs,
+            profile.source_rules,
+            profile.rules,
+            profile.image_settings,
+            finish,
+            |assets| raster.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    let request = RendererRequest {
+        name: b"models/test/tris.md2".as_slice(),
+        source: profile.source_rules,
+        kind: RendererRegistration::Model,
+        world: None,
+    };
+    let prefix = owner.assets().counts();
+    assert!(
+        owner
+            .prepare_registration(
+                &fixture.vfs,
+                &request,
+                next,
+                RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |assets, _| {
+                    let _candidate =
+                        CpuBackend::load_with_assets(64, 64, assets).map_err(str::to_owned)?;
+                    Err("reject staged native replacement".to_owned())
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), prefix);
+    assert_eq!(
+        owner.catalog().renderer_registration(handle, profile),
+        Some(registration)
+    );
+    owner
+        .prepare_registration(
+            &fixture.vfs,
+            &request,
+            next,
+            RegistrationVariant::Guard(false),
+            |_| Ok(()),
+            |assets, _| {
+                raster = CpuBackend::load_with_assets(64, 64, assets).map_err(str::to_owned)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    let next_registration = owner.catalog().renderer_registration(handle, next).unwrap();
+    let next_lods = owner
+        .catalog()
+        .lod_bindings(next_registration, 0, Default::default())
+        .unwrap();
+    assert_eq!(
+        next_lods.base().unwrap().choices().next().unwrap().model,
+        native_mesh
+    );
+    assert_eq!(
+        next_lods
+            .replacement()
+            .unwrap()
+            .0
+            .choices()
+            .map(|part| part.model)
+            .collect::<Vec<_>>(),
+        replacement_meshes
+    );
+    assert_eq!(owner.assets().counts().models, prefix.models);
+    let prefix = owner.assets().counts();
+    for reject in [true, false] {
+        let result =
+            owner.image_transaction(&fixture.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+                let refresh = owner.refresh_images(
+                    &fixture.vfs,
+                    &[profile, next],
+                    &[],
+                    [None; 5],
+                    finish,
+                    false,
+                    |_| Ok(()),
+                )?;
+                assert_eq!(refresh.profile(next), next);
+                assert_eq!(
+                    refresh.registration(next_registration, owner.catalog())?,
+                    next_registration
+                );
+                let mut candidate =
+                    CpuBackend::load_with_assets(64, 64, owner.assets()).map_err(str::to_owned)?;
+                let packet = captured_replacement(
+                    owner,
+                    handle,
+                    next,
+                    0,
+                    Default::default(),
+                    Default::default(),
+                );
+                assert_eq!(candidate.render(&packet, owner.assets()).rejected, 0);
+                assert_eq!(candidate.pixels(), pixels);
+                if reject {
+                    return Err("reject published replacement reload".to_owned());
+                }
+                raster = candidate;
+                Ok(())
+            });
+        assert_eq!(result.is_err(), reject);
+        if reject {
+            assert_eq!(owner.assets().counts(), prefix);
+        }
+        assert_eq!(owner.assets().counts().models, prefix.models);
+        assert_eq!(
+            owner
+                .catalog()
+                .model_handle(b"models/test/tris.md2", profile.source_rules),
+            Some(handle)
+        );
+        assert_eq!(
+            owner.catalog().metadata(b"models/test/tris.md2"),
+            Some(metadata)
+        );
+        assert!(Arc::ptr_eq(
+            &skeleton,
+            owner
+                .assets()
+                .model(replacement_meshes[0])
+                .unwrap()
+                .skeleton()
+                .unwrap()
+        ));
+        let packet = captured_replacement(
+            &owner,
+            handle,
+            next,
+            0,
+            Default::default(),
+            Default::default(),
+        );
+        assert_eq!(raster.render(&packet, owner.assets()).rejected, 0);
+        assert_eq!(raster.pixels(), pixels);
+    }
+}

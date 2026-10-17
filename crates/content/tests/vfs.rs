@@ -171,6 +171,98 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
 }
 
 #[test]
+fn retained_source_precedence_matches_winners_after_unlink_unmount_and_vfs_drop() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+
+    let root = Fixture::new("retained-precedence");
+    let mut vfs = Vfs::default();
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    let mut accepted = Vec::new();
+    for (name, priority) in [("older", 7), ("later", 7), ("lower", 6), ("higher", 8)] {
+        let directory = root.0.join(name);
+        qa_platform::files::create_dir_all(&directory).unwrap();
+        qa_platform::files::write(directory.join("shared"), name).unwrap();
+        qa_platform::files::write(directory.join("other"), b"other").unwrap();
+        let mount = vfs.mount_directory(&directory, priority).unwrap();
+        let file = vfs
+            .files_in_mount(mount)
+            .find(|(_, name)| *name == b"shared")
+            .unwrap()
+            .0;
+        assert_eq!(
+            vfs.read_to_vec(file, 16, &mut reader).unwrap(),
+            name.as_bytes()
+        );
+        let rank = vfs.source_precedence(file).unwrap();
+        let other = vfs
+            .files_in_mount(mount)
+            .find(|(_, name)| *name == b"other")
+            .unwrap()
+            .0;
+        assert_eq!(
+            rank.compare(&vfs.source_precedence(other).unwrap()),
+            Some(Equal)
+        );
+        accepted.push((mount, file, rank));
+    }
+    let [
+        (older_mount, older_file, older),
+        (later_mount, later_file, later),
+        (_, _, lower),
+        (higher_mount, higher_file, higher),
+    ] = accepted.as_slice()
+    else {
+        panic!()
+    };
+    assert_eq!(later.compare(older), Some(Greater));
+    assert_eq!(lower.compare(older), Some(Less));
+    assert_eq!(higher.compare(later), Some(Greater));
+    assert_eq!(vfs.open(b"shared"), Some(*higher_file));
+    assert!(vfs.unmount(*higher_mount));
+    assert_eq!(vfs.open(b"shared"), Some(*later_file));
+    assert!(vfs.unmount(*later_mount));
+    assert_eq!(vfs.open(b"shared"), Some(*older_file));
+
+    qa_platform::files::remove_file(root.0.join("older/shared")).unwrap();
+    assert_eq!(
+        vfs.source_precedence(*older_file).unwrap().compare(older),
+        Some(Equal)
+    );
+    assert!(vfs.unmount(*older_mount));
+    assert!(matches!(
+        vfs.source_precedence(*older_file),
+        Err(VfsError::Handle)
+    ));
+    assert!(matches!(
+        vfs.source_precedence(*higher_file),
+        Err(VfsError::Handle)
+    ));
+    drop(vfs);
+    assert_eq!(later.compare(older), Some(Greater));
+    assert_eq!(lower.compare(older), Some(Less));
+    assert_eq!(higher.compare(later), Some(Greater));
+    assert_eq!(older.compare(&older.clone()), Some(Equal));
+}
+
+#[test]
+fn source_precedence_from_independent_vfs_owners_is_incomparable() {
+    let root = Fixture::new("precedence-owner");
+    qa_platform::files::write(root.0.join("shared"), b"same source").unwrap();
+    let mut first = Vfs::default();
+    let mut second = Vfs::default();
+    first.mount_directory(&root.0, 7).unwrap();
+    second.mount_directory(&root.0, 7).unwrap();
+    let first = first
+        .source_precedence(first.open(b"shared").unwrap())
+        .unwrap();
+    let second = second
+        .source_precedence(second.open(b"shared").unwrap())
+        .unwrap();
+    assert_eq!(first.compare(&second), None);
+    assert_eq!(second.compare(&first), None);
+}
+
+#[test]
 fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("ranges");
@@ -330,6 +422,13 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     assert_eq!(exact_members.len(), 2);
     assert_eq!(priority_members.len(), 2);
     assert_eq!(map_members.len(), 2);
+    assert_eq!(
+        zip_vfs
+            .source_precedence(case_members[0])
+            .unwrap()
+            .compare(&zip_vfs.source_precedence(case_members[1]).unwrap()),
+        Some(std::cmp::Ordering::Equal)
+    );
     assert_eq!(zip_vfs.origin(case_members[0]).unwrap().member, b"Case-Zip");
     assert_eq!(zip_vfs.origin(case_members[1]).unwrap().member, b"CASE-ZIP");
     let case_listing: Vec<_> = zip_vfs

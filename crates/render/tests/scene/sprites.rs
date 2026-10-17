@@ -3,7 +3,7 @@ use qa_core::primitives::ThinkTime;
 use qa_render::{
     ModelId,
     assets::{ModelAnimation, SpriteFrame, SpriteGeometry, SpriteOrientation, TimedGroup},
-    scene::{FrameTiming, ModelChoiceSelector, SpritePlacement},
+    scene::{FrameTiming, SpritePlacement},
 };
 use std::sync::Arc;
 
@@ -113,7 +113,7 @@ fn selected(packet: &qa_render::CommandList) -> Vec<(u32, ShaderBindingId, Vec3)
         .map(|view| {
             let draw = packet.draws(view.scene.draws)[0];
             (
-                draw.frames.unwrap()[0],
+                draw.frames.unwrap().current,
                 draw.shader.unwrap().source(&()).unwrap(),
                 packet
                     .polys(view.scene.polys)
@@ -159,10 +159,10 @@ fn spr_groups_keep_extent_and_material_together_with_cumulative_time_under_both_
         };
         let capture = |views: &[Refdef]| {
             super::mdl_groups::capture_with(&assets, views, |frame| {
-                assert!(frame.add_model_choices(
+                assert!(model_choices::sprite(
+                    frame,
                     pose,
                     model,
-                    ModelChoiceSelector::Frame,
                     shaders.into_iter().map(Into::into)
                 ));
             })
@@ -185,13 +185,7 @@ fn spr_groups_keep_extent_and_material_together_with_cumulative_time_under_both_
                 (source.frame, source.old_frame, source.sync_base),
                 (1, 0, 0.)
             );
-            assert!(matches!(
-                source.model,
-                SceneModel::Timed {
-                    selector: ModelChoiceSelector::Frame,
-                    ..
-                }
-            ));
+            assert!(matches!(source.model, SceneModel::Choice { .. }));
         }
         let mut cpu = qa_render::cpu::CpuBackend::load_with_assets(80, 16, &assets).unwrap();
         assert_eq!(cpu.render(&packet, &assets).rejected, 0);
@@ -217,7 +211,8 @@ fn spr_groups_keep_extent_and_material_together_with_cumulative_time_under_both_
         }],
         |frame| {
             for sync_base in [0., 0.25] {
-                assert!(frame.add_model_choices(
+                assert!(model_choices::sprite(
+                    frame,
                     SceneEntity {
                         origin: Vec3([8., 0., 0.]),
                         frame: 1,
@@ -225,7 +220,6 @@ fn spr_groups_keep_extent_and_material_together_with_cumulative_time_under_both_
                         ..Default::default()
                     },
                     model,
-                    ModelChoiceSelector::Frame,
                     shaders.into_iter().map(Into::into)
                 ));
             }
@@ -249,27 +243,32 @@ fn sp2_wraps_geometry_and_shader_at_the_same_boundary_and_choice_failure_is_atom
     let (assets, spr, sp2, shaders) = sprites();
     let mut front = FrontEnd::load(Limits {
         entities: 2,
-        model_choices: 2,
+        model_choices: 3,
         model_joints: 0,
         ..Default::default()
     })
     .unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
-    assert!(!frame.add_model_choices(
+    assert!(!model_choices::sprite(
+        &mut frame,
         SceneEntity::default(),
         spr,
-        ModelChoiceSelector::Frame,
         shaders.into_iter().map(Into::into)
     ));
-    assert!(!frame.add_model_choices(SceneEntity::default(), sp2, ModelChoiceSelector::Frame, []));
-    assert!(frame.add_model_choices(
+    assert!(!model_choices::sprite(
+        &mut frame,
+        SceneEntity::default(),
+        sp2,
+        []
+    ));
+    assert!(model_choices::sprite(
+        &mut frame,
         SceneEntity {
             frame: 5,
             origin: Vec3([8., 0., 0.]),
             ..Default::default()
         },
         sp2,
-        ModelChoiceSelector::Frame,
         shaders[..2].iter().copied().map(Into::into)
     ));
     assert!(frame.render_scene(
@@ -281,19 +280,19 @@ fn sp2_wraps_geometry_and_shader_at_the_same_boundary_and_choice_failure_is_atom
     let packet = frame.finish();
     assert_eq!(packet.rejected, 2);
     assert_eq!(selected(&packet), [(1, shaders[1], Vec3([8., 3., 1.]))]);
-    let SceneModel::Timed { choices, .. } = packet.entity(0).model else {
+    let SceneModel::Choice { root } = packet.entity(0).model else {
         panic!("SP2 choice span")
     };
-    assert_eq!(choices, Span { first: 0, count: 2 });
+    assert_eq!(root, 2);
     let invalid = super::mdl_groups::capture_with(&assets, &[Refdef::default()], |frame| {
-        assert!(frame.add_model_choices(
+        assert!(model_choices::sprite(
+            frame,
             SceneEntity {
                 frame: u32::MAX,
                 origin: Vec3([8., 0., 0.]),
                 ..Default::default()
             },
             spr,
-            ModelChoiceSelector::Frame,
             shaders.into_iter().map(Into::into)
         ));
     });

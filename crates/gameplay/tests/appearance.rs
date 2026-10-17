@@ -591,6 +591,17 @@ fn rerelease_keeps_old_frame_selection_separate_from_discrete_origin_selection()
 }
 
 #[test]
+fn no_model_lod_is_a_rerelease_capability_not_a_shared_native_bit() {
+    let mut appearance = EntityAppearance::default();
+    appearance.native.render_flags = 1 << 25;
+    for source in RuleSetId::ALL {
+        let projected = policy(source).project(&appearance);
+        assert_eq!(projected.no_model_lod, source == RuleSetId::Quake2Rerelease);
+        assert_eq!(appearance.native.render_flags, 1 << 25);
+    }
+}
+
+#[test]
 fn software_alias_light_preserves_native_dot_then_negation_order() {
     for angles in [Vec3::default(), Vec3([23.0, 45.0, 67.0])] {
         let light = Vec3([-1.0, 0.0, 0.0]);

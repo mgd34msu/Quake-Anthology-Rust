@@ -1580,7 +1580,7 @@ fn embedded_mdl_skin_choices_preserve_distinct_images_in_a_native_view() {
     }
 }
 
-fn interleaved_mdl_frames() -> Vec<u8> {
+pub(super) fn interleaved_mdl_frames() -> Vec<u8> {
     let original = support::mdl();
     let mut bytes = original[..84].to_vec();
     bytes[48..52].copy_from_slice(&4i32.to_le_bytes());

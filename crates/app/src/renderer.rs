@@ -391,6 +391,7 @@ pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef
         fov,
         curve_error: client.curve_error,
         model_lod: client.model_lod,
+        model_replacements: client.model_replacements,
         model_time: client.model_time,
         frame_timing,
         skin_timing,
@@ -623,10 +624,12 @@ impl SceneComposer {
         &mut self,
         assets: &Assets,
         required: Option<Limits>,
+        choices: usize,
     ) -> Result<qa_render::scene::FrontEndCapacity<'_>, String> {
         let limits = required
             .unwrap_or(self.frontend.limits())
-            .for_assets(assets)?;
+            .for_assets(assets)?
+            .for_model_choices(choices)?;
         match self.frame.as_mut() {
             Some(frame) => self.frontend.stage_capacity_with_frame(limits, frame),
             None => self.frontend.stage_capacity(limits),
@@ -841,6 +844,7 @@ impl SceneComposer {
         assets: &Assets,
         graphics: VideoGraphics,
         refresh: &crate::model_assets::ImageRefresh,
+        model_choices: usize,
     ) -> Result<SceneVideoAppend<'_>, String> {
         if self.frame.is_some() {
             return Err("scene frame is active".to_owned());
@@ -874,7 +878,9 @@ impl SceneComposer {
             let world = assets.world(world).ok_or("missing video world")?;
             limits = scene_surface_limits(limits, world.visibility().surface_count())?;
         }
-        limits = limits.for_assets(assets)?;
+        limits = limits
+            .for_assets(assets)?
+            .for_model_choices(model_choices)?;
         let frontend = self.frontend.stage_capacity(limits)?;
         Ok(SceneVideoAppend {
             frontend,
@@ -1059,6 +1065,9 @@ pub trait AssetPreparer {
         None
     }
     fn prepare_assets(&mut self, assets: &Assets, scene: Option<Limits>) -> Result<(), String>;
+    fn prepare_model_assets(&mut self, assets: &Assets, _per_entity: usize) -> Result<(), String> {
+        self.prepare_assets(assets, None)
+    }
 }
 impl AssetPreparer for Renderer {
     fn target_size(&self) -> Option<[u32; 2]> {
@@ -1087,6 +1096,7 @@ impl Renderer {
         console: console::ConsoleAssets,
         hud: [Option<hud::HudAssets>; 5],
         mut effects: qa_render::effects::Effects,
+        model_choices: usize,
     ) -> Result<(Self, SceneComposer), String> {
         let kind = match &context {
             Context::Cpu(_) => Kind::Cpu,
@@ -1105,6 +1115,7 @@ impl Renderer {
             .ok_or("particle scene capacity")?;
         let (limits, ui_commands) =
             scene_ui_limits(limits, 0, ui_command_capacity(Some(&console), true)?)?;
+        let limits = limits.for_model_choices(model_choices)?;
         let (mut scene, limits) = SceneComposer::load(limits, assets, worlds)?;
         scene.kind = kind;
         scene.console = Some(console);

@@ -1,3 +1,6 @@
+#[path = "support/model_choices.rs"]
+mod model_choices;
+
 use qa_core::primitives::{Bounds, Vec3};
 use qa_render::SceneModel;
 use qa_render::assets::{MaterialSettings, Stage};
@@ -11,6 +14,8 @@ use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 #[path = "scene/mdl_groups.rs"]
 mod mdl_groups;
+#[path = "scene/model_replacements.rs"]
+mod model_replacements;
 #[path = "scene/skeletal.rs"]
 mod skeletal;
 #[path = "scene/sprites.rs"]
@@ -900,7 +905,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
     let limits = Limits {
         commands: 6,
         entities: 2,
-        model_choices: 2,
+        model_choices: 3,
         model_joints: 0,
         polys: 2,
         vertices: 6,
@@ -913,7 +918,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
     let required = Limits {
         commands: 8,
         entities: 4,
-        model_choices: 8,
+        model_choices: 10,
         model_joints: 0,
         ..limits
     };
@@ -931,10 +936,11 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
     let mut front = FrontEnd::load(limits).unwrap();
     let mut frame = front.begin_frame([1, 2, 3, 255]).unwrap();
     frame.for_client(Some(client), |frame| {
-        assert!(frame.add_model_choices(
+        assert!(model_choices::skin(
+            frame,
             SceneEntity::default(),
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(1),
+            1,
             shaders[1..3].iter().copied().map(Into::into)
         ));
         assert!(frame.add_world(
@@ -985,22 +991,24 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
             ..Default::default()
         }));
         drop(front.stage_capacity_with_frame(required, frame).unwrap());
-        assert_eq!(front.limits().model_choices, 2);
-        assert!(!frame.add_model_choices(
+        assert_eq!(front.limits().model_choices, 3);
+        assert!(!model_choices::skin(
+            frame,
             SceneEntity::default(),
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+            3,
             shaders[6..12].iter().copied().map(Into::into)
         ));
         front
             .stage_capacity_with_frame(required, frame)
             .unwrap()
             .commit();
-        assert_eq!(front.limits().model_choices, 8);
-        assert!(frame.add_model_choices(
+        assert_eq!(front.limits().model_choices, 10);
+        assert!(model_choices::skin(
+            frame,
             SceneEntity::default(),
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+            3,
             shaders[6..12].iter().copied().map(Into::into)
         ));
         assert!(frame.render_scene(view, &[0xaa], &assets, ShaderView::direct()));
@@ -1086,17 +1094,11 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
     assert_eq!(empty.scene.particles.count, 0);
     assert_eq!(empty.scene.draws.count, 0);
     assert_eq!(empty.particle_client, None);
-    for (captured, choices) in [
-        (first, Span { first: 0, count: 2 }),
-        (second, Span { first: 2, count: 6 }),
-    ] {
-        let SceneModel::Timed {
-            choices: stored, ..
-        } = packet.entities(captured.scene.entities)[0].model
-        else {
+    for (captured, expected_root) in [(first, 2), (second, 9)] {
+        let SceneModel::Choice { root } = packet.entities(captured.scene.entities)[0].model else {
             panic!("timed skin payload")
         };
-        assert_eq!(stored, choices);
+        assert_eq!(root, expected_root);
     }
     front
         .recycle(packet)

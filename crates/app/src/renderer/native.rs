@@ -29,6 +29,7 @@ struct Target {
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
+    model_controls: qa_console::model::ModelHandles,
     view_policy: super::ViewPolicyViews,
 }
 impl Target {
@@ -161,6 +162,7 @@ impl SceneRole {
         software_waterwarp: qa_console::cvars::View,
         curve_error: qa_console::cvars::View,
         model_lod: [qa_console::cvars::View; 2],
+        model_controls: qa_console::model::ModelHandles,
         view_policy: super::ViewPolicyViews,
     ) {
         self.target = Some(Target {
@@ -174,6 +176,7 @@ impl SceneRole {
             software_waterwarp,
             curve_error,
             model_lod,
+            model_controls,
             view_policy,
         });
     }
@@ -416,18 +419,6 @@ impl SceneService for SceneBorrow<'_> {
                 native: self.native,
                 context: self.context,
             };
-            if !choices
-                .clone()
-                .flat_map(|row| row.into_iter().take(info.native_count()).flatten())
-                .all(|choice| {
-                    shader.is_some()
-                        || choice
-                            .shaders()
-                            .all(|source| choice.resolve_shader(source, shaders, nodes).is_some())
-                })
-            {
-                return frame.reject_submission();
-            }
             let Some(first) = assets.model(first_choice.model) else {
                 return frame.reject_submission();
             };
@@ -457,34 +448,7 @@ impl SceneService for SceneBorrow<'_> {
                     pose.old_frame = old as u32;
                 }
             }
-            if let Some((selector, members)) = first_choice.shader.deferred() {
-                return frame.add_model_choices(
-                    pose,
-                    first_choice.model,
-                    selector,
-                    members.filter_map(|source| {
-                        shader.or_else(|| first_choice.resolve_shader(source, shaders, nodes))
-                    }),
-                );
-            }
-            return frame.add_model_lods(
-                pose,
-                info.radius(pose.frame),
-                choices.map(|row| {
-                    row.into_iter().take(info.native_count()).map(|choice| {
-                        let choice = choice?;
-                        let crate::model_assets::ModelShaderChoice::Single(source) = choice.shader
-                        else {
-                            return None;
-                        };
-                        Some(qa_render::scene::ModelPart {
-                            model: choice.model,
-                            shader: shader
-                                .or_else(|| choice.resolve_shader(source, shaders, nodes))?,
-                        })
-                    })
-                }),
-            );
+            return choices.capture(frame, pose, shaders, nodes, shader);
         }
         pose.shader = Some(if submitted.kind == EntityKind::Beam {
             ShaderRef::Direct(composer.beam)
@@ -615,6 +579,9 @@ impl SceneService for SceneBorrow<'_> {
             cvars.numeric(target.software_waterwarp).unwrap_or(0.0) != 0.0;
         view.refdef.curve_error = crate::render_settings::curve_error(cvars, target.curve_error);
         view.refdef.model_lod = crate::render_settings::model_lod(cvars, target.model_lod);
+        view.refdef.model_replacements =
+            crate::render_settings::model_replacements(cvars, target.model_controls)
+                .map_err(|_| CallError::Geometry)?;
         (view.refdef.policy, view.refdef.near) = target
             .view_policy
             .read(cvars)

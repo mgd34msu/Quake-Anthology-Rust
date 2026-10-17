@@ -25,10 +25,10 @@ pub use assets::{
 };
 pub use scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame,
-    FrameTiming, FrontEnd, Light, LightStyle, Limits, ModelChoiceSelector, ModelLodSettings,
-    ModelPart, PaletteOperation, PaletteShift, PaletteTransform, ParticlePresentation,
-    PerspectiveStep, Refdef, SceneEntity, SceneModel, SceneParticle, SkinTiming, SpritePlacement,
-    Viewport,
+    FrameTiming, FrontEnd, Light, LightStyle, Limits, ModelCapture, ModelChoice, ModelFramePose,
+    ModelLodSettings, ModelPart, ModelReplacementSettings, ModelSelector, PaletteOperation,
+    PaletteShift, PaletteTransform, ParticlePresentation, PerspectiveStep, Refdef, SceneEntity,
+    SceneModel, SceneParticle, SkeletalFrameMap, SkinTiming, SpritePlacement, Viewport,
 };
 pub use world::WorldPresentationId;
 

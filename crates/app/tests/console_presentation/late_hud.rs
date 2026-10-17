@@ -246,6 +246,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
         },
         ..Default::default()
     });
+    let model_choices = owner.catalog().max_choice_nodes();
     let (mut renderer, mut scene) = Renderer::load(
         Context::Cpu(configuration),
         160,
@@ -256,6 +257,7 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
         console,
         std::array::from_fn(|_| None),
         effects,
+        model_choices,
     )
     .unwrap();
     owner

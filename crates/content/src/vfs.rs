@@ -1,6 +1,7 @@
 use qa_core::names::NameTable;
 use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
+    cmp::Ordering as CmpOrdering,
     io,
     path::{Path, PathBuf},
     sync::{
@@ -14,6 +15,26 @@ pub struct MountId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileRef {
     entry: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MountPrecedence {
+    priority: i32,
+    mount: u32,
+}
+
+/// Retained mount precedence from an accepted resource's VFS owner.
+#[derive(Clone, Debug)]
+pub struct SourcePrecedence {
+    owner: Arc<()>,
+    mount: MountPrecedence,
+}
+impl SourcePrecedence {
+    /// Greater means higher priority, then later mounted. Different VFS owners
+    /// have no comparable search order, even if their numeric ranks coincide.
+    pub fn compare(&self, other: &Self) -> Option<CmpOrdering> {
+        Arc::ptr_eq(&self.owner, &other.owner).then(|| self.mount.cmp(&other.mount))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +51,14 @@ pub struct MountInfo {
     /// Larger priorities win; equally ranked mounts prefer the last mounted.
     pub priority: i32,
     active: bool,
+}
+impl MountInfo {
+    fn precedence(&self) -> MountPrecedence {
+        MountPrecedence {
+            priority: self.priority,
+            mount: self.id.0,
+        }
+    }
 }
 
 pub struct Origin<'a> {
@@ -96,6 +125,7 @@ impl From<io::Error> for VfsError {
 
 #[derive(Default)]
 pub struct Vfs {
+    owner: Arc<()>,
     mounts: Vec<MountInfo>,
     entries: Vec<Entry>,
     names: Option<NameTable>,
@@ -350,10 +380,9 @@ impl Vfs {
                 .cmp(&y.name)
                 .then_with(|| {
                     self.mounts[y.mount]
-                        .priority
-                        .cmp(&self.mounts[x.mount].priority)
+                        .precedence()
+                        .cmp(&self.mounts[x.mount].precedence())
                 })
-                .then(y.mount.cmp(&x.mount))
                 .then_with(|| match self.mounts[x.mount].kind {
                     MountKind::Pk3 => b.entry.cmp(&a.entry),
                     MountKind::Directory | MountKind::Pak => a.entry.cmp(&b.entry),
@@ -383,6 +412,16 @@ impl Vfs {
             .get(reference.entry as usize)
             .filter(|entry| self.mounts[entry.mount].active)
             .ok_or(VfsError::Handle)
+    }
+
+    /// Snapshot the source used by a cold read. The value remains comparable
+    /// after its file is removed, its mount is retired, or this VFS is dropped.
+    pub fn source_precedence(&self, reference: FileRef) -> Result<SourcePrecedence, VfsError> {
+        let entry = self.entry(reference)?;
+        Ok(SourcePrecedence {
+            owner: Arc::clone(&self.owner),
+            mount: self.mounts[entry.mount].precedence(),
+        })
     }
 
     pub fn length(&self, reference: FileRef) -> Result<u64, VfsError> {

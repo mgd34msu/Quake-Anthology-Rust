@@ -4,7 +4,7 @@ use qa_compat::services::{
     CallError, LoadedWorldBinding, ModelLoader, ModelLookup, RendererRegistration, RendererRequest,
     ShaderLighting,
 };
-use qa_content::vfs::Vfs;
+use qa_content::vfs::{SourcePrecedence, Vfs};
 use qa_core::names::{NameTable, canonical_path, file_stem};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
@@ -307,24 +307,6 @@ pub enum ModelShaderChoice<'a> {
         members: ModelShaderMembers<'a>,
     },
 }
-impl<'a> ModelShaderChoice<'a> {
-    pub fn deferred(
-        self,
-    ) -> Option<(
-        qa_render::scene::ModelChoiceSelector,
-        ModelShaderMembers<'a>,
-    )> {
-        use qa_render::scene::ModelChoiceSelector;
-        match self {
-            Self::Single(_) => None,
-            Self::SkinGroup { group, members } => {
-                Some((ModelChoiceSelector::SkinGroup(group), members))
-            }
-            Self::Frames { members } => Some((ModelChoiceSelector::Frame, members)),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct SelectedModelChoice<'a> {
     pub model: ModelId,
@@ -333,8 +315,45 @@ pub struct SelectedModelChoice<'a> {
     pub resource: ShaderResource,
     pub registrations: &'a [ShaderRegistration],
     pub default: ShaderDefault,
+    timing_source: Option<ModelId>,
 }
 impl SelectedModelChoice<'_> {
+    pub fn capture<'capture>(
+        self,
+        capture: &mut qa_render::scene::ModelCapture<'capture>,
+        view: ShaderView<'_>,
+        nodes: Option<&[ShaderNodeId]>,
+        override_shader: Option<ShaderRef>,
+    ) -> Option<qa_render::scene::ModelChoice<'capture>> {
+        use qa_render::scene::{ModelChoice as Choice, ModelPart, ModelSelector};
+        if !self.shaders().all(|shader| {
+            override_shader
+                .or_else(|| self.resolve_shader(shader, view, nodes))
+                .is_some()
+        }) {
+            return None;
+        }
+        let leaf = |shader| {
+            Some(Choice::part(ModelPart {
+                model: self.model,
+                shader: override_shader.or_else(|| self.resolve_shader(shader, view, nodes))?,
+            }))
+        };
+        match self.shader {
+            ModelShaderChoice::Single(shader) => leaf(shader),
+            ModelShaderChoice::SkinGroup { group, members } => capture.select(
+                ModelSelector::SkinGroup {
+                    timing_source: self.timing_source.unwrap_or(self.model),
+                    group,
+                },
+                members.filter_map(leaf),
+            ),
+            ModelShaderChoice::Frames { members } => capture.select(
+                ModelSelector::SpriteFrame { model: self.model },
+                members.filter_map(leaf),
+            ),
+        }
+    }
     pub fn shaders(&self) -> impl Iterator<Item = ShaderChoice> + Clone {
         let (single, members) = match self.shader {
             ModelShaderChoice::Single(shader) => (Some(shader), None),
@@ -398,6 +417,7 @@ pub struct ModelBindings<'a> {
     resource: ShaderResource,
     default_shader: ShaderBindingId,
     animation: Option<&'a ModelAnimation>,
+    timing_source: Option<ModelId>,
 }
 impl<'a> ModelBindings<'a> {
     pub fn len(&self) -> usize {
@@ -487,6 +507,7 @@ impl<'a> ModelBindings<'a> {
             resource,
             registrations,
             default,
+            timing_source: self.timing_source,
         })
     }
 }
@@ -532,8 +553,92 @@ pub struct ModelLodBindings<'a> {
     levels: [Option<ModelBindings<'a>>; 3],
     info: ModelLodInfo<'a>,
     remaining: usize,
+    replacement: Option<(
+        ModelBindings<'a>,
+        Option<qa_render::scene::SkeletalFrameMap>,
+        RuleSetId,
+    )>,
 }
 impl<'a> ModelLodBindings<'a> {
+    pub fn first_choice(&self) -> Option<SelectedModelChoice<'a>> {
+        self.levels
+            .iter()
+            .flatten()
+            .find_map(|bindings| bindings.clone().next_choice())
+    }
+    pub fn capture(
+        mut self,
+        frame: &mut qa_render::Frame,
+        pose: qa_render::SceneEntity,
+        view: ShaderView<'_>,
+        nodes: Option<&[ShaderNodeId]>,
+        override_shader: Option<ShaderRef>,
+    ) -> bool {
+        use qa_render::scene::{ModelChoice as Choice, ModelSelector};
+        let mut replacement = self.replacement();
+        let info = self.info;
+        frame.add_model_choices(pose, |capture| {
+            while let Some(row) = self.next() {
+                let mut children = [Choice::missing(); 3];
+                for (target, choice) in children.iter_mut().zip(row) {
+                    if let Some(choice) = choice {
+                        let Some(node) = choice.capture(capture, view, nodes, override_shader)
+                        else {
+                            return false;
+                        };
+                        *target = node;
+                    }
+                }
+                let Some(mut root) = capture.select(
+                    ModelSelector::Lod {
+                        radius: info.radius(pose.frame),
+                    },
+                    children.into_iter().take(info.native_count()),
+                ) else {
+                    return false;
+                };
+                if let Some((bindings, mapping, rules)) = &mut replacement {
+                    let replacement = match bindings.next_choice() {
+                        Some(choice) => {
+                            let Some(mut node) =
+                                choice.capture(capture, view, nodes, override_shader)
+                            else {
+                                return false;
+                            };
+                            if let Some(mapping) = mapping {
+                                let Some(mapped) = capture.map_frames(*mapping, node) else {
+                                    return false;
+                                };
+                                node = mapped;
+                            }
+                            node
+                        }
+                        None => Choice::missing(),
+                    };
+                    let Some(selected) = capture.select(
+                        ModelSelector::Replacement { rules: *rules },
+                        [root, replacement],
+                    ) else {
+                        return false;
+                    };
+                    root = selected;
+                }
+                if !capture.submit(root) {
+                    return false;
+                }
+            }
+            true
+        })
+    }
+    pub fn replacement(
+        &self,
+    ) -> Option<(
+        ModelBindings<'a>,
+        Option<qa_render::scene::SkeletalFrameMap>,
+        RuleSetId,
+    )> {
+        self.replacement.clone()
+    }
     pub fn base(&self) -> Option<ModelBindings<'a>> {
         self.levels[0].clone()
     }
@@ -596,6 +701,7 @@ pub struct ModelCapacity {
     pub frame_vertices: usize,
     pub indices: usize,
     pub inline_bindings: usize,
+    pub model_choices: usize,
 }
 
 struct Registration {
@@ -612,8 +718,14 @@ struct RegisteredProfile {
 }
 struct ModelReady {
     surfaces: [Option<IndexSpan>; 3],
+    replacement: Option<ReplacementReady>,
     default_shader: ShaderBindingId,
     registrations: Box<[ShaderRegistration]>,
+}
+struct ReplacementReady {
+    surfaces: IndexSpan,
+    frames: Option<qa_render::scene::SkeletalFrameMap>,
+    rules: RuleSetId,
 }
 struct RegisteredShader {
     name: NameId,
@@ -754,11 +866,16 @@ impl FileError {
             message: message.to_owned(),
         }
     }
-    fn tag(message: String) -> Self {
+    fn file(message: String) -> Self {
         Self {
             kind: CallError::File,
             message,
         }
+    }
+}
+impl From<ResourceError> for FileError {
+    fn from(error: ResourceError) -> Self {
+        Self::file(format!("image registration: {error:?}"))
     }
 }
 #[derive(Clone)]
@@ -809,6 +926,17 @@ struct Md5Source {
     diagnostics: Arc<[String]>,
 }
 #[derive(Clone)]
+struct ReplacementSource {
+    source: NameId,
+    skins: Arc<[Box<[NameId]>]>,
+}
+#[derive(Clone)]
+enum ReplacementState {
+    Unattempted,
+    Unavailable(Option<String>),
+    Ready(ReplacementSource),
+}
+#[derive(Clone)]
 enum ModelSourceFile {
     Empty,
     Invalid {
@@ -817,9 +945,11 @@ enum ModelSourceFile {
     },
     Ready {
         bytes: Arc<[u8]>,
+        precedence: SourcePrecedence,
         metadata: ModelMetadata,
         animation: Option<Arc<ModelAnimation>>,
         skeletal: Option<Md5Source>,
+        replacement: ReplacementState,
         radii: Arc<[f32]>,
         tags: Option<TagLayout>,
         meshes: Vec<Option<ModelId>>,
@@ -1072,6 +1202,7 @@ pub struct ModelAssets {
     palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
     image_transaction_active: Option<ImageRefreshMode>,
+    replacement_load: [bool; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -1107,6 +1238,9 @@ impl<'a> RendererAdmission<'a> {
     }
     pub(crate) fn assets(self) -> &'a Assets {
         &self.owner.assets
+    }
+    pub(crate) fn choice_nodes(self) -> usize {
+        self.owner.catalog.max_choice_nodes()
     }
     pub(crate) fn budget(self) -> (usize, usize) {
         self.owner.shader_occurrence_budget()
@@ -1850,6 +1984,10 @@ impl ModelAssets {
         self.assets.set_image_search_order(order);
     }
 
+    pub fn set_model_replacement_load(&mut self, q1: bool, q2: bool) {
+        self.replacement_load = [q1, q2];
+    }
+
     /// The startup cache moves into the same owner as its palette resources.
     pub fn adopt_palettes(
         &mut self,
@@ -2459,6 +2597,7 @@ impl ModelAssets {
             palettes: Default::default(),
             initial_registration: true,
             image_transaction_active: None,
+            replacement_load: [true; 2],
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
@@ -3415,8 +3554,21 @@ impl ModelAssets {
     }
 
     fn model_bytes(&mut self, vfs: &Vfs, path: &str) -> Result<Arc<[u8]>, FileError> {
-        vfs.read_file(
-            path.as_bytes(),
+        let reference = vfs.open(path.as_bytes()).ok_or_else(|| FileError {
+            kind: CallError::File,
+            message: format!("missing model source {path}"),
+        })?;
+        self.model_bytes_at(vfs, path, reference)
+    }
+
+    fn model_bytes_at(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        reference: qa_content::vfs::FileRef,
+    ) -> Result<Arc<[u8]>, FileError> {
+        vfs.read_to_vec(
+            reference,
             self.catalog.limits.file_bytes,
             &mut self.catalog.reader,
         )
@@ -3502,13 +3654,19 @@ impl ModelAssets {
         {
             return Ok(Some(name));
         }
-        if vfs.open(path.as_bytes()).is_none() {
+        let Some(reference) = vfs.open(path.as_bytes()) else {
             return Ok(None);
-        }
+        };
+        let precedence = vfs
+            .source_precedence(reference)
+            .map_err(|error| FileError {
+                kind: CallError::File,
+                message: format!("model source origin: {error}"),
+            })?;
         let name = self
             .admit_name(path.as_bytes())
             .map_err(|_| FileError::capacity("model source name capacity"))?;
-        let bytes = self.model_bytes(vfs, path)?;
+        let bytes = self.model_bytes_at(vfs, path, reference)?;
         let model = match Model::parse(&bytes) {
             Ok(model) => model,
             Err(error) => {
@@ -3557,7 +3715,7 @@ impl ModelAssets {
             kind: CallError::File,
             message,
         })?;
-        let tags = self.admit_tags(&model).map_err(FileError::tag)?;
+        let tags = self.admit_tags(&model).map_err(FileError::file)?;
         let meshes = vec![
             None;
             if matches!(model.format, ModelFormat::Spr | ModelFormat::Sp2) {
@@ -3569,9 +3727,11 @@ impl ModelAssets {
         drop(model);
         self.catalog.sources[name.0 as usize] = ModelSourceFile::Ready {
             bytes,
+            precedence,
             metadata,
             animation,
             skeletal,
+            replacement: ReplacementState::Unattempted,
             radii,
             tags,
             meshes,
@@ -3681,6 +3841,144 @@ impl ModelAssets {
         Ok(lods)
     }
 
+    fn replacement_source(&mut self, vfs: &Vfs, source: NameId) -> Option<ReplacementSource> {
+        let ModelSourceFile::Ready {
+            bytes,
+            metadata,
+            precedence,
+            replacement,
+            ..
+        } = &self.catalog.sources[source.0 as usize]
+        else {
+            return None;
+        };
+        let q1 = metadata.format == ModelFormat::Mdl;
+        if !matches!(metadata.format, ModelFormat::Mdl | ModelFormat::Md2)
+            || !self.replacement_load[usize::from(!q1)]
+        {
+            return None;
+        }
+        match replacement {
+            ReplacementState::Ready(replacement) => return Some(replacement.clone()),
+            ReplacementState::Unavailable(_) => return None,
+            _ => (),
+        }
+        let bytes = Arc::clone(bytes);
+        let precedence = precedence.clone();
+        let result = (|| -> Result<Option<ReplacementSource>, String> {
+            let original =
+                Model::parse(&bytes).map_err(|error| format!("replacement source: {error:?}"))?;
+            let path = self
+                .catalog
+                .name(source)
+                .ok_or("replacement source name")?
+                .to_owned();
+            let stem = file_stem(&path);
+            let candidate = format!(
+                "{}.md5mesh",
+                if q1 {
+                    stem.to_owned()
+                } else {
+                    md5_directory(stem)
+                }
+            );
+            let Some(candidate) = self
+                .model_source(vfs, &candidate)
+                .map_err(|error| error.message)?
+            else {
+                return Ok(None);
+            };
+            let ModelSourceFile::Ready {
+                bytes,
+                precedence: candidate_rank,
+                metadata,
+                ..
+            } = &self.catalog.sources[candidate.0 as usize]
+            else {
+                return Err(match &self.catalog.sources[candidate.0 as usize] {
+                    ModelSourceFile::Invalid { error, .. } => error.message.clone(),
+                    _ => "replacement source unavailable".to_owned(),
+                });
+            };
+            if !matches!(
+                candidate_rank.compare(&precedence),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            ) {
+                return Ok(None);
+            }
+            if metadata.format != ModelFormat::Md5Mesh {
+                return Err("replacement is not an MD5 mesh".to_owned());
+            }
+            let candidate_bytes = Arc::clone(bytes);
+            let model = Model::parse(&candidate_bytes)
+                .map_err(|error| format!("replacement mesh: {error:?}"))?;
+            let mut skins = Vec::with_capacity(model.meshes.len());
+            for mesh in &model.meshes {
+                let mut names = Vec::with_capacity(original.skins.len());
+                if q1 {
+                    let shader = std::str::from_utf8(
+                        mesh.shaders.first().ok_or("replacement mesh shader")?.name,
+                    )
+                    .map_err(|_| "replacement shader is not UTF-8")?;
+                    for (group, description) in original.skin_groups.iter().enumerate() {
+                        for member in 0..description.members.len() {
+                            let path = format!("progs/{shader}_{group:02}_{member:02}.lmp");
+                            let bytes = self
+                                .model_bytes(vfs, &path)
+                                .map_err(|error| error.message)?;
+                            qa_formats::image::decode(
+                                &bytes,
+                                qa_formats::image::ImageFormat::Lmp,
+                                RuleSetId::Quake.lineage(),
+                            )
+                            .map_err(|error| format!("replacement skin {path}: {error:?}"))?;
+                            names.push(
+                                self.admit_name(path.as_bytes())
+                                    .map_err(|_| "replacement skin name capacity")?,
+                            );
+                        }
+                    }
+                } else {
+                    for skin in &original.skins {
+                        let Image::External(path) = skin else {
+                            return Err("MD2 replacement skin source".to_owned());
+                        };
+                        let path = md5_directory(&canonical_path(
+                            std::str::from_utf8(path)
+                                .map_err(|_| "replacement skin is not UTF-8")?,
+                        ));
+                        names.push(
+                            self.admit_name(path.as_bytes())
+                                .map_err(|_| "replacement skin name capacity")?,
+                        );
+                    }
+                }
+                skins.push(names.into_boxed_slice());
+            }
+            Ok(Some(ReplacementSource {
+                source: candidate,
+                skins: skins.into(),
+            }))
+        })();
+        let replacement = match result {
+            Ok(Some(value)) => ReplacementState::Ready(value),
+            Ok(None) => ReplacementState::Unavailable(None),
+            Err(error) => ReplacementState::Unavailable(Some(error)),
+        };
+        let result = match &replacement {
+            ReplacementState::Ready(value) => Some(value.clone()),
+            _ => None,
+        };
+        if let ModelSourceFile::Ready {
+            replacement: current,
+            ..
+        } = &mut self.catalog.sources[source.0 as usize]
+        {
+            *current = replacement;
+        }
+        result
+    }
+
     fn ensure_file_profile(
         &mut self,
         vfs: &Vfs,
@@ -3777,71 +4075,145 @@ impl ModelAssets {
                 Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
             },
         };
-        let mut inputs = Vec::new();
-        for slot in (0..3).rev() {
-            let ModelLodSlot::Source(source) = lods.slots[slot] else {
-                continue;
-            };
+        let replacement = lods
+            .source(0)
+            .and_then(|source| self.replacement_source(vfs, source));
+        let replacement_frames = replacement.as_ref().and_then(|replacement| {
+            let original = &self.catalog.sources[lods.source(0)?.0 as usize];
             let ModelSourceFile::Ready {
-                bytes,
-                meshes,
+                metadata,
+                radii,
                 animation,
-                skeletal,
                 ..
-            } = &self.catalog.sources[source.0 as usize]
+            } = original
             else {
-                return Err(self.fail_file(
-                    name,
-                    fresh_profiles,
-                    FileError::capacity("model source unavailable"),
-                ));
+                return None;
             };
-            let bytes = Arc::clone(bytes);
-            let animation = animation.clone();
-            let skeletal = skeletal.clone();
-            let meshes = meshes.clone();
-            let model = match Model::parse(&bytes) {
-                Ok(model) => model,
-                Err(error) => {
-                    return Err(self.fail_file(
-                        name,
-                        fresh_profiles,
-                        FileError {
-                            kind: CallError::File,
-                            message: format!("decode: {error:?}"),
-                        },
-                    ));
-                }
+            if metadata.format == ModelFormat::Md2 {
+                return Some(qa_render::scene::SkeletalFrameMap::Wrap);
+            }
+            let native = animation
+                .as_ref()
+                .map_or(radii.len(), |animation| animation.frame_groups().len());
+            let ModelSourceFile::Ready {
+                skeletal: Some(skeletal),
+                ..
+            } = &self.catalog.sources[replacement.source.0 as usize]
+            else {
+                return None;
             };
-            let surfaces = match self.admit_surface_names(&model) {
-                Ok(surfaces) => surfaces,
-                Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
-            };
-            if model.tags_per_frame != 0
-                && matches!(
-                    self.catalog.sources[source.0 as usize],
-                    ModelSourceFile::Ready { tags: None, .. }
-                )
-            {
-                let restored = match self.admit_tags(&model) {
-                    Ok(tags) => tags,
-                    Err(message) => {
-                        return Err(self.fail_file(name, fresh_profiles, FileError::tag(message)));
+            (native != skeletal.skeleton.frame_count() as usize)
+                .then_some(qa_render::scene::SkeletalFrameMap::Elapsed { rate: 2.0 })
+        });
+        let mut inputs = Vec::new();
+        let source_rows = (0..3)
+            .rev()
+            .filter_map(|slot| match lods.slots[slot] {
+                ModelLodSlot::Source(source) => Some((slot, source)),
+                _ => None,
+            })
+            .chain(
+                replacement
+                    .as_ref()
+                    .map(|replacement| (3, replacement.source)),
+            );
+        for (slot, source) in source_rows {
+            let input = (|| -> Result<_, FileError> {
+                let ModelSourceFile::Ready {
+                    bytes,
+                    meshes,
+                    animation,
+                    skeletal,
+                    ..
+                } = &self.catalog.sources[source.0 as usize]
+                else {
+                    return Err(FileError::capacity("model source unavailable"));
+                };
+                let bytes = Arc::clone(bytes);
+                let animation = animation.clone();
+                let skeletal = skeletal.clone();
+                let meshes = meshes.clone();
+                let replacement_skins = if slot == 3 {
+                    Some(
+                        replacement
+                            .as_ref()
+                            .ok_or_else(|| FileError::capacity("replacement source"))?
+                            .skins
+                            .iter()
+                            .map(|names| {
+                                names
+                                    .iter()
+                                    .map(|&name| {
+                                        self.catalog.name(name).map(str::to_owned).ok_or_else(
+                                            || FileError::capacity("replacement skin name"),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )
+                } else {
+                    None
+                };
+                let model = match Model::parse(&bytes) {
+                    Ok(model) => model,
+                    Err(error) => {
+                        return Err(FileError::file(format!("decode: {error:?}")));
                     }
                 };
-                if let ModelSourceFile::Ready { tags, .. } =
-                    &mut self.catalog.sources[source.0 as usize]
+                let surfaces = match self.admit_surface_names(&model) {
+                    Ok(surfaces) => surfaces,
+                    Err(error) => return Err(error),
+                };
+                if model.tags_per_frame != 0
+                    && matches!(
+                        self.catalog.sources[source.0 as usize],
+                        ModelSourceFile::Ready { tags: None, .. }
+                    )
                 {
-                    *tags = restored;
+                    let restored = match self.admit_tags(&model) {
+                        Ok(tags) => tags,
+                        Err(message) => {
+                            return Err(FileError::file(message));
+                        }
+                    };
+                    if let ModelSourceFile::Ready { tags, .. } =
+                        &mut self.catalog.sources[source.0 as usize]
+                    {
+                        *tags = restored;
+                    }
                 }
+                drop(model);
+                Ok((
+                    slot,
+                    source,
+                    bytes,
+                    surfaces,
+                    meshes,
+                    animation,
+                    skeletal,
+                    replacement_skins,
+                ))
+            })();
+            match input {
+                Ok(input) => inputs.push(input),
+                Err(error) if slot == 3 => {
+                    if let Some(native) = lods.source(0)
+                        && let ModelSourceFile::Ready { replacement, .. } =
+                            &mut self.catalog.sources[native.0 as usize]
+                    {
+                        *replacement = ReplacementState::Unavailable(Some(error.message));
+                    }
+                }
+                Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
             }
-            drop(model);
-            inputs.push((slot, source, bytes, surfaces, meshes, animation, skeletal));
         }
-        if inputs.iter().any(|(_, source, ..)| {
-            self.catalog.sources[source.0 as usize]
-                .metadata()
-                .is_some_and(|metadata| named_model_shaders(metadata.format))
+        if inputs.iter().any(|input| {
+            let source = input.1;
+            input.7.is_none()
+                && self.catalog.sources[source.0 as usize]
+                    .metadata()
+                    .is_some_and(|metadata| named_model_shaders(metadata.format))
         }) {
             self.shader_catalog(vfs);
         }
@@ -3879,6 +4251,18 @@ impl ModelAssets {
                         error: error.clone(),
                     }));
             }
+            if let Some(source) = lods.source(0)
+                && let ModelSourceFile::Ready {
+                    replacement: ReplacementState::Unavailable(Some(error)),
+                    ..
+                } = &self.catalog.sources[source.0 as usize]
+            {
+                self.catalog.diagnostics.push(ModelDiagnostic {
+                    name,
+                    profile: entry.profile,
+                    error: error.clone(),
+                });
+            }
             let indexed_palette = if entry.profile.source_palette.is_none()
                 && inputs.iter().any(|(_, source, ..)| {
                     self.catalog.sources[source.0 as usize]
@@ -3913,24 +4297,58 @@ impl ModelAssets {
                     images.with_images(vfs, &mut self.assets, |temporary| {
                         let mut compiled = Vec::new();
                         let mut registrations = Vec::new();
-                        for (slot, _, bytes, _, meshes, animation, skeletal) in &mut inputs {
+                        let mut replacement_error = None;
+                        for (slot, _, bytes, _, meshes, animation, skeletal, replacement_skins) in
+                            &mut inputs
+                        {
                             let model = Model::parse(bytes)
                                 .map_err(|error| format!("decode: {error:?}"))?;
                             validate_model(&model)?;
-                            let mut model = register(
-                                &model,
-                                temporary,
-                                &registration,
-                                model_policy,
-                                native_default,
-                                meshes,
-                                animation.as_ref(),
-                                skeletal.as_ref().map(|source| &source.skeleton),
-                                self.catalog.shader_catalog.as_ref(),
-                                &mut self.catalog.capacity,
-                                self.catalog.limits,
-                                compile_policy,
-                            )?;
+                            let replacement_checkpoint =
+                                (*slot == 3).then(|| (self.catalog.capacity, meshes.clone()));
+                            let mut compile = |temporary: &mut Images<'_>| {
+                                register(
+                                    &model,
+                                    temporary,
+                                    &registration,
+                                    model_policy,
+                                    native_default,
+                                    meshes,
+                                    animation.as_ref(),
+                                    skeletal.as_ref().map(|source| &source.skeleton),
+                                    replacement_skins.as_deref(),
+                                    lods.source(0)
+                                        .and_then(|source| {
+                                            self.catalog.sources[source.0 as usize].metadata()
+                                        })
+                                        .is_some_and(|metadata| {
+                                            metadata.format == ModelFormat::Md2
+                                        }),
+                                    self.catalog.shader_catalog.as_ref(),
+                                    &mut self.catalog.capacity,
+                                    self.catalog.limits,
+                                    compile_policy,
+                                )
+                                .map_err(FileError::file)
+                            };
+                            let registered = if replacement_checkpoint.is_some() {
+                                temporary.try_registration(compile)
+                            } else {
+                                compile(temporary)
+                            };
+                            let mut model = match registered {
+                                Ok(model) => model,
+                                Err(error) => {
+                                    let Some((capacity, old_meshes)) = replacement_checkpoint
+                                    else {
+                                        return Err(error.message);
+                                    };
+                                    self.catalog.capacity = capacity;
+                                    *meshes = old_meshes;
+                                    replacement_error = Some(error.message);
+                                    continue;
+                                }
+                            };
                             let offset = u32::try_from(registrations.len())
                                 .map_err(|_| "model shader occurrence capacity")?;
                             for materials in model.surfaces.iter_mut().flatten() {
@@ -3955,14 +4373,22 @@ impl ModelAssets {
                             registrations.extend(model.registrations);
                             compiled.push((*slot, model.surfaces));
                         }
-                        Ok((compiled, registrations))
+                        Ok((compiled, registrations, replacement_error))
                     })
                 })
             });
             let images = &self.catalog.profiles[profile_index];
             entry.state = match result {
-                Ok((compiled, registrations)) => {
+                Ok((compiled, registrations, replacement_error)) => {
+                    if let Some(error) = replacement_error {
+                        self.catalog.diagnostics.push(ModelDiagnostic {
+                            name,
+                            profile: entry.profile,
+                            error: format!("replacement material: {error}"),
+                        });
+                    }
                     let mut surfaces = [None; 3];
+                    let mut replacement = None;
                     for (slot, compiled) in compiled {
                         let first = self.catalog.surfaces.len() as u32;
                         let count = compiled.len() as u32;
@@ -3978,7 +4404,7 @@ impl ModelAssets {
                                     first: self.catalog.bindings.len() as u32,
                                     count: skins.len() as u32,
                                 },
-                                wrap_skins: lods.supports_lods,
+                                wrap_skins: slot != 3 && lods.supports_lods,
                                 sprite_frames: !lods.supports_lods
                                     && self.catalog.sources[inputs[0].1.0 as usize]
                                         .metadata()
@@ -3991,7 +4417,34 @@ impl ModelAssets {
                             });
                             self.catalog.bindings.extend(skins);
                         }
-                        surfaces[slot] = Some(IndexSpan { first, count });
+                        if slot == 3 {
+                            let native_format = lods
+                                .source(0)
+                                .and_then(|source| {
+                                    self.catalog.sources[source.0 as usize].metadata()
+                                })
+                                .ok_or_else(|| FileError::capacity("replacement source metadata"))?
+                                .format;
+                            let rules = match native_format {
+                                ModelFormat::Mdl
+                                    if entry.profile.source_rules == RuleSetId::QuakeWorld =>
+                                {
+                                    RuleSetId::QuakeWorld
+                                }
+                                ModelFormat::Mdl => RuleSetId::Quake,
+                                _ if entry.profile.source_rules == RuleSetId::Quake2Rerelease => {
+                                    RuleSetId::Quake2Rerelease
+                                }
+                                _ => RuleSetId::Quake2,
+                            };
+                            replacement = Some(ReplacementReady {
+                                surfaces: IndexSpan { first, count },
+                                frames: replacement_frames,
+                                rules,
+                            });
+                        } else {
+                            surfaces[slot] = Some(IndexSpan { first, count });
+                        }
                     }
                     for slot in (0..3).rev() {
                         if let ModelLodSlot::Alias(next) = lods.slots[slot] {
@@ -4005,6 +4458,7 @@ impl ModelAssets {
                                 .native_default
                                 .map_or(ShaderBindingId(0), |entry| entry.0),
                             surfaces,
+                            replacement,
                             registrations: registrations.into_boxed_slice(),
                         },
                         required_assets: (!self.initial_registration).then(|| self.assets.counts()),
@@ -4020,7 +4474,7 @@ impl ModelAssets {
                 }
             };
         }
-        for (_, source, _, _, meshes, _, _) in inputs {
+        for (_, source, _, _, meshes, _, _, _) in inputs {
             if let ModelSourceFile::Ready {
                 meshes: current, ..
             } = &mut self.catalog.sources[source.0 as usize]
@@ -4035,6 +4489,7 @@ impl ModelAssets {
         self.catalog.capacity.registrations = self.catalog.registrations.len();
         self.catalog.capacity.bindings =
             self.catalog.bindings.len() * ModelMaterialPolicy::ALL.len();
+        self.catalog.capacity.model_choices = self.catalog.calculate_choice_nodes();
         Ok(self.catalog.files[name.0 as usize]
             .bounds(&self.catalog.sources)
             .unwrap_or_default())
@@ -5048,6 +5503,9 @@ fn lerp_tag(
     Some(sample(start)?.interpolate(sample(end)?, fraction))
 }
 impl ModelLoader for ModelAssets {
+    fn set_model_replacement_load(&mut self, q1: bool, q2: bool) {
+        ModelAssets::set_model_replacement_load(self, q1, q2);
+    }
     fn lookup(&self) -> &dyn ModelLookup {
         &self.catalog
     }
@@ -5156,6 +5614,76 @@ impl ModelLookup for ModelCatalog {
     }
 }
 impl ModelCatalog {
+    pub fn max_choice_nodes(&self) -> usize {
+        self.capacity.model_choices
+    }
+    fn calculate_choice_nodes(&self) -> usize {
+        self.registrations
+            .iter()
+            .filter_map(|entry| {
+                let ready = entry.state.ready()?.0;
+                let ModelFile::Ready { lods, .. } = self.files.get(entry.file.0 as usize)? else {
+                    return None;
+                };
+                let groups = lods
+                    .source(0)
+                    .and_then(|source| self.sources.get(source.0 as usize))
+                    .and_then(|source| match source {
+                        ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
+                        _ => None,
+                    });
+                let skin_members = groups
+                    .and_then(|animation| {
+                        animation
+                            .skin_groups()
+                            .iter()
+                            .map(|group| group.members.count as usize)
+                            .max()
+                    })
+                    .unwrap_or(1);
+                let ordinary = ready
+                    .surfaces
+                    .iter()
+                    .flatten()
+                    .flat_map(|range| &self.surfaces[range.range()])
+                    .map(|surface| {
+                        let members = if surface.sprite_frames {
+                            surface.skins.count as usize
+                        } else {
+                            skin_members
+                        };
+                        if members > 1 {
+                            members.saturating_add(1)
+                        } else {
+                            0
+                        }
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let native = if lods.native_count > 1 {
+                    ordinary
+                        .saturating_mul(lods.native_count)
+                        .saturating_add(lods.native_count + 1)
+                } else {
+                    ordinary
+                };
+                Some(if let Some(replacement) = &ready.replacement {
+                    let mut selected = if skin_members > 1 {
+                        skin_members + 1
+                    } else {
+                        0
+                    };
+                    if replacement.frames.is_some() {
+                        selected += if selected == 0 { 2 } else { 1 };
+                    }
+                    native.saturating_add(selected).saturating_add(3)
+                } else {
+                    native
+                })
+            })
+            .max()
+            .unwrap_or(0)
+    }
     pub fn profiles(&self) -> impl Iterator<Item = ModelProfile> + '_ {
         self.profiles.iter().map(|entry| entry.profile)
     }
@@ -5646,15 +6174,30 @@ impl ModelCatalog {
                 *level = Some(self.model_bindings(registration, slot, skin, policy)?);
             }
         }
+        let replacement = if let Some(replacement) = &ready.replacement {
+            Some((
+                self.model_bindings(registration, 3, skin, policy)?,
+                replacement.frames,
+                replacement.rules,
+            ))
+        } else {
+            None
+        };
         let remaining = levels
             .iter()
             .flatten()
             .map(|level| level.len())
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(
+                replacement
+                    .as_ref()
+                    .map_or(0, |(bindings, ..)| bindings.len()),
+            );
         Some(ModelLodBindings {
             levels,
             remaining,
+            replacement,
             info: ModelLodInfo {
                 native_count: lods.native_count,
                 supports_lods: lods.supports_lods,
@@ -5678,13 +6221,17 @@ impl ModelCatalog {
             .state
             .ready()?
             .0;
-        let span = *ready.surfaces.get(slot)?.as_ref()?;
+        let span = if slot == 3 {
+            ready.replacement.as_ref()?.surfaces
+        } else {
+            *ready.surfaces.get(slot)?.as_ref()?
+        };
         let animation = match self
             .files
             .get(self.registrations[registration.0 as usize].file.0 as usize)?
         {
             ModelFile::Ready { lods, .. } => lods
-                .source(slot)
+                .source(if slot == 3 { 0 } else { slot })
                 .and_then(|source| self.sources.get(source.0 as usize))
                 .and_then(|source| match source {
                     ModelSourceFile::Ready { animation, .. } => animation.as_deref(),
@@ -5732,6 +6279,13 @@ impl ModelCatalog {
             resource: ShaderResource::Model(self.registrations[registration.0 as usize].file),
             default_shader: ready.default_shader,
             animation,
+            timing_source: (slot == 3)
+                .then(|| {
+                    let native = ready.surfaces[0]?;
+                    let surface = self.surfaces.get(native.first as usize)?;
+                    Some(self.bindings.get(surface.skins.first as usize)?.variants[0].model)
+                })
+                .flatten(),
         })
     }
     /// Cold CLIENT registration reads the same already-loaded file record.
@@ -5851,6 +6405,15 @@ fn named_model_shaders(format: ModelFormat) -> bool {
     supports_lods(format) || format == ModelFormat::Md5Mesh
 }
 
+fn md5_directory(path: &str) -> String {
+    let (directory, name) = path
+        .rsplit_once('/')
+        .map_or(("", path), |(directory, name)| {
+            (&path[..directory.len() + 1], name)
+        });
+    format!("{directory}md5/{name}")
+}
+
 fn model_animation(model: &Model<'_>) -> Result<Option<Arc<ModelAnimation>>, String> {
     if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Spr) {
         return Ok(None);
@@ -5924,6 +6487,8 @@ fn register(
     shared_meshes: &mut [Option<ModelId>],
     animation: Option<&Arc<ModelAnimation>>,
     skeleton: Option<&Arc<Skeleton>>,
+    replacement_skins: Option<&[Vec<String>]>,
+    replacement_missing: bool,
     shader_catalog: Option<&Result<ShaderCatalog, String>>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
@@ -5961,32 +6526,53 @@ fn register(
     };
     let mut surfaces = Vec::with_capacity(model.meshes.len());
     let mut registrations = Vec::new();
-    if let Some(alias) = &alias {
-        for (skin, variants) in model.skins.iter().zip(alias) {
-            let raw = match skin {
-                Image::External(raw) => *raw,
-                _ => registration.path.as_bytes(),
-            };
-            registrations.push(images.assets.shader_registration(raw, variants[0])?);
-        }
-    }
     let mut skin_count = capacity.skins;
-    for (mesh, shared_mesh) in model.meshes.iter().zip(shared_meshes) {
-        let count = alias
+    for (mesh_index, (mesh, shared_mesh)) in model.meshes.iter().zip(shared_meshes).enumerate() {
+        let replacement_images = replacement_skins.map(|skins| {
+            skins[mesh_index]
+                .iter()
+                .map(|path| Image::External(path.as_bytes()))
+                .collect::<Vec<_>>()
+        });
+        let skin_images = replacement_images.as_deref().unwrap_or(&model.skins);
+        let replacement_materials = replacement_images
             .as_ref()
-            .map_or_else(|| mesh.shaders.len().max(1), Vec::len);
+            .map(|skins| {
+                alias_materials(
+                    skins,
+                    images,
+                    registration,
+                    model_policy,
+                    replacement_missing,
+                )
+            })
+            .transpose()?;
+        let alias = replacement_materials.as_ref().or(alias.as_ref());
+        let occurrence_first = registrations.len() as u32;
+        if let Some(alias) = alias {
+            for (skin, variants) in skin_images.iter().zip(alias) {
+                let raw = match skin {
+                    Image::External(raw) => *raw,
+                    _ => registration.path.as_bytes(),
+                };
+                registrations.push(images.assets.shader_registration(raw, variants[0])?);
+            }
+        }
+        let count = alias.map_or_else(|| mesh.shaders.len().max(1), |materials| materials.len());
         skin_count = skin_count
             .checked_add(count)
             .filter(|&count| count <= limits.skins && count <= u32::MAX as usize)
             .ok_or("model skin capacity")?;
-        let materials = if let Some(materials) = &alias {
+        let materials = if let Some(materials) = alias {
             materials
                 .iter()
                 .enumerate()
                 .map(|(skin, variants)| {
                     std::array::from_fn(|index| {
-                        if index == 0 && matches!(model.skins[skin], Image::External(_)) {
-                            ShaderChoice::Occurrence(ShaderOccurrence(skin as u32))
+                        if index == 0 && matches!(skin_images[skin], Image::External(_)) {
+                            ShaderChoice::Occurrence(ShaderOccurrence(
+                                occurrence_first + skin as u32,
+                            ))
                         } else {
                             ShaderChoice::Direct(variants[index])
                         }
@@ -6311,6 +6897,18 @@ fn model_image(
                     None,
                     usage,
                 )?
+            } else if qa_formats::image::ImageFormat::from_path(path.as_bytes())
+                == Some(qa_formats::image::ImageFormat::Lmp)
+            {
+                images
+                    .indexed_lmp(
+                        path,
+                        indexed_palette
+                            .ok_or(ResourceError::Asset("LMP skin requires a source palette"))?,
+                        transparent,
+                        usage,
+                    )?
+                    .id
             } else {
                 images
                     .raster(

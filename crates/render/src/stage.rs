@@ -354,8 +354,7 @@ impl DrawInputs {
             && matches!(
                 entity.model,
                 crate::scene::SceneModel::Mesh(_)
-                    | crate::scene::SceneModel::Lods { .. }
-                    | crate::scene::SceneModel::Timed { .. }
+                    | crate::scene::SceneModel::Choice { .. }
                     | crate::scene::SceneModel::World { .. }
             )
         {

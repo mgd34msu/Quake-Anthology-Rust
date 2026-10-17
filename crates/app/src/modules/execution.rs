@@ -1497,7 +1497,9 @@ fn stage_renderer<'a>(
     ) {
         scene
             .as_mut()
-            .map(|scene| scene.stage_model_choices(admission.assets(), None))
+            .map(|scene| {
+                scene.stage_model_choices(admission.assets(), None, admission.choice_nodes())
+            })
             .transpose()?
     } else {
         None
@@ -1565,6 +1567,11 @@ fn register_renderer(
             .ok_or("missing model assets")?;
         if let Some(order) = image_search {
             owner.set_image_search_order(order);
+            let (q1, q2) = host
+                .model_controls
+                .replacement_load(&host.console.cvars)
+                .map_err(|_| "model load setting conversion")?;
+            owner.set_model_replacement_load(q1, q2);
         }
         let scene = &mut host.runtime.scene;
         let (handle, staged, _) = owner.prepare_registration(

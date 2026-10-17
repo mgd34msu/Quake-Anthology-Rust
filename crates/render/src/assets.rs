@@ -1379,7 +1379,8 @@ impl Assets {
     pub fn models(&self) -> &[Model] {
         &self.models
     }
-    /// Cold packet demand per entity: LOD levels, skin members or sprite frames.
+    /// Cold native choice demand: member leaves plus their selector header.
+    /// Catalog replacement recipes add their complete combined graph cost.
     pub fn max_model_choices(&self) -> usize {
         self.models
             .iter()
@@ -1401,6 +1402,7 @@ impl Assets {
             .max()
             .unwrap_or(0)
             .max(3)
+            + 1
     }
     /// Cold packet demand for the largest admitted shared skeleton.
     pub fn max_model_joints(&self) -> usize {

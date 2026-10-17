@@ -282,6 +282,53 @@ pub(crate) fn model_lod_views(vars: &Cvars) -> Result<[View; 2], &'static str> {
     ])
 }
 
+pub(crate) fn model_replacements(
+    vars: &Cvars,
+    handles: qa_console::model::ModelHandles,
+) -> Result<[qa_render::scene::ModelReplacementSettings; 5], &'static str> {
+    use qa_render::scene::ModelReplacementSettings;
+    let (q1, load) = handles
+        .replacement_load(vars)
+        .map_err(|_| "model load setting conversion")?;
+    let q2 = load
+        && vars
+            .integer_view(handles.usage)
+            .map_err(|_| "model use setting conversion")?
+            != 0;
+    let source_distance = vars
+        .numeric(handles.distance)
+        .map_err(|_| "model distance setting conversion")?;
+    let text = vars
+        .read(handles.limit)
+        .map_err(|_| "model distance setting conversion")?;
+    let text = text.as_str().trim();
+    let distance = if text.eq_ignore_ascii_case("source") {
+        None
+    } else {
+        let value = if text.is_empty() {
+            0.0
+        } else {
+            text.parse::<f32>().map_err(|_| "invalid model distance")?
+        };
+        if !value.is_finite() {
+            return Err("invalid model distance");
+        }
+        Some(value)
+    };
+    if !source_distance.is_finite() {
+        return Err("invalid source model distance");
+    }
+    let q1 = ModelReplacementSettings {
+        enabled: q1,
+        distance: distance.unwrap_or(0.0),
+    };
+    let q2 = ModelReplacementSettings {
+        enabled: q2,
+        distance: distance.unwrap_or(source_distance),
+    };
+    Ok([q1, q1, q2, q2, ModelReplacementSettings::default()])
+}
+
 pub(crate) fn model_lod(vars: &Cvars, views: [View; 2]) -> qa_render::scene::ModelLodSettings {
     let defaults = qa_render::scene::ModelLodSettings::default();
     qa_render::scene::ModelLodSettings {

@@ -1173,7 +1173,7 @@ impl<'a> Images<'a> {
         (&mut self.state, self.assets)
     }
     /// Optional native registrations discard only their uncommitted resource suffix.
-    pub(crate) fn try_registration<T, E: From<ResourceError>>(
+    pub fn try_registration<T, E: From<ResourceError>>(
         &mut self,
         register: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E> {

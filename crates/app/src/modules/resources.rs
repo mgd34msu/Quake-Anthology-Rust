@@ -10,19 +10,17 @@ struct ModelPreparer<'a> {
     scene: &'a mut Option<crate::renderer::SceneComposer>,
     backend: &'a mut dyn crate::renderer::AssetPreparer,
 }
-impl crate::renderer::AssetPreparer for ModelPreparer<'_> {
-    fn target_size(&self) -> Option<[u32; 2]> {
-        self.backend.target_size()
-    }
-    fn prepare_assets(
+impl ModelPreparer<'_> {
+    fn prepare(
         &mut self,
         assets: &qa_render::Assets,
         required: Option<qa_render::Limits>,
+        choices: usize,
     ) -> Result<(), String> {
         let capacity = self
             .scene
             .as_mut()
-            .map(|scene| scene.stage_model_choices(assets, required))
+            .map(|scene| scene.stage_model_choices(assets, required, choices))
             .transpose()?;
         self.backend.prepare_assets(
             assets,
@@ -35,6 +33,25 @@ impl crate::renderer::AssetPreparer for ModelPreparer<'_> {
             capacity.commit();
         }
         Ok(())
+    }
+}
+impl crate::renderer::AssetPreparer for ModelPreparer<'_> {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        self.backend.target_size()
+    }
+    fn prepare_assets(
+        &mut self,
+        assets: &qa_render::Assets,
+        required: Option<qa_render::Limits>,
+    ) -> Result<(), String> {
+        self.prepare(assets, required, 0)
+    }
+    fn prepare_model_assets(
+        &mut self,
+        assets: &qa_render::Assets,
+        per_entity: usize,
+    ) -> Result<(), String> {
+        self.prepare(assets, None, per_entity)
     }
 }
 
@@ -73,7 +90,7 @@ impl FrameHost {
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
     ) {
-        if let Err(error) = self.refresh_image_search() {
+        if let Err(error) = self.refresh_resource_settings() {
             let _ = self
                 .runtime
                 .server
@@ -790,6 +807,7 @@ impl FrameHost {
                 software_waterwarp,
                 curve_error,
                 model_lod,
+                self.model_controls,
                 view_policy,
             );
         }

@@ -160,6 +160,7 @@ pub trait ModelLookup {
 pub trait ModelLoader {
     fn lookup(&self) -> &dyn ModelLookup;
     fn set_image_search_order(&mut self, order: qa_render::material::resources::ImageSearchOrder);
+    fn set_model_replacement_load(&mut self, enhanced: bool, skeletal: bool);
 
     fn register_inline(
         &mut self,
@@ -388,6 +389,7 @@ pub struct ServiceStorage {
     collision: qa_console::collision::CollisionHandles,
     qw_phs: CvarHandle,
     image_search: View,
+    model: qa_console::model::ModelHandles,
 }
 
 impl ServiceStorage {
@@ -557,6 +559,7 @@ impl ServiceStorage {
                     },
                 )
                 .ok_or(CallError::Cvar)?,
+            model: qa_console::model::ModelHandles::bind(cvars).map_err(|_| CallError::Cvar)?,
         })
     }
     fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
@@ -1775,8 +1778,14 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let order =
             qa_render::material::resources::ImageSearchOrder::parse(text.as_str().as_bytes())
                 .map_err(|_| CallError::File)?;
+        let (enhanced, skeletal) = s
+            .storage
+            .model
+            .replacement_load(s.cvars)
+            .map_err(|_| CallError::Cvar)?;
         let loader = s.model_loader.as_mut().ok_or(CallError::File)?;
         loader.set_image_search_order(order);
+        loader.set_model_replacement_load(enhanced, skeletal);
         loader.precache(s.vfs, path, rules)
     },
     model_bounds: |s, path, rules| {

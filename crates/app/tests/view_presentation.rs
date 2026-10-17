@@ -47,6 +47,7 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
         lighting_scales: [0.6, 1.],
         curve_error: 250.0,
         model_lod: Default::default(),
+        model_replacements: Default::default(),
         policy: Default::default(),
         near: 4.0,
     };
@@ -62,6 +63,8 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     second.curve_error = 17.25;
     second.model_lod.scale = 7.25;
     second.model_lod.bias = -1;
+    second.model_replacements[2].enabled = false;
+    second.model_replacements[3].distance = 128.0;
     second.policy.ignore_pvs = true;
     second.policy.ignore_areas = true;
     second.policy.draw_entities = false;
@@ -73,6 +76,8 @@ fn seats_share_geometry_without_sharing_refdef_presentation() {
     assert_ne!(a.cpu_presentation, b.cpu_presentation);
     assert_eq!(b.lightstyles[0].indexed_scale, 384);
     assert_eq!(b.identity_light, 0.5);
+    assert_eq!(a.model_replacements, first.model_replacements);
+    assert_eq!(b.model_replacements, second.model_replacements);
     assert_eq!(a.curve_error, first.curve_error);
     assert_eq!(a.model_lod, first.model_lod);
     assert_eq!(b.curve_error, second.curve_error);

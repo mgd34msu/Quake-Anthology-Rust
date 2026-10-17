@@ -9,6 +9,7 @@ pub mod cvars_generated;
 pub mod editor;
 pub mod input_settings;
 pub mod logger;
+pub mod model;
 pub mod movement;
 pub mod numbers;
 pub mod pending;

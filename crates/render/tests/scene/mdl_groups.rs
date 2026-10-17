@@ -133,7 +133,10 @@ fn pairs(packet: &CommandList) -> Vec<[u32; 2]> {
         })
         .flatten()
         .filter(|draw| draw.kind == DrawKind::Entity)
-        .map(|draw| draw.frames.unwrap())
+        .map(|draw| {
+            let pose = draw.frames.unwrap();
+            [pose.current, pose.previous]
+        })
         .collect()
 }
 
@@ -604,10 +607,11 @@ fn grouped_skin_cumulative_boundaries_sync_and_copied_views_select_real_cpu_mate
         })
         .collect::<Vec<_>>();
     let packet = capture_with(&assets, &views, |frame| {
-        assert!(frame.add_model_choices(
+        assert!(model_choices::skin(
+            frame,
             skin_pose(),
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(2),
+            2,
             shaders[3..6].iter().copied().map(Into::into)
         ));
     });
@@ -626,13 +630,7 @@ fn grouped_skin_cumulative_boundaries_sync_and_copied_views_select_real_cpu_mate
             (entity.frame, entity.old_frame, entity.sync_base),
             (0, 0, 0.)
         );
-        assert!(matches!(
-            entity.model,
-            SceneModel::Timed {
-                selector: qa_render::scene::ModelChoiceSelector::SkinGroup(2),
-                ..
-            }
-        ));
+        assert!(matches!(entity.model, SceneModel::Choice { .. }));
     }
     let sync = capture_with(
         &assets,
@@ -642,13 +640,14 @@ fn grouped_skin_cumulative_boundaries_sync_and_copied_views_select_real_cpu_mate
         }],
         |frame| {
             for sync_base in [0., 0.25] {
-                assert!(frame.add_model_choices(
+                assert!(model_choices::skin(
+                    frame,
                     SceneEntity {
                         sync_base,
                         ..skin_pose()
                     },
                     model,
-                    qa_render::scene::ModelChoiceSelector::SkinGroup(2),
+                    2,
                     shaders[3..6].iter().copied().map(Into::into)
                 ));
             }
@@ -662,16 +661,18 @@ fn grouped_skin_cumulative_boundaries_sync_and_copied_views_select_real_cpu_mate
             ..Default::default()
         }),
         |frame| {
-            assert!(frame.add_model_choices(
+            assert!(model_choices::skin(
+                frame,
                 skin_pose(),
                 model,
-                qa_render::scene::ModelChoiceSelector::SkinGroup(1),
+                1,
                 shaders[1..3].iter().copied().map(Into::into)
             ));
-            assert!(frame.add_model_choices(
+            assert!(model_choices::skin(
+                frame,
                 skin_pose(),
                 model,
-                qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+                3,
                 shaders[6..12].iter().copied().map(Into::into)
             ));
         },
@@ -694,13 +695,14 @@ fn legacy_four_keeps_final_overwritten_slots_repeats_short_groups_and_ignores_sy
     });
     let packet = capture_with(&assets, &views, |frame| {
         for (skin, range, sync_base) in [(1, 1..3, 0.), (2, 3..6, 0.25), (3, 6..12, f32::NAN)] {
-            assert!(frame.add_model_choices(
+            assert!(model_choices::skin(
+                frame,
                 SceneEntity {
                     sync_base,
                     ..skin_pose()
                 },
                 model,
-                qa_render::scene::ModelChoiceSelector::SkinGroup(skin),
+                skin,
                 shaders[range].iter().copied().map(Into::into)
             ));
         }
@@ -740,13 +742,14 @@ fn legacy_four_keeps_final_overwritten_slots_repeats_short_groups_and_ignores_sy
         })
         .collect::<Vec<_>>();
     let pixels = capture_with(&assets, &views, |frame| {
-        assert!(frame.add_model_choices(
+        assert!(model_choices::skin(
+            frame,
             SceneEntity {
                 sync_base: 0.875,
                 ..skin_pose()
             },
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+            3,
             shaders[6..12].iter().copied().map(Into::into)
         ));
     });
@@ -756,7 +759,7 @@ fn legacy_four_keeps_final_overwritten_slots_repeats_short_groups_and_ignores_sy
 #[test]
 fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission() {
     let (assets, model, shaders) = skin_models();
-    assert_eq!(assets.max_model_choices(), 6);
+    assert_eq!(assets.max_model_choices(), 7);
     let grown = Limits {
         entities: 3,
         model_choices: 0,
@@ -765,26 +768,28 @@ fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission
     }
     .for_assets(&assets)
     .unwrap();
-    assert!(grown.model_choices >= 18);
+    assert!(grown.model_choices >= 21);
     assert_eq!(grown.draws, 0);
     let mut frontend = FrontEnd::load(Limits {
         entities: 2,
-        model_choices: 2,
+        model_choices: 3,
         model_joints: 0,
         ..Default::default()
     })
     .unwrap();
     let mut frame = frontend.begin_frame([0; 4]).unwrap();
-    assert!(!frame.add_model_choices(
+    assert!(!model_choices::skin(
+        &mut frame,
         skin_pose(),
         model,
-        qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+        3,
         shaders[6..12].iter().copied().map(Into::into)
     ));
-    assert!(frame.add_model_choices(
+    assert!(model_choices::skin(
+        &mut frame,
         skin_pose(),
         model,
-        qa_render::scene::ModelChoiceSelector::SkinGroup(1),
+        1,
         shaders[1..3].iter().copied().map(Into::into)
     ));
     assert!(frame.render_scene(
@@ -803,22 +808,11 @@ fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission
         panic!("timed model view")
     };
     assert_eq!(view.scene.entities, Span { first: 0, count: 1 });
-    let SceneModel::Timed {
-        model: captured_model,
-        selector,
-        choices,
-    } = packet.entities(view.scene.entities)[0].model
-    else {
+    let SceneModel::Choice { root } = packet.entities(view.scene.entities)[0].model else {
         panic!("deferred native skin group")
     };
-    assert_eq!(
-        (captured_model, selector, choices),
-        (
-            model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(1),
-            Span { first: 0, count: 2 }
-        )
-    );
+    assert_eq!(root, 2);
+    assert_eq!(packet.draws(view.scene.draws)[0].mesh, Some(model));
     let custom = capture_with(
         &assets,
         &[Refdef {
@@ -826,23 +820,25 @@ fn timed_skin_custom_shader_and_bounded_choice_capture_preserve_atomic_admission
             ..Default::default()
         }],
         |frame| {
-            assert!(frame.add_model_choices(
+            assert!(model_choices::skin(
+                frame,
                 SceneEntity {
                     shader: Some(shaders[0].into()),
                     ..skin_pose()
                 },
                 model,
-                qa_render::scene::ModelChoiceSelector::SkinGroup(3),
+                3,
                 shaders[6..12].iter().copied().map(Into::into)
             ));
         },
     );
     assert_eq!(selected_skins(&custom), [shaders[0]]);
     let single = capture_with(&assets, &[Refdef::default()], |frame| {
-        assert!(frame.add_model_choices(
+        assert!(model_choices::skin(
+            frame,
             skin_pose(),
             model,
-            qa_render::scene::ModelChoiceSelector::SkinGroup(0),
+            0,
             std::iter::once(shaders[0].into())
         ));
     });

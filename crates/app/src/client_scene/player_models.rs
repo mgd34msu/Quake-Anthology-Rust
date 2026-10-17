@@ -299,8 +299,8 @@ impl ClientAssets<'_> {
                 &request,
                 *profile,
                 crate::model_assets::RegistrationVariant::Guard(*ui_fullscreen),
-                |_| Ok(()),
-                |assets, _| preparer.prepare_assets(assets, None),
+                |admission| Ok(admission.choice_nodes()),
+                |assets, choices| preparer.prepare_model_assets(assets, *choices),
             )
             .ok()?;
         if handle <= 0 {

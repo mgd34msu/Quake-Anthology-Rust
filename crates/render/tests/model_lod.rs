@@ -1,10 +1,12 @@
+#[path = "support/model_choices.rs"]
+mod model_choices;
+
 use qa_core::primitives::Vec3;
 use qa_render::{
     Assets, Command, FrontEnd, Limits, ModelId, ModelLodSettings, ModelPart, Refdef, SceneEntity,
     SceneModel, ShaderBinding, ShaderBindingId, Vertex, Viewport,
     assets::{Cull, MaterialSettings, Stage},
     cpu::CpuBackend,
-    scene::Span,
     shader::{AlphaGen, RgbGen, StageBlend, reference::ShaderView},
     world::{SurfaceMaterial, VisibleSurface, WorldPresentationInput, geometry::LightSource},
 };
@@ -314,7 +316,8 @@ fn multipart_choices_capture_each_view_and_drive_real_cpu_pixels_in_either_order
                 index
             };
             let (camera_x, settings, _, _) = &requests[selected];
-            assert!(frame.add_model_lods(
+            assert!(model_choices::lods(
+                &mut frame,
                 SceneEntity {
                     origin: Vec3([64., 0., 0.]),
                     ..Default::default()
@@ -323,7 +326,7 @@ fn multipart_choices_capture_each_view_and_drive_real_cpu_pixels_in_either_order
                 [
                     [Some(parts[0]), Some(parts[1]), None],
                     [None, Some(parts[3]), Some(parts[2])],
-                ],
+                ]
             ));
             assert!(frame.render_scene(
                 view(index as u32 * 16, *camera_x, *settings),
@@ -362,7 +365,7 @@ fn multipart_choices_capture_each_view_and_drive_real_cpu_pixels_in_either_order
                 packet
                     .entities(view.scene.entities)
                     .iter()
-                    .all(|entity| matches!(entity.model, SceneModel::Lods { .. }))
+                    .all(|entity| matches!(entity.model, SceneModel::Choice { .. }))
             );
             for draw in packet.draws(view.scene.draws) {
                 let part = parts
@@ -404,7 +407,7 @@ fn choice_capacity_rolls_back_the_whole_group_and_single_levels_use_no_arena() {
     let (assets, parts) = fixture();
     let mut front = FrontEnd::load(Limits {
         entities: 2,
-        model_choices: 3,
+        model_choices: 4,
         model_joints: 0,
         ..Default::default()
     })
@@ -414,14 +417,21 @@ fn choice_capacity_rolls_back_the_whole_group_and_single_levels_use_no_arena() {
         origin: Vec3([8., 0., 0.]),
         ..Default::default()
     };
-    assert!(!frame.add_model_lods(pose, Some(2.), [[Some(parts[0]); 3]; 2]));
-    assert!(frame.add_model_lods(
+    assert!(!model_choices::lods(
+        &mut frame,
+        pose,
+        Some(2.),
+        [[Some(parts[0]); 3]; 2]
+    ));
+    assert!(model_choices::lods(
+        &mut frame,
         pose,
         Some(2.),
         [[Some(parts[0]), Some(parts[1]), Some(parts[2])]]
     ));
-    assert!(frame.add_model_lods(pose, None, [[None]]));
-    assert!(frame.add_model_lods(
+    assert!(model_choices::lods(&mut frame, pose, None, [[None]]));
+    assert!(model_choices::lods(
+        &mut frame,
         SceneEntity {
             origin: Vec3([7., 0., 0.]),
             ..pose
@@ -451,10 +461,7 @@ fn choice_capacity_rolls_back_the_whole_group_and_single_levels_use_no_arena() {
     assert_eq!(view.scene.entities.count, 2);
     assert!(matches!(
         packet.entities(view.scene.entities)[0].model,
-        SceneModel::Lods {
-            choices: Span { first: 0, count: 3 },
-            ..
-        }
+        SceneModel::Choice { root: 3 }
     ));
     assert_eq!(
         packet.entities(view.scene.entities)[1].model,
@@ -466,7 +473,12 @@ fn choice_capacity_rolls_back_the_whole_group_and_single_levels_use_no_arena() {
 
     assert!(front.recycle(packet).is_ok());
     let mut next = front.begin_frame(CLEAR.to_le_bytes()).unwrap();
-    assert!(next.add_model_lods(pose, Some(2.), [[Some(parts[0]); 3]]));
+    assert!(model_choices::lods(
+        &mut next,
+        pose,
+        Some(2.),
+        [[Some(parts[0]); 3]]
+    ));
 }
 
 #[test]
@@ -484,8 +496,18 @@ fn zero_choice_capacity_keeps_ordinary_meshes_and_can_grow_cold() {
         ..Default::default()
     };
     let mut frame = front.begin_frame(CLEAR.to_le_bytes()).unwrap();
-    assert!(!frame.add_model_lods(pose, Some(2.), [[Some(parts[0]); 2]]));
-    assert!(frame.add_model_lods(pose, None, [[Some(parts[2])]]));
+    assert!(!model_choices::lods(
+        &mut frame,
+        pose,
+        Some(2.),
+        [[Some(parts[0]); 2]]
+    ));
+    assert!(model_choices::lods(
+        &mut frame,
+        pose,
+        None,
+        [[Some(parts[2])]]
+    ));
     assert!(frame.render_scene(
         view(0, 0., ModelLodSettings::default()),
         &[],
@@ -508,13 +530,18 @@ fn zero_choice_capacity_keeps_ordinary_meshes_and_can_grow_cold() {
     assert!(front.recycle(packet).is_ok());
 
     let required = Limits {
-        model_choices: 3,
+        model_choices: 4,
         model_joints: 0,
         ..front.limits()
     };
     front.stage_capacity(required).unwrap().commit();
     let mut next = front.begin_frame(CLEAR.to_le_bytes()).unwrap();
-    assert!(next.add_model_lods(pose, Some(2.), [[Some(parts[0]); 3]]));
+    assert!(model_choices::lods(
+        &mut next,
+        pose,
+        Some(2.),
+        [[Some(parts[0]); 3]]
+    ));
     assert!(next.render_scene(
         view(0, 0., ModelLodSettings::default()),
         &[],
@@ -551,15 +578,26 @@ fn arbitrary_level_counts_and_bad_selected_frames_drop_only_the_affected_part() 
     };
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame(CLEAR.to_le_bytes()).unwrap();
-    assert!(frame.add_model_lods(pose, Some(2.), [[Some(animated), Some(parts[1])]]));
+    assert!(model_choices::lods(
+        &mut frame,
+        pose,
+        Some(2.),
+        [[Some(animated), Some(parts[1])]]
+    ));
     assert!(frame.render_scene(
         view(0, 56., ModelLodSettings::default()),
         &[],
         &assets,
         ShaderView::direct()
     ));
-    assert!(frame.add_model_lods(pose, Some(2.), [[Some(animated), Some(parts[1])]]));
-    assert!(frame.add_model_lods(
+    assert!(model_choices::lods(
+        &mut frame,
+        pose,
+        Some(2.),
+        [[Some(animated), Some(parts[1])]]
+    ));
+    assert!(model_choices::lods(
+        &mut frame,
         SceneEntity {
             frame: 0,
             old_frame: 0,
@@ -568,7 +606,8 @@ fn arbitrary_level_counts_and_bad_selected_frames_drop_only_the_affected_part() 
         None,
         [[Some(parts[0]); 2]]
     ));
-    assert!(frame.add_model_lods(
+    assert!(model_choices::lods(
+        &mut frame,
         SceneEntity {
             frame: 0,
             old_frame: 0,
@@ -650,7 +689,7 @@ fn portal_copies_share_choices_but_capture_their_own_selected_mesh() {
     let presentation = assets.world(world).unwrap().presentations()[0];
     let mut scratch = qa_render::world::WorldView::load(assets.world(world).unwrap());
     let mut front = FrontEnd::load(Limits {
-        model_choices: 3,
+        model_choices: 4,
         model_joints: 0,
         ..Default::default()
     })
@@ -664,7 +703,8 @@ fn portal_copies_share_choices_but_capture_their_own_selected_mesh() {
         },
         ..Default::default()
     }));
-    assert!(frame.add_model_lods(
+    assert!(model_choices::lods(
+        &mut frame,
         SceneEntity {
             origin: Vec3([100., 0., 0.]),
             ..Default::default()
@@ -709,7 +749,7 @@ fn portal_copies_share_choices_but_capture_their_own_selected_mesh() {
                 .entities(view.scene.entities)
                 .iter()
                 .find_map(|entity| match entity.model {
-                    SceneModel::Lods { choices, .. } => Some(choices),
+                    SceneModel::Choice { root } => Some(root),
                     _ => None,
                 })
                 .unwrap()

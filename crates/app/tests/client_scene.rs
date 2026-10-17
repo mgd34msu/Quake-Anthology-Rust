@@ -333,19 +333,20 @@ fn q2_snapshot_sprite_frames_reach_the_shared_scene() {
         ));
         let packet = frame.finish();
         let entity = packet.entity(0);
-        let qa_render::SceneModel::Timed {
-            model,
-            selector: qa_render::scene::ModelChoiceSelector::Frame,
-            ..
-        } = entity.model
-        else {
-            panic!("deferred sprite model")
-        };
+        assert!(matches!(entity.model, qa_render::SceneModel::Choice { .. }));
         let qa_render::Command::View(view) = packet.commands()[1] else {
             panic!("sprite view")
         };
         let first = packet.draws(view.scene.draws)[0];
-        assert_eq!(first.frames, Some([native_frame as u32 % 2; 2]));
+        assert_eq!(
+            first.frames,
+            Some(qa_render::scene::ModelFramePose {
+                current: native_frame as u32 % 2,
+                previous: native_frame as u32 % 2,
+                back_lerp: 0.,
+            })
+        );
+        let model = first.mesh.unwrap();
         materials.push(first.shader.unwrap().source(&()).unwrap());
         assert_eq!(assets.models().len(), models_before + 1);
         assert_eq!(
@@ -2614,7 +2615,14 @@ fn netquake_oriented_spr_preserves_pitch_and_native_parent_fallback_in_shared_vi
                 .source(&())
                 .unwrap();
             for draw in packet.draws(view.scene.draws) {
-                assert_eq!(draw.frames, Some([physical as u32; 2]));
+                assert_eq!(
+                    draw.frames,
+                    Some(qa_render::scene::ModelFramePose {
+                        current: physical as u32,
+                        previous: physical as u32,
+                        back_lerp: 0.,
+                    })
+                );
                 assert_eq!(draw.shader.unwrap().source(&()), Some(expected));
             }
             assert_eq!(packet.rejected, 0);

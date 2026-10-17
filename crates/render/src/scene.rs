@@ -8,9 +8,15 @@ use crate::world::{VisibleSurface, WorldId, WorldPresentationId};
 pub use qa_core::primitives::LightStyle;
 use qa_core::primitives::{Orientation, PlayerViewFlags, ThinkTime, Vec3};
 use std::cmp::Ordering as SortOrdering;
+mod model_choice;
 mod model_lod;
 mod patch;
 pub use crate::assets::{FrameTiming, SkinTiming};
+use model_choice::ChoiceNode;
+pub use model_choice::{
+    ModelCapture, ModelChoice, ModelFramePose, ModelReplacementSettings, ModelSelector,
+    SkeletalFrameMap,
+};
 pub use model_lod::ModelLodSettings;
 pub(crate) use model_lod::projection_scales;
 pub use patch::{PatchSelection, PatchTriangles};
@@ -166,6 +172,8 @@ pub struct Refdef {
     pub lightstyles: [LightStyle; 256],
     pub curve_error: f32,
     pub model_lod: ModelLodSettings,
+    /// Independently selected model control roles, never inferred from the map.
+    pub model_replacements: [ModelReplacementSettings; 5],
 }
 pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
     let fov_x = if fov_x.is_finite() {
@@ -280,6 +288,7 @@ impl Default for Refdef {
             lightstyles: [LightStyle::default(); 256],
             curve_error: DEFAULT_CURVE_ERROR,
             model_lod: ModelLodSettings::default(),
+            model_replacements: [ModelReplacementSettings::default(); 5],
         }
     }
 }
@@ -366,14 +375,8 @@ pub struct ModelPart {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SceneModel {
     Mesh(ModelId),
-    Lods {
-        choices: Span,
-        radius: Option<f32>,
-    },
-    Timed {
-        model: ModelId,
-        selector: ModelChoiceSelector,
-        choices: Span,
+    Choice {
+        root: u32,
     },
     World {
         world: WorldId,
@@ -408,11 +411,6 @@ pub enum SceneModel {
     },
     PolyMarker,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelChoiceSelector {
-    SkinGroup(u32),
-    Frame,
-}
 impl From<ModelId> for SceneModel {
     fn from(model: ModelId) -> Self {
         Self::Mesh(model)
@@ -422,8 +420,7 @@ impl SceneModel {
     pub fn mesh(self) -> Option<ModelId> {
         match self {
             Self::Mesh(model) => Some(model),
-            Self::Lods { .. }
-            | Self::Timed { .. }
+            Self::Choice { .. }
             | Self::World { .. }
             | Self::Sprite { .. }
             | Self::Beam { .. }
@@ -481,6 +478,8 @@ pub struct SceneEntity {
     pub old_frame: u32,
     pub back_lerp: f32,
     pub depth_hack: bool,
+    /// Native RF_NO_LOD bypasses replacement distance while keeping enable policy.
+    pub no_model_lod: bool,
     pub shader_time: f32,
     /// Native model synchronization, independent of shader animation time.
     pub sync_base: f32,
@@ -539,6 +538,7 @@ impl Default for SceneEntity {
             old_frame: 0,
             back_lerp: 0.0,
             depth_hack: false,
+            no_model_lod: false,
             shader_time: 0.0,
             sync_base: 0.0,
             sprite_roll: 0.0,
@@ -804,7 +804,7 @@ pub struct DrawItem {
     pub shader: Option<ShaderRef>,
     pub mesh: Option<ModelId>,
     /// Flattened current/previous poses selected for this copied view.
-    pub frames: Option<[u32; 2]>,
+    pub frames: Option<ModelFramePose>,
     /// Prepared model-space joint rows in this owned packet.
     pub pose: Option<Span>,
     key: DrawKey,
@@ -871,16 +871,23 @@ impl Limits {
     /// Resolve one cold packet budget for any admitted entity skin group or LOD.
     /// Direct FrontEnd callers can retain a smaller explicit bounded arena.
     pub fn for_assets(mut self, assets: &Assets) -> Result<Self, &'static str> {
-        let required = self
-            .entities
-            .checked_mul(assets.max_model_choices())
-            .ok_or("scene model choice capacity overflow")?;
-        self.model_choices = self.model_choices.max(required);
+        self = self.for_model_choices(assets.max_model_choices())?;
         let joints = self
             .entities
             .checked_mul(assets.max_model_joints())
             .ok_or("scene model joint capacity overflow")?;
         self.model_joints = self.model_joints.max(joints);
+        self.resolved()?;
+        Ok(self)
+    }
+
+    /// Cold catalog recipes supply the complete captured graph cost per part.
+    pub fn for_model_choices(mut self, per_entity: usize) -> Result<Self, &'static str> {
+        let required = self
+            .entities
+            .checked_mul(per_entity)
+            .ok_or("scene model choice capacity overflow")?;
+        self.model_choices = self.model_choices.max(required);
         self.resolved()?;
         Ok(self)
     }
@@ -964,7 +971,7 @@ impl Default for Limits {
 pub struct CommandList {
     commands: Box<[Command]>,
     entities: Box<[SceneEntity]>,
-    model_choices: Box<[Option<ModelPart>]>,
+    model_choices: Box<[ChoiceNode]>,
     model_joints: Box<[crate::assets::PreparedJoint]>,
     polys: Box<[Poly]>,
     vertices: Box<[Vertex]>,
@@ -994,7 +1001,7 @@ impl CommandList {
         Self {
             commands: vec![Command::Empty; l.commands].into_boxed_slice(),
             entities: vec![SceneEntity::default(); l.entities].into_boxed_slice(),
-            model_choices: vec![None; l.model_choices].into_boxed_slice(),
+            model_choices: vec![ChoiceNode::Missing; l.model_choices].into_boxed_slice(),
             model_joints: vec![crate::assets::PreparedJoint::default(); l.model_joints]
                 .into_boxed_slice(),
             polys: vec![Poly::default(); l.polys].into_boxed_slice(),
@@ -1436,7 +1443,7 @@ impl Frame {
             return Ok(Some(draw));
         };
         let frames = draw.frames.ok_or(())?;
-        let back = self.list.entity(draw.index).back_lerp;
+        let back = frames.back_lerp;
         // Existing draw receipts are the only reuse index. Multipart meshes share
         // their source Arc and joint span; no second pose map is retained.
         for prior in &self.list.draws[..self.list.draw_count] {
@@ -1447,7 +1454,6 @@ impl Frame {
                 || prior.frames != Some(frames)
                 || pose.count != skeleton.joint_count()
                 || !pose.fits(self.list.model_joint_count)
-                || self.list.entity(prior.index).back_lerp.to_bits() != back.to_bits()
             {
                 continue;
             }
@@ -1469,7 +1475,7 @@ impl Frame {
             .get_mut(first..first.checked_add(count).ok_or(())?)
             .ok_or(())?;
         skeleton
-            .prepare(frames[0], frames[1], back, output)
+            .prepare(frames.current, frames.previous, back, output)
             .ok_or(())?;
         self.list.model_joint_count += count;
         draw.pose = Some(Span {
@@ -1746,10 +1752,7 @@ impl Frame {
             if entity.lighting.is_none()
                 && matches!(
                     entity.model,
-                    SceneModel::Mesh(_)
-                        | SceneModel::Lods { .. }
-                        | SceneModel::Timed { .. }
-                        | SceneModel::World { .. }
+                    SceneModel::Mesh(_) | SceneModel::Choice { .. } | SceneModel::World { .. }
                 )
             {
                 entity.lighting = Some(crate::lighting::setup_entity(
@@ -1764,107 +1767,6 @@ impl Frame {
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
         self.add_entities(std::iter::once(entity))
     }
-    /// Capture every part's independent levels into this packet, or leave all
-    /// payload counts unchanged. Copied views share these immutable choices.
-    pub fn add_model_lods(
-        &mut self,
-        pose: SceneEntity,
-        radius: Option<f32>,
-        parts: impl IntoIterator<Item = impl IntoIterator<Item = Option<ModelPart>>>,
-    ) -> bool {
-        let checkpoint = self.checkpoint();
-        for levels in parts {
-            let mut levels = levels.into_iter();
-            let Some(first_level) = levels.next() else {
-                self.restore(checkpoint);
-                return self.reject_submission();
-            };
-            let Some(second_level) = levels.next() else {
-                if let Some(part) = first_level {
-                    let mut entity = pose;
-                    entity.model = SceneModel::Mesh(part.model);
-                    entity.shader = pose.shader.or(Some(part.shader));
-                    if !self.add_entity_part(entity) {
-                        self.restore(checkpoint);
-                        return false;
-                    }
-                }
-                continue;
-            };
-            let Some(choices) =
-                self.capture_model_choices([first_level, second_level].into_iter().chain(levels))
-            else {
-                self.restore(checkpoint);
-                return self.reject_submission();
-            };
-            let mut entity = pose;
-            entity.model = SceneModel::Lods { choices, radius };
-            if !self.add_entity_part(entity) {
-                self.restore(checkpoint);
-                return false;
-            }
-        }
-        true
-    }
-    /// Capture a cold-validated skin group or sprite's physical-frame shaders.
-    /// Selection waits for the copied view's time and native frame policy.
-    pub fn add_model_choices(
-        &mut self,
-        mut pose: SceneEntity,
-        model: ModelId,
-        selector: ModelChoiceSelector,
-        member_shaders: impl IntoIterator<Item = ShaderRef>,
-    ) -> bool {
-        let mut members = member_shaders.into_iter();
-        let Some(first) = members.next() else {
-            return self.reject_submission();
-        };
-        let Some(second) = members.next() else {
-            pose.model = SceneModel::Mesh(model);
-            pose.shader = pose.shader.or(Some(first));
-            return self.add_entity(pose);
-        };
-        let checkpoint = self.checkpoint();
-        let Some(choices) = self.capture_model_choices(
-            [first, second]
-                .into_iter()
-                .chain(members)
-                .map(|shader| Some(ModelPart { model, shader })),
-        ) else {
-            self.restore(checkpoint);
-            return self.reject_submission();
-        };
-        pose.model = SceneModel::Timed {
-            model,
-            selector,
-            choices,
-        };
-        if !self.add_entity_part(pose) {
-            self.restore(checkpoint);
-            return false;
-        }
-        true
-    }
-
-    fn capture_model_choices(
-        &mut self,
-        choices: impl IntoIterator<Item = Option<ModelPart>>,
-    ) -> Option<Span> {
-        let first = self.list.model_choice_count;
-        for choice in choices {
-            let slot = self
-                .list
-                .model_choices
-                .get_mut(self.list.model_choice_count)?;
-            *slot = choice;
-            self.list.model_choice_count += 1;
-        }
-        Some(Span {
-            first: first as u32,
-            count: (self.list.model_choice_count - first) as u32,
-        })
-    }
-
     /// One submitted model may contain several surfaces. Admit that complete
     /// group or restore all counts, without copying/growing packet storage.
     pub fn add_entities(&mut self, entities: impl IntoIterator<Item = SceneEntity>) -> bool {
@@ -1882,15 +1784,14 @@ impl Frame {
             self.list.rejected += 1;
             return false;
         }
-        if let SceneModel::Lods { choices, .. } | SceneModel::Timed { choices, .. } = entity.model
-            && (choices.count == 0 || !choices.fits(self.list.model_choice_count))
+        if let SceneModel::Choice { root } = entity.model
+            && root as usize >= self.list.model_choice_count
         {
             return self.reject_submission();
         }
         match entity.model {
             SceneModel::Mesh(_)
-            | SceneModel::Lods { .. }
-            | SceneModel::Timed { .. }
+            | SceneModel::Choice { .. }
             | SceneModel::Sprite { .. }
             | SceneModel::Beam { .. }
             | SceneModel::RailCore { .. }
@@ -2245,18 +2146,16 @@ pub(crate) fn draw_entity(list: &CommandList, draw: DrawItem) -> Option<SceneEnt
     let mut entity = *list.entity(draw_entity_index(list, draw)?);
     if let Some(mesh) = draw.mesh {
         entity.model = SceneModel::Mesh(mesh);
-    } else if matches!(
-        entity.model,
-        SceneModel::Lods { .. } | SceneModel::Timed { .. }
-    ) {
+    } else if matches!(entity.model, SceneModel::Choice { .. }) {
         return None;
     }
     if let Some(shader) = draw.shader {
         entity.shader = Some(shader);
     }
-    if let Some([current, previous]) = draw.frames {
-        entity.frame = current;
-        entity.old_frame = previous;
+    if let Some(frames) = draw.frames {
+        entity.frame = frames.current;
+        entity.old_frame = frames.previous;
+        entity.back_lerp = frames.back_lerp;
     }
     Some(entity)
 }
@@ -2276,115 +2175,41 @@ fn select_model_draw(
     let entity = list.entity(draw.index);
     match entity.model {
         SceneModel::Mesh(model) => draw.mesh = Some(model),
-        SceneModel::Lods { choices, radius } => {
-            let level = view
-                .model_lod
-                .select(
-                    radius.ok_or(())?,
-                    choices.count,
-                    entity.origin,
-                    view,
-                    projection.ok_or(())?,
-                )
-                .ok_or(())?;
-            let Some(part) = list.model_choices[choices.range()][level as usize] else {
+        SceneModel::Choice { root } => {
+            let Some(selected) =
+                model_choice::choose(list, assets, root, entity, view, projection)?
+            else {
                 return Ok(None);
             };
-            draw.mesh = Some(part.model);
-            draw.shader = entity.shader.or(Some(part.shader));
+            draw.mesh = Some(selected.part.model);
+            draw.shader = entity.shader.or(Some(selected.part.shader));
+            draw.frames = Some(selected.frames);
         }
-        SceneModel::Timed { model, .. } => draw.mesh = Some(model),
         _ => {}
     }
     if let Some(mesh) = draw.mesh {
         let model = assets.model(mesh).ok_or(())?;
-        if let Some(sprite) = &model.sprite {
-            let current = if let Some(animation) = model.animation() {
-                let parent = if entity.frame < model.native_frame_count() {
-                    entity.frame
-                } else {
-                    0
-                };
-                animation
-                    .frame_pose(
-                        parent,
-                        view.model_time(),
-                        entity.sync_base,
-                        FrameTiming::Cumulative,
-                    )
-                    .ok_or(())?
-            } else if sprite.wrap_frames {
-                entity.frame % model.frame_count()
-            } else if entity.frame < model.frame_count() {
-                entity.frame
-            } else {
-                0
-            };
-            draw.frames = Some([current, current]);
-        } else if let Some(animation) = model.animation() {
-            let time = view.model_time();
-            draw.frames = Some([
-                animation
-                    .frame_pose(entity.frame, time, entity.sync_base, view.frame_timing)
-                    .ok_or(())?,
-                animation
-                    .frame_pose(entity.old_frame, time, entity.sync_base, view.frame_timing)
-                    .ok_or(())?,
-            ]);
-        }
-        if let SceneModel::Timed {
-            selector, choices, ..
-        } = entity.model
+        if draw.frames.is_none()
+            && (model.sprite.is_some() || model.animation().is_some() || model.skeleton().is_some())
         {
-            let member = match selector {
-                ModelChoiceSelector::SkinGroup(skin) => {
-                    let animation = model.animation().ok_or(())?;
-                    let group = animation.skin_groups().get(skin as usize).ok_or(())?;
-                    if group.members.count != choices.count {
-                        return Err(());
-                    }
-                    animation
-                        .skin_member(skin, view.model_time(), entity.sync_base, view.skin_timing)
-                        .ok_or(())?
-                }
-                ModelChoiceSelector::Frame => {
-                    if model.sprite.is_none() || choices.count != model.frame_count() {
-                        return Err(());
-                    }
-                    draw.frames.ok_or(())?[0]
-                }
-            };
-            let part = list.model_choices[choices.range()][member as usize].ok_or(())?;
-            if part.model != mesh {
-                return Err(());
-            }
-            draw.shader = entity.shader.or(Some(part.shader));
+            draw.frames = Some(model_choice::resolve_frames(model, entity, view).ok_or(())?);
         }
-        if model.skeleton().is_some() {
-            draw.frames = Some([entity.frame, entity.old_frame]);
-            if entity.frame >= model.frame_count()
-                || entity.old_frame >= model.frame_count()
-                || !entity.back_lerp.is_finite()
-                || !(0.0..=1.0).contains(&entity.back_lerp)
-            {
-                return Err(());
-            }
-        }
-        if matches!(
-            entity.model,
-            SceneModel::Lods { .. } | SceneModel::Timed { .. }
-        ) || model.animation().is_some()
-        {
+        if draw.frames.is_some() {
             let selected = draw_entity(list, draw).ok_or(())?;
             if model.sprite.is_some() {
                 model.sprite_frame(selected.frame).ok_or(())?;
-            } else if model.skeleton().is_none() {
+            } else if model.skeleton().is_some() {
+                if !draw.frames.ok_or(())?.valid(model.frame_count()) {
+                    return Err(());
+                }
+            } else {
                 model.posed_frames(&selected).ok_or(())?;
             }
         }
     }
     Ok(Some(draw))
 }
+
 fn source_shader(
     list: &CommandList,
     assets: &Assets,

@@ -496,6 +496,13 @@ impl RendererSource {
         });
         host.runtime.model_assets = Some(owner);
         let huds = std::array::from_fn(|_| None);
+        let model_choices = host
+            .runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .catalog()
+            .max_choice_nodes();
         let (assets, staged) = host.stage_engine_graphics(&console, &huds).unwrap();
         let (renderer, scene) = Renderer::load(
             Context::Cpu(configuration),
@@ -507,6 +514,7 @@ impl RendererSource {
             console,
             huds,
             effects,
+            model_choices,
         )
         .unwrap();
         staged.commit();
