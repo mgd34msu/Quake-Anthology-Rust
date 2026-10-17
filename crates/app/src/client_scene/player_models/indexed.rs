@@ -329,6 +329,7 @@ impl PlayerBindings {
                             *ui_fullscreen,
                             layout,
                             translation,
+                            None,
                             |assets, choices| preparer.prepare_model_assets(assets, choices),
                         )
                     };

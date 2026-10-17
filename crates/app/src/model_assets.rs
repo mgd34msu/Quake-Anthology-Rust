@@ -1016,6 +1016,7 @@ impl std::fmt::Display for IndexedSkinError {
 }
 struct RegisteredSkin {
     name: NameId,
+    search: SearchView,
     profiles: Vec<SkinProfile>,
     source: Option<SkinSource>,
 }
@@ -1654,8 +1655,11 @@ impl ReloadCheckpoint {
                 .ok_or("skin replay filename")?
                 .to_vec();
             let request = entry.profiles[row].request;
+            let search = entry.search.clone();
             let path = std::str::from_utf8(&name).map_err(|_| "skin replay filename")?;
-            if let Err(error) = owner.admit_skin_request(vfs, path, profile, guard, request) {
+            if let Err(error) =
+                owner.admit_skin_request(vfs, path, profile, guard, request, Some(&search))
+            {
                 // Source absence or malformed source is a retained native fallback.
                 // Material, capacity and backend errors are transaction failures.
                 let source_failure = matches!(request, SkinRequest::Indexed(indexed)
@@ -2032,7 +2036,7 @@ impl RegistrationCheckpoint {
                     &catalog.names,
                     &catalog.skin_indices,
                     raw,
-                    &catalog.registration_vfs,
+                    search.unwrap_or(&catalog.registration_vfs),
                 );
             }
             RendererRegistration::Shader { .. } => {
@@ -2142,7 +2146,7 @@ impl RegistrationCheckpoint {
                 Some(&shader.search),
             )?;
         }
-        for (name, _) in catalog.skin_indices.entries(&catalog.registration_vfs) {
+        for (search, name, _) in catalog.skin_indices.all_entries() {
             self.capture_target(
                 owner,
                 &RendererRequest {
@@ -2151,7 +2155,7 @@ impl RegistrationCheckpoint {
                     kind: RendererRegistration::Skin,
                     world: None,
                 },
-                None,
+                Some(search),
             )?;
         }
         self.inline_before = catalog
@@ -3075,11 +3079,7 @@ impl ModelAssets {
             )?;
         }
         let mut skins = Vec::new();
-        for (name, index) in self
-            .catalog
-            .skin_indices
-            .entries(&self.catalog.registration_vfs)
-        {
+        for (search, name, index) in self.catalog.skin_indices.all_entries() {
             for (row, entry) in self.catalog.skins[index.0 as usize]
                 .profiles
                 .iter()
@@ -3101,11 +3101,12 @@ impl ModelAssets {
                             skin: index.0,
                             row: row as u32,
                         },
+                        search.clone(),
                     ));
                 }
             }
         }
-        for (name, profile, mut request, old_selection) in skins {
+        for (name, profile, mut request, old_selection, search) in skins {
             if request != SkinRequest::Named {
                 if let SkinRequest::Indexed(indexed) = &mut request {
                     indexed.translation.target = profile.palette;
@@ -3122,6 +3123,7 @@ impl ModelAssets {
                         profile,
                         ui_fullscreen,
                         request,
+                        Some(&search),
                         |assets, _| prepare(assets),
                     )
                     .map_err(|error| format!("derived skin refresh: {error}"))?;
@@ -3134,9 +3136,11 @@ impl ModelAssets {
                 kind: RendererRegistration::Skin,
                 world: None,
             };
-            self.prepare_registration(
+            let mut target = RegistrationTarget::named(&request);
+            target.search = Some(&search);
+            self.prepare_targets(
                 vfs,
-                &request,
+                [target],
                 profile,
                 RegistrationVariant::Guard(ui_fullscreen),
                 |_| Ok(()),
@@ -3412,7 +3416,7 @@ impl ModelAssets {
                             &self.catalog.names,
                             &self.catalog.skin_indices,
                             request.name.as_ref(),
-                            &self.catalog.registration_vfs,
+                            search.unwrap_or(&self.catalog.registration_vfs),
                         ) else {
                             continue;
                         };
@@ -3775,9 +3779,14 @@ impl ModelAssets {
                             })
                         }
                     }
-                    RendererRegistration::Skin => {
-                        self.admit_skin_profile(vfs, raw, request.source, selected, ui_fullscreen)
-                    }
+                    RendererRegistration::Skin => self.admit_skin_profile(
+                        vfs,
+                        raw,
+                        request.source,
+                        selected,
+                        ui_fullscreen,
+                        targets[index].search,
+                    ),
                     RendererRegistration::Shader { mipmaps, lighting } => self
                         .admit_shader_profile(
                             vfs,
@@ -5971,24 +5980,27 @@ impl ModelAssets {
             .ok_or(CallError::File)
     }
 
-    pub(crate) fn preload_skin(
+    pub fn preload_skin(
         &mut self,
         vfs: &Vfs,
         raw: &[u8],
         source: RuleSetId,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Result<i32, CallError> {
-        self.admit_skin_profile(vfs, raw, source, None, ui_fullscreen)
+        self.admit_skin_profile(vfs, raw, source, None, ui_fullscreen, search)
     }
 
-    fn ensure_skin_row(&mut self, path: &str, ui_fullscreen: bool) -> Result<usize, CallError> {
+    fn ensure_skin_row(
+        &mut self,
+        path: &str,
+        ui_fullscreen: bool,
+        search: Option<&SearchView>,
+    ) -> Result<usize, CallError> {
+        let view = search.unwrap_or(&self.catalog.registration_vfs).clone();
         let name = self.admit_name(path.as_bytes())?;
         let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
-        if let Some(index) = self
-            .catalog
-            .skin_indices
-            .find(&self.catalog.registration_vfs, group)
-        {
+        if let Some(index) = self.catalog.skin_indices.find(&view, group) {
             return Ok(index.0 as usize);
         }
         if self.catalog.skins.len() >= self.catalog.limits.models
@@ -5999,20 +6011,17 @@ impl ModelAssets {
         let index = self.catalog.skins.len();
         self.catalog
             .skin_indices
-            .bind(
-                self.catalog.registration_vfs.clone(),
-                group,
-                RegistrationIndex(index as u32),
-            )
+            .bind(view.clone(), group, RegistrationIndex(index as u32))
             .map_err(|_| CallError::Capacity)?;
         self.catalog.skins.push(RegisteredSkin {
             name,
+            search: view.clone(),
             source: None,
             profiles: self
                 .catalog
                 .profiles
                 .iter()
-                .filter(|images| images.source.same_selection(&self.catalog.registration_vfs))
+                .filter(|images| images.source.same_selection(&view))
                 .map(|images| SkinProfile {
                     request: SkinRequest::Named,
                     profile: images.profile,
@@ -6039,6 +6048,7 @@ impl ModelAssets {
         ui_fullscreen: bool,
         layout: IndexedSkinLayout,
         translation: IndexedSkinTranslation,
+        search: Option<&SearchView>,
         prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
     ) -> Result<SkinSelection, IndexedSkinError> {
         self.prepare_skin_request(
@@ -6050,6 +6060,7 @@ impl ModelAssets {
                 layout,
                 translation,
             }),
+            search,
             prepare,
         )
     }
@@ -6072,12 +6083,19 @@ impl ModelAssets {
             .file_name(row.file)
             .ok_or("model color filename")?
             .to_owned();
+        let search = self
+            .catalog
+            .files
+            .source_view(row.file)
+            .cloned()
+            .ok_or("model color source selection")?;
         self.prepare_skin_request(
             vfs,
             &path,
             profile,
             ui_fullscreen,
             SkinRequest::ModelColors(colors),
+            Some(&search),
             prepare,
         )
         .map_err(|error| error.to_string())
@@ -6090,10 +6108,14 @@ impl ModelAssets {
         profile: ModelProfile,
         ui_fullscreen: bool,
         request: SkinRequest,
+        search: Option<&SearchView>,
         prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
     ) -> Result<SkinSelection, IndexedSkinError> {
         self.check_registration_vfs(vfs).map_err(|error| {
             IndexedSkinError::Rejected(format!("renderer VFS owner: {error:?}"))
+        })?;
+        let view = vfs.read_view(search).retain().map_err(|error| {
+            IndexedSkinError::Rejected(format!("skin source selection: {error:?}"))
         })?;
         let path = canonical_path(name);
         if path.is_empty() || path.len() >= 64 {
@@ -6109,7 +6131,7 @@ impl ModelAssets {
         }
         if let Some(selected) =
             self.catalog
-                .find_skin_selection(&path, profile, request, ui_fullscreen)
+                .find_skin_selection(&path, profile, request, ui_fullscreen, Some(&view))
         {
             return Ok(selected);
         }
@@ -6120,7 +6142,10 @@ impl ModelAssets {
             world: None,
         };
         let mut checkpoint =
-            RegistrationCheckpoint::capture(self, [&target]).map_err(IndexedSkinError::Rejected)?;
+            RegistrationCheckpoint::base(self).map_err(IndexedSkinError::Rejected)?;
+        checkpoint
+            .capture_target(self, &target, Some(&view))
+            .map_err(IndexedSkinError::Rejected)?;
         if matches!(request, SkinRequest::ModelColors(_)) {
             checkpoint
                 .capture_all(self)
@@ -6128,7 +6153,8 @@ impl ModelAssets {
         }
         let mut rollback = RegistrationRollback::Retry;
         let result = (|| {
-            let selection = self.admit_skin_request(vfs, &path, profile, ui_fullscreen, request)?;
+            let selection =
+                self.admit_skin_request(vfs, &path, profile, ui_fullscreen, request, Some(&view))?;
             let counts = self.assets.counts();
             if !self.initial_registration {
                 self.validate_admission(counts).map_err(|error| {
@@ -6143,7 +6169,7 @@ impl ModelAssets {
             Ok(selection)
         })();
         if result.is_err() {
-            if find_skin_index(&self.catalog.names, &self.catalog.skin_indices, path.as_bytes(), &self.catalog.registration_vfs)
+            if find_skin_index(&self.catalog.names, &self.catalog.skin_indices, path.as_bytes(), &view)
                 .and_then(|(_, index)| index).and_then(|index| self.catalog.skins.get(index as usize))
                 .is_some_and(|entry| matches!(&entry.source, Some(SkinSource::IndexedFailure { layout: failed, .. }) if matches!(request, SkinRequest::Indexed(indexed) if indexed.layout == *failed))) {
                 rollback = RegistrationRollback::Source;
@@ -6162,13 +6188,17 @@ impl ModelAssets {
         profile: ModelProfile,
         ui: bool,
         request: SkinRequest,
+        search: Option<&SearchView>,
     ) -> Result<SkinSelection, IndexedSkinError> {
+        let view = search.unwrap_or(&self.catalog.registration_vfs).clone();
+        self.ensure_source_profiles(&view, Some(profile))
+            .map_err(|error| IndexedSkinError::Rejected(error.message))?;
         match request {
             SkinRequest::Indexed(request) => {
-                self.admit_indexed_skin(vfs, path, profile, ui, request)
+                self.admit_indexed_skin(vfs, path, profile, ui, request, Some(&view))
             }
             SkinRequest::ModelColors(colors) => self
-                .admit_model_colors(vfs, path, profile, ui, colors)
+                .admit_model_colors(vfs, path, profile, ui, colors, Some(&view))
                 .map_err(IndexedSkinError::Rejected),
             SkinRequest::Named => {
                 let handle = self
@@ -6178,6 +6208,7 @@ impl ModelAssets {
                         profile.source_rules,
                         Some(profile),
                         ui,
+                        Some(&view),
                     )
                     .map_err(|error| {
                         IndexedSkinError::Rejected(format!("skin registration: {error:?}"))
@@ -6251,15 +6282,15 @@ impl ModelAssets {
         profile: ModelProfile,
         ui_fullscreen: bool,
         request: IndexedSkinRequest,
+        search: Option<&SearchView>,
     ) -> Result<SkinSelection, IndexedSkinError> {
-        let image_index = image_profile_index(
-            &self.catalog.profiles,
-            profile,
-            &self.catalog.registration_vfs,
-        )
-        .ok_or_else(|| IndexedSkinError::Rejected("indexed skin profile unavailable".to_owned()))?;
+        let view = search.unwrap_or(&self.catalog.registration_vfs).clone();
+        let image_index =
+            image_profile_index(&self.catalog.profiles, profile, &view).ok_or_else(|| {
+                IndexedSkinError::Rejected("indexed skin profile unavailable".to_owned())
+            })?;
         let index = self
-            .ensure_skin_row(path, ui_fullscreen)
+            .ensure_skin_row(path, ui_fullscreen, Some(&view))
             .map_err(|error| IndexedSkinError::Rejected(format!("indexed skin row: {error:?}")))?;
         let selection = self
             .skin_variant(index, profile, ui_fullscreen, SkinRequest::Indexed(request))
@@ -6343,11 +6374,18 @@ impl ModelAssets {
         profile: ModelProfile,
         ui: bool,
         colors: ModelSkinColors,
+        search: Option<&SearchView>,
     ) -> Result<SkinSelection, String> {
         let file = self
             .catalog
-            .file_id(path.as_bytes(), None)
+            .file_id(path.as_bytes(), search)
             .ok_or("model color file")?;
+        let view = self
+            .catalog
+            .files
+            .source_view(file)
+            .cloned()
+            .ok_or("model color source selection")?;
         let registration = self
             .catalog
             .registration_name_variant(file, profile, RegistrationVariant::Guard(ui))
@@ -6405,14 +6443,10 @@ impl ModelAssets {
             }
             Some(Arc::clone(&replacement.skins))
         };
-        let image_index = self
-            .catalog
-            .profiles
-            .iter()
-            .position(|row| row.profile == profile)
+        let image_index = image_profile_index(&self.catalog.profiles, profile, &view)
             .ok_or("model color image owner")?;
         let index = self
-            .ensure_skin_row(path, ui)
+            .ensure_skin_row(path, ui, Some(&view))
             .map_err(|error| format!("model color row: {error:?}"))?;
         let selected = self.skin_variant(index, profile, ui, SkinRequest::ModelColors(colors))?;
         if self.catalog.skins[index].profiles[selected.row as usize]
@@ -6436,7 +6470,7 @@ impl ModelAssets {
                         .ok_or("model color sidecar filename")?
                         .to_owned();
                     let skin = self
-                        .ensure_skin_row(&path, ui)
+                        .ensure_skin_row(&path, ui, Some(&view))
                         .map_err(|error| format!("model color sidecar row: {error:?}"))?;
                     let source = self
                         .skin_source(vfs, &path, image_index, skin, Default::default())
@@ -6650,8 +6684,13 @@ impl ModelAssets {
         source: RuleSetId,
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Result<i32, CallError> {
         self.check_registration_vfs(vfs)?;
+        let view = vfs
+            .read_view(search)
+            .retain()
+            .map_err(|_| CallError::File)?;
         if raw.is_empty() {
             return Ok(0);
         }
@@ -6666,14 +6705,14 @@ impl ModelAssets {
                 profile,
                 None,
                 RegistrationVariant::Guard(ui_fullscreen),
-                None,
+                Some(&view),
             )
         } else {
             find_skin_index(
                 &self.catalog.names,
                 &self.catalog.skin_indices,
                 path.as_bytes(),
-                &self.catalog.registration_vfs,
+                &view,
             )
             .and_then(|(_, index)| index)
             .and_then(|index| {
@@ -6687,13 +6726,15 @@ impl ModelAssets {
         if let Some(handle) = cached {
             return Ok(handle);
         }
-        let index = self.ensure_skin_row(&path, ui_fullscreen)?;
+        self.ensure_source_profiles(&view, selected)
+            .map_err(|error| error.kind)?;
+        let index = self.ensure_skin_row(&path, ui_fullscreen, Some(&view))?;
         let name = self.catalog.skins[index].name;
         for images in self
             .catalog
             .profiles
             .iter()
-            .filter(|images| images.source.same_selection(&self.catalog.registration_vfs))
+            .filter(|images| images.source.same_selection(&view))
         {
             if !self.catalog.skins[index].profiles.iter().any(|row| {
                 row.request == SkinRequest::Named
@@ -6746,12 +6787,13 @@ impl ModelAssets {
                 match &retained_source {
                     Some(SkinSource::Script(bytes)) => Arc::clone(bytes),
                     _ => Arc::from(
-                        vfs.read_file(
-                            path.as_bytes(),
-                            self.catalog.limits.file_bytes,
-                            &mut self.catalog.reader,
-                        )
-                        .map_err(|_| CallError::File)?,
+                        vfs.read_view(Some(&view))
+                            .read_file(
+                                path.as_bytes(),
+                                self.catalog.limits.file_bytes,
+                                &mut self.catalog.reader,
+                            )
+                            .map_err(|_| CallError::File)?,
                     ),
                 }
             } else {
@@ -6780,7 +6822,7 @@ impl ModelAssets {
                 .and_then(|count| self.catalog.capacity.skins.checked_add(count))
                 .filter(|&count| count <= self.catalog.limits.skins)
                 .ok_or(CallError::Capacity)?;
-            let catalog_id = self.shader_catalog(vfs, None)?;
+            let catalog_id = self.shader_catalog(vfs, Some(&view))?;
             let mut mappings = Vec::with_capacity(rows.len());
             for row in rows {
                 let surface = self.admit_name(row.surface)?;
@@ -6827,12 +6869,8 @@ impl ModelAssets {
             {
                 continue;
             }
-            let image_index = image_profile_index(
-                &self.catalog.profiles,
-                profile.profile,
-                &self.catalog.registration_vfs,
-            )
-            .ok_or(CallError::Aborted)?;
+            let image_index = image_profile_index(&self.catalog.profiles, profile.profile, &view)
+                .ok_or(CallError::Aborted)?;
             let registered = with_image_owner(
                 &mut self.catalog.profiles,
                 image_index,
@@ -7191,7 +7229,7 @@ impl ModelLoader for ModelAssets {
     ) -> Result<i32, CallError> {
         // The trait is the fixed Engine preload entry; CLIENT passes its
         // captured guard directly to the same admission path.
-        self.preload_skin(vfs, name, source, false)
+        self.preload_skin(vfs, name, source, false, None)
     }
     fn register_shader(
         &mut self,
@@ -7819,12 +7857,13 @@ impl ModelCatalog {
         profile: ModelProfile,
         request: SkinRequest,
         ui: bool,
+        search: Option<&SearchView>,
     ) -> Option<SkinSelection> {
         let (_, skin) = find_skin_index(
             &self.names,
             &self.skin_indices,
             path.as_bytes(),
-            &self.registration_vfs,
+            search.unwrap_or(&self.registration_vfs),
         )?;
         let skin = skin?;
         let row = self

@@ -112,6 +112,12 @@ impl<K: BindingId> ScopedBindings<K> {
             Some((NameId(ordinal), names?.get(ordinal)?))
         })
     }
+    pub(super) fn all_entries(&self) -> impl Iterator<Item = (&SearchView, NameId, K)> + '_ {
+        self.scopes.entries.iter().flat_map(|(view, _)| {
+            self.entries(view)
+                .map(move |(name, record)| (view, name, record))
+        })
+    }
     /// Records append during cold admission; rollback removes only the rejected suffix.
     pub(super) fn discard_suffix(&mut self, records: usize) -> Result<(), ()> {
         for (_, names) in &mut self.scopes.entries {

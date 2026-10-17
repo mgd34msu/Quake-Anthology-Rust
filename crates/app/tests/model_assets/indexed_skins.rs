@@ -81,6 +81,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             translation,
+            None,
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -114,6 +115,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
                 false,
                 layout,
                 translation,
+                None,
                 |_, _| panic!("cached indexed body prepared twice")
             )
             .unwrap(),
@@ -133,6 +135,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             second_request,
+            None,
             |_, _| Err("backend rejection".to_owned())
         ),
         Err(IndexedSkinError::Rejected(_))
@@ -148,6 +151,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             second_request,
+            None,
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -163,6 +167,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             translation,
+            None,
             |_, _| panic!("missing skin reached backend")
         ),
         Err(IndexedSkinError::Missing)
@@ -175,6 +180,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             translation,
+            None,
             |_, _| panic!("invalid skin reached backend")
         ),
         Err(IndexedSkinError::InvalidSource(_))
@@ -188,6 +194,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             translation,
+            None,
             |_, _| panic!()
         ),
         Err(IndexedSkinError::Missing)
@@ -200,6 +207,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
             false,
             layout,
             translation,
+            None,
             |_, _| panic!()
         ),
         Err(IndexedSkinError::InvalidSource(_))

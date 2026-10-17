@@ -521,7 +521,19 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     let script = b"textures/body { cull none { map textures/pic.tga rgbGen identity } }";
     let mut files = support::Fixture::new(&[
         ("models/player.md3", model.clone()),
-        ("scripts/player.shader", script.to_vec()),
+        (
+            "scripts/player.shader",
+            [
+                script.as_slice(),
+                b" textures/skin-a { cull none { map textures/skin-a.tga rgbGen identity } }",
+            ]
+            .concat(),
+        ),
+        ("models/player.skin", b"body,textures/skin-a\n".to_vec()),
+        (
+            "textures/skin-a.tga",
+            support::tga(4, 4, &[[255, 0, 0, 255]; 16]),
+        ),
         (
             "textures/pic.tga",
             support::tga(4, 4, &[[255, 0, 0, 255]; 16]),
@@ -529,7 +541,19 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     ]);
     let high = support::Fixture::new(&[
         ("models/player.md3", model),
-        ("scripts/player.shader", script.to_vec()),
+        (
+            "scripts/player.shader",
+            [
+                script.as_slice(),
+                b" textures/skin-b { cull none { map textures/skin-b.tga rgbGen identity } }",
+            ]
+            .concat(),
+        ),
+        ("models/player.skin", b"body,textures/skin-b\n".to_vec()),
+        (
+            "textures/skin-b.tga",
+            support::tga(4, 4, &[[0, 0, 255, 255]; 16]),
+        ),
         (
             "textures/pic.tga",
             support::tga(4, 4, &[[0, 0, 255, 255]; 16]),
@@ -604,7 +628,18 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .all(|(file, _)| file.0 as i32 != default_model)
     );
     let mut shaders = Vec::new();
+    let mut skins = Vec::new();
     for (view, expected) in [(&low, [255, 0, 0, 255]), (&high, [0, 0, 255, 255])] {
+        let skin = owner
+            .preload_skin(
+                &files.vfs,
+                b"models/player.skin",
+                RuleSetId::Quake3,
+                false,
+                Some(view),
+            )
+            .unwrap();
+        skins.push((skin, expected));
         let handle = owner
             .preload_shader(
                 &files.vfs,
@@ -645,6 +680,20 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
                     RuleSetId::Quake3,
                     true,
                     ShaderLighting::TwoDimensional,
+                )
+                .unwrap(),
+            handle
+        );
+    }
+    for (view, &(handle, _)) in [&low, &high].into_iter().zip(&skins) {
+        assert_eq!(
+            owner
+                .preload_skin(
+                    &files.vfs,
+                    b"models/player.skin",
+                    RuleSetId::Quake3,
+                    false,
+                    Some(view)
                 )
                 .unwrap(),
             handle
@@ -742,6 +791,32 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     for &(handle, expected) in &shaders {
         let binding = owner.catalog.shader_binding(handle, profile).unwrap();
         let pixels = super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
+    for &(skin, expected) in &skins {
+        let registration = owner
+            .catalog
+            .renderer_registration(records[0].0.0 as i32, profile)
+            .unwrap();
+        let binding = owner
+            .catalog
+            .bindings(
+                registration,
+                0,
+                ModelMaterialPolicy {
+                    custom_skin: skin,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap();
+        let pixels =
+            super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding.shader);
         assert!(
             pixels
                 .iter()
@@ -863,5 +938,247 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
                 .iter()
                 .all(|pixel| *pixel == u32::from_le_bytes(expected))
         );
+    }
+    for &(skin, expected) in &skins {
+        let registration = owner
+            .catalog
+            .renderer_registration(records[0].0.0 as i32, selected)
+            .unwrap();
+        let binding = owner
+            .catalog
+            .bindings(
+                registration,
+                0,
+                ModelMaterialPolicy {
+                    custom_skin: skin,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap();
+        let pixels =
+            super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding.shader);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
+}
+
+#[test]
+fn indexed_skins_and_model_colors_keep_the_selected_file_source() {
+    let mut low_model = support::mdl();
+    low_model[88..90].fill(16); // The authored two-pixel skin follows the 84-byte header and skin type.
+    let mut high_model = low_model.clone();
+    high_model[88..90].fill(96);
+    let mut files = support::Fixture::new(&[
+        ("progs/player.mdl", low_model),
+        ("skins/player.pcx", support::pcx_dimensions(2, 1, 16)),
+    ]);
+    let high_files = support::Fixture::new(&[
+        ("progs/player.mdl", high_model),
+        ("skins/player.pcx", support::pcx_dimensions(2, 1, 96)),
+    ]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high_files.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let request = ModelRequest::native("progs/player.mdl", RuleSetId::Quake, Some(palette));
+    let profile = request.profile();
+    let mut owner = ModelAssets::load(
+        &files.vfs,
+        assets,
+        [&low, &high].map(|view| ModelRequest {
+            search: Some(view),
+            ..request
+        }),
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let first_index = |owner: &ModelAssets, shader| {
+        let material = owner.assets().shader_binding(shader).unwrap().material;
+        let StageTexture::Image(image) =
+            owner.assets().material(material).unwrap().stages[0].texture
+        else {
+            panic!("indexed source image");
+        };
+        owner
+            .assets()
+            .image(image)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices()[0]
+    };
+    let colored_index = |owner: &ModelAssets, registration, colored| {
+        let choices = owner
+            .catalog
+            .lod_bindings(
+                registration,
+                0,
+                ModelMaterialPolicy {
+                    fullbright: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .with_skin(owner.catalog(), colored)
+            .unwrap();
+        let group = choices.base().unwrap().choices().next().unwrap();
+        let shader = group.shaders().next().unwrap();
+        let binding = group
+            .resolve_shader(
+                shader,
+                qa_render::shader::reference::ShaderView::direct(),
+                None,
+            )
+            .unwrap()
+            .source(&())
+            .unwrap();
+        first_index(owner, binding)
+    };
+    let (initial, mut cpu) = super::registration_tests::publish(owner);
+    owner = initial;
+    let mut retained = Vec::new();
+    for (view, expected) in [(&low, 16), (&high, 96)] {
+        let registration = owner
+            .catalog
+            .registration(request.path, profile, Some(view))
+            .unwrap();
+        let colors = ModelSkinColors {
+            indexed: [1, 6],
+            rgba: [1, 6],
+            upload_extent: None,
+            rgba_crop: None,
+        };
+        let colored = owner
+            .prepare_model_colors(&files.vfs, registration, colors, false, |assets, _| {
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            })
+            .unwrap();
+        assert_eq!(colored_index(&owner, registration, colored), expected);
+        let translation = IndexedSkinTranslation {
+            palette,
+            target: Some(palette),
+            indexed_colors: None,
+            rgba_colors: None,
+            crop: None,
+            coordinate_extent: [2, 1],
+            upload_extent: None,
+            usage: ImageUse {
+                role: ImageRole::Skin,
+                allow_picmip: false,
+                sampler: qa_render::assets::Sampler {
+                    mipmaps: false,
+                    ..Default::default()
+                },
+            },
+        };
+        let indexed = owner
+            .prepare_indexed_skin(
+                &files.vfs,
+                "skins/player.pcx",
+                profile,
+                false,
+                IndexedSkinLayout {
+                    storage: Some([2, 1]),
+                    padding: 0,
+                    omit_last_row: false,
+                },
+                translation,
+                Some(view),
+                |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+            .unwrap();
+        let binding = owner
+            .catalog
+            .indexed_skin(indexed, Default::default())
+            .unwrap()
+            .source(&())
+            .unwrap();
+        assert_eq!(first_index(&owner, binding), expected);
+        retained.push((registration, colors, colored, indexed, translation));
+    }
+    assert_ne!(retained[0].2, retained[1].2);
+    assert_ne!(retained[0].3, retained[1].3);
+    files.vfs.take_lookup_count();
+    for (view, &(registration, colors, colored, indexed, translation)) in
+        [&low, &high].into_iter().zip(&retained)
+    {
+        assert_eq!(
+            owner
+                .prepare_model_colors(&files.vfs, registration, colors, false, |_, _| panic!(
+                    "cached model colors prepared twice"
+                ))
+                .unwrap(),
+            colored
+        );
+        assert_eq!(
+            owner
+                .prepare_indexed_skin(
+                    &files.vfs,
+                    "skins/player.pcx",
+                    profile,
+                    false,
+                    IndexedSkinLayout {
+                        storage: Some([2, 1]),
+                        padding: 0,
+                        omit_last_row: false
+                    },
+                    translation,
+                    Some(view),
+                    |_, _| panic!("cached indexed skin prepared twice")
+                )
+                .unwrap(),
+            indexed
+        );
+    }
+    assert_eq!(files.vfs.take_lookup_count(), 0);
+    let mut current = profile;
+    for mode in [ImageRefreshMode::Reconfigure, ImageRefreshMode::Reload] {
+        let mut settings = [None; 5];
+        if mode == ImageRefreshMode::Reconfigure {
+            settings[current.rules as usize] = Some(ImageSettings {
+                picmip: 1,
+                ..current.image_settings
+            });
+        }
+        let refresh = owner
+            .image_transaction(&files.vfs, None, mode, |owner, _| {
+                owner.refresh_images(
+                    &files.vfs,
+                    &[current],
+                    &[],
+                    settings,
+                    current.finish,
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            })
+            .unwrap();
+        current = refresh.profile(current);
+        for (index, row) in retained.iter_mut().enumerate() {
+            row.0 = refresh.registration(row.0, owner.catalog()).unwrap();
+            row.2 = owner.catalog.refresh_skin(row.2, &refresh).unwrap();
+            row.3 = owner.catalog.refresh_skin(row.3, &refresh).unwrap();
+            let expected = [16, 96][index];
+            assert_eq!(colored_index(&owner, row.0, row.2), expected);
+            let binding = owner
+                .catalog
+                .indexed_skin(row.3, Default::default())
+                .unwrap()
+                .source(&())
+                .unwrap();
+            assert_eq!(first_index(&owner, binding), expected);
+        }
     }
 }

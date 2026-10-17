@@ -493,7 +493,7 @@ impl ClientAssets<'_> {
                 source,
                 ui_fullscreen,
             } => loader
-                .preload_skin(vfs, path, *source, *ui_fullscreen)
+                .preload_skin(vfs, path, *source, *ui_fullscreen, None)
                 .ok()
                 .filter(|&handle| handle > 0),
             Self::Frozen { catalog, profile } => {

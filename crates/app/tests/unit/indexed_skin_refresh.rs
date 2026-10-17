@@ -132,6 +132,7 @@ impl IndexedFixture {
                 false,
                 layout,
                 translation,
+                None,
                 |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
             .unwrap();
@@ -143,6 +144,7 @@ impl IndexedFixture {
                 false,
                 layout,
                 translation,
+                None,
                 |_, _| panic!("invalid source prepared")
             ),
             Err(IndexedSkinError::InvalidSource(_))
@@ -155,6 +157,7 @@ impl IndexedFixture {
                 false,
                 layout,
                 translation,
+                None,
                 |_, _| panic!("missing source prepared")
             ),
             Err(IndexedSkinError::Missing)
@@ -165,7 +168,9 @@ impl IndexedFixture {
             "skins/missing.pcx",
         ]
         .map(|path| selected(&owner, path));
-        let unused = owner.ensure_skin_row("skins/unused.pcx", false).unwrap();
+        let unused = owner
+            .ensure_skin_row("skins/unused.pcx", false, None)
+            .unwrap();
         owner
             .skin_variant(
                 unused,
@@ -452,6 +457,7 @@ fn indexed_skin_reload_retries_sources_and_restores_every_old_body_on_late_rejec
             false,
             *layout,
             *translation,
+            None,
             |_, _| panic!("negative source prepared")
         ),
         Err(IndexedSkinError::Missing)
