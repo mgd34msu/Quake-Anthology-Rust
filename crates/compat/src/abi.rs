@@ -1429,7 +1429,7 @@ fn qc_temporary(
 fn qc_float_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     let value = float::<false>(c, 0)?;
     let mut text = FixedText::<{ quakec::TEMP_STRING_BYTES }>::default();
-    crate::numbers::native_number(&mut text, value, 5, 1).map_err(|_| CallError::Text)?;
+    qa_core::text::native_number(&mut text, value, 5, 1).map_err(|_| CallError::Text)?;
     qc_temporary(c, &text)
 }
 fn qc_vector_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
@@ -1439,7 +1439,7 @@ fn qc_vector_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallErr
         if index != 0 {
             text.write_char(' ').map_err(|_| CallError::Text)?;
         }
-        crate::numbers::fixed_float(&mut text, float::<false>(c, index)?, 5, 1)
+        qa_core::text::fixed_float(&mut text, float::<false>(c, index)?, 5, 1)
             .map_err(|_| CallError::Text)?;
     }
     text.write_char('\'').map_err(|_| CallError::Text)?;
@@ -1948,8 +1948,7 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let mut text = FixedText::<64>::default();
     // Cvar_SetValue uses an integral form only when the f32 fits its native
     // signed int; all other values use %f after promotion to double.
-    crate::numbers::native_number(&mut text, f64::from(value), 0, 6)
-        .map_err(|_| CallError::Text)?;
+    qa_core::text::native_number(&mut text, f64::from(value), 0, 6).map_err(|_| CallError::Text)?;
     // The original Com_sprintf copies at most 31 bytes into val[32].
     if text.as_bytes().len() >= 32 {
         let _ = (ENGINE_CALLS.console_formatted)(

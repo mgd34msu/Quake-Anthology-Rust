@@ -1,7 +1,7 @@
 //! Native console number formatting.
-use qa_core::math::native_integer;
+use crate::math::native_integer;
 
-pub(crate) fn native_number(
+pub fn native_number(
     text: &mut impl std::fmt::Write,
     value: f64,
     width: usize,
@@ -15,7 +15,7 @@ pub(crate) fn native_number(
     }
 }
 
-pub(crate) fn fixed_float(
+pub fn fixed_float(
     text: &mut impl std::fmt::Write,
     value: f64,
     width: usize,

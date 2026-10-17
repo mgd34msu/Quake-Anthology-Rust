@@ -11,7 +11,13 @@ fn every_canonical_alias_and_seat_has_a_slot_and_seats_remain_independent() {
         OWNER_DEFINITION_COUNT + ENGINE_DEFINITION_COUNT
     );
     let mut cvars = Cvars::new().unwrap();
-    assert_eq!(cvars.entries().count(), 1293 + ENGINE_DEFINITION_COUNT);
+    assert_eq!(
+        cvars.entries().count(),
+        1293 + DEFINITIONS[OWNER_DEFINITION_COUNT..]
+            .iter()
+            .map(|row| row.family_count as usize)
+            .sum::<usize>()
+    );
     for binding in BINDINGS {
         if binding.scope == qa_console::catalog::Scope::Server {
             continue;

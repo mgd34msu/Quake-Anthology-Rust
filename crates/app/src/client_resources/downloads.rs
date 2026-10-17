@@ -75,6 +75,7 @@ pub(crate) struct ClientDownload {
     permissions: Option<DownloadViews>,
     skin_pass: Option<SkinPass>,
     blocks: Option<BlockProgress>,
+    progress_dirty: bool,
 }
 
 #[derive(Default)]
@@ -114,6 +115,60 @@ struct DownloadViews {
     protocol: Protocol,
     allow: qa_console::cvars::View,
     categories: Option<[qa_console::cvars::View; 4]>,
+    progress: Option<ProgressViews>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProgressViews {
+    name: qa_console::cvars::View,
+    size: qa_console::cvars::View,
+    count: qa_console::cvars::View,
+    time: qa_console::cvars::View,
+}
+impl ProgressViews {
+    pub(crate) fn bind(cvars: &qa_console::cvars::Cvars, seat: SeatId) -> Result<Self, String> {
+        let context = qa_console::views::Context {
+            source: RuleSetId::Quake3,
+            seat,
+            ..Default::default()
+        };
+        let [name, size, count, time] = [
+            "cl_downloadName",
+            "cl_downloadSize",
+            "cl_downloadCount",
+            "cl_downloadTime",
+        ]
+        .map(|name| {
+            cvars
+                .bind(name, context)
+                .ok_or_else(|| format!("missing native progress {name}"))
+        });
+        Ok(Self {
+            name: name?,
+            size: size?,
+            count: count?,
+            time: time?,
+        })
+    }
+    fn number(
+        view: qa_console::cvars::View,
+        value: f32,
+        cvars: &mut qa_console::cvars::Cvars,
+    ) -> Result<(), String> {
+        let mut text = FixedText::<64>::default();
+        qa_core::text::native_number(&mut text, f64::from(value), 0, 6)
+            .map_err(|_| "download number capacity")?;
+        cvars
+            .force_write(view, text.as_str())
+            .map_err(|error| format!("download progress: {error:?}"))
+    }
+    pub(crate) fn rejected(
+        self,
+        size: i32,
+        cvars: &mut qa_console::cvars::Cvars,
+    ) -> Result<(), String> {
+        Self::number(self.size, size as f32, cvars)
+    }
 }
 
 impl ClientResources {
@@ -414,6 +469,7 @@ impl DownloadViews {
                 protocol,
                 allow,
                 categories: None,
+                progress: Some(ProgressViews::bind(cvars, seat)?),
             }));
         }
         let [maps, models, sounds, players] = [
@@ -431,6 +487,7 @@ impl DownloadViews {
             protocol,
             allow,
             categories: Some([maps?, models?, sounds?, players?]),
+            progress: None,
         }))
     }
     fn allows(&self, name: &[u8], cvars: &qa_console::cvars::Cvars) -> bool {
@@ -472,6 +529,7 @@ impl ClientDownload {
             transfer: Transfer::Idle,
             permissions,
             blocks: (protocol == Protocol::Quake3_68).then(BlockProgress::default),
+            progress_dirty: true,
             skin_pass: (protocol == Protocol::QuakeWorld28).then(|| SkinPass {
                 stamp: None,
                 cursor: 0,
@@ -485,6 +543,7 @@ impl ClientDownload {
     }
 
     pub(crate) fn close(&mut self) {
+        self.progress_dirty |= !matches!(self.transfer, Transfer::Idle);
         self.transfer = Transfer::Idle;
         if let Some(blocks) = &mut self.blocks {
             *blocks = BlockProgress::default();
@@ -499,6 +558,7 @@ impl ClientDownload {
     }
 
     pub(crate) fn reject(&mut self) {
+        self.progress_dirty = true;
         self.stop_blocks();
         let previous = std::mem::replace(&mut self.transfer, Transfer::Idle);
         self.transfer = match previous {
@@ -584,6 +644,7 @@ impl ClientDownload {
         })();
         match result {
             Ok(file) => {
+                self.progress_dirty = true;
                 if let Some(blocks) = &mut self.blocks {
                     *blocks = BlockProgress::default();
                 }
@@ -610,6 +671,7 @@ impl ClientDownload {
     }
 
     fn stop(&mut self) {
+        self.progress_dirty = true;
         self.stop_blocks();
         if let Some(pass) = &mut self.skin_pass {
             pass.paused = true;
@@ -796,6 +858,50 @@ impl ClientDownload {
             )
     }
 
+    fn progress_views(&self) -> Option<ProgressViews> {
+        self.permissions.as_ref()?.progress
+    }
+    fn flush_progress(
+        &mut self,
+        cvars: &mut qa_console::cvars::Cvars,
+        time: qa_core::sys_events::EventTime,
+    ) -> Result<(), String> {
+        if !self.progress_dirty {
+            return Ok(());
+        }
+        if let Some(views) = self.progress_views() {
+            if matches!(
+                self.transfer,
+                Transfer::Active {
+                    sending: Sending::Request,
+                    ..
+                }
+            ) {
+                ProgressViews::number(views.size, 0.0, cvars)?;
+                ProgressViews::number(views.count, 0.0, cvars)?;
+                ProgressViews::number(views.time, time.milliseconds() as i32 as f32, cvars)?;
+            }
+            let (name, count) = match &self.transfer {
+                Transfer::Active { request, file, .. } => (request.name.as_str(), Some(file.len())),
+                Transfer::Published { bytes, .. }
+                | Transfer::Finished { bytes, .. }
+                | Transfer::RefreshFailed { bytes, .. } => ("", Some(*bytes)),
+                _ => ("", None),
+            };
+            cvars
+                .force_write(views.name, name)
+                .map_err(|error| format!("download progress: {error:?}"))?;
+            if let Some(total) = self.blocks.as_ref().and_then(|blocks| blocks.total) {
+                ProgressViews::number(views.size, total as f32, cvars)?;
+            }
+            if let Some(count) = count {
+                ProgressViews::number(views.count, count as f32, cvars)?;
+            }
+        }
+        self.progress_dirty = false;
+        Ok(())
+    }
+
     fn pending(&self) -> Option<Pending> {
         if let Some(blocks) = &self.blocks {
             if blocks.stop {
@@ -962,10 +1068,12 @@ impl ClientDownload {
                 })();
                 match result {
                     Ok(state) => {
+                        self.progress_dirty = true;
                         self.transfer = state;
                         Ok(())
                     }
                     Err(error) => {
+                        self.progress_dirty = true;
                         self.transfer = Transfer::Failed(request);
                         self.stop_blocks();
                         Err(error)
@@ -1031,6 +1139,24 @@ impl ClientDownload {
 }
 
 impl crate::host::FrameHost {
+    pub(crate) fn close_client_downloads(&mut self, id: ClientId) {
+        if let Some(downloads) = self
+            .runtime
+            .client_resources
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .and_then(|resources| resources.downloads.as_mut())
+        {
+            downloads.close();
+            if let Err(error) = downloads.flush_progress(&mut self.console.cvars, self.time) {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("{error}\n"));
+            }
+        }
+    }
     pub fn configure_client_downloads(
         &mut self,
         client: ClientId,
@@ -1215,7 +1341,13 @@ impl crate::host::FrameHost {
                 .is_none_or(|binding| binding.presentation_closed())
             {
                 downloads.close();
-                continue;
+            }
+            if let Err(error) = downloads.flush_progress(&mut self.console.cvars, self.time) {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("{error}\n"));
             }
             if downloads.pending().is_none() {
                 continue;

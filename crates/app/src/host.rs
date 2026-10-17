@@ -3071,15 +3071,7 @@ impl FrameHost {
     }
 
     pub(crate) fn received_client_disconnect(&mut self, id: ClientId) {
-        if let Some(downloads) = self
-            .runtime
-            .client_resources
-            .get_mut(id.0 as usize)
-            .and_then(Option::as_mut)
-            .and_then(|resources| resources.downloads.as_mut())
-        {
-            downloads.close();
-        }
+        self.close_client_downloads(id);
         // The network may be temporarily moved into receive_packet. Retire
         // presentation here; transport completion is observed after restoration.
         self.runtime.close_client_presentation(id);
@@ -3411,7 +3403,11 @@ impl FrameHost {
                                 self.receive_server_commands(id, seat, text, time, download_protocol);
                             }
                             Incoming::Download(chunk) => {
-                                if let Ok(qa_network::downloads::Chunk::Rejected { message, .. }) = chunk {
+                                if let Ok(qa_network::downloads::Chunk::Rejected { size, message }) = chunk {
+                                    let progress = crate::client_resources::downloads::ProgressViews::bind(&self.console.cvars, seat);
+                                    if let Err(error) = progress.and_then(|views| views.rejected(size, &mut self.console.cvars)) {
+                                        let _ = self.runtime.server.events.console_formatted(format_args!("{error}\n"));
+                                    }
                                     self.reject_client_startup(id, format_args!("{}", String::from_utf8_lossy(message)));
                                     return std::ops::ControlFlow::Break(());
                                 }

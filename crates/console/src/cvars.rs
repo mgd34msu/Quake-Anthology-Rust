@@ -7,7 +7,7 @@ use crate::{
     views::{Context, Role, RuleSetId},
 };
 use qa_core::names::{NameTable, NamesError};
-use qa_core::primitives::{CvarHandle, NameId};
+use qa_core::primitives::{CvarHandle, IndexSpan, NameId};
 use qa_core::stamps::StampSet;
 use qa_core::text::FixedText;
 use std::{borrow::Cow, fmt::Write};
@@ -238,6 +238,7 @@ pub struct Cvars {
     details: Vec<[Option<Box<Detail>>; 5]>,
     pending: Vec<PendingWrite>,
     projections: Vec<Projections>,
+    projection_rows: Box<[IndexSpan]>,
     dependents: Vec<Vec<u16>>,
     dirty_handles: Vec<CvarHandle>,
     dirty_values: StampSet,
@@ -354,6 +355,24 @@ impl Cvars {
                 .ok_or(NamesError::Capacity)?
                 .row as usize] as u32,
         );
+        let mut projection_count = 0;
+        let projection_rows: Vec<_> = BINDINGS
+            .iter()
+            .map(|binding| {
+                let family = DEFINITIONS[binding.row as usize].family_count;
+                let count = if binding.seat == 0 {
+                    u32::from(family).min(qa_core::sys_events::SeatId::COUNT as u32)
+                } else {
+                    1
+                };
+                let span = IndexSpan {
+                    first: projection_count,
+                    count,
+                };
+                projection_count += count;
+                span
+            })
+            .collect();
         let mut registry = Self {
             catalog_values,
             values,
@@ -376,6 +395,8 @@ impl Cvars {
                 .collect(),
             details: BINDINGS
                 .iter()
+                .enumerate()
+                .flat_map(|(index, b)| (0..projection_rows[index].count).map(move |_| b))
                 .map(|b| {
                     std::array::from_fn(|source| {
                         let row = &DEFINITIONS[b.row as usize];
@@ -398,7 +419,8 @@ impl Cvars {
                 })
                 .collect(),
             pending: Vec::with_capacity(pending_capacity),
-            projections: vec![[[Ok((0.0, 0)); 3]; 5]; BINDINGS.len()],
+            projections: vec![[[Ok((0.0, 0)); 3]; 5]; projection_count as usize],
+            projection_rows: projection_rows.into_boxed_slice(),
             dependents: (0..pending_capacity).map(|_| Vec::new()).collect(),
             dirty_handles: Vec::with_capacity(pending_capacity),
             dirty_values: StampSet::new(pending_capacity),
@@ -410,7 +432,9 @@ impl Cvars {
         };
         for (i, binding) in BINDINGS.iter().enumerate() {
             let handle = registry.slot(binding.row as usize, binding.seat);
-            registry.dependents[handle.0 as usize].push(i as u16);
+            for offset in 0..registry.projection_rows[i].count {
+                registry.dependents[handle.0 as usize + offset as usize].push(i as u16);
+            }
             let definition = &DEFINITIONS[binding.row as usize];
             for source in 0..5 {
                 let c = &CONVERSIONS[if definition.stored {
@@ -486,6 +510,34 @@ impl Cvars {
                 }) as u32,
         )
     }
+    fn binding_slot(
+        &self,
+        binding: &crate::catalog::Binding,
+        context: Context,
+    ) -> Option<CvarHandle> {
+        let family = DEFINITIONS[binding.row as usize].family_count;
+        let seat = if binding.seat == 0 && family > 1 {
+            context.seat.index() as u8 + 1
+        } else {
+            binding.seat
+        };
+        (seat <= family).then(|| self.slot(binding.row as usize, seat))
+    }
+    fn projection_index(&self, view: View) -> Option<usize> {
+        let span = *self.projection_rows.get(view.binding as usize)?;
+        let offset = if span.count > 1 {
+            self.values[view.handle.0 as usize].seat.saturating_sub(1) as usize
+        } else {
+            0
+        };
+        Some(span.first as usize + offset)
+    }
+    fn projected_number(&self, view: View) -> Result<(f32, i32), conversion::Error> {
+        let index = self
+            .projection_index(view)
+            .ok_or(conversion::Error::PolicyRequired)?;
+        self.projections[index][view.context.source as usize][role_index(view.context.role)]
+    }
     pub(crate) fn lookup_name(&self, name: &str) -> Option<NameId> {
         #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
         self.lookups.set(self.lookups.get().wrapping_add(1));
@@ -515,9 +567,13 @@ impl Cvars {
     pub(crate) fn bind_id(&self, id: NameId, context: Context) -> Option<View> {
         let binding = self.binding_id(self.names.folded(id)?, context.side)?;
         let handle = BINDINGS.get(binding as usize).map_or_else(
-            || CvarHandle((self.catalog_values + binding as usize - BINDINGS.len()) as u32),
-            |b| self.slot(b.row as usize, b.seat),
-        );
+            || {
+                Some(CvarHandle(
+                    (self.catalog_values + binding as usize - BINDINGS.len()) as u32,
+                ))
+            },
+            |b| self.binding_slot(b, context),
+        )?;
         Some(View {
             handle,
             binding,
@@ -1188,18 +1244,14 @@ impl Cvars {
         if self.reads_stored(view).unwrap_or(true) {
             Ok(self.value_in(view.handle, view.context.source))
         } else {
-            self.projections[view.binding as usize][view.context.source as usize]
-                [role_index(view.context.role)]
-            .map(|(number, _)| number)
+            self.projected_number(view).map(|(number, _)| number)
         }
     }
     pub fn integer_view(&self, view: View) -> Result<i32, conversion::Error> {
         if self.reads_stored(view).unwrap_or(true) {
             Ok(self.integer_in(view.handle, view.context.source))
         } else {
-            self.projections[view.binding as usize][view.context.source as usize]
-                [role_index(view.context.role)]
-            .map(|(_, integer)| integer)
+            self.projected_number(view).map(|(_, integer)| integer)
         }
     }
     fn reads_stored(&self, view: View) -> Option<bool> {
@@ -1511,7 +1563,7 @@ impl Cvars {
         Ok(())
     }
     fn detail(&self, view: View) -> Option<&str> {
-        self.details.get(view.binding as usize)?[view.context.source as usize]
+        self.details.get(self.projection_index(view)?)?[view.context.source as usize]
             .as_ref()
             .filter(|d| {
                 d.present
@@ -1533,7 +1585,10 @@ impl Cvars {
             revisions[count] = (handle, self.values[handle.0 as usize].revision);
             count += 1;
         }
-        let detail = self.details[view.binding as usize][view.context.source as usize]
+        let index = self
+            .projection_index(view)
+            .ok_or(conversion::Error::PolicyRequired)?;
+        let detail = self.details[index][view.context.source as usize]
             .as_mut()
             .ok_or(conversion::Error::PolicyRequired)?;
         detail
@@ -1548,15 +1603,16 @@ impl Cvars {
     fn clear_details(&mut self, handle: CvarHandle) {
         let mut modified = false;
         for &binding in &self.dependents[handle.0 as usize] {
-            let source_details = &mut self.details[binding as usize];
-            for detail in source_details.iter_mut().flatten() {
-                if detail.present
-                    && detail.revisions[..detail.count]
-                        .iter()
-                        .any(|(h, _)| *h == handle)
-                {
-                    detail.present = false;
-                    modified = true;
+            for index in self.projection_rows[binding as usize].range() {
+                for detail in self.details[index].iter_mut().flatten() {
+                    if detail.present
+                        && detail.revisions[..detail.count]
+                            .iter()
+                            .any(|(h, _)| *h == handle)
+                    {
+                        detail.present = false;
+                        modified = true;
+                    }
                 }
             }
         }
@@ -1765,34 +1821,42 @@ impl Cvars {
     }
     fn refresh_projection_at(&mut self, index: usize) {
         let binding = &BINDINGS[index];
-        let projections = std::array::from_fn(|source| {
-            std::array::from_fn(|role| {
-                let context = Context {
-                    source: RuleSetId::ALL[source],
-                    side: self.context.side,
-                    role: ROLES[role],
-                    dedicated: self.context.dedicated,
-                    seat: qa_core::sys_events::SeatId::FIRST,
-                    event_time: None,
-                    key_source: None,
-                    producer: None,
-                    client_lifetime: None,
-                    client_policy: None,
-                };
-                let view = View {
-                    handle: self.slot(binding.row as usize, binding.seat),
-                    binding: index as u16,
-                    context,
-                };
-                self.read(view).map(|text| {
-                    (
-                        number(text.as_str(), context.source),
-                        integer(text.as_str()),
-                    )
+        let span = self.projection_rows[index];
+        for projection in span.range() {
+            let projections = std::array::from_fn(|source| {
+                std::array::from_fn(|role| {
+                    let context = Context {
+                        source: RuleSetId::ALL[source],
+                        side: self.context.side,
+                        role: ROLES[role],
+                        dedicated: self.context.dedicated,
+                        seat: qa_core::sys_events::SeatId::new(
+                            (projection - span.first as usize) as u8,
+                        )
+                        .unwrap_or(qa_core::sys_events::SeatId::FIRST),
+                        event_time: None,
+                        key_source: None,
+                        producer: None,
+                        client_lifetime: None,
+                        client_policy: None,
+                    };
+                    let view = View {
+                        handle: self
+                            .binding_slot(binding, context)
+                            .ok_or(conversion::Error::PolicyRequired)?,
+                        binding: index as u16,
+                        context,
+                    };
+                    self.read(view).map(|text| {
+                        (
+                            number(text.as_str(), context.source),
+                            integer(text.as_str()),
+                        )
+                    })
                 })
-            })
-        });
-        self.projections[index] = projections;
+            });
+            self.projections[projection] = projections;
+        }
     }
     fn refresh_projections(&mut self) {
         for index in 0..BINDINGS.len() {

@@ -12,6 +12,9 @@ use qa_session::clients::{Connection, Server};
 use qa_world::{area::LinkOrder, collision::CollisionStore, entities::AllocationPolicy};
 use std::{num::NonZeroU32, sync::Arc};
 
+#[path = "support/userinfo.rs"]
+mod userinfo;
+
 fn context(module: ModuleId, native_rules: RuleSetId) -> CallContext {
     CallContext {
         module,
@@ -337,6 +340,20 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
             Err(CallError::Entity)
         );
         assert!(services.server.disconnect(ClientId(0)));
+        assert!(
+            services
+                .server
+                .userinfo_record(ClientId(0))
+                .unwrap()
+                .text
+                .is_empty()
+        );
+        let stamp = userinfo::publish(services.server, ClientId(0));
+        let retired = drain(services, second);
+        assert_eq!(retired.len(), 1);
+        assert!(
+            matches!(retired[0].event, FrameEvent::PeerInfo { user_id, .. } if user_id == stamp.user_id)
+        );
         let first = recipient(services, ClientId(0));
         let mut other = SignonCursor::default();
         assert_eq!(

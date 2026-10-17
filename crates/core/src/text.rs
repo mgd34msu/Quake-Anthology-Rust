@@ -1,4 +1,6 @@
 //! Load-sized storage for engine text. Mutation never grows it.
+mod format;
+pub use format::{fixed_float, native_number};
 mod info;
 mod numbers;
 pub use info::{

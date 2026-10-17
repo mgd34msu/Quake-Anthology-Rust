@@ -41,6 +41,13 @@ def aliases(cell):
     return result
 
 
+def family_names(name, family):
+    if family and family[0] in name:
+        return [(name.replace(family[0], str(seat)), seat)
+                for seat in range(int(family[1]), int(family[2]) + 1)]
+    return [(name, 0)]
+
+
 class Catalog:
     def __init__(self, rows, policy):
         self.rows_input, self.policy = rows, policy
@@ -467,10 +474,7 @@ class Catalog:
                     scope = 0
                 conversions = tuple(self.conversion(index, name, game, canonical) for game in range(5))
                 member_native = sum(1 << game for game in canonical_native) if canonical else sum(1 << DIALECTS.index(game) for game in games if game in DIALECTS)
-                expanded = [(name, 0)]
-                if family:
-                    expanded = [(name.replace(family[0], str(seat)), seat) for seat in range(int(family[1]), int(family[2]) + 1)]
-                for expanded_name, seat in expanded:
+                for expanded_name, seat in family_names(name, family):
                     self.bindings.append((self.text(expanded_name), index, conversions, scope, int(canonical), member_native, seat))
             rule = self.conversion(index, row['canonical'], 4, True)
             policies = int('Latched: applies at next map.' in row['conversion'])
@@ -512,7 +516,7 @@ class Catalog:
                 raise ValueError('input cell changed or dropped: ' + original['canonical'])
             names = [original['canonical']] + [name for name, games in aliases(original['aliases'])]
             family = re.search(r'<(\d+)-(\d+)>', original['canonical'])
-            expanded = [name.replace(family[0], str(seat)) for name in names for seat in range(int(family[1]), int(family[2]) + 1)] if family else names
+            expanded = [expanded_name for name in names for expanded_name, _ in family_names(name, family)]
             actual = [self.pool_text(item[0]) for item in self.bindings if item[1] == index]
             if sorted(expanded) != sorted(actual):
                 raise ValueError('canonical/alias/family binding coverage changed')

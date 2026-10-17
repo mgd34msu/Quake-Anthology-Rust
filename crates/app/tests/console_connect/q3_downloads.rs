@@ -43,6 +43,37 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     command(&mut host, &mut source, "download maps/late.bin\n", 30);
     collect(&mut server, &mut native, 30);
     assert_eq!(native.count(b"download maps/late.bin"), 1);
+    let progress = |host: &FrameHost, name: &str| {
+        let view = host
+            .console
+            .cvars
+            .bind(
+                name,
+                Context {
+                    role: qa_console::views::Role::Cgame,
+                    ..context()
+                },
+            )
+            .unwrap();
+        host.console.cvars.read(view).unwrap().as_str().to_owned()
+    };
+    assert_eq!(progress(&host, "cl_downloadName"), "maps/late.bin");
+    assert_eq!(progress(&host, "cl_downloadSize"), "0");
+    assert_eq!(progress(&host, "cl_downloadCount"), "0");
+    assert_eq!(progress(&host, "cl_downloadTime"), "30");
+    let other = host
+        .console
+        .cvars
+        .bind(
+            "cl_downloadName",
+            Context {
+                seat: SeatId::new(1).unwrap(),
+                ..context()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.read(other).unwrap().as_str(), "");
+
     // Fill the sole reliable command window. A later block ACK must retain its
     // cursor when queue_client_command reports Full, without another byte queue.
     let channel = &mut host
@@ -80,6 +111,10 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     collect(&mut server, &mut native, 40);
     assert_eq!(native.count(b"nextdl 0"), 1);
     assert_eq!(native.count(b"nextdl 1"), 0);
+    assert_eq!(progress(&host, "cl_downloadSize"), "4096");
+    assert_eq!(progress(&host, "cl_downloadCount"), "2048");
+    assert_eq!(progress(&host, "cl_downloadTime"), "30");
+
     assert!(bytes(&host, b"maps/late.bin").is_none());
     // Native ACK frees the command window. The remaining ACKs are sent in order.
     send(&mut server, socket, local, &mut native, 50, |_, _| Ok(()));
@@ -126,6 +161,10 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
         assert_eq!(native.count(format!("nextdl {number}").as_bytes()), 1);
     }
     assert_eq!(bytes(&host, b"maps/late.bin"), Some(data));
+    assert_eq!(progress(&host, "cl_downloadName"), "");
+    assert_eq!(progress(&host, "cl_downloadCount"), "4096");
+    assert_eq!(progress(&host, "cl_downloadSize"), "4096");
+
     send(&mut server, socket, local, &mut native, 75, |writer, _| {
         downloads::write_service(
             Q3,
@@ -165,6 +204,10 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     collect(&mut server, &mut native, 90);
     assert_eq!(bytes(&host, b"maps/empty.bin"), Some(vec![]));
     assert_eq!(native.count(b"nextdl 0"), 2);
+    assert_eq!(progress(&host, "cl_downloadName"), "");
+    assert_eq!(progress(&host, "cl_downloadSize"), "0");
+    assert_eq!(progress(&host, "cl_downloadCount"), "0");
+    assert_eq!(progress(&host, "cl_downloadTime"), "80");
 
     command(&mut host, &mut source, "download maps/broken.bin\n", 100);
     collect(&mut server, &mut native, 100);
@@ -262,6 +305,37 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     let origin = host.runtime.vfs.origin(&reference).unwrap();
     assert_eq!(origin.kind, qa_content::vfs::MountKind::Pk3);
     assert!(origin.path.ends_with("packs/late.pk3"));
+    command(&mut host, &mut source, "download maps/cancel.bin\n", 160);
+    collect(&mut server, &mut native, 160);
+    assert_eq!(progress(&host, "cl_downloadName"), "maps/cancel.bin");
+    send(&mut server, socket, local, &mut native, 170, |writer, _| {
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 0,
+                total: Some(8),
+                bytes: b"half",
+            },
+            writer,
+        )
+        .unwrap();
+        Ok(())
+    });
+    frame(&mut host, &mut source, 170);
+    collect(&mut server, &mut native, 170);
+    assert_eq!(progress(&host, "cl_downloadCount"), "4");
+    command(&mut host, &mut source, "stopdownload\n", 180);
+    collect(&mut server, &mut native, 180);
+    assert_eq!(progress(&host, "cl_downloadName"), "");
+    assert!(bytes(&host, b"maps/cancel.bin").is_none());
+    command(&mut host, &mut source, "retrydownload\n", 190);
+    collect(&mut server, &mut native, 190);
+    assert_eq!(progress(&host, "cl_downloadName"), "maps/cancel.bin");
+    assert_eq!(progress(&host, "cl_downloadCount"), "0");
+    assert_eq!(progress(&host, "cl_downloadSize"), "0");
+    assert_eq!(progress(&host, "cl_downloadTime"), "190");
+    command(&mut host, &mut source, "disconnect\n", 200);
+    assert_eq!(progress(&host, "cl_downloadName"), "");
 }
 
 #[test]
@@ -333,6 +407,19 @@ fn q3_unsolicited_and_rejected_downloads_stay_scoped_to_the_receiving_client() {
     });
     frame(&mut host, &mut source, 40);
     assert!(host.local_clients[0].is_none());
+    let size = host
+        .console
+        .cvars
+        .bind("cl_downloadSize", context())
+        .unwrap();
+    assert_eq!(host.console.cvars.integer_view(size).unwrap(), -1);
+    let name = host
+        .console
+        .cvars
+        .bind("cl_downloadName", context())
+        .unwrap();
+    assert_eq!(host.console.cvars.read(name).unwrap().as_str(), "");
+
     assert_eq!(host.local_clients[1], Some(healthy));
     assert!(
         host.runtime

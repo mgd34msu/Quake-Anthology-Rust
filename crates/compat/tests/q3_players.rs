@@ -21,6 +21,8 @@ use qa_world::{area::LinkOrder, collision::CollisionStore, entities::AllocationP
 
 #[path = "support/shaders.rs"]
 mod shaders;
+#[path = "support/userinfo.rs"]
+mod userinfo;
 use shaders::ShaderLoader;
 
 const ENTITIES: u64 = 4096;
@@ -1700,6 +1702,7 @@ fn qvm_player_signals_preserve_native_cells_and_publication_boundaries() {
         vm.bind_client(&f.server.entities, NATIVE, old_entity),
         Err(CallError::Entity)
     );
+    userinfo::publish(&mut f.server, ClientId(1));
     assert_eq!(
         f.server.connect(Connection::Local, MODULE, Some(NATIVE)),
         Some(ClientId(1))

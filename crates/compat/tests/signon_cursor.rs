@@ -13,6 +13,9 @@ use qa_session::clients::{Connection, Server};
 use qa_world::{area::LinkOrder, collision::CollisionStore, entities::AllocationPolicy};
 use std::{num::NonZeroU32, sync::Arc};
 
+#[path = "support/userinfo.rs"]
+mod userinfo;
+
 fn bank() -> Arc<qa_audio::Bank> {
     let rate = NonZeroU32::new(44100).unwrap();
     Arc::new(
@@ -350,6 +353,15 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
             Err(CallError::Entity)
         );
         assert!(services.server.disconnect(first));
+        userinfo::publish(services.server, first);
+        let retired = drain(services.server, second);
+        assert!(matches!(
+            retired.as_slice(),
+            [OutputRecord {
+                event: FrameEvent::PeerInfo { .. },
+                ..
+            }]
+        ));
         let reused = connect(services.server);
         assert_eq!(reused, first);
         assert_ne!(

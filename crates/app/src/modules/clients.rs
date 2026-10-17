@@ -1276,6 +1276,7 @@ impl FrameHost {
         {
             row.counts.rejected += 1;
         }
+        self.close_client_downloads(id);
         self.runtime.disconnect_client(id);
         if let Some(modules) = self.modules.as_mut() {
             for row in modules.rows.iter_mut().flatten() {

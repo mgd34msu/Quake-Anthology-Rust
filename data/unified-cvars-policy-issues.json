@@ -1,17 +1,17 @@
 {
   "counts": {
-    "rows": 1262,
+    "rows": 1266,
     "owner_rows": 1260,
-    "engine_rows": 2,
+    "engine_rows": 6,
     "owner_cells": 26460,
-    "aliases": 237,
-    "bindings": 1532,
-    "defaults": 6377,
-    "flag_clauses": 2337,
-    "conversions": 239,
+    "aliases": 241,
+    "bindings": 1552,
+    "defaults": 6397,
+    "flag_clauses": 2357,
+    "conversions": 240,
     "operands": 43,
     "maps": 67,
-    "issues": 1393
+    "issues": 1397
   },
   "policy_issues": [
     {
@@ -9743,6 +9743,34 @@
       "field": "type/range_units",
       "reason": "single-name inferred hints; not runtime validators",
       "bits": 1
+    },
+    {
+      "row": 1262,
+      "name": "cl_downloadName<1-4>",
+      "field": "owner",
+      "reason": "no native canonical home dialect; Anthology/guest owner decides",
+      "bits": 16
+    },
+    {
+      "row": 1263,
+      "name": "cl_downloadSize<1-4>",
+      "field": "owner",
+      "reason": "no native canonical home dialect; Anthology/guest owner decides",
+      "bits": 16
+    },
+    {
+      "row": 1264,
+      "name": "cl_downloadCount<1-4>",
+      "field": "owner",
+      "reason": "no native canonical home dialect; Anthology/guest owner decides",
+      "bits": 16
+    },
+    {
+      "row": 1265,
+      "name": "cl_downloadTime<1-4>",
+      "field": "owner",
+      "reason": "no native canonical home dialect; Anthology/guest owner decides",
+      "bits": 16
     },
     {
       "row": 104,
