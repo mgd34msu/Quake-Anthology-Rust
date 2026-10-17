@@ -856,11 +856,7 @@ pub(super) fn setinfo(
     args: qa_console::command_text::Arguments<'_>,
     driver: &mut crate::modules::Driver<'_>,
 ) -> Result<bool, ClientCommandError> {
-    use qa_core::{
-        primitives::{NativeDelivery, NativeTarget},
-        text::{FixedText, InfoUpdate},
-    };
-    use qa_network::{commands::packet::Protocol, outputs::PeerUpdate};
+    use qa_core::text::{FixedText, InfoUpdate};
     if source != RuleSetId::QuakeWorld || args.get_bytes(0) != b"setinfo" {
         return Ok(false);
     }
@@ -877,46 +873,16 @@ pub(super) fn setinfo(
     if key.starts_with(b"*") {
         return Ok(true);
     }
-    let client = host
+    let module = host
         .runtime
         .server
         .clients
         .get(id.0 as usize)
         .filter(|client| client.is_server_active())
-        .ok_or(ClientCommandError::Inactive)?;
-    let slot = host
-        .runtime
-        .snapshots
-        .get(id.0 as usize)
-        .and_then(Option::as_ref)
-        .filter(|binding| binding.protocol == Protocol::QuakeWorld28)
-        .and_then(|binding| binding.native_client())
-        .or_else(|| {
-            let native =
-                host.runtime.server.entities.columns.native_entity[client.entity.slot as usize]?;
-            (client.connection == Some(qa_session::clients::Connection::Bot))
-                .then(|| {
-                    u32::try_from(native.slot).ok()?.checked_sub(
-                        crate::output_namespace::native_client_entity(Protocol::QuakeWorld28, 0)?,
-                    )
-                })
-                .flatten()
-        })
-        .filter(|slot| *slot < Protocol::QuakeWorld28.resource_layout().players.count)
-        .ok_or(ClientCommandError::InvalidSlot)? as u8;
-    let delivery = NativeDelivery {
-        module: client.module,
-        source,
-        target: NativeTarget::All,
-        origin: client.player.body.position,
-        reliable: true,
-        dupe_key: 0,
-        component: 0,
-        emission: None,
-        check_portals: false,
-    };
+        .ok_or(ClientCommandError::Inactive)?
+        .module;
     let mut rules = userinfo_rules(host)?;
-    if let Some(info) = host.client_info(client.module) {
+    if let Some(info) = host.client_info(module) {
         rules.bytes = rules
             .bytes
             .max(info.userinfo_bytes)
@@ -948,90 +914,27 @@ pub(super) fn setinfo(
     {
         return Ok(true);
     }
-    let mut restore = true;
-    let result = (|| {
-        // A native capacity failure may remove a row, so compare the resulting
-        // effective value even when the replacement could not be appended.
-        let _ = host
-            .runtime
-            .server
-            .update_userinfo(id, mutation.first_only());
-        let current = host
-            .runtime
-            .server
-            .userinfo(id)
-            .ok_or(ClientCommandError::Inactive)?;
-        if info_value(current, key) == old {
-            return Ok(());
-        }
-        // An external callback can publish other effects or retire this
-        // lifetime. Never restore earlier bytes across that boundary.
-        restore = false;
-        let notified = host.notify_userinfo_module_client_with_driver(id, driver)?;
-        restore = !notified;
-        if !notified {
-            extract_name(host, id, rules)
-                .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
-        }
-        let current = host
-            .runtime
-            .server
-            .userinfo(id)
-            .ok_or(ClientCommandError::Inactive)?;
-        let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES * 4];
-        let mut length = 0;
-        let mut append = |key, value| -> Result<(), ClientCommandError> {
-            length += qa_network::outputs::peer_update(
-                Protocol::QuakeWorld28,
-                PeerUpdate::SetInfo { slot, key, value },
-                &mut bytes[length..],
-            )
+    // A native capacity failure may remove a row, so compare the resulting
+    // effective value even when the replacement could not be appended.
+    let _ = host
+        .runtime
+        .server
+        .update_userinfo(id, mutation.first_only());
+    let current = host
+        .runtime
+        .server
+        .userinfo(id)
+        .ok_or(ClientCommandError::Inactive)?;
+    if info_value(current, key) == old {
+        return Ok(true);
+    }
+    // Accepted bytes and callback effects belong to the producer. Ring pressure
+    // retries publication from its revision, never this external callback.
+    if !host.notify_userinfo_module_client_with_driver(id, driver)? {
+        extract_name(host, id, rules)
             .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
-            Ok(())
-        };
-        if notified {
-            let before = peer_info(previous.as_bytes());
-            let after = peer_info(current);
-            for (key, value) in qa_core::text::info_changes(before.as_bytes(), after.as_bytes()) {
-                append(key, value)?;
-            }
-        } else {
-            append(key, info_value(current, key))?;
-        }
-        if length == 0 {
-            return Ok(());
-        }
-        host.runtime
-            .server
-            .events
-            .native_message(delivery, &bytes[..length])
-            .map_err(|_| ClientCommandError::Usercmd(ServiceError::Capacity))?;
-        Ok(())
-    })();
-    if result.is_err() && restore {
-        let _ = host
-            .runtime
-            .server
-            .replace_userinfo_raw(id, previous.as_bytes(), rules.bytes);
     }
-    result.map(|()| true)
-}
-
-fn peer_info(text: &[u8]) -> qa_core::text::FixedText<{ qa_compat::quakec::QW_USERINFO_BYTES }> {
-    use qa_core::text::{FixedText, InfoBytes, InfoRules, InfoUpdate, info_changes};
-    let mut result = FixedText::default();
-    let rules = InfoRules {
-        filter: InfoBytes::AboveCarriageReturn,
-        ..qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld)
-    };
-    for (key, value) in info_changes(b"", text) {
-        if let Ok(update) = InfoUpdate::new(key, value, rules) {
-            // A module's larger native record remains intact in SERVER. QW
-            // drops only fields that do not fit its own field/total limits.
-            let _ = result.update_info(update);
-        }
-    }
-    result
+    Ok(true)
 }
 
 pub(super) fn publish(

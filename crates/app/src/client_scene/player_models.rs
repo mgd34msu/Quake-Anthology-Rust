@@ -205,12 +205,8 @@ impl PlayerBindings {
             update,
             PeerUpdate::UserInfo { .. } | PeerUpdate::SetInfo { .. }
         ) {
-            let color = |key| {
-                qa_core::text::info_value(text, key, false)
-                    .map_or(0, |range| qa_core::text::atoi_prefix(&text[range]))
-            };
-            peer.top_color = color(b"topcolor");
-            peer.bottom_color = color(b"bottomcolor");
+            peer.top_color = qa_core::text::info_integer(text, b"topcolor");
+            peer.bottom_color = qa_core::text::info_integer(text, b"bottomcolor");
         }
         if old_colors != (peer.colors, peer.top_color, peer.bottom_color) {
             self.dirty = true;

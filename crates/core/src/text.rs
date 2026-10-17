@@ -122,6 +122,11 @@ pub fn info_value(info: &[u8], key: &[u8], folded: bool) -> Option<std::ops::Ran
         .map(|pair| pair.value)
 }
 
+/// The first exact native info field, parsed with the common atoi semantics.
+pub fn info_integer(info: &[u8], key: &[u8]) -> i32 {
+    info_value(info, key, false).map_or(0, |span| atoi_prefix(&info[span]))
+}
+
 /// Compact a native info string in place; the caller owns its NUL terminator.
 /// Matching and duplicate removal are caller-selected native rules.
 pub fn info_remove(info: &mut [u8], key: &[u8], folded: bool, remove_all: bool) -> usize {

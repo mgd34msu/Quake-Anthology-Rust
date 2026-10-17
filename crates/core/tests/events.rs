@@ -1376,3 +1376,279 @@ fn console_responses_reject_wrong_records_and_stale_consumers_without_lending_te
     assert!(ring.retained_for(current, sequence));
     assert_eq!(ring.rejected_publications(), 2);
 }
+
+#[test]
+fn peer_info_routes_keep_receiver_generations_and_pages_until_every_real_ack() {
+    let routes = [
+        NativePeerRoute {
+            receiver: EntityId {
+                slot: 2,
+                generation: 7,
+            },
+            ordinal: 15,
+            reset_count: 16,
+        },
+        NativePeerRoute {
+            receiver: EntityId {
+                slot: 2,
+                generation: 9,
+            },
+            ordinal: 0,
+            reset_count: 0,
+        },
+        NativePeerRoute {
+            receiver: EntityId {
+                slot: 20,
+                generation: 3,
+            },
+            ordinal: 31,
+            reset_count: 32,
+        },
+    ];
+    let mut captures = [0; 3 * NATIVE_PEER_ROUTE_BYTES];
+    for (route, row) in routes
+        .into_iter()
+        .zip(captures.chunks_exact_mut(NATIVE_PEER_ROUTE_BYTES))
+    {
+        route.write_capture(row).unwrap();
+    }
+    assert_eq!(
+        &captures[..16],
+        &[2, 0, 0, 0, 7, 0, 0, 0, 15, 0, 0, 0, 16, 0, 0, 0]
+    );
+    assert_eq!(NativePeerRoute::read_capture(&captures), Some(routes[0]));
+    assert_eq!(NativePeerRoute::read_capture(&captures[..15]), None);
+    let mut short = [0xcc; NATIVE_PEER_ROUTE_BYTES - 1];
+    assert_eq!(routes[0].write_capture(&mut short), None);
+    assert_eq!(short, [0xcc; NATIVE_PEER_ROUTE_BYTES - 1]);
+    let mut ring = EventRing::load(1, 5, 8, 8).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let local = ring.bind(OutputTarget::Local(ClientId(0))).unwrap();
+    let info = b"\\name\\peer\x80";
+    let sequence = ring.peer_info(i32::MIN, info, &captures).unwrap();
+    assert!(consume(&mut ring, presentation, OutputSubmission::BestEffort).is_empty());
+    assert!(consume(&mut ring, module, OutputSubmission::BestEffort).is_empty());
+    assert!(consume(&mut ring, local, OutputSubmission::BestEffort).is_empty());
+    let mut batch = ring.batch(first).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    assert_eq!(record.delivery, None);
+    let FrameEvent::PeerInfo { user_id, payload } = record.event else {
+        panic!("engine peer info")
+    };
+    assert_eq!(user_id, i32::MIN);
+    assert_eq!(payload.len(), info.len());
+    let mut stored = [0; 64];
+    let bytes = ring.texts.copy_payload(payload, &mut stored).unwrap();
+    assert_eq!(bytes, [info.as_slice(), &captures].concat());
+    for route in routes {
+        assert_eq!(payload.peer(bytes, route.receiver), Some(route));
+    }
+    assert_eq!(
+        payload.peer(
+            bytes,
+            EntityId {
+                slot: 2,
+                generation: 8
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        payload.peer(
+            bytes,
+            EntityId {
+                slot: 20,
+                generation: 4
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        payload.peer(&bytes[..bytes.len() - 1], routes[0].receiver),
+        None
+    );
+    assert!(ring.submit(
+        first,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(7))
+    ));
+    assert!(ring.submit(
+        second,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(9))
+    ));
+    assert_eq!(ring.acknowledge(first, NativeReceipt(6)), 0);
+    assert_eq!(ring.acknowledge(second, NativeReceipt(8)), 0);
+    assert!(ring.texts.copy_payload(payload, &mut stored).is_some());
+    assert_eq!(ring.acknowledge(first, NativeReceipt(7)), 1);
+    assert!(ring.retained_for(second, sequence));
+    assert_eq!(
+        ring.texts.copy_payload(payload, &mut stored).unwrap(),
+        [info.as_slice(), &captures].concat()
+    );
+    assert_eq!(ring.acknowledge(second, NativeReceipt(9)), 1);
+    assert!(ring.is_empty());
+    assert!(ring.texts.copy_payload(payload, &mut stored).is_none());
+    ring.peer_info(0, b"", &captures).unwrap();
+    let mut batch = ring.batch(first).unwrap();
+    let FrameEvent::PeerInfo {
+        payload,
+        user_id: 0,
+    } = ring.next(&mut batch).unwrap().event
+    else {
+        panic!("empty peer info")
+    };
+    assert!(payload.is_empty());
+    let bytes = ring.texts.copy_payload(payload, &mut stored).unwrap();
+    assert_eq!(payload.peer(bytes, routes[2].receiver), Some(routes[2]));
+}
+
+#[test]
+fn republished_peer_info_leases_the_existing_payload_pages() {
+    let mut ring = EventRing::load(2, 4, 3, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let local = ring.bind(OutputTarget::Local(ClientId(0))).unwrap();
+    let receiver = EntityId {
+        slot: 3,
+        generation: 17,
+    };
+    let mut captures = [0; NATIVE_PEER_ROUTE_BYTES];
+    NativePeerRoute {
+        receiver,
+        ordinal: u32::MAX,
+        reset_count: 0,
+    }
+    .write_capture(&mut captures)
+    .unwrap();
+    let first = ring.peer_info(i32::MAX, b"info", &captures).unwrap();
+    let mut batch = ring.batch(client).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::PeerInfo { payload, .. } = record.event else {
+        panic!("peer info")
+    };
+    assert!(ring.submit(client, first, OutputSubmission::Reliable(NativeReceipt(1))));
+    let second = ring
+        .push_delivered(native_delivery(NativeTarget::All), record.event)
+        .unwrap();
+    for other in [module, presentation, local] {
+        assert!(consume(&mut ring, other, OutputSubmission::BestEffort).is_empty());
+    }
+    assert_eq!(ring.acknowledge(client, NativeReceipt(1)), 1);
+    let mut bytes = [0; 24];
+    assert_eq!(
+        payload.peer(
+            ring.texts.copy_payload(payload, &mut bytes).unwrap(),
+            receiver
+        ),
+        Some(NativePeerRoute {
+            receiver,
+            ordinal: u32::MAX,
+            reset_count: 0
+        })
+    );
+    assert!(ring.submit(client, second, OutputSubmission::Reliable(NativeReceipt(2))));
+    assert_eq!(ring.acknowledge(client, NativeReceipt(2)), 1);
+    assert!(ring.texts.copy_payload(payload, &mut bytes).is_none());
+}
+
+#[test]
+fn peer_info_text_pressure_and_malformed_captures_publish_no_partial_record() {
+    let mut ring = EventRing::load(1, 1, 3, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let held = ring.texts.insert(b"display").unwrap();
+    let mut captures = [0; NATIVE_PEER_ROUTE_BYTES];
+    NativePeerRoute {
+        receiver: EntityId {
+            slot: 1,
+            generation: 2,
+        },
+        ordinal: 3,
+        reset_count: 16,
+    }
+    .write_capture(&mut captures)
+    .unwrap();
+    let before = ring.sequence_range();
+    assert_eq!(
+        ring.peer_info(9, b"12345678", &captures),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.sequence_range(), before);
+    assert!(ring.is_empty());
+    assert!(!ring.needs_resync(client));
+    assert_eq!(ring.texts.get(held.id()), Some(b"display".as_slice()));
+    let reclaimed = ring.texts.insert(b"free").unwrap();
+    assert_eq!(ring.texts.get(reclaimed.id()), Some(b"free".as_slice()));
+    ring.texts.release(reclaimed);
+    assert_eq!(
+        ring.peer_info(9, b"x", &captures[..12]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.sequence_range(), before);
+    assert_eq!(ring.rejected_publications(), 2);
+    ring.texts.release(held);
+    assert_eq!(ring.peer_info(9, b"12345678", &captures), Ok(before.end));
+}
+
+#[test]
+fn shared_capture_search_keeps_native_cue_offsets_and_absent_entity_sentinel() {
+    let mut ring = EventRing::load(1, 1, 4, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let mut stored = [0; 8 + 2 * NATIVE_CUE_CAPTURE_BYTES];
+    let entity = EntityId {
+        slot: 99,
+        generation: 33,
+    };
+    NativeCueBinding { entity: None }
+        .write_capture(0, &mut stored[8..])
+        .unwrap();
+    NativeCueBinding {
+        entity: Some(entity),
+    }
+    .write_capture(4, &mut stored[20..])
+    .unwrap();
+    ring.native_message_bound(native_delivery(NativeTarget::All), 8, &stored)
+        .unwrap();
+    let mut batch = ring.batch(client).unwrap();
+    let FrameEvent::Native(payload) = ring.next(&mut batch).unwrap().event else {
+        panic!("native cue payload")
+    };
+    let mut copy = [0; 32];
+    let bytes = ring.texts.copy_payload(payload, &mut copy).unwrap();
+    assert_eq!(payload.cue(bytes, 0).unwrap().entity, None);
+    assert_eq!(payload.cue(bytes, 4).unwrap().entity, Some(entity));
+    assert!(payload.cue(bytes, 1).is_none());
+    assert!(payload.cue(bytes, usize::MAX).is_none());
+    assert!(payload.cue(&bytes[..31], 4).is_none());
+}
+
+#[test]
+fn peer_and_cue_publishers_keep_their_own_capture_alignment_and_single_rejection_count() {
+    let mut ring = EventRing::load(1, 1, 4, 16).unwrap();
+    let _client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let before = ring.sequence_range();
+    assert_eq!(
+        ring.native_message_bound(native_delivery(NativeTarget::All), 1, &[0; 17]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.rejected_publications(), 1);
+    assert_eq!(
+        ring.publish_group(1, |group| {
+            group.native_message_parts(native_delivery(NativeTarget::All), b"x", &[0; 16])?;
+            Ok(())
+        }),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.rejected_publications(), 2);
+    assert_eq!(
+        ring.peer_info(1, b"x", &[0; 12]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.rejected_publications(), 3);
+    assert_eq!(ring.sequence_range(), before);
+    assert!(ring.is_empty());
+}

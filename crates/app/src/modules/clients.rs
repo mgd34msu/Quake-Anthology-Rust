@@ -1180,6 +1180,7 @@ impl FrameHost {
         access: super::execution::TraceAccess<'_>,
     ) -> Option<(CallbackId, CallbackCall<'static>)> {
         let prepared = self.client_disconnect_call(id);
+        self.runtime.retain_peer_numbers(lifetime);
         if !self
             .runtime
             .server

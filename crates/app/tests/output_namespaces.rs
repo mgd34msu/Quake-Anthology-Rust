@@ -677,3 +677,51 @@ fn primary_weak_player_references_convert_without_a_live_client_binding() {
         );
     }
 }
+
+#[test]
+fn departing_player_numbers_survive_generation_reset_until_captured() {
+    use qa_core::primitives::ClientId;
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let mut table = EntityTable::new(12, 4).unwrap();
+        let own = client(&mut table, 0, Some(native(1, 1)));
+        let departing = client(&mut table, 1, Some(native(2, 4)));
+        let waiting = client(&mut table, 2, Some(native(3, 9)));
+        let mut numbers = NativeNumbers::load(protocol);
+        numbers.set_native_clients(2, 1);
+        numbers.set_self(own, 0, protocol);
+        numbers.refresh(&table, Some(ModuleId(1)), protocol, [own, departing]);
+        let reference = numbers
+            .client_reference(&table, departing, ClientId(0))
+            .unwrap();
+        numbers.retain_player(departing);
+        let replacement = table.reset_client(departing).unwrap();
+        numbers.refresh(&table, Some(ModuleId(1)), protocol, [own, waiting]);
+        assert_eq!(
+            numbers.number(departing),
+            Some(reference.ordinal + qa_network::snapshots::snapshot_limits(protocol).first_entity)
+        );
+        assert_eq!(
+            numbers.client_reference(&table, departing, ClientId(0)),
+            None
+        );
+        assert!(!numbers.bind(
+            waiting,
+            reference.ordinal + qa_network::snapshots::snapshot_limits(protocol).first_entity
+        ));
+        assert_eq!(
+            numbers.client_reference(&table, replacement, ClientId(0)),
+            None
+        );
+        numbers.release_retiring_player(departing);
+        numbers.refresh(&table, Some(ModuleId(1)), protocol, [own, waiting]);
+        assert_eq!(
+            numbers.client_reference(&table, departing, ClientId(0)),
+            None
+        );
+        assert!(
+            numbers
+                .client_reference(&table, waiting, ClientId(0))
+                .is_some()
+        );
+    }
+}

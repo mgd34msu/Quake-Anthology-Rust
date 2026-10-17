@@ -13,6 +13,7 @@ use qa_session::clients::Connection;
 mod config;
 pub mod duplicates;
 mod native;
+mod peers;
 
 #[derive(Default)]
 pub struct OutputCounts {
@@ -174,6 +175,7 @@ pub(crate) fn dispatch_frame(
         runtime.publish_audio_retirements();
     }
     runtime.publish_presentation_resets();
+    runtime.publish_userinfos();
     let server = &mut runtime.server;
     let snapshots = &mut runtime.snapshots;
     runtime
@@ -377,7 +379,9 @@ pub(crate) fn dispatch_frame(
                         }
                         // Native messages have per-client channel delivery below;
                         // there is no second presentation copy of their payload.
-                        FrameEvent::Native(_) | FrameEvent::GameState { .. } => true,
+                        FrameEvent::Native(_)
+                        | FrameEvent::GameState { .. }
+                        | FrameEvent::PeerInfo { .. } => true,
                         FrameEvent::Hud(_) => true,
                         FrameEvent::ViewFeedback(_) => true,
                         FrameEvent::ConfigString { .. } => true,
@@ -409,6 +413,7 @@ pub(crate) fn dispatch_frame(
             }
         }
     }
+    let mut peer_resync = false;
     let client_count = server.clients.len();
     for slot in 0..client_count {
         let Some(id) = server.clients[slot].output else {
@@ -416,26 +421,6 @@ pub(crate) fn dispatch_frame(
         };
         let client_id = ClientId(slot as u32);
         let is_local = local.contains(&Some(client_id));
-        if let Some(protocol) = runtime
-            .network
-            .get(client_id, qa_core::loopback::Endpoint::Server)
-            .and_then(|connection| connection.commands.as_ref())
-            .map(|commands| commands.protocol)
-        {
-            let native_module = server.entities.columns.native_entity
-                [server.clients[slot].entity.slot as usize]
-                .map(|native| native.module);
-            runtime.native_numbers[slot].refresh(
-                &server.entities,
-                native_module,
-                protocol,
-                server
-                    .clients
-                    .iter()
-                    .filter(|client| client.is_server_active())
-                    .map(|client| client.entity),
-            );
-        }
         let client = &mut server.clients[slot];
         // A local client still has a native channel. During bounded resync,
         // finish its retained datagram/reliable flight under the old binding.
@@ -508,7 +493,54 @@ pub(crate) fn dispatch_frame(
                     return OutputSubmission::Unsent;
                 }
                 let mut resource_pending = false;
-                let submission = if let FrameEvent::ConfigString {
+                let submission = if let FrameEvent::PeerInfo { user_id, payload } = record.event {
+                    let Some(stored) = texts.copy_payload(payload, &mut runtime.output_bytes)
+                    else {
+                        counts.stale_texts += 1;
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(route) = payload.peer(stored, client.entity) else {
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(connection) = runtime
+                        .network
+                        .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                    else {
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Some(protocol) = connection
+                        .commands
+                        .as_ref()
+                        .map(|commands| commands.protocol)
+                    else {
+                        return OutputSubmission::BestEffort;
+                    };
+                    let Ok(length) = peers::encode(
+                        protocol,
+                        route,
+                        user_id,
+                        &stored[..payload.len()],
+                        &mut runtime.output_native_bytes,
+                    ) else {
+                        counts.native_unsupported += 1;
+                        return OutputSubmission::BestEffort;
+                    };
+                    match native::reliable(
+                        &mut connection.channel,
+                        &runtime.output_native_bytes[..length],
+                    ) {
+                        Ok(submission) => {
+                            if submission != OutputSubmission::Unsent {
+                                counts.native_messages += 1;
+                            }
+                            submission
+                        }
+                        Err(()) => {
+                            counts.native_unsupported += 1;
+                            OutputSubmission::BestEffort
+                        }
+                    }
+                } else if let FrameEvent::ConfigString {
                     destination_index,
                     text,
                     ..
@@ -1043,7 +1075,11 @@ pub(crate) fn dispatch_frame(
             }
             runtime.config_publications[slot].reset();
             runtime.native_numbers[slot].reset();
+            peer_resync = true;
         }
+    }
+    if peer_resync {
+        server.invalidate_userinfo_publications();
     }
     counts
 }

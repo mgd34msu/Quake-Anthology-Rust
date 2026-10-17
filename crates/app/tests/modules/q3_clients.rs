@@ -933,3 +933,63 @@ fn q3_bot_uses_its_explicit_native_namespace_and_the_common_command_builder_once
     );
     assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
 }
+
+#[test]
+fn accepted_userinfo_survives_text_pressure_without_repeating_the_module_callback() {
+    let (mut host, client, _) = fixture_extra(
+        0,
+        Phase::Server,
+        None,
+        false,
+        false,
+        Protocol::QuakeWorld28,
+        1,
+        |_, _| Vec::new(),
+    );
+    host.connect_module_client(MODULE, client, b"\\name\\Tester\\skin\\original")
+        .unwrap();
+    let mut held = Vec::new();
+    while let Some(lease) = host
+        .runtime
+        .server
+        .events
+        .texts
+        .insert(b"independent lease")
+    {
+        held.push(lease);
+    }
+    let rejected = host.runtime.server.events.rejected_publications();
+    send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    assert_eq!(count(&mut host, 4), 1);
+    tick(&mut host, 0);
+    assert!(host.runtime.server.events.rejected_publications() > rejected);
+    assert!(host.runtime.server.userinfo_record(client).unwrap().dirty());
+    assert_eq!(
+        host.runtime.server.userinfo(client).unwrap(),
+        &CHANGED_USERINFO[..CHANGED_USERINFO.len() - 1]
+    );
+    for lease in held {
+        host.runtime.server.events.texts.release(lease);
+    }
+    for tick_number in 1..=8 {
+        send_qw_command(&mut host, client, b"");
+        tick(&mut host, tick_number * 20);
+    }
+    let peer = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .peer(0)
+        .unwrap();
+    for (key, value) in [
+        (b"name".as_slice(), b"GameName".as_slice()),
+        (b"skin", b"game/blue"),
+    ] {
+        let span = qa_core::text::info_value(peer.text, key, false).unwrap();
+        assert_eq!(&peer.text[span], value);
+    }
+    assert_eq!(count(&mut host, 4), 1);
+    assert!(!host.runtime.server.userinfo_record(client).unwrap().dirty());
+    assert!(host.runtime.server.clients[0].is_active());
+    assert!(!host.runtime.quit);
+}

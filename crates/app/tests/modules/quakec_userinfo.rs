@@ -1,10 +1,5 @@
 use super::*;
 use qa_app::modules::ClientCommandError;
-use qa_core::{events::OutputTarget, primitives::NativeTarget};
-use qa_network::{
-    commands::packet::Protocol,
-    outputs::{NativeService, PeerUpdate},
-};
 
 fn connected(info: &[u8]) -> (Box<FrameHost>, ClientId) {
     let (mut host, id, _, _, _) = qc_client_host(
@@ -32,57 +27,16 @@ fn command(
         .map(|_| ())
 }
 
-fn updates(
-    host: &FrameHost,
-    observer: qa_core::events::OutputConsumerId,
-) -> Vec<(u8, Vec<u8>, Vec<u8>)> {
-    let events = &host.runtime.server.events;
-    let mut batch = events.batch(observer).unwrap();
-    let mut result = Vec::new();
-    while let Some(record) = events.next(&mut batch) {
-        let FrameEvent::Native(payload) = record.event else {
-            continue;
-        };
-        let delivery = record.delivery.unwrap();
-        assert_eq!(delivery.source, RuleSetId::QuakeWorld);
-        assert_eq!(delivery.target, NativeTarget::All);
-        assert!(delivery.reliable);
-        let mut bytes = [0; 256];
-        let wire = events.texts.copy_payload(payload, &mut bytes).unwrap();
-        let (NativeService::Peer(PeerUpdate::SetInfo { slot, key, value }), consumed) =
-            qa_network::outputs::read_native_service(
-                Protocol::QuakeWorld28,
-                &wire[..payload.len()],
-            )
-            .unwrap()
-        else {
-            panic!("setinfo must use the shared peer service")
-        };
-        assert_eq!(consumed, payload.len());
-        result.push((slot, key.to_vec(), value.to_vec()));
-    }
-    result
-}
-
 #[test]
 fn qw_setinfo_uses_effective_first_duplicate_value_and_no_guest_callback() {
     let (mut host, id) = connected(b"\\name\\native\\skin\\first\\skin\\second");
     let calls = host.module_counts(ModuleId(1)).unwrap().calls;
-    let observer = host
-        .runtime
-        .server
-        .events
-        .bind(OutputTarget::Module(ModuleId(9)))
-        .unwrap();
     command(&mut host, id, b"skin", b"third").unwrap();
     assert_eq!(
         host.runtime.server.userinfo(id).unwrap(),
         b"\\name\\native\\skin\\second\\skin\\third"
     );
-    assert_eq!(
-        updates(&host, observer),
-        [(0, b"skin".to_vec(), b"second".to_vec())]
-    );
+    assert!(host.runtime.server.userinfo_record(id).unwrap().dirty());
     command(&mut host, id, b"skin", b"third").unwrap();
     let end = host.runtime.server.events.sequence_range().end;
     command(&mut host, id, b"skin", b"third").unwrap();
@@ -101,21 +55,17 @@ fn qw_server_filtering_and_post_extraction_names_share_the_native_record() {
         host.runtime.server.userinfo(id).unwrap(),
         b"\\name\\unnamed"
     );
-    let observer = host
-        .runtime
-        .server
-        .events
-        .bind(OutputTarget::Module(ModuleId(9)))
-        .unwrap();
     command(&mut host, id, b"name", b"  colored  ").unwrap();
     command(&mut host, id, b"team", b"\xc1RED;\x01").unwrap();
-    assert_eq!(
-        updates(&host, observer),
-        [
-            (0, b"name".to_vec(), b"colored".to_vec()),
-            (0, b"team".to_vec(), b"\xc1RED;".to_vec()),
-        ]
-    );
+    let text = host.runtime.server.userinfo(id).unwrap();
+    for (key, value) in [
+        (b"name".as_slice(), b"colored".as_slice()),
+        (b"team", b"\xc1RED;"),
+    ] {
+        let span = qa_core::text::info_value(text, key, false).unwrap();
+        assert_eq!(&text[span], value);
+    }
+    assert!(host.runtime.server.userinfo_record(id).unwrap().dirty());
     let highchars = host
         .console
         .cvars
@@ -141,14 +91,32 @@ fn qw_server_filtering_and_post_extraction_names_share_the_native_record() {
 }
 
 #[test]
-fn qw_setinfo_rolls_back_raw_userinfo_when_native_publication_cannot_fit() {
+fn qw_setinfo_retains_accepted_bytes_and_retries_after_independent_text_leases_release() {
     let (mut host, id) = connected(b"\\name\\native\\skin\\original");
-    let before = host.runtime.server.userinfo(id).unwrap().to_vec();
-    host.runtime.server.events = qa_core::events::EventRing::load(8, 8, 1, 1).unwrap();
-    assert!(command(&mut host, id, b"name", b" console ").is_err());
-    assert_eq!(host.runtime.server.userinfo(id).unwrap(), before);
-    assert!(host.runtime.server.events.sequence_range().is_empty());
-    assert_eq!(host.runtime.server.events.rejected_publications(), 1);
+    let calls = host.module_counts(ModuleId(1)).unwrap().calls;
+    let mut leases = Vec::new();
+    while let Some(lease) = host.runtime.server.events.texts.insert(b"retained display") {
+        leases.push(lease);
+    }
+    let rejected = host.runtime.server.events.rejected_publications();
+    command(&mut host, id, b"name", b" console ").unwrap();
+    assert_eq!(
+        host.runtime.server.userinfo(id).unwrap(),
+        b"\\skin\\original\\name\\unnamed"
+    );
+    let mut source = Source {
+        time: EventTime::default(),
+        polls: 0,
+    };
+    host.dispatch_output(&mut source, &mut Default::default());
+    assert!(host.runtime.server.userinfo_record(id).unwrap().dirty());
+    assert!(host.runtime.server.events.rejected_publications() > rejected);
+    for lease in leases {
+        host.runtime.server.events.texts.release(lease);
+    }
+    host.dispatch_output(&mut source, &mut Default::default());
+    assert!(!host.runtime.server.userinfo_record(id).unwrap().dirty());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
 }
 
 #[test]

@@ -501,10 +501,11 @@ fn q3_owned_closing_record_uses_each_connections_native_disconnect_and_real_ack(
         Protocol::Quake2Repro1038,
         Protocol::Quake3_68,
     ] {
-        let mut runtime = Runtime::load(2, []).unwrap();
-        let closing = remote_protocol(&mut runtime, protocol, 2000);
-        let healthy = remote(&mut runtime, 2001);
-        let mut host = host(runtime);
+        // Seed pacing before admission: a bound native client now receives
+        // real peer-state flights which a throwaway startup source cannot ACK.
+        let mut host = host(Runtime::load(2, []).unwrap());
+        let closing = remote_protocol(&mut host.runtime, protocol, 2000);
+        let healthy = remote(&mut host.runtime, 2001);
         let (_, output, sequence) = begin_close(&mut host, closing);
         let mut peer = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).unwrap();
         peer.configure_snapshots(protocol).unwrap();

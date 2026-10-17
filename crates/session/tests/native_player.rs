@@ -55,6 +55,8 @@ fn native_metadata_follows_the_bound_lifetime_and_clears_on_rebind_or_disconnect
     );
     server.clients[id.0 as usize].player.native = Some(tail);
     assert!(server.disconnect(id));
+    let tombstone = server.userinfo_record(id).unwrap().stamp;
+    assert!(server.mark_userinfo_queued(id, tombstone));
     let replacement = server
         .connect(Connection::Bot, native.module, Some(native))
         .unwrap();

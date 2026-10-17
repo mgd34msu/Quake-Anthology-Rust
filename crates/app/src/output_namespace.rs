@@ -13,12 +13,13 @@ pub fn native_client_entity(protocol: Protocol, client: u32) -> Option<u32> {
     client.checked_add(snapshot_limits(protocol).first_entity)
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum MappingRole {
     #[default]
     Entity,
     Player,
     InactivePlayer,
+    RetiringPlayer,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -43,6 +44,7 @@ pub struct NativeNumbers {
     world_entity: u32,
     next_foreign: usize,
     end: usize,
+    peer_seeded: bool,
 }
 
 impl NativeNumbers {
@@ -62,7 +64,19 @@ impl NativeNumbers {
             world_entity: limits.world_entity,
             next_foreign: limits.first_entity as usize,
             end: limits.end_entity as usize,
+            peer_seeded: false,
         }
+    }
+
+    pub(crate) fn peer_reset_count(&self) -> u32 {
+        if self.peer_seeded {
+            0
+        } else {
+            self.player_count()
+        }
+    }
+    pub(crate) fn peers_seeded(&mut self) {
+        self.peer_seeded = true;
     }
 
     pub fn native_clients(&self) -> u32 {
@@ -83,6 +97,7 @@ impl NativeNumbers {
             native_client_entity(protocol, native_client).map(|number| (entity, number));
     }
     pub fn reset(&mut self) {
+        self.peer_seeded = false;
         self.slots.fill(Mapping::default());
         self.owners.fill(None);
         self.module = None;
@@ -113,8 +128,10 @@ impl NativeNumbers {
                 && entities.client_index(id).is_some()
             {
                 let row = &mut self.slots[slot];
-                row.id = Some(id);
-                row.role = MappingRole::InactivePlayer;
+                if !matches!(row.role, MappingRole::RetiringPlayer) {
+                    row.id = Some(id);
+                    row.role = MappingRole::InactivePlayer;
+                }
             }
         }
         for id in players {
@@ -275,14 +292,16 @@ impl NativeNumbers {
     pub fn begin(&mut self, entities: &EntityTable, module: Option<ModuleId>, protocol: Protocol) {
         self.configure(protocol);
         if self.module != module {
+            self.peer_seeded = false;
             self.slots.fill(Mapping::default());
             self.owners.fill(None);
             self.module = module;
         } else {
             for slot in 0..self.slots.len() {
-                if self.slots[slot]
-                    .id
-                    .is_some_and(|id| entities.resolve(id).is_none())
+                if !matches!(self.slots[slot].role, MappingRole::RetiringPlayer)
+                    && self.slots[slot]
+                        .id
+                        .is_some_and(|id| entities.resolve(id).is_none())
                 {
                     self.release(slot);
                 }
@@ -326,6 +345,12 @@ impl NativeNumbers {
         if let Some(previous) = self.owners[number_index]
             && previous != id
         {
+            if matches!(
+                self.slots[previous.slot as usize].role,
+                MappingRole::RetiringPlayer
+            ) {
+                return false;
+            }
             self.unmap(previous.slot as usize);
         }
         self.release(id.slot as usize);
@@ -384,9 +409,33 @@ impl NativeNumbers {
         id: EntityId,
         receiver: ClientId,
     ) -> Option<NativeClientRef> {
-        let slot = entities.resolve(id)?;
-        let row = self.slots.get(slot)?;
-        if row.id != Some(id) || !matches!(row.role, MappingRole::Player) {
+        entities.resolve(id)?;
+        self.player_reference(id, receiver, MappingRole::Player)
+    }
+
+    pub(crate) fn peer_reference(
+        &self,
+        entities: &EntityTable,
+        id: EntityId,
+        receiver: ClientId,
+    ) -> Option<NativeClientRef> {
+        if self.slots.get(id.slot as usize).is_some_and(|row| {
+            row.id == Some(id) && matches!(row.role, MappingRole::RetiringPlayer)
+        }) {
+            self.player_reference(id, receiver, MappingRole::RetiringPlayer)
+        } else {
+            self.client_reference(entities, id, receiver)
+        }
+    }
+
+    fn player_reference(
+        &self,
+        id: EntityId,
+        receiver: ClientId,
+        role: MappingRole,
+    ) -> Option<NativeClientRef> {
+        let row = self.slots.get(id.slot as usize)?;
+        if row.id != Some(id) || row.role != role {
             return None;
         }
         let number = row.number?;
@@ -396,6 +445,26 @@ impl NativeNumbers {
         let client = number.checked_sub(self.first as u32)?;
         (client < self.player_count())
             .then(|| NativeClientRef::client(ResourceNamespace::Client(receiver), client))
+    }
+
+    /// Keep a departing player's ordinal until its tombstone belongs to the
+    /// output ring. Its entity generation may reset before the next output pass.
+    pub fn retain_player(&mut self, id: EntityId) {
+        if let Some(row) = self.slots.get_mut(id.slot as usize)
+            && row.id == Some(id)
+            && row.number.is_some()
+            && matches!(row.role, MappingRole::Player)
+        {
+            row.role = MappingRole::RetiringPlayer;
+        }
+    }
+
+    pub fn release_retiring_player(&mut self, id: EntityId) {
+        if self.slots.get(id.slot as usize).is_some_and(|row| {
+            row.id == Some(id) && matches!(row.role, MappingRole::RetiringPlayer)
+        }) {
+            self.release(id.slot as usize);
+        }
     }
 
     pub fn foreign(&mut self, id: EntityId) -> Option<u32> {

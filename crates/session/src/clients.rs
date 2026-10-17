@@ -40,6 +40,33 @@ impl From<InfoError> for ClientInfoError {
     }
 }
 
+/// Publication names the admitted SERVER lifetime, even after its entity resets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserinfoStamp {
+    pub lifetime: EntityId,
+    pub user_id: i32,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UserinfoRecord<'a> {
+    pub stamp: UserinfoStamp,
+    pub text: &'a [u8],
+    pub queued_revision: Option<u64>,
+    pub connected: bool,
+}
+impl UserinfoRecord<'_> {
+    pub fn dirty(self) -> bool {
+        self.queued_revision != Some(self.stamp.revision)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UserinfoPublication {
+    stamp: UserinfoStamp,
+    queued_revision: Option<u64>,
+}
+
 /// Retained until the Presentation consumer has applied the retirement.
 /// A canceled ring publication is retried with the same canonical lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +119,7 @@ pub struct Client {
     /// Raw native connect parameters, retained on the canonical client slot.
     pub module_spawn_parms: [u32; 16],
     userinfo: FixedText<USERINFO_BYTES>,
+    userinfo_publication: Option<UserinfoPublication>,
     pub value_publication: qa_core::primitives::ValueBank,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
@@ -115,6 +143,12 @@ impl Client {
         self.is_active() && self.server_authoritative
     }
 
+    fn userinfo_changed(&mut self) {
+        if let Some(publication) = self.userinfo_publication.as_mut() {
+            publication.stamp.revision = publication.stamp.revision.wrapping_add(1);
+        }
+    }
+
     // audio_retirement is completed by Presentation, never by a state reset.
     fn reset(&mut self, texts: &mut qa_core::events::TextStore, module: ModuleId) {
         self.phase = ClientPhase::Active;
@@ -126,6 +160,7 @@ impl Client {
         self.command_observation = None;
         self.module_spawn_parms = [0; 16];
         self.userinfo.clear();
+        self.userinfo_publication = None;
         self.value_publication.clear();
         self.command_pending = false;
         self.module_movement = false;
@@ -147,6 +182,7 @@ pub struct Server {
     pub presentation: OutputConsumerId,
     pub world_time: EventTime,
     pub world_frame: u64,
+    next_user_id: i32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +272,7 @@ impl Server {
                 command_observation: None,
                 module_spawn_parms: [0; 16],
                 userinfo: FixedText::default(),
+                userinfo_publication: None,
                 value_publication: qa_core::primitives::ValueBank::load(values),
                 intent: CommandIntent::default(),
                 command_pending: false,
@@ -278,6 +315,7 @@ impl Server {
             clients,
             world_time: EventTime::default(),
             world_frame: 0,
+            next_user_id: 0,
         })
     }
 
@@ -300,6 +338,9 @@ impl Server {
             .position(|client| {
                 client.connection.is_none()
                     && client.audio_retirement.is_none()
+                    && client.userinfo_publication.is_none_or(|publication| {
+                        publication.queued_revision == Some(publication.stamp.revision)
+                    })
                     && self.entities.resolve(client.entity).is_some()
             })
             .map(|slot| ClientId(slot as u32))
@@ -340,6 +381,20 @@ impl Server {
         self.entities.columns.collision_tags[entity_slot] = self
             .entities
             .collision_tags(client.entity, Default::default())?;
+        if server_authoritative {
+            self.next_user_id = self.next_user_id.wrapping_add(1);
+            client.userinfo_publication = Some(UserinfoPublication {
+                stamp: UserinfoStamp {
+                    lifetime: client.entity,
+                    user_id: self.next_user_id,
+                    revision: 0,
+                },
+                queued_revision: None,
+            });
+            if connection != Connection::Bot {
+                self.invalidate_userinfo_publications();
+            }
+        }
         Some(ClientId(slot as u32))
     }
 
@@ -362,6 +417,43 @@ impl Server {
             .then(|| client.userinfo.as_bytes())
     }
 
+    /// Borrow the sole raw record, including a disconnected SERVER tombstone.
+    pub fn userinfo_record(&self, id: ClientId) -> Option<UserinfoRecord<'_>> {
+        let client = self.clients.get(id.0 as usize)?;
+        let publication = client.userinfo_publication?;
+        Some(UserinfoRecord {
+            stamp: publication.stamp,
+            text: client.userinfo.as_bytes(),
+            queued_revision: publication.queued_revision,
+            connected: client.connection.is_some(),
+        })
+    }
+
+    /// A successful ring insertion owns subsequent reliable delivery and ACKs.
+    pub fn mark_userinfo_queued(&mut self, id: ClientId, stamp: UserinfoStamp) -> bool {
+        let Some(publication) = self
+            .clients
+            .get_mut(id.0 as usize)
+            .and_then(|client| client.userinfo_publication.as_mut())
+            .filter(|publication| publication.stamp == stamp)
+        else {
+            return false;
+        };
+        publication.queued_revision = Some(stamp.revision);
+        true
+    }
+
+    /// A new recipient needs current peers independently of earlier ring ACKs.
+    pub fn invalidate_userinfo_publications(&mut self) {
+        for client in &mut self.clients {
+            if client.is_server_active()
+                && let Some(publication) = client.userinfo_publication.as_mut()
+            {
+                publication.queued_revision = None;
+            }
+        }
+    }
+
     /// Mutate the existing native record with a boundary-validated update.
     /// The shared info writer retains native removal on capacity failure.
     pub fn update_userinfo(
@@ -376,8 +468,12 @@ impl Server {
                 client.connection.is_some() && self.entities.resolve(client.entity).is_some()
             })
             .ok_or(ClientInfoError::Client)?;
-        client.userinfo.update_info(update)?;
-        Ok(())
+        let previous = client.userinfo.clone();
+        let result = client.userinfo.update_info(update);
+        if previous.as_bytes() != client.userinfo.as_bytes() {
+            client.userinfo_changed();
+        }
+        result.map_err(Into::into)
     }
 
     /// Input admission checks the complete record before replacing its raw
@@ -428,10 +524,14 @@ impl Server {
                 client.connection.is_some() && self.entities.resolve(client.entity).is_some()
             })
             .ok_or(ClientInfoError::Client)?;
+        if client.userinfo.as_bytes() == text {
+            return Ok(());
+        }
         client
             .userinfo
             .set_bytes(text)
             .map_err(|_| InfoError::Capacity)?;
+        client.userinfo_changed();
         Ok(())
     }
 
@@ -466,9 +566,9 @@ impl Server {
         }
         let client = &mut self.clients[id.0 as usize];
         let slot = client.entity.slot as usize;
-        if client.module != native.module
-            || self.entities.columns.native_entity[slot] != Some(native)
-        {
+        let changed = client.module != native.module
+            || self.entities.columns.native_entity[slot] != Some(native);
+        if changed {
             self.entities.columns.published_fields[slot] = Default::default();
             client.player.weapon_state = None;
             client.player.native = None;
@@ -481,6 +581,9 @@ impl Server {
         client.module = native.module;
         self.entities.columns.owner[slot] = native.module;
         self.entities.columns.native_entity[slot] = Some(native);
+        if changed {
+            self.invalidate_userinfo_publications();
+        }
         true
     }
 
@@ -552,6 +655,9 @@ impl Server {
     }
 
     pub fn disconnect(&mut self, id: ClientId) -> bool {
+        let recipients = self.clients.iter().enumerate().any(|(slot, client)| {
+            slot != id.0 as usize && client.is_server_active() && client.output.is_some()
+        });
         let Some(client) = self
             .clients
             .get_mut(id.0 as usize)
@@ -564,7 +670,15 @@ impl Server {
         }
         self.area.unlink(client.entity);
         client.connection = None;
+        if !client.userinfo.as_bytes().is_empty() {
+            client.userinfo_changed();
+        }
+        let publication = client.userinfo_publication.take().map(|mut publication| {
+            publication.queued_revision = (!recipients).then_some(publication.stamp.revision);
+            publication
+        });
         client.reset(&mut self.events.texts, ModuleId::default());
+        client.userinfo_publication = publication;
         if let Some(entity) = self.entities.reset_client(client.entity) {
             client.entity = entity;
         }

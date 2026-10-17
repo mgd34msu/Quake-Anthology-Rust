@@ -62,6 +62,8 @@ pub struct Runtime {
     pub input_time: qa_core::sys_events::EventTime,
     pub(crate) output_bytes: Box<[u8]>,
     pub(crate) output_native_bytes: Box<[u8]>,
+    pub(crate) userinfo_cursor: usize,
+    pub(crate) userinfo_queued_at: qa_core::sys_events::EventTime,
     script_reader: qa_formats::archive::ArchiveReader,
 }
 
@@ -391,6 +393,8 @@ impl Runtime {
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
+            userinfo_cursor: 0,
+            userinfo_queued_at: Default::default(),
             output_bytes: vec![0; NATIVE_PAYLOAD_BYTES].into_boxed_slice(),
             output_native_bytes: vec![0; NATIVE_WIRE_BYTES].into_boxed_slice(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
@@ -653,6 +657,7 @@ impl Runtime {
         {
             self.retire_client_audio(id);
         }
+        self.retain_peer_numbers(self.server.clients[slot].entity);
         self.output_duplicates.reset_client(id);
         self.server.disconnect(id);
         self.network.unbind(id);
@@ -662,6 +667,7 @@ impl Runtime {
         self.client_collision[slot] = None;
         self.config_publications[slot].reset();
         self.native_numbers[slot].reset();
+        self.publish_userinfos();
         true
     }
 
@@ -875,6 +881,7 @@ impl Runtime {
                 limits.first_entity,
             );
             self.native_numbers[slot].set_self(self_entity, native_client, protocol);
+            self.server.invalidate_userinfo_publications();
         }
         Ok(())
     }

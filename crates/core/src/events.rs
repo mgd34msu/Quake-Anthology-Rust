@@ -1,9 +1,9 @@
 use crate::primitives::{
     ClientId, EffectEvent, EntityId, EntityRecord, HudEvent, IndexSpan, ModuleId,
-    NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES,
-    NATIVE_WIRE_PAGES, NativeDelivery, NativePayload, NativeTarget, NumericValue, PrintEvent,
-    PrintKind, PrintText, RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3,
-    ViewFeedbackEvent,
+    NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_PEER_ROUTE_BYTES,
+    NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES, NativeDelivery, NativePayload, NativeTarget,
+    NumericValue, PrintEvent, PrintKind, PrintText, RuleSetId, SoundEvent, TextId, TextLease,
+    ValueId, Vec3, ViewFeedbackEvent,
 };
 use std::fmt::{self, Write};
 
@@ -33,6 +33,11 @@ pub enum FrameEvent {
     },
     SetAngles(Vec3),
     Native(NativePayload),
+    /// Reliable engine-produced SERVER peer metadata with captured receiver ordinals.
+    PeerInfo {
+        user_id: i32,
+        payload: NativePayload,
+    },
     /// One native SERVER state body, retained until its channel acknowledges
     /// receipt. Framing is regenerated without changing its command watermark.
     GameState {
@@ -151,6 +156,9 @@ impl OutputGroup<'_> {
         wire: &[u8],
         captures: &[u8],
     ) -> Result<u64, EventStorageError> {
+        if !captures.len().is_multiple_of(NATIVE_CUE_CAPTURE_BYTES) {
+            return Err(EventStorageError::TextCapacity);
+        }
         self.payload(delivery, wire, captures, FrameEvent::Native)
     }
     pub fn print(
@@ -442,7 +450,9 @@ impl EventRing {
             FrameEvent::Music(crate::primitives::MusicControl::Remap { entries }) => {
                 pages[0] = Some(entries);
             }
-            FrameEvent::Native(payload) | FrameEvent::GameState { payload, .. } => {
+            FrameEvent::Native(payload)
+            | FrameEvent::PeerInfo { payload, .. }
+            | FrameEvent::GameState { payload, .. } => {
                 pages = payload.pages;
             }
             _ => {}
@@ -503,6 +513,12 @@ impl EventRing {
                     }
                     _ => c.target == Some(target),
                 })
+                && match event {
+                    FrameEvent::PeerInfo { .. } => {
+                        matches!(c.target, Some(OutputTarget::Client(_)))
+                    }
+                    _ => true,
+                }
                 && delivery.is_none_or(|delivery| match c.target {
                     Some(OutputTarget::Client(id)) => match delivery.target {
                         NativeTarget::Client(to) => id == to,
@@ -628,7 +644,11 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
-        self.publish_payload(delivery, wire, captures, FrameEvent::Native)
+        if !captures.len().is_multiple_of(NATIVE_CUE_CAPTURE_BYTES) {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_payload(Some(delivery), wire, captures, FrameEvent::Native)
     }
     pub fn game_state(
         &mut self,
@@ -641,15 +661,32 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
-        self.publish_payload(delivery, bytes, &[], |payload| FrameEvent::GameState {
+        self.publish_payload(Some(delivery), bytes, &[], |payload| {
+            FrameEvent::GameState {
+                payload,
+                command_sequence,
+                body_bits,
+            }
+        })
+    }
+    pub fn peer_info(
+        &mut self,
+        user_id: i32,
+        info: &[u8],
+        captures: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        if !captures.len().is_multiple_of(NATIVE_PEER_ROUTE_BYTES) {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_payload(None, info, captures, |payload| FrameEvent::PeerInfo {
+            user_id,
             payload,
-            command_sequence,
-            body_bits,
         })
     }
     fn publish_payload(
         &mut self,
-        delivery: NativeDelivery,
+        delivery: Option<NativeDelivery>,
         wire: &[u8],
         captures: &[u8],
         event: impl FnOnce(NativePayload) -> FrameEvent,
@@ -659,7 +696,7 @@ impl EventRing {
             self.rejected_publications += 1;
         })?;
         let sequence = self.tail;
-        self.store_slot(sequence, None, Some(delivery), event(payload), texts, 0);
+        self.store_slot(sequence, None, delivery, event(payload), texts, 0);
         self.commit_slot(sequence);
         self.tail += 1;
         self.retire();
@@ -676,7 +713,6 @@ impl EventRing {
             .ok_or(EventStorageError::TextCapacity)?;
         if wire.len() > NATIVE_WIRE_BYTES.min(self.texts.width * NATIVE_WIRE_PAGES)
             || stored_length > NATIVE_PAYLOAD_BYTES.min(self.texts.width * NATIVE_PAYLOAD_PAGES)
-            || !captures.len().is_multiple_of(NATIVE_CUE_CAPTURE_BYTES)
         {
             return Err(EventStorageError::TextCapacity);
         }

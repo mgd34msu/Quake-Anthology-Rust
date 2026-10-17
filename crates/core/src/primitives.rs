@@ -2528,6 +2528,7 @@ pub struct NativeEmission {
 /// Immutable native-cue boundary identities, stored with the leased bytes.
 pub const NATIVE_WIRE_BYTES: usize = 32 * 1024;
 pub const NATIVE_CUE_CAPTURE_BYTES: usize = 12;
+pub const NATIVE_PEER_ROUTE_BYTES: usize = 16;
 /// Muzzle flashes are the remaining native cues with captured entity lifetimes.
 pub const NATIVE_CUE_MIN_WIRE_BYTES: usize = 4;
 pub const NATIVE_CUE_CAPACITY: usize = NATIVE_WIRE_BYTES / NATIVE_CUE_MIN_WIRE_BYTES;
@@ -2553,7 +2554,36 @@ impl NativeCueBinding {
         Some(())
     }
 }
-/// Wire bytes and immutable cue captures use the existing leased payload pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativePeerRoute {
+    pub receiver: EntityId,
+    pub ordinal: u32,
+    /// Clear this many receiver-native slots before applying the live row.
+    /// Zero preserves an already seeded namespace.
+    pub reset_count: u32,
+}
+impl NativePeerRoute {
+    pub fn read_capture(input: &[u8]) -> Option<Self> {
+        let row = input.get(..NATIVE_PEER_ROUTE_BYTES)?;
+        Some(Self {
+            receiver: EntityId {
+                slot: u32::from_le_bytes(row[..4].try_into().ok()?),
+                generation: u32::from_le_bytes(row[4..8].try_into().ok()?),
+            },
+            ordinal: u32::from_le_bytes(row[8..12].try_into().ok()?),
+            reset_count: u32::from_le_bytes(row[12..16].try_into().ok()?),
+        })
+    }
+    pub fn write_capture(self, output: &mut [u8]) -> Option<()> {
+        let row = output.get_mut(..NATIVE_PEER_ROUTE_BYTES)?;
+        row[..4].copy_from_slice(&self.receiver.slot.to_le_bytes());
+        row[4..8].copy_from_slice(&self.receiver.generation.to_le_bytes());
+        row[8..12].copy_from_slice(&self.ordinal.to_le_bytes());
+        row[12..16].copy_from_slice(&self.reset_count.to_le_bytes());
+        Some(())
+    }
+}
+/// Wire bytes and immutable native captures use the existing leased payload pages.
 #[derive(Clone, Copy, Debug)]
 pub struct NativePayload {
     pub(crate) pages: [Option<TextId>; NATIVE_PAYLOAD_PAGES],
@@ -2570,24 +2600,49 @@ impl NativePayload {
     /// Sorted (native-service byte offset, captured entity lifetime) entries live
     /// in the same leased pages as the original bytes, never module storage.
     pub fn cue(self, stored: &[u8], offset: usize) -> Option<NativeCueBinding> {
+        let row = self.capture(
+            stored,
+            NATIVE_CUE_CAPTURE_BYTES,
+            u32::try_from(offset).ok()?,
+            NativeCueBinding::offset,
+        )?;
+        let slot = u32::from_le_bytes(row[4..8].try_into().ok()?);
+        let generation = u32::from_le_bytes(row[8..12].try_into().ok()?);
+        Some(NativeCueBinding {
+            entity: (slot != u32::MAX).then_some(EntityId { slot, generation }),
+        })
+    }
+    /// Routes are sorted by the receiving connection's slot and generation.
+    pub fn peer(self, stored: &[u8], receiver: EntityId) -> Option<NativePeerRoute> {
+        let row = self.capture(
+            stored,
+            NATIVE_PEER_ROUTE_BYTES,
+            (receiver.slot, receiver.generation),
+            |row| {
+                let route = NativePeerRoute::read_capture(row)?;
+                Some((route.receiver.slot, route.receiver.generation))
+            },
+        )?;
+        NativePeerRoute::read_capture(row)
+    }
+    fn capture<'a, Key: Ord>(
+        self,
+        stored: &'a [u8],
+        stride: usize,
+        key: Key,
+        read_key: impl Fn(&[u8]) -> Option<Key>,
+    ) -> Option<&'a [u8]> {
         let rows = stored.get(self.length..self.stored_length)?;
         let mut low = 0;
-        let mut high = rows.len() / NATIVE_CUE_CAPTURE_BYTES;
+        let mut high = rows.len() / stride;
         while low < high {
             let index = low + (high - low) / 2;
-            let first = index * NATIVE_CUE_CAPTURE_BYTES;
-            let row = rows.get(first..first + NATIVE_CUE_CAPTURE_BYTES)?;
-            let at = NativeCueBinding::offset(row)? as usize;
-            match at.cmp(&offset) {
+            let first = index * stride;
+            let row = rows.get(first..first + stride)?;
+            match read_key(row)?.cmp(&key) {
                 std::cmp::Ordering::Less => low = index + 1,
                 std::cmp::Ordering::Greater => high = index,
-                std::cmp::Ordering::Equal => {
-                    let slot = u32::from_le_bytes(row[4..8].try_into().ok()?);
-                    let generation = u32::from_le_bytes(row[8..12].try_into().ok()?);
-                    return Some(NativeCueBinding {
-                        entity: (slot != u32::MAX).then_some(EntityId { slot, generation }),
-                    });
-                }
+                std::cmp::Ordering::Equal => return Some(row),
             }
         }
         None

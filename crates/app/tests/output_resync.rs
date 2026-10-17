@@ -98,6 +98,27 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         // Admit the local command queued in CLIENT before blocking SERVER
         // transport, including QW's native request/reply grant.
         host.drain(&mut FrameResult::default());
+        for _ in 0..4 {
+            for id in ids {
+                assert!(host.runtime.send_client_command(
+                    id,
+                    &UserCmd::default(),
+                    source.0,
+                    &mut source
+                ));
+            }
+            host.drain(&mut FrameResult::default());
+            qa_app::output::dispatch(
+                &mut host.runtime,
+                &mut source,
+                &mut host.console.scrollback,
+                &host.local_clients,
+                EventTime::default(),
+                3.0,
+                2.0,
+            );
+            host.drain(&mut FrameResult::default());
+        }
         let lease = host.runtime.server.clients[stalled.0 as usize]
             .hud
             .centerprint

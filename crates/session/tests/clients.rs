@@ -3,6 +3,182 @@ use qa_core::primitives::{
 };
 use qa_session::clients::{Connection, Server};
 
+fn capture_userinfo(server: &mut Server, id: ClientId) {
+    let stamp = server.userinfo_record(id).unwrap().stamp;
+    assert!(server.mark_userinfo_queued(id, stamp));
+}
+
+#[test]
+fn userinfo_publication_revisions_follow_actual_bytes_including_failed_native_mutation() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, InfoUpdate};
+    use qa_session::clients::ClientInfoError;
+    let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
+    let presentation = server.connect_client().unwrap();
+    assert!(server.userinfo_record(presentation).is_none());
+    let id = server
+        .connect(Connection::Local, ModuleId(1), None)
+        .unwrap();
+    let initial = server.userinfo_record(id).unwrap().stamp;
+    assert_eq!((initial.user_id, initial.revision), (1, 0));
+    assert!(server.userinfo_record(id).unwrap().connected);
+    assert!(server.userinfo_record(id).unwrap().dirty());
+    capture_userinfo(&mut server, id);
+    let rules = InfoRules {
+        bytes: 196,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::AboveCarriageReturn,
+    };
+    server.replace_userinfo(id, b"\\a\\first", rules).unwrap();
+    let first = server.userinfo_record(id).unwrap().stamp;
+    assert_eq!(first.revision, 1);
+    assert!(!server.mark_userinfo_queued(id, initial));
+    capture_userinfo(&mut server, id);
+    server.replace_userinfo(id, b"\\a\\first", rules).unwrap();
+    server
+        .replace_userinfo_raw(id, b"\\a\\first\0ignored", rules.bytes)
+        .unwrap();
+    server
+        .update_userinfo(
+            id,
+            InfoUpdate::new(b"a", b"first", rules).unwrap().first_only(),
+        )
+        .unwrap();
+    let unchanged = server.userinfo_record(id).unwrap();
+    assert_eq!(unchanged.stamp, first);
+    assert!(!unchanged.dirty());
+    server
+        .replace_userinfo(id, b"\\a\\first\\a\\second", rules)
+        .unwrap();
+    capture_userinfo(&mut server, id);
+    let before_error = server.userinfo_record(id).unwrap().stamp;
+    assert_eq!(
+        server.update_userinfo(
+            id,
+            InfoUpdate::new(b"a", b"too long", InfoRules { bytes: 12, ..rules })
+                .unwrap()
+                .first_only()
+        ),
+        Err(ClientInfoError::Info(InfoError::Capacity))
+    );
+    let changed = server.userinfo_record(id).unwrap();
+    assert_eq!(changed.text, b"\\a\\second");
+    assert_eq!(changed.stamp.revision, before_error.revision + 1);
+    assert!(changed.dirty());
+    let final_stamp = changed.stamp;
+    assert!(!server.mark_userinfo_queued(id, before_error));
+    assert!(server.replace_userinfo(id, b"\\a", rules).is_err());
+    assert!(server.replace_userinfo_raw(id, b"text", 0).is_err());
+    assert_eq!(server.userinfo_record(id).unwrap().stamp, final_stamp);
+    assert!(server.mark_userinfo_queued(id, final_stamp));
+    assert!(!server.userinfo_record(id).unwrap().dirty());
+}
+
+#[test]
+fn new_server_recipients_invalidate_peer_baselines_without_consuming_client_only_ids() {
+    let mut server = Server::load(4, 8, 2, 2, 2, 0).unwrap();
+    let first = server
+        .connect(Connection::Local, ModuleId(1), None)
+        .unwrap();
+    capture_userinfo(&mut server, first);
+    let stamp = server.userinfo_record(first).unwrap().stamp;
+    let client_only = server.connect_client().unwrap();
+    assert!(server.userinfo_record(client_only).is_none());
+    assert!(!server.userinfo_record(first).unwrap().dirty());
+    let bot = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
+    assert_eq!(server.userinfo_record(bot).unwrap().stamp.user_id, 2);
+    assert!(!server.userinfo_record(first).unwrap().dirty());
+    capture_userinfo(&mut server, bot);
+    let newcomer = server
+        .connect(Connection::Remote, ModuleId(3), None)
+        .unwrap();
+    assert_eq!(server.userinfo_record(newcomer).unwrap().stamp.user_id, 3);
+    assert_eq!(server.userinfo_record(first).unwrap().stamp, stamp);
+    for id in [first, bot, newcomer] {
+        assert!(server.userinfo_record(id).unwrap().dirty());
+        capture_userinfo(&mut server, id);
+    }
+    server.invalidate_userinfo_publications();
+    for id in [first, bot, newcomer] {
+        assert!(server.userinfo_record(id).unwrap().dirty());
+    }
+    assert!(server.userinfo_record(client_only).is_none());
+}
+
+#[test]
+fn userinfo_tombstone_fences_reuse_until_capture_and_rejects_stale_marks() {
+    use qa_core::text::{InfoBytes, InfoRules};
+    let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
+    assert!(server.userinfo_record(ClientId(0)).is_none());
+    assert!(server.userinfo_record(ClientId(u32::MAX)).is_none());
+    server
+        .connect(Connection::Remote, ModuleId(7), None)
+        .unwrap();
+    let id = server
+        .connect(Connection::Remote, ModuleId(1), None)
+        .unwrap();
+    let rules = InfoRules {
+        bytes: 196,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::Exact,
+    };
+    server
+        .replace_userinfo(id, b"\\name\\first", rules)
+        .unwrap();
+    capture_userinfo(&mut server, id);
+    let live = server.userinfo_record(id).unwrap().stamp;
+    assert!(server.disconnect(id));
+    assert!(server.userinfo(id).is_none());
+    let tombstone = server.userinfo_record(id).unwrap();
+    assert_eq!(tombstone.stamp.lifetime, live.lifetime);
+    assert_eq!(tombstone.stamp.user_id, live.user_id);
+    assert_eq!(tombstone.stamp.revision, live.revision + 1);
+    assert!(tombstone.text.is_empty() && !tombstone.connected && tombstone.dirty());
+    assert_ne!(server.clients[id.0 as usize].entity, live.lifetime);
+    let empty = tombstone.stamp;
+    assert_eq!(server.available_client_slot(), None);
+    assert!(server.connect_client().is_none());
+    assert!(server.connect(Connection::Bot, ModuleId(2), None).is_none());
+    assert!(!server.mark_userinfo_queued(id, live));
+    assert!(server.mark_userinfo_queued(id, empty));
+    assert_eq!(server.available_client_slot(), Some(id));
+    let reused = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
+    assert_eq!(reused, id);
+    let next = server.userinfo_record(id).unwrap().stamp;
+    assert_eq!(next.user_id, live.user_id + 1);
+    assert_eq!(next.revision, 0);
+    assert_ne!(next.lifetime, live.lifetime);
+    assert!(!server.mark_userinfo_queued(id, empty));
+    let wrong_lifetime = qa_session::clients::UserinfoStamp {
+        lifetime: live.lifetime,
+        ..next
+    };
+    assert!(!server.mark_userinfo_queued(id, wrong_lifetime));
+    capture_userinfo(&mut server, id);
+    assert!(server.disconnect(id));
+    let second_empty = server.userinfo_record(id).unwrap();
+    assert_eq!(
+        second_empty.stamp, next,
+        "clearing an already empty record does not change its text revision"
+    );
+    assert!(second_empty.dirty());
+    capture_userinfo(&mut server, id);
+    assert_eq!(server.connect_client(), Some(id));
+    assert!(server.userinfo_record(id).is_none());
+    assert!(!server.mark_userinfo_queued(id, next));
+    assert!(server.disconnect(id));
+    assert_eq!(server.available_client_slot(), Some(id));
+    assert_eq!(
+        server.connect(Connection::Local, ModuleId(3), None),
+        Some(id)
+    );
+    assert_eq!(
+        server.userinfo_record(id).unwrap().stamp.user_id,
+        next.user_id + 1
+    );
+}
+
 #[test]
 fn userinfo_updates_share_native_mutation_and_reject_retired_clients() {
     use qa_core::text::{InfoBytes, InfoError, InfoRules, InfoUpdate};
@@ -308,6 +484,7 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     let hud_weapons = server.clients[0].hud.owned_weapons.words().as_ptr();
     let old_entity = server.clients[0].entity;
     assert!(server.disconnect(first));
+    capture_userinfo(&mut server, first);
     assert_eq!(
         server.connect(Connection::Local, ModuleId(3), None),
         Some(first)
@@ -397,6 +574,7 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
         .as_ptr();
     assert!(server.disconnect(first));
     assert_eq!(server.entities.columns.native_entity[slot], None);
+    capture_userinfo(&mut server, first);
     assert_eq!(
         server.connect(Connection::Bot, ModuleId(12), None),
         Some(first)
@@ -520,6 +698,7 @@ fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it(
     );
     server.disconnect(id);
     assert_eq!(server.clients[id.0 as usize].command_observation, None);
+    capture_userinfo(&mut server, id);
     assert_eq!(
         server.connect(Connection::Remote, ModuleId(7), None),
         Some(id)
@@ -591,6 +770,7 @@ fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
         publication: Some((server.presentation, 42)),
     });
     assert!(server.disconnect(old));
+    capture_userinfo(&mut server, old);
     assert_eq!(
         server.clients[old.0 as usize]
             .audio_retirement
@@ -613,7 +793,8 @@ fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
     );
     assert_ne!(server.clients[old.0 as usize].entity, lifetime);
     assert!(server.disconnect(healthy));
-    // SERVER-only clients never acquire an audio retirement and reuse at once.
+    // SERVER-only clients need no audio retirement after publication capture.
+    capture_userinfo(&mut server, healthy);
     assert_eq!(
         server.connect(Connection::Bot, ModuleId(2), None),
         Some(healthy)
