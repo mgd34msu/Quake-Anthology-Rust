@@ -274,6 +274,8 @@ impl ModelMaterialPolicy {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ModelMaterials {
     variants: [ModelChoice; 4],
+    /// Exact Assets filename whose absence selected this row's alias fallback.
+    missing_image: Option<NameId>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ModelChoice {
@@ -2283,7 +2285,157 @@ impl RegistrationCheckpoint {
 }
 
 impl ModelAssets {
-    pub(crate) fn retry_published_file(&mut self, path: &[u8]) -> bool {
+    /// Admit newly available model images before replacing their fallback choices.
+    pub(crate) fn downloaded(
+        &mut self,
+        vfs: &Vfs,
+        path: &[u8],
+        prepare: impl FnOnce(&Assets) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let image = std::str::from_utf8(path)
+            .ok()
+            .and_then(|path| self.assets.find_name(path));
+        let mut targets = Vec::new();
+        if let Some(image) = image {
+            for (registration, entry) in self.catalog.registrations.iter().enumerate() {
+                let Some((ready, _)) = entry.state.ready() else {
+                    continue;
+                };
+                for span in ready
+                    .surfaces
+                    .into_iter()
+                    .flatten()
+                    .chain(ready.replacement.as_ref().map(|row| row.surfaces))
+                {
+                    for surface in &self.catalog.surfaces[span.range()] {
+                        for (skin, binding) in surface.skins.range().enumerate() {
+                            let materials = self.catalog.bindings[binding];
+                            if materials.missing_image != Some(image)
+                                || targets.iter().any(|&(_, found, _, _)| found == binding)
+                            {
+                                continue;
+                            }
+                            let occurrence = match materials.variants[0].shader {
+                                ShaderChoice::Occurrence(occurrence)
+                                | ShaderChoice::Converted { occurrence, .. } => occurrence,
+                                ShaderChoice::Direct(_) => {
+                                    return Err("missing model skin occurrence".to_owned());
+                                }
+                            };
+                            if ready.registrations.get(occurrence.0 as usize).is_none() {
+                                return Err("missing model skin receipt".to_owned());
+                            }
+                            targets.push((registration, binding, skin, occurrence));
+                        }
+                    }
+                }
+            }
+        }
+        if targets.is_empty() {
+            return Ok(self.retry_published_file(path));
+        }
+        let initial = self.initial_registration;
+        if !initial && self.catalog.admitted_assets != Some(self.assets.counts()) {
+            return Err("download refresh requires a published resource prefix".to_owned());
+        }
+        let checkpoint = RegistrationCheckpoint::base(self)?;
+        let result: Result<(), String> = (|| {
+            let image_path = self
+                .assets
+                .name(image.ok_or("published model image")?)
+                .ok_or("published model image name")?
+                .to_owned();
+            let mut updates = Vec::with_capacity(targets.len());
+            for &(registration, binding, skin, occurrence) in &targets {
+                let entry = &self.catalog.registrations[registration];
+                let profile = entry.profile;
+                let (ready, _) = entry.state.ready().ok_or("published model registration")?;
+                let indexed_palette = ready.indexed_palette;
+                let model_path = self
+                    .catalog
+                    .name(entry.file)
+                    .ok_or("model filename")?
+                    .to_owned();
+                let image_index = self
+                    .catalog
+                    .profiles
+                    .iter()
+                    .position(|images| images.profile == profile)
+                    .ok_or("model image profile")?;
+                let (variants, receipt) =
+                    with_image_owner(&mut self.catalog.profiles, image_index, |owner| {
+                        let policy = owner.model_policy;
+                        owner.with_images(vfs, &mut self.assets, |images| {
+                            let image = model_image(
+                                Image::External(image_path.as_bytes()),
+                                images,
+                                profile,
+                                indexed_palette,
+                                ImageRole::Skin,
+                                policy.source.indexed_external_pcx,
+                                None,
+                            )
+                            .map_err(|error| format!("published model skin: {error:?}"))?;
+                            let variants = alias_image_materials(
+                                images.assets,
+                                &model_path,
+                                skin,
+                                image,
+                                policy,
+                                false,
+                            )?;
+                            let receipt = images
+                                .assets
+                                .shader_registration(image_path.as_bytes(), variants[0])?;
+                            Ok((variants, receipt))
+                        })
+                    })?;
+                let mut materials = self.catalog.bindings[binding];
+                for (index, choice) in materials.variants.iter_mut().enumerate() {
+                    choice.shader = if index == 0 {
+                        ShaderChoice::Converted {
+                            binding: variants[index],
+                            occurrence,
+                        }
+                    } else {
+                        ShaderChoice::Direct(variants[index])
+                    };
+                }
+                materials.missing_image = None;
+                updates.push((registration, binding, occurrence, materials, receipt));
+            }
+            let counts = self.assets.counts();
+            if !initial {
+                self.validate_admission(counts)
+                    .map_err(|error| format!("download publication: {error:?}"))?;
+                prepare(&self.assets)?;
+            }
+            // Every fallible check precedes backend admission. Preserve each
+            // occurrence so an already active native remap still selects its target.
+            for (registration, binding, occurrence, materials, receipt) in updates {
+                self.catalog.bindings[binding] = materials;
+                if let RegistrationState::Ready { value, .. } =
+                    &mut self.catalog.registrations[registration].state
+                {
+                    value.registrations[occurrence.0 as usize] = receipt;
+                }
+            }
+            if !initial {
+                self.apply_admission(counts);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            checkpoint
+                .rollback(self, RegistrationRollback::Retry)
+                .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+            return Err(error);
+        }
+        self.retry_published_file(path);
+        Ok(true)
+    }
+
+    fn retry_published_file(&mut self, path: &[u8]) -> bool {
         let Some(name) = self.catalog.names.find_path_bytes(path) else {
             return false;
         };
@@ -6344,7 +6496,8 @@ impl ModelAssets {
                                     model_policy,
                                     false,
                                 )?;
-                                let materials = materials.pop().ok_or("missing skin material")?;
+                                let materials =
+                                    materials.pop().ok_or("missing skin material")?.variants;
                                 let registration =
                                     images.assets.shader_registration(raw, materials[0])?;
                                 Ok((materials, registration))
@@ -7750,12 +7903,16 @@ fn register(
         let alias = replacement_materials.as_ref().or(alias.as_ref());
         let occurrence_first = registrations.len() as u32;
         if let Some(alias) = alias {
-            for (skin, variants) in skin_images.iter().zip(alias) {
+            for (skin, material) in skin_images.iter().zip(alias) {
                 let raw = match skin {
                     Image::External(raw) => *raw,
                     _ => registration.path.as_bytes(),
                 };
-                registrations.push(images.assets.shader_registration(raw, variants[0])?);
+                registrations.push(
+                    images
+                        .assets
+                        .shader_registration(raw, material.variants[0])?,
+                );
             }
         }
         let count = alias.map_or_else(|| mesh.shaders.len().max(1), |materials| materials.len());
@@ -7767,14 +7924,14 @@ fn register(
             materials
                 .iter()
                 .enumerate()
-                .map(|(skin, variants)| {
+                .map(|(skin, material)| {
                     std::array::from_fn(|index| {
                         if index == 0 && matches!(skin_images[skin], Image::External(_)) {
                             ShaderChoice::Occurrence(ShaderOccurrence(
                                 occurrence_first + skin as u32,
                             ))
                         } else {
-                            ShaderChoice::Direct(variants[index])
+                            ShaderChoice::Direct(material.variants[index])
                         }
                     })
                 })
@@ -7870,12 +8027,16 @@ fn register(
         surfaces.push(
             materials
                 .into_iter()
-                .map(|materials| ModelMaterials {
+                .enumerate()
+                .map(|(skin, materials)| ModelMaterials {
                     variants: materials.map(|material| ModelChoice {
                         model: id,
                         shader: material,
                         pose: model_policy.presentation.pose,
                     }),
+                    missing_image: alias
+                        .and_then(|materials| materials.get(skin))
+                        .and_then(|material| material.missing_image),
                 })
                 .collect(),
         );
@@ -8035,6 +8196,7 @@ fn register_sprites(
                 shader,
                 pose: AliasPose::default(),
             }),
+            missing_image: None,
         })
         .collect();
     capacity.surfaces = next_surfaces;
@@ -8125,13 +8287,18 @@ fn model_image(
     })
 }
 
+struct AliasMaterial {
+    variants: [ShaderBindingId; 4],
+    missing_image: Option<NameId>,
+}
+
 fn alias_materials(
     skins: &[Image<'_>],
     images: &mut Images<'_>,
     registration: &Registration,
     model_policy: ModelPolicy,
     allow_missing: bool,
-) -> Result<Vec<[ShaderBindingId; 4]>, String> {
+) -> Result<Vec<AliasMaterial>, String> {
     let options = registration.profile;
     let mut materials = Vec::with_capacity(skins.len());
     let mut default_image = None;
@@ -8167,7 +8334,23 @@ fn alias_materials(
             model_policy,
             missing_skin,
         )?;
-        materials.push(variants);
+        let missing_image = if missing_skin {
+            match skin {
+                Image::External(path) => {
+                    let path = canonical_path(
+                        std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?,
+                    );
+                    Some(images.assets.intern_resource_name(path.as_bytes())?)
+                }
+                Image::Indexed { .. } => None,
+            }
+        } else {
+            None
+        };
+        materials.push(AliasMaterial {
+            variants,
+            missing_image,
+        });
     }
     Ok(materials)
 }

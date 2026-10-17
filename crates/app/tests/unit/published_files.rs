@@ -131,7 +131,13 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             .is_none()
     );
 
-    assert!(owner.retry_published_file(b"MODELS\\LATER.MD2"));
+    assert!(
+        owner
+            .downloaded(&files.vfs, b"MODELS\\LATER.MD2", |_| panic!(
+                "failed source reset prepared"
+            ))
+            .unwrap()
+    );
     resources.retry_published_file(b"models/later.md2");
     assert_eq!(
         resources.state.models.prepare_pending(
@@ -174,7 +180,13 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
     };
     assert!(Arc::ptr_eq(bytes, &ready_source));
     let counts = owner.assets.counts();
-    assert!(!owner.retry_published_file(b"models/later.md2"));
+    assert!(
+        !owner
+            .downloaded(&files.vfs, b"models/later.md2", |_| panic!(
+                "cached publication prepared"
+            ))
+            .unwrap()
+    );
     assert_eq!(owner.assets.counts(), counts);
 }
 
@@ -223,7 +235,13 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
             .0,
         0
     );
-    assert!(owner.retry_published_file(request.name));
+    assert!(
+        owner
+            .downloaded(&files.vfs, request.name, |_| panic!(
+                "named failure reset prepared"
+            ))
+            .unwrap()
+    );
     assert_eq!(
         owner
             .prepare_registration(
@@ -272,6 +290,188 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
     assert!(pixels.windows(2).all(|pair| pair[0] == pair[1]));
     assert_ne!(pixels[0], u32::from_ne_bytes([3, 5, 7, 255]));
     let counts = owner.assets.counts();
-    assert!(!owner.retry_published_file(request.name));
+    assert!(
+        !owner
+            .downloaded(&files.vfs, request.name, |_| panic!(
+                "named failure reset prepared"
+            ))
+            .unwrap()
+    );
     assert_eq!(owner.assets.counts(), counts);
+}
+
+#[test]
+fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
+    let mut files = support::Fixture::new(&[
+        ("models/test/tris.md2", support::md2()),
+        ("models/test/skin1.pcx", support::pcx(11)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let native = ModelRequest::native("", RuleSetId::Quake2, Some(palette)).profile();
+    let converted = ModelProfile {
+        rules: RuleSetId::Quake3,
+        ..native
+    };
+    let mut owner = ModelAssets::new(assets, [native, converted], [], Default::default()).unwrap();
+    let handle = owner
+        .register_model(&files.vfs, b"models/test/tris.md2", native.source_rules)
+        .unwrap();
+    let registrations = [native, converted].map(|profile| {
+        owner
+            .catalog
+            .renderer_registration(handle, profile)
+            .unwrap()
+    });
+    let rows = registrations.map(|registration| {
+        let ready = owner.catalog.registrations[registration.0 as usize]
+            .state
+            .ready()
+            .unwrap()
+            .0;
+        let surface = owner.catalog.surfaces[ready.surfaces[0].unwrap().first as usize];
+        assert_eq!(surface.skins.count, 2);
+        (surface.skins.first as usize, ready.registrations.to_vec())
+    });
+    let before_rows = rows
+        .clone()
+        .map(|(row, _)| [owner.catalog.bindings[row], owner.catalog.bindings[row + 1]]);
+    assert!(
+        before_rows
+            .iter()
+            .all(|rows| rows[0].missing_image.is_some())
+    );
+    let meshes = before_rows.map(|rows| rows[0].variants[0].model);
+    assert_eq!(meshes[0], meshes[1]);
+    let ShaderChoice::Direct(old_fullbright) = before_rows[0][0].variants[1].shader else {
+        panic!("alias fullbright material");
+    };
+    let StageTexture::Image(missing_image) = owner
+        .assets
+        .material(
+            owner
+                .assets
+                .shader_binding(old_fullbright)
+                .unwrap()
+                .material,
+        )
+        .unwrap()
+        .stages[0]
+        .texture
+    else {
+        panic!("generated missing image");
+    };
+    let missing_rgba = owner.assets.image(missing_image).unwrap().rgba.to_vec();
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[handle as usize] else {
+        panic!("retained MD2 source");
+    };
+    let source = Arc::clone(bytes);
+    let (mut owner, mut cpu) = publish(owner);
+    let prefix = owner.assets.counts();
+    let capacity = owner.catalog.capacity;
+    let old_pixels = paint_shader(&mut cpu, owner.assets(), old_fullbright);
+    files.remove("models/test/tris.md2");
+    publish_file(&mut files, "models/test/skin0.pcx", &support::pcx(37));
+    assert_eq!(
+        owner
+            .downloaded(&files.vfs, b"models/test/skin0.pcx", |assets| {
+                let candidate =
+                    CpuBackend::load_with_assets(8, 8, assets).map_err(str::to_owned)?;
+                assert_eq!(candidate.admitted_assets(), Some(assets.counts()));
+                Err("published material backend rejected".to_owned())
+            })
+            .unwrap_err(),
+        "published material backend rejected"
+    );
+    assert_eq!(owner.assets.counts(), prefix);
+    assert_eq!(cpu.admitted_assets(), Some(prefix));
+    for (index, (row, receipts)) in rows.iter().enumerate() {
+        assert_eq!(&owner.catalog.bindings[*row..*row + 2], &before_rows[index]);
+        assert_eq!(
+            owner.catalog.registrations[registrations[index].0 as usize]
+                .state
+                .ready()
+                .unwrap()
+                .0
+                .registrations
+                .as_ref(),
+            receipts
+        );
+    }
+    assert_eq!(
+        paint_shader(&mut cpu, owner.assets(), old_fullbright),
+        old_pixels
+    );
+    assert!(
+        owner
+            .downloaded(&files.vfs, b"MoDeLs\\TeSt\\SkIn0.PcX", |assets| {
+                cpu.prepare_assets(assets, None).map_err(str::to_owned)
+            })
+            .unwrap()
+    );
+    let admitted = owner.assets.counts();
+    assert_eq!(admitted.models, prefix.models);
+    assert_eq!(owner.catalog.capacity, capacity);
+    assert_eq!(cpu.admitted_assets(), Some(admitted));
+    for (index, (row, receipts)) in rows.iter().enumerate() {
+        let refreshed = owner.catalog.bindings[*row];
+        assert_eq!(refreshed.missing_image, None);
+        assert_eq!(refreshed.variants[0].model, meshes[index]);
+        assert_eq!(owner.catalog.bindings[*row + 1], before_rows[index][1]);
+        let ShaderChoice::Occurrence(old_occurrence) = before_rows[index][0].variants[0].shader
+        else {
+            panic!("original model occurrence");
+        };
+        let ShaderChoice::Converted {
+            binding,
+            occurrence,
+        } = refreshed.variants[0].shader
+        else {
+            panic!("refreshed generated body");
+        };
+        assert_eq!(occurrence, old_occurrence);
+        let ready = owner.catalog.registrations[registrations[index].0 as usize]
+            .state
+            .ready()
+            .unwrap()
+            .0;
+        assert_eq!(ready.registrations[occurrence.0 as usize].shader, binding);
+        assert_eq!(
+            ready.registrations[occurrence.0 as usize].key,
+            receipts[occurrence.0 as usize].key
+        );
+        assert_eq!(ready.registrations[1], receipts[1]);
+    }
+    let ShaderChoice::Direct(new_fullbright) = owner.catalog.bindings[rows[0].0].variants[1].shader
+    else {
+        panic!("refreshed fullbright material");
+    };
+    let pixels = paint_shader(&mut cpu, owner.assets(), new_fullbright);
+    // Native Q2 skin uploads apply the default intensity of two.
+    assert_ne!(pixels, old_pixels);
+    assert!(
+        pixels
+            .iter()
+            .all(|&pixel| pixel == u32::from_ne_bytes([74, 255, 36, 255])),
+        "first refreshed pixel: {:?}",
+        pixels.first().map(|pixel| pixel.to_ne_bytes())
+    );
+    assert_eq!(
+        owner.assets.image(missing_image).unwrap().rgba.as_ref(),
+        missing_rgba
+    );
+    let ModelSourceFile::Ready { bytes, .. } = &owner.catalog.sources[handle as usize] else {
+        panic!("retained MD2 source");
+    };
+    assert!(Arc::ptr_eq(bytes, &source));
+    files.vfs.take_lookup_count();
+    assert!(
+        !owner
+            .downloaded(&files.vfs, b"models/test/skin0.pcx", |_| {
+                panic!("already refreshed material prepared");
+            })
+            .unwrap()
+    );
+    assert_eq!(files.vfs.take_lookup_count(), 0);
+    assert_eq!(owner.assets.counts(), admitted);
 }

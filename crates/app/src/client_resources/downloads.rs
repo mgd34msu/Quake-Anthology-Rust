@@ -1244,7 +1244,13 @@ impl crate::host::FrameHost {
         self.flush_client_downloads();
     }
 
-    pub(crate) fn finish_client_downloads(&mut self) {
+    pub(crate) fn finish_client_downloads(
+        &mut self,
+        mut prepare: impl FnMut(
+            &mut Option<crate::renderer::SceneComposer>,
+            &qa_render::Assets,
+        ) -> Result<(), String>,
+    ) {
         for index in 0..self.runtime.client_resources.len() {
             let Some(resources) = self.runtime.client_resources[index].as_mut() else {
                 continue;
@@ -1263,13 +1269,24 @@ impl crate::host::FrameHost {
             let result = self
                 .runtime
                 .vfs
-                .refresh_directory_prefix(request.mount, prefix);
+                .refresh_directory_prefix(request.mount, prefix)
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    self.runtime
+                        .model_assets
+                        .as_mut()
+                        .map_or(Ok(false), |owner| {
+                            owner.downloaded(&self.runtime.vfs, name, |assets| {
+                                prepare(&mut self.runtime.scene, assets)
+                            })
+                        })
+                });
             let previous = std::mem::replace(&mut downloads.transfer, Transfer::Idle);
             let Transfer::Published { request, bytes } = previous else {
                 continue;
             };
             match result {
-                Ok(()) => {
+                Ok(changed) => {
                     if request.name.as_bytes().starts_with(b"skins/") {
                         self.player_skin_views.request_refresh();
                         resources.startup.invalidate_skins();
@@ -1281,12 +1298,7 @@ impl crate::host::FrameHost {
                     ));
                     let published = request.name.clone();
                     downloads.transfer = Transfer::Finished { request, bytes };
-                    if self
-                        .runtime
-                        .model_assets
-                        .as_mut()
-                        .is_some_and(|owner| owner.retry_published_file(published.as_bytes()))
-                    {
+                    if changed {
                         for resources in self.runtime.client_resources.iter_mut().flatten() {
                             resources.retry_published_file(published.as_bytes());
                         }

@@ -207,7 +207,12 @@ impl FrameHost {
             true
         };
         if resource_settings_ready {
-            self.finish_client_downloads();
+            self.finish_client_downloads(|scene, assets| {
+                let backend = preparer
+                    .as_deref_mut()
+                    .ok_or("download refresh requires a resource preparer")?;
+                ModelPreparer { scene, backend }.prepare(assets, None, 0)
+            });
             self.advance_startup_files();
             if let Some(preparer) = preparer.as_mut() {
                 self.refresh_player_skins(&mut **preparer);

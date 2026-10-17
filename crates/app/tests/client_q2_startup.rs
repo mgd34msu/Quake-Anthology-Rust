@@ -133,12 +133,26 @@ impl Server {
 
 struct Source {
     backend: asset_frames::Source,
+    reject_assets: bool,
     servers: Vec<Server>,
     time: u64,
 }
+impl qa_app::renderer::AssetPreparer for Source {
+    fn prepare_assets(&mut self, assets: &Assets, required: Option<Limits>) -> Result<(), String> {
+        if self.reject_assets {
+            self.backend.attempts += 1;
+            return Err("published model material rejected".to_owned());
+        }
+        qa_app::renderer::AssetPreparer::prepare_assets(&mut self.backend, assets, required)
+    }
+}
 impl FrameSource for Source {
     fn asset_preparer(&mut self) -> Option<&mut (dyn qa_app::renderer::AssetPreparer + '_)> {
-        self.backend.asset_preparer()
+        if self.backend.enabled {
+            Some(self)
+        } else {
+            None
+        }
     }
     fn begin_frame(&mut self) -> Duration {
         self.time += 100;
@@ -277,6 +291,7 @@ fn setup(
         host,
         Source {
             backend,
+            reject_assets: false,
             servers,
             time: 100,
         },
@@ -997,6 +1012,137 @@ fn chunk(host: &mut FrameHost, source: &mut Source, client: usize, percent: u8, 
     )
     .unwrap();
     send(host, source, client, &packet[..length]);
+}
+
+#[test]
+fn published_pcx_refresh_retries_backend_admission_without_downloading_again() {
+    use qa_compat::services::ModelLookup;
+    let (fixture, mut host, mut source) = setup(
+        &[("models/ready.md2", support::md2_skin(b"models/later.pcx"))],
+        &[CLASSIC],
+    );
+    let row = layout(&host, 0).resources[0].get(2).unwrap();
+    send(
+        &mut host,
+        &mut source,
+        0,
+        &config(CLASSIC, row, b"models/ready.md2"),
+    );
+    settle(&mut host, &mut source);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let profile = owner.catalog().profiles().next().unwrap();
+    let handle = owner.catalog().file_handle(b"models/ready.md2").unwrap();
+    let registration = owner
+        .catalog()
+        .renderer_registration(handle, profile)
+        .unwrap();
+    let old = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    let old_receipts = owner
+        .catalog()
+        .renderer_registrations(
+            qa_compat::services::RendererRegistration::Model,
+            handle,
+            profile,
+        )
+        .unwrap()
+        .to_vec();
+    let prefix = owner.assets().counts();
+    let revision = host.runtime.client_resources[0]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(row)
+        .unwrap()
+        .revision;
+    fixture.remove("models/ready.md2");
+    let mount = host.runtime.vfs.mounts().next().unwrap().id;
+    host.configure_client_downloads(ClientId(0), mount, mount, 8192, 64)
+        .unwrap();
+    for name in ["cl_allowDownload", "allow_download_models"] {
+        let view = host
+            .console
+            .cvars
+            .bind(
+                name,
+                Context {
+                    source: RuleSetId::Quake2,
+                    side: qa_console::catalog::Scope::Client,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        host.console.cvars.force_write(view, "1").unwrap();
+    }
+    command(&mut host, &mut source, 0, "download models/later.pcx\n");
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"download models/later.pcx"), 1);
+    source.reject_assets = true;
+    let attempts = source.backend.attempts;
+    chunk(&mut host, &mut source, 0, 100, &support::pcx(37));
+    settle(&mut host, &mut source);
+    assert!(source.backend.attempts > attempts);
+    assert!(host.runtime.vfs.open(b"models/later.pcx").is_some());
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    assert_eq!(owner.assets().counts(), prefix);
+    assert_eq!(source.backend.cpu.admitted_assets(), Some(prefix));
+    assert_eq!(
+        owner
+            .catalog()
+            .bindings(registration, 0, Default::default())
+            .unwrap()
+            .next(),
+        Some(old)
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .renderer_registrations(
+                qa_compat::services::RendererRegistration::Model,
+                handle,
+                profile
+            )
+            .unwrap(),
+        old_receipts
+    );
+    source.reject_assets = false;
+    command(&mut host, &mut source, 0, "retrydownload\n");
+    settle(&mut host, &mut source);
+    assert_eq!(source.servers[0].count(b"download models/later.pcx"), 1);
+    assert_eq!(source.servers[0].count(b"nextdl"), 0);
+    let owner = host.runtime.model_assets.as_ref().unwrap();
+    let current = owner
+        .catalog()
+        .bindings(registration, 0, Default::default())
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(current.model, old.model);
+    assert_ne!(current.shader, old.shader);
+    assert_eq!(owner.assets().counts().models, prefix.models);
+    assert_eq!(
+        source.backend.cpu.admitted_assets(),
+        Some(owner.assets().counts())
+    );
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .configs
+            .config(row)
+            .unwrap()
+            .revision,
+        revision
+    );
+    let attempts = source.backend.attempts;
+    settle(&mut host, &mut source);
+    assert_eq!(source.backend.attempts, attempts);
 }
 
 #[test]
