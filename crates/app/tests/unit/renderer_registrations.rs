@@ -1463,6 +1463,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
             missing.name,
             profile,
             ShaderLighting::World(Some(presentations[2])),
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -1473,7 +1474,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assert_eq!(
         owner
             .catalog()
-            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional),
+            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional, None),
         Some(&outcome)
     );
     assert_eq!(
@@ -1530,7 +1531,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assert_eq!(
         owner
             .catalog()
-            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional),
+            .shader_outcome(missing.name, profile, ShaderLighting::TwoDimensional, None),
         Some(&outcome)
     );
     assert_eq!(

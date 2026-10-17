@@ -722,6 +722,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
             b"ui/pic.tga",
             profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap()
         .shader;
@@ -730,6 +731,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
             b"ui/pic.tga",
             peer_profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap()
         .shader;
@@ -1516,6 +1518,7 @@ pub(super) fn ownership() {
             b"ui/pic.tga",
             profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap()
         .shader;
@@ -1607,6 +1610,7 @@ pub(super) fn entities(native: bool, ui: bool) {
             b"textures/glow",
             profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap()
         .shader;
@@ -2628,14 +2632,19 @@ pub(super) fn remaps(native: bool) {
     let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
     assert!(
         catalog
-            .shader_outcome(b"remap/d", profile, ShaderLighting::World(None))
+            .shader_outcome(b"remap/d", profile, ShaderLighting::World(None), None)
             .unwrap()
             .defaulted
             .is_none()
     );
     assert!(
         catalog
-            .shader_outcome(b"remap/absent-b", profile, ShaderLighting::World(None))
+            .shader_outcome(
+                b"remap/absent-b",
+                profile,
+                ShaderLighting::World(None),
+                None
+            )
             .unwrap()
             .defaulted
             .is_some()
@@ -2658,7 +2667,12 @@ pub(super) fn remaps(native: bool) {
             .as_ref()
             .unwrap()
             .catalog()
-            .shader_outcome(b"remap/absent-a", profile, ShaderLighting::World(None))
+            .shader_outcome(
+                b"remap/absent-a",
+                profile,
+                ShaderLighting::World(None),
+                None
+            )
             .unwrap()
             .defaulted
             .is_some()
@@ -2953,7 +2967,7 @@ pub(super) fn remaps(native: bool) {
         .as_ref()
         .unwrap()
         .catalog()
-        .shader_outcome(b"remap/c", profile, ShaderLighting::World(None))
+        .shader_outcome(b"remap/c", profile, ShaderLighting::World(None), None)
         .unwrap()
         .shader;
     for (module, client, command, args, expected, missing) in [

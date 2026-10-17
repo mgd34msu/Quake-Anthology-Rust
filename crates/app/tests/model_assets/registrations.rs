@@ -193,7 +193,12 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
     assert!(
         owner
             .catalog()
-            .shader_outcome(b"ui/missing.tga", profile, ShaderLighting::TwoDimensional)
+            .shader_outcome(
+                b"ui/missing.tga",
+                profile,
+                ShaderLighting::TwoDimensional,
+                None
+            )
             .is_none()
     );
     let (handle, _, admitted) = owner
@@ -218,7 +223,12 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
     );
     let outcome = *owner
         .catalog()
-        .shader_outcome(b"ui/missing.tga", profile, ShaderLighting::TwoDimensional)
+        .shader_outcome(
+            b"ui/missing.tga",
+            profile,
+            ShaderLighting::TwoDimensional,
+            None,
+        )
         .unwrap();
     assert_eq!(outcome.defaulted, Some(NativeDefaultKind::MissingImage));
     assert_eq!(
@@ -271,7 +281,7 @@ fn implicit_named_default_retries_backend_then_publishes_zero_and_caches_all_lig
         assert_eq!(
             owner
                 .catalog()
-                .shader_outcome(b"ui/missing", profile, lighting),
+                .shader_outcome(b"ui/missing", profile, lighting, None),
             Some(&outcome)
         );
     }
@@ -479,7 +489,7 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
     assert!(
         owner
             .catalog()
-            .shader_outcome(b"ui/sibling", sibling, ShaderLighting::TwoDimensional)
+            .shader_outcome(b"ui/sibling", sibling, ShaderLighting::TwoDimensional, None)
             .is_none()
     );
     cpu.prepare_assets(owner.assets(), None).unwrap();
@@ -488,7 +498,7 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
         .unwrap();
     let outcome = owner
         .catalog()
-        .shader_outcome(b"ui/sibling", sibling, ShaderLighting::TwoDimensional)
+        .shader_outcome(b"ui/sibling", sibling, ShaderLighting::TwoDimensional, None)
         .unwrap();
     assert_eq!(outcome.defaulted, Some(NativeDefaultKind::MissingImage));
     assert_eq!(

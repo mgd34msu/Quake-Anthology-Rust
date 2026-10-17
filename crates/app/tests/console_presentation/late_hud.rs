@@ -374,6 +374,7 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
             b"gfx/2d/bigchars",
             profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap();
     assert_eq!(

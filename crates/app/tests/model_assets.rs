@@ -4151,6 +4151,7 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
             b"ui/missing",
             profile,
             qa_compat::services::ShaderLighting::TwoDimensional,
+            None,
         )
         .unwrap();
     assert_eq!(

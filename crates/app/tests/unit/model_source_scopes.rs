@@ -475,6 +475,44 @@ fn image_policy_sharing_keeps_source_selection_independent_of_presentation() {
         };
         assert_eq!(&assets.image(image).unwrap().rgba[..4], &expected);
     }
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let mut shaders = Vec::new();
+    for (view, expected) in [
+        (&low, [255, 0, 0, 255]),
+        (&high, [0, 0, 255, 255]),
+        (&low, [255, 0, 0, 255]),
+    ] {
+        let handle = owner
+            .preload_shader(
+                &files.vfs,
+                Some(view),
+                b"textures/pic.tga",
+                RuleSetId::Quake3,
+                false,
+                ShaderLighting::TwoDimensional,
+            )
+            .unwrap();
+        shaders.push((handle, expected));
+    }
+    assert_eq!(shaders[0].0, shaders[2].0);
+    assert_ne!(shaders[0].0, shaders[1].0);
+    let (owner, mut cpu) = super::registration_tests::publish(owner);
+    for (handle, expected) in shaders {
+        let binding = owner.catalog.shader_binding(handle, profile).unwrap();
+        let pixels = super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
 }
 
 #[test]
@@ -565,6 +603,20 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .iter()
             .all(|(file, _)| file.0 as i32 != default_model)
     );
+    let mut shaders = Vec::new();
+    for (view, expected) in [(&low, [255, 0, 0, 255]), (&high, [0, 0, 255, 255])] {
+        let handle = owner
+            .preload_shader(
+                &files.vfs,
+                Some(view),
+                b"textures/body",
+                RuleSetId::Quake3,
+                true,
+                ShaderLighting::TwoDimensional,
+            )
+            .unwrap();
+        shaders.push((handle, expected));
+    }
     let default_shader = owner
         .register_shader(
             &files.vfs,
@@ -574,16 +626,45 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             ShaderLighting::TwoDimensional,
         )
         .unwrap();
+    assert_ne!(shaders[0].0, shaders[1].0);
+    assert!(shaders.iter().all(|&(handle, _)| handle != default_shader));
+    shaders.push((default_shader, [0, 0, 255, 255]));
     assert_eq!(owner.catalog.profiles().collect::<Vec<_>>(), [profile]);
     let counts = owner.assets.counts();
     files.vfs.take_lookup_count();
     for request in requests {
         owner.register_request(&files.vfs, request).unwrap();
     }
+    for (view, &(handle, _)) in [&low, &high].into_iter().zip(&shaders) {
+        assert_eq!(
+            owner
+                .preload_shader(
+                    &files.vfs,
+                    Some(view),
+                    b"textures/body",
+                    RuleSetId::Quake3,
+                    true,
+                    ShaderLighting::TwoDimensional,
+                )
+                .unwrap(),
+            handle
+        );
+    }
     assert_eq!(files.vfs.take_lookup_count(), 0);
     assert_eq!(owner.assets.counts(), counts);
-    records.push((ModelFileId(default_model as u32), [0, 0, 255, 255]));
     let foreign = Vfs::default().default_view();
+    assert_eq!(
+        owner.preload_shader(
+            &files.vfs,
+            Some(&foreign),
+            b"textures/body",
+            RuleSetId::Quake3,
+            true,
+            ShaderLighting::TwoDimensional,
+        ),
+        Err(CallError::File)
+    );
+    records.push((ModelFileId(default_model as u32), [0, 0, 255, 255]));
     assert!(
         owner
             .register_request(
@@ -658,6 +739,15 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .iter()
             .all(|pixel| *pixel == u32::from_le_bytes([0, 0, 255, 255]))
     );
+    for &(handle, expected) in &shaders {
+        let binding = owner.catalog.shader_binding(handle, profile).unwrap();
+        let pixels = super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
     let mut settings = [None; 5];
     settings[RuleSetId::Quake3 as usize] = Some(ImageSettings {
         picmip: 0,
@@ -746,6 +836,28 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .unwrap();
         let pixels =
             super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding.shader);
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| *pixel == u32::from_le_bytes(expected))
+        );
+    }
+    owner
+        .image_transaction(&files.vfs, None, ImageRefreshMode::Reload, |owner, _| {
+            owner.refresh_images(
+                &files.vfs,
+                &[selected],
+                &[],
+                [None; 5],
+                selected.finish,
+                false,
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+        })
+        .unwrap();
+    for &(handle, expected) in &shaders {
+        let binding = owner.catalog.shader_binding(handle, selected).unwrap();
+        let pixels = super::registration_tests::paint_shader(&mut cpu, owner.assets(), binding);
         assert!(
             pixels
                 .iter()

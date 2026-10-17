@@ -1593,6 +1593,7 @@ fn register_renderer(
                                 scope.profile,
                                 request.world,
                                 crate::model_assets::RegistrationVariant::Retained,
+                                None,
                             )
                             .is_some()
                 })

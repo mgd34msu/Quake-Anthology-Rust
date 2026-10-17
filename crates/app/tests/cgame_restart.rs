@@ -3369,7 +3369,12 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
             .as_ref()
             .unwrap()
             .catalog()
-            .shader_outcome(b"console", font.profile, ShaderLighting::TwoDimensional)
+            .shader_outcome(
+                b"console",
+                font.profile,
+                ShaderLighting::TwoDimensional,
+                None,
+            )
             .unwrap();
         (font.profile, [font.registration.unwrap(), console])
     };

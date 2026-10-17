@@ -74,6 +74,7 @@ pub(crate) fn live_formats(native: bool, ui: bool) {
                 name,
                 profile,
                 qa_compat::services::ShaderLighting::TwoDimensional,
+                None,
             )
             .unwrap()
             .shader;

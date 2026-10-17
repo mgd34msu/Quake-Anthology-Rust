@@ -411,6 +411,7 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
                 name,
                 profile,
                 qa_compat::services::ShaderLighting::TwoDimensional,
+                None,
             )
             .unwrap();
         assert_eq!(
