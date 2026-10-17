@@ -1,4 +1,4 @@
-//! Load-sized native ordinal bindings with a cached numeric inverse.
+//! Load-sized ordinal bindings with a cached numeric inverse.
 use crate::primitives::{NameId, SoundId};
 
 pub trait BindingId: Copy + Eq {
@@ -21,6 +21,7 @@ pub enum BindingError {
     Identity,
 }
 
+#[derive(Clone)]
 pub struct OrdinalBindings<K> {
     forward: Box<[Option<K>]>,
     inverse: Box<[Option<u32>]>,

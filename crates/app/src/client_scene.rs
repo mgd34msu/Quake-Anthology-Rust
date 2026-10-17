@@ -508,7 +508,7 @@ impl ClientModelBindings {
         &self,
         reference: ModelRef,
         catalog: &ModelCatalog,
-    ) -> Result<Option<(qa_core::primitives::NameId, i32)>, ()> {
+    ) -> Result<Option<(qa_core::primitives::ModelFileId, i32)>, ()> {
         if reference.namespace != ResourceNamespace::Client(self.client) {
             return Err(());
         }

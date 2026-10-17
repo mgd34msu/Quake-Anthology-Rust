@@ -6,7 +6,7 @@ use qa_compat::services::{
 };
 use qa_content::vfs::{SourcePrecedence, Vfs};
 use qa_core::names::{NameTable, canonical_path, file_stem};
-use qa_core::primitives::{Bounds, IndexSpan, NameId, Orientation, RuleSetId};
+use qa_core::primitives::{Bounds, IndexSpan, ModelFileId, NameId, Orientation, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Md5Animation, Mesh, Model, ModelFormat};
 use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
@@ -37,6 +37,8 @@ use qa_render::{
 };
 use std::sync::Arc;
 
+mod files;
+use files::ModelFiles;
 mod sources;
 use sources::{ModelSourceId, ModelSources};
 
@@ -637,7 +639,7 @@ impl<'a> ModelLodBindings<'a> {
             let ShaderResource::Model(file) = level.resource else {
                 return None;
             };
-            let ModelFile::Ready { lods, .. } = catalog.files.get(file.0 as usize)? else {
+            let ModelFile::Ready { lods, .. } = catalog.files.get(file)? else {
                 return None;
             };
             if lods.source(0) != Some(*source) {
@@ -779,7 +781,7 @@ pub struct InlineBinding {
 }
 struct RegisteredInline {
     binding: InlineBinding,
-    handle: Option<NameId>,
+    handle: Option<ModelFileId>,
 }
 #[derive(Debug)]
 pub struct ModelDiagnostic {
@@ -809,7 +811,7 @@ struct Registration {
     required: bool,
 }
 struct RegisteredProfile {
-    file: NameId,
+    file: ModelFileId,
     profile: ModelProfile,
     vertex_collapse: bool,
     state: RegistrationState<ModelReady>,
@@ -1347,9 +1349,8 @@ impl ProfileImages {
 pub struct ModelCatalog {
     reader: ArchiveReader,
     names: NameTable,
-    files: Vec<ModelFile>,
+    files: ModelFiles,
     sources: ModelSources,
-    models: Vec<Vec<usize>>,
     shader_indices: Vec<Option<u32>>,
     shaders: Vec<RegisteredShader>,
     shader_bindings: Vec<ShaderProfileBinding>,
@@ -1506,6 +1507,7 @@ struct RegistrationCheckpoint {
     admitted_assets: Option<AssetCounts>,
     palettes: [Option<PaletteId>; 5],
     names: usize,
+    file_count: usize,
     capacity: ModelCapacity,
     registrations: usize,
     bindings: usize,
@@ -1523,7 +1525,7 @@ struct RegistrationCheckpoint {
     shaders_before: Vec<ShaderCheckpoint>,
     skins_before: Vec<SkinCheckpoint>,
     skin_indices: Vec<(NameId, Option<u32>)>,
-    inline_before: Vec<(usize, Option<NameId>)>,
+    inline_before: Vec<(usize, Option<ModelFileId>)>,
     images: Vec<Option<ImageRegistrationMark>>,
     reload: Option<ReloadCheckpoint>,
 }
@@ -1570,7 +1572,7 @@ impl ReloadCheckpoint {
                 RegistrationVariant::from_collapse(profile, entry.vertex_collapse)?.guard()?;
             let path = owner
                 .catalog
-                .name(entry.file)
+                .file_name(entry.file)
                 .ok_or("model replay filename")?
                 .to_owned();
             owner
@@ -1678,7 +1680,7 @@ struct ShaderCheckpoint {
     bindings: Vec<(usize, Option<ShaderRequest>)>,
 }
 struct ModelCheckpoint {
-    name: NameId,
+    name: ModelFileId,
     file: ModelFile,
     profiles: Vec<usize>,
     unattempted: Vec<usize>,
@@ -1702,7 +1704,7 @@ impl ProfileCheckpoint {
         Ok(Self {
             registration: RegistrationCheckpoint::base(owner)?,
             profiles: owner.catalog.profiles.len(),
-            models: owner.catalog.models.iter().map(Vec::len).collect(),
+            models: owner.catalog.files.all_rows().map(Vec::len).collect(),
             shaders: owner
                 .catalog
                 .shaders
@@ -1719,7 +1721,7 @@ impl ProfileCheckpoint {
     }
     fn rollback(self, owner: &mut ModelAssets) -> Result<(), String> {
         owner.catalog.profiles.truncate(self.profiles);
-        for (rows, length) in owner.catalog.models.iter_mut().zip(self.models) {
+        for (rows, length) in owner.catalog.files.all_rows_mut().zip(self.models) {
             rows.truncate(length);
         }
         for (shader, length) in owner.catalog.shaders.iter_mut().zip(self.shaders) {
@@ -1903,6 +1905,7 @@ impl RegistrationCheckpoint {
             admitted_assets: catalog.admitted_assets,
             palettes: owner.palettes.checkpoint(),
             names: catalog.names.len(),
+            file_count: catalog.files.len(),
             capacity: catalog.capacity,
             registrations: catalog.registrations.len(),
             bindings: catalog.bindings.len(),
@@ -1955,14 +1958,13 @@ impl RegistrationCheckpoint {
                 let slot = inline_slot(&catalog.worlds, world, index)
                     .ok_or("inline registration model")?;
                 inline = Some((slot, catalog.inline[slot].handle));
-                let key = format!("\0engine:inline/{}/{}", world.0, index);
-                file_name = catalog.names.find(key.as_bytes());
+                file_name = catalog.inline[slot].handle;
             }
             RendererRegistration::Model => {
                 let path = canonical_path(
                     std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?,
                 );
-                file_name = catalog.names.find(path.as_bytes());
+                file_name = catalog.file_id(path.as_bytes());
             }
             RendererRegistration::Skin => {
                 skin_index = find_skin_index(&catalog.names, &catalog.skin_indices, raw);
@@ -2029,20 +2031,8 @@ impl RegistrationCheckpoint {
                     .collect(),
             });
         }
-        if let Some(name) = file_name
-            && !self.files.iter().any(|saved| saved.name == name)
-        {
-            let profiles = catalog.models[name.0 as usize].clone();
-            self.files.push(ModelCheckpoint {
-                name,
-                file: catalog.files[name.0 as usize].clone(),
-                unattempted: profiles
-                    .iter()
-                    .copied()
-                    .filter(|&index| catalog.registrations[index].state.pending())
-                    .collect(),
-                profiles,
-            });
+        if let Some(file) = file_name {
+            self.capture_file(catalog, file);
         }
         if let Some((slot, handle)) = inline
             && !self.inline_before.iter().any(|&(saved, _)| saved == slot)
@@ -2052,22 +2042,28 @@ impl RegistrationCheckpoint {
         Ok(())
     }
 
+    fn capture_file(&mut self, catalog: &ModelCatalog, name: ModelFileId) {
+        if self.files.iter().any(|saved| saved.name == name) {
+            return;
+        }
+        let profiles = catalog.files.rows(name).clone();
+        self.files.push(ModelCheckpoint {
+            name,
+            file: catalog.files[name].clone(),
+            unattempted: profiles
+                .iter()
+                .copied()
+                .filter(|&index| catalog.registrations[index].state.pending())
+                .collect(),
+            profiles,
+        });
+    }
     fn capture_all(&mut self, owner: &ModelAssets) -> Result<(), String> {
         let catalog = &owner.catalog;
         for (index, file) in catalog.files.iter().enumerate() {
-            if !matches!(file, ModelFile::Empty) || !catalog.models[index].is_empty() {
-                self.capture_target(
-                    owner,
-                    &RendererRequest {
-                        name: catalog
-                            .names
-                            .get(NameId(index as u32))
-                            .ok_or("model name")?,
-                        source: RuleSetId::Quake3,
-                        kind: RendererRegistration::Model,
-                        world: None,
-                    },
-                )?;
+            let id = ModelFileId(index as u32);
+            if !matches!(file, ModelFile::Empty) || !catalog.files.rows(id).is_empty() {
+                self.capture_file(catalog, id);
             }
         }
         for shader in &catalog.shaders {
@@ -2153,9 +2149,12 @@ impl RegistrationCheckpoint {
             catalog.skins.truncate(self.skins);
             catalog.diagnostics.truncate(self.diagnostics);
             // Interned names retain their identities without rejected bindings.
+            for index in self.file_count..catalog.files.len() {
+                let id = ModelFileId(index as u32);
+                catalog.files[id] = ModelFile::Empty;
+                catalog.files.rows_mut(id).clear();
+            }
             for index in self.names..catalog.names.len() {
-                catalog.files[index] = ModelFile::Empty;
-                catalog.models[index].clear();
                 catalog.shader_indices[index] = None;
                 catalog.skin_indices[index] = None;
             }
@@ -2225,30 +2224,34 @@ impl RegistrationCheckpoint {
         }
         if matches!(mode, RegistrationRollback::Source) {
             for file in &self.files {
-                if matches!(catalog.files[file.name.0 as usize], ModelFile::Failed(_))
+                if matches!(catalog.files[file.name], ModelFile::Failed(_))
                     && matches!(file.file, ModelFile::Ready { renderer_sources, .. } if renderer_sources != 0)
                 {
-                    catalog.files[file.name.0 as usize] = file.file.clone();
+                    catalog.files[file.name] = file.file.clone();
                 }
             }
             for index in self
                 .files
                 .iter()
                 .map(|file| file.name.0 as usize)
-                .chain(self.names..catalog.names.len())
+                .chain(self.file_count..catalog.files.len())
             {
-                let sources = catalog.models[index]
-                    .iter()
-                    .copied()
-                    .fold(0, |sources, entry| {
-                        let profile = &catalog.registrations[entry];
-                        sources
-                            | if profile.state.ready().is_some() {
-                                1 << profile.profile.source_rules as u8
-                            } else {
-                                0
-                            }
-                    });
+                let index = ModelFileId(index as u32);
+                let sources =
+                    catalog
+                        .files
+                        .rows(index)
+                        .iter()
+                        .copied()
+                        .fold(0, |sources, entry| {
+                            let profile = &catalog.registrations[entry];
+                            sources
+                                | if profile.state.ready().is_some() {
+                                    1 << profile.profile.source_rules as u8
+                                } else {
+                                    0
+                                }
+                        });
                 if let ModelFile::Ready {
                     renderer_sources, ..
                 } = &mut catalog.files[index]
@@ -2258,8 +2261,8 @@ impl RegistrationCheckpoint {
             }
         } else {
             for file in self.files {
-                catalog.files[file.name.0 as usize] = file.file;
-                catalog.models[file.name.0 as usize] = file.profiles;
+                catalog.files[file.name] = file.file;
+                *catalog.files.rows_mut(file.name) = file.profiles;
             }
         }
         for (slot, handle) in self.inline_before {
@@ -2342,7 +2345,7 @@ impl ModelAssets {
                 let indexed_palette = ready.indexed_palette;
                 let model_path = self
                     .catalog
-                    .name(entry.file)
+                    .file_name(entry.file)
                     .ok_or("model filename")?
                     .to_owned();
                 let image_index = self
@@ -2433,18 +2436,20 @@ impl ModelAssets {
             return false;
         };
         let mut changed = false;
-        if matches!(self.catalog.files[name.0 as usize], ModelFile::Failed(_)) {
-            self.catalog.files[name.0 as usize] = ModelFile::Empty;
-            changed = true;
-        }
-        changed |= self.catalog.sources.invalidate(name);
-        for &index in &self.catalog.models[name.0 as usize] {
-            let state = &mut self.catalog.registrations[index].state;
-            if matches!(state, RegistrationState::Failed(_)) {
-                *state = RegistrationState::Unattempted;
+        if let Some(file) = self.catalog.files.find(name) {
+            if matches!(self.catalog.files[file], ModelFile::Failed(_)) {
+                self.catalog.files[file] = ModelFile::Empty;
                 changed = true;
             }
+            for &index in self.catalog.files.rows(file) {
+                let state = &mut self.catalog.registrations[index].state;
+                if matches!(state, RegistrationState::Failed(_)) {
+                    *state = RegistrationState::Unattempted;
+                    changed = true;
+                }
+            }
         }
+        changed |= self.catalog.sources.invalidate(name);
         if let Some(index) = self.catalog.skin_indices[name.0 as usize] {
             let skin = &mut self.catalog.skins[index as usize];
             let mut retry = false;
@@ -2627,9 +2632,9 @@ impl ModelAssets {
             .ok_or("model profile row capacity")?;
         let models = self
             .catalog
-            .models
-            .iter()
-            .zip(&self.catalog.files)
+            .files
+            .all_rows()
+            .zip(self.catalog.files.iter())
             .filter(|(rows, file)| !rows.is_empty() || matches!(file, ModelFile::Ready { .. }))
             .count();
         self.catalog
@@ -2659,19 +2664,13 @@ impl ModelAssets {
         if let Some(Err(error)) = &images.state {
             return Err(error.clone());
         }
-        for (name, (rows, file)) in self
-            .catalog
-            .models
-            .iter_mut()
-            .zip(&self.catalog.files)
-            .enumerate()
-        {
+        for (name, file, rows) in self.catalog.files.entries_mut() {
             if rows.is_empty() && !matches!(file, ModelFile::Ready { .. }) {
                 continue;
             }
             rows.push(self.catalog.registrations.len());
             self.catalog.registrations.push(RegisteredProfile {
-                file: NameId(name as u32),
+                file: name,
                 profile,
                 vertex_collapse: profile.finish.compile(false).collapse_vertex(),
                 state: RegistrationState::Unattempted,
@@ -2944,15 +2943,16 @@ impl ModelAssets {
             refresh.worlds.push((world, old, selected));
         }
         let mut models = Vec::new();
-        for (name, rows) in self.catalog.models.iter().enumerate() {
+        for (name, rows) in self.catalog.files.all_rows().enumerate() {
             for &index in rows {
                 let entry = &self.catalog.registrations[index];
                 let profile = refresh.profile(entry.profile);
                 if profile != entry.profile && entry.state.ready().is_some() {
                     let path = self
                         .catalog
-                        .names
-                        .get(NameId(name as u32))
+                        .files
+                        .name(ModelFileId(name as u32))
+                        .and_then(|name| self.catalog.names.get(name))
                         .ok_or("image refresh model name")?
                         .to_vec();
                     models.push((path, profile));
@@ -3118,6 +3118,8 @@ impl ModelAssets {
             unique.push(entry);
         }
         let (worlds, inline) = inline_bindings(&assets, worlds, limits)?;
+        let sources = ModelSources::load(names.capacity());
+        let files = ModelFiles::load(names.capacity(), limits.inline_models)?;
         let capacity = ModelCapacity {
             names: 1,
             inline_bindings: inline.len(),
@@ -3132,9 +3134,8 @@ impl ModelAssets {
             catalog: ModelCatalog {
                 reader: ArchiveReader::default(),
                 names,
-                files: vec![ModelFile::Empty],
-                sources: ModelSources::default(),
-                models: vec![Vec::new()],
+                files,
+                sources,
                 shader_indices: vec![None],
                 shaders: Vec::new(),
                 shader_bindings: Vec::new(),
@@ -3577,9 +3578,8 @@ impl ModelAssets {
                         .map_err(|error| error.kind)
                         .and_then(|_| {
                             self.catalog
-                                .names
-                                .find_path_bytes(raw)
-                                .and_then(|name| i32::try_from(name.0).ok())
+                                .file_id(raw)
+                                .and_then(|file| i32::try_from(file.0).ok())
                                 .ok_or(CallError::File)
                         })
                     }
@@ -3973,8 +3973,6 @@ impl ModelAssets {
             .intern(bytes)
             .map_err(|_| CallError::Capacity)?;
         if self.catalog.names.len() != previous {
-            self.catalog.files.push(ModelFile::Empty);
-            self.catalog.models.push(Vec::new());
             self.catalog.shader_indices.push(None);
             self.catalog.skin_indices.push(None);
             self.catalog.capacity.names = self.catalog.names.len();
@@ -3983,6 +3981,10 @@ impl ModelAssets {
         Ok(name)
     }
 
+    fn admit_file(&mut self, path: &[u8]) -> Result<ModelFileId, CallError> {
+        let name = self.admit_name(path)?;
+        self.catalog.files.admit(Some(name))
+    }
     /// Admit the already-loaded world as native model metadata. Its surface
     /// binding and collision bounds do not create a mesh or decode another file.
     pub fn bind_loaded_world(
@@ -4003,10 +4005,10 @@ impl ModelAssets {
             .ok_or("loaded world model0")?;
         let path = canonical_path(path);
         let name = self
-            .admit_name(path.as_bytes())
+            .admit_file(path.as_bytes())
             .map_err(|_| "model name capacity".to_owned())?;
-        if !matches!(self.catalog.files[name.0 as usize], ModelFile::Empty) {
-            return match self.catalog.files.get(name.0 as usize) {
+        if !matches!(self.catalog.files[name], ModelFile::Empty) {
+            return match self.catalog.files.get(name) {
                 Some(ModelFile::LoadedWorld {
                     binding: existing,
                     bounds,
@@ -4022,7 +4024,7 @@ impl ModelAssets {
                 _ => Err("loaded world filename conflict".to_owned()),
             };
         }
-        self.catalog.files[name.0 as usize] = ModelFile::LoadedWorld {
+        self.catalog.files[name] = ModelFile::LoadedWorld {
             binding,
             bounds: native_bounds,
             collision,
@@ -4046,20 +4048,20 @@ impl ModelAssets {
             }
         };
         let admission = self.ensure_file(vfs, &path);
-        let Some(name) = self.catalog.names.find(path.as_bytes()) else {
+        let Some(name) = self.catalog.file_id(path.as_bytes()) else {
             return Err(admission.err().map_or_else(
                 || "missing registered model name".to_owned(),
                 |e| context(&e.message),
             ));
         };
-        if matches!(
-            self.catalog.files[name.0 as usize],
-            ModelFile::LoadedWorld { .. }
-        ) {
+        if matches!(self.catalog.files[name], ModelFile::LoadedWorld { .. }) {
             return Ok(());
         }
         if let Err(error) = admission
-            && !self.catalog.models[name.0 as usize]
+            && !self
+                .catalog
+                .files
+                .rows(name)
                 .iter()
                 .copied()
                 .any(|index| !self.catalog.registrations[index].state.pending())
@@ -4070,7 +4072,10 @@ impl ModelAssets {
             return Err(context(&error.message));
         }
         let profile = request.profile();
-        let registration = self.catalog.models[name.0 as usize]
+        let registration = self
+            .catalog
+            .files
+            .rows(name)
             .iter()
             .copied()
             .map(|index| &self.catalog.registrations[index])
@@ -4593,36 +4598,33 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<Bounds, FileError> {
-        let name = if let Some(name) = self.catalog.names.find(path.as_bytes()) {
-            let file = &self.catalog.files[name.0 as usize];
+        let name = if let Some(name) = self.catalog.file_id(path.as_bytes()) {
+            let file = &self.catalog.files[name];
             let unattempted = !self
                 .catalog
                 .profiles
                 .iter()
                 .filter(|images| selected.is_none_or(|profile| images.profile == profile))
                 .all(|images| {
-                    self.catalog.models[name.0 as usize].iter().any(|&row| {
+                    self.catalog.files.rows(name).iter().any(|&row| {
                         let row = &self.catalog.registrations[row];
                         row.profile == images.profile
                             && row.vertex_collapse
                                 == row.profile.finish.compile(ui_fullscreen).collapse_vertex()
                     })
                 })
-                || self.catalog.models[name.0 as usize]
-                    .iter()
-                    .copied()
-                    .any(|index| {
-                        self.catalog.registrations[index].state.pending()
-                            && self.catalog.registrations[index].vertex_collapse
-                                == self.catalog.registrations[index]
-                                    .profile
-                                    .finish
-                                    .compile(ui_fullscreen)
-                                    .collapse_vertex()
-                            && selected.is_none_or(|profile| {
-                                self.catalog.registrations[index].profile == profile
-                            })
-                    });
+                || self.catalog.files.rows(name).iter().copied().any(|index| {
+                    self.catalog.registrations[index].state.pending()
+                        && self.catalog.registrations[index].vertex_collapse
+                            == self.catalog.registrations[index]
+                                .profile
+                                .finish
+                                .compile(ui_fullscreen)
+                                .collapse_vertex()
+                        && selected.is_none_or(|profile| {
+                            self.catalog.registrations[index].profile == profile
+                        })
+                });
             if !matches!(file, ModelFile::Empty)
                 && !(matches!(file, ModelFile::Ready { .. }) && unattempted)
             {
@@ -4639,10 +4641,15 @@ impl ModelAssets {
             }
             name
         } else {
-            self.admit_name(path.as_bytes())
+            self.admit_file(path.as_bytes())
                 .map_err(|_| FileError::capacity("model name capacity"))?
         };
-        let mut rows = self.catalog.models[name.0 as usize].clone();
+        let file_name = self
+            .catalog
+            .files
+            .name(name)
+            .ok_or_else(|| FileError::capacity("model file name binding"))?;
+        let mut rows = self.catalog.files.rows(name).clone();
         let fresh_profiles = rows.is_empty();
         for images in &self.catalog.profiles {
             if !rows.iter().any(|&row| {
@@ -4674,8 +4681,8 @@ impl ModelAssets {
                 });
             }
         }
-        self.catalog.models[name.0 as usize] = rows.clone();
-        let lods = match self.catalog.files[name.0 as usize] {
+        *self.catalog.files.rows_mut(name) = rows.clone();
+        let lods = match self.catalog.files[name] {
             ModelFile::Ready { lods, .. } => lods,
             _ => match self.model_lods(vfs, path) {
                 Ok(lods) => lods,
@@ -4822,7 +4829,7 @@ impl ModelAssets {
         }) {
             self.shader_catalog(vfs);
         }
-        let mut renderer_sources = match &self.catalog.files[name.0 as usize] {
+        let mut renderer_sources = match &self.catalog.files[name] {
             ModelFile::Ready {
                 renderer_sources, ..
             } => *renderer_sources,
@@ -4851,7 +4858,7 @@ impl ModelAssets {
                 self.catalog
                     .diagnostics
                     .extend(source.diagnostics.iter().map(|error| ModelDiagnostic {
-                        name,
+                        name: file_name,
                         profile: entry.profile,
                         error: error.clone(),
                     }));
@@ -4863,7 +4870,7 @@ impl ModelAssets {
                 } = &self.catalog.sources[source]
             {
                 self.catalog.diagnostics.push(ModelDiagnostic {
-                    name,
+                    name: file_name,
                     profile: entry.profile,
                     error: error.clone(),
                 });
@@ -4985,7 +4992,7 @@ impl ModelAssets {
                 Ok((compiled, registrations, replacement_error, indexed_palette)) => {
                     if let Some(error) = replacement_error {
                         self.catalog.diagnostics.push(ModelDiagnostic {
-                            name,
+                            name: file_name,
                             profile: entry.profile,
                             error: format!("replacement material: {error}"),
                         });
@@ -5068,7 +5075,7 @@ impl ModelAssets {
                 }
                 Err(error) => {
                     self.catalog.diagnostics.push(ModelDiagnostic {
-                        name,
+                        name: file_name,
                         profile: entry.profile,
                         error: error.clone(),
                     });
@@ -5084,7 +5091,7 @@ impl ModelAssets {
                 *current = meshes;
             }
         }
-        self.catalog.files[name.0 as usize] = ModelFile::Ready {
+        self.catalog.files[name] = ModelFile::Ready {
             lods,
             renderer_sources,
         };
@@ -5092,13 +5099,21 @@ impl ModelAssets {
         self.catalog.capacity.bindings =
             self.catalog.bindings.len() * ModelMaterialPolicy::ALL.len();
         self.catalog.capacity.model_choices = self.catalog.calculate_choice_nodes();
-        Ok(self.catalog.files[name.0 as usize]
+        Ok(self.catalog.files[name]
             .bounds(&self.catalog.sources)
             .unwrap_or_default())
     }
 
-    fn fail_file(&mut self, name: NameId, fresh_profiles: bool, error: FileError) -> FileError {
-        let rows = &self.catalog.models[name.0 as usize];
+    fn fail_file(
+        &mut self,
+        name: ModelFileId,
+        fresh_profiles: bool,
+        error: FileError,
+    ) -> FileError {
+        let Some(file_name) = self.catalog.files.name(name) else {
+            return FileError::capacity("model file name binding");
+        };
+        let rows = self.catalog.files.rows(name);
         let unused_suffix = fresh_profiles
             && rows.first().is_some_and(|&first| {
                 first + rows.len() == self.catalog.registrations.len()
@@ -5118,7 +5133,7 @@ impl ModelAssets {
             let entry = &mut self.catalog.registrations[index];
             if entry.state.pending() {
                 self.catalog.diagnostics.push(ModelDiagnostic {
-                    name,
+                    name: file_name,
                     profile: entry.profile,
                     error: error.message.clone(),
                 });
@@ -5127,10 +5142,10 @@ impl ModelAssets {
         }
         if unused_suffix {
             self.catalog.registrations.truncate(rows[0]);
-            self.catalog.models[name.0 as usize].clear();
+            self.catalog.files.rows_mut(name).clear();
             self.catalog.capacity.registrations = self.catalog.registrations.len();
         }
-        self.catalog.files[name.0 as usize] = ModelFile::Failed(error.clone());
+        self.catalog.files[name] = ModelFile::Failed(error.clone());
         error
     }
 
@@ -5256,11 +5271,9 @@ impl ModelAssets {
         name: &[u8],
     ) -> Option<ShaderResource> {
         match kind {
-            RendererRegistration::Model if !name.starts_with(b"*") => self
-                .catalog
-                .names
-                .find_path_bytes(name)
-                .map(ShaderResource::Model),
+            RendererRegistration::Model if !name.starts_with(b"*") => {
+                self.catalog.file_id(name).map(ShaderResource::Model)
+            }
             RendererRegistration::Skin => {
                 find_skin_index(&self.catalog.names, &self.catalog.skin_indices, name)
                     .and_then(|(_, index)| index)
@@ -5577,12 +5590,9 @@ impl ModelAssets {
             .and_then(|world| world.geometry().models.get(index as usize))
             .ok_or(CallError::File)?
             .bounds;
-        // A native cstring cannot name this private semantic key, so an
-        // ordinary file registration cannot overwrite the inline record.
-        let key = format!("\0engine:inline/{}/{}", world.0, index);
-        let handle = self.admit_name(key.as_bytes())?;
+        let handle = self.catalog.files.admit(None)?;
         let native = i32::try_from(handle.0).map_err(|_| CallError::Capacity)?;
-        self.catalog.files[handle.0 as usize] = ModelFile::LoadedWorld {
+        self.catalog.files[handle] = ModelFile::LoadedWorld {
             binding,
             bounds,
             collision: None,
@@ -5701,7 +5711,7 @@ impl ModelAssets {
         let profile = row.profile;
         let path = self
             .catalog
-            .name(row.file)
+            .file_name(row.file)
             .ok_or("model color filename")?
             .to_owned();
         self.prepare_skin_request(
@@ -5977,8 +5987,7 @@ impl ModelAssets {
     ) -> Result<SkinSelection, String> {
         let file = self
             .catalog
-            .names
-            .find_path(path)
+            .file_id(path.as_bytes())
             .ok_or("model color file")?;
         let registration = self
             .catalog
@@ -6006,7 +6015,7 @@ impl ModelAssets {
                     .collect()
             })
             .unwrap_or_default();
-        let ModelFile::Ready { lods, .. } = self.catalog.files[file.0 as usize] else {
+        let ModelFile::Ready { lods, .. } = self.catalog.files[file] else {
             return Err("model color source slots".to_owned());
         };
         let source_name = lods.source(0).ok_or("model color native source")?;
@@ -6650,7 +6659,7 @@ fn skin_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<
     catalog.skin_source_handle(handle, source, RegistrationVariant::Retained)
 }
 
-fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<LoadedWorldBinding> {
+fn loaded_world(names: &NameTable, files: &ModelFiles, name: &[u8]) -> Option<LoadedWorldBinding> {
     let ModelFile::LoadedWorld {
         binding, collision, ..
     } = file_lookup(names, files, name)?
@@ -6662,32 +6671,25 @@ fn loaded_world(names: &NameTable, files: &[ModelFile], name: &[u8]) -> Option<L
         collision: *collision,
     })
 }
-fn file_lookup<'a>(
-    names: &NameTable,
-    files: &'a [ModelFile],
-    path: &[u8],
-) -> Option<&'a ModelFile> {
+fn file_lookup<'a>(names: &NameTable, files: &'a ModelFiles, path: &[u8]) -> Option<&'a ModelFile> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    files.get(name.0 as usize)
+    files.get(files.find(name)?)
 }
 fn model_handle(
     names: &NameTable,
-    files: &[ModelFile],
+    files: &ModelFiles,
     path: &[u8],
     source: Option<RuleSetId>,
 ) -> Option<i32> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    let handle = i32::try_from(name.0).ok()?;
+    let file = files.find(name)?;
+    let handle = i32::try_from(file.0).ok()?;
     renderer_file(files, handle, source)?;
     Some(handle)
 }
-fn renderer_file(
-    files: &[ModelFile],
-    handle: i32,
-    source: Option<RuleSetId>,
-) -> Option<&ModelFile> {
+fn renderer_file(files: &ModelFiles, handle: i32, source: Option<RuleSetId>) -> Option<&ModelFile> {
     let index = usize::try_from(handle).ok().filter(|&index| index > 0)?;
-    let file = files.get(index)?;
+    let file = files.get(ModelFileId(index as u32))?;
     match file {
         ModelFile::LoadedWorld { .. } => Some(file),
         ModelFile::Ready {
@@ -6698,7 +6700,7 @@ fn renderer_file(
         _ => None,
     }
 }
-fn model_bounds(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Option<Bounds> {
+fn model_bounds(files: &ModelFiles, sources: &ModelSources, handle: i32) -> Option<Bounds> {
     match renderer_file(files, handle, None)? {
         ModelFile::Ready { lods, .. } => Some(
             lods.source(0)
@@ -6709,7 +6711,7 @@ fn model_bounds(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Opt
         file => file.bounds(sources),
     }
 }
-fn model_tags(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Option<TagLayout> {
+fn model_tags(files: &ModelFiles, sources: &ModelSources, handle: i32) -> Option<TagLayout> {
     let ModelFile::Ready { lods, .. } = renderer_file(files, handle, None)? else {
         return None;
     };
@@ -6720,7 +6722,7 @@ fn model_tags(files: &[ModelFile], sources: &ModelSources, handle: i32) -> Optio
 }
 fn lerp_tag(
     names: &NameTable,
-    files: &[ModelFile],
+    files: &ModelFiles,
     sources: &ModelSources,
     tags: &[TaggedOrientation],
     handle: i32,
@@ -6877,7 +6879,7 @@ impl ModelCatalog {
             .iter()
             .filter_map(|entry| {
                 let ready = entry.state.ready()?.0;
-                let ModelFile::Ready { lods, .. } = self.files.get(entry.file.0 as usize)? else {
+                let ModelFile::Ready { lods, .. } = self.files.get(entry.file)? else {
                     return None;
                 };
                 let groups = lods
@@ -6947,10 +6949,13 @@ impl ModelCatalog {
             .get(id.0 as usize)
             .map(|entry| entry.profile)
     }
-    pub(crate) fn registration_source(&self, id: ModelRegistrationId) -> Option<(NameId, i32)> {
+    pub(crate) fn registration_source(
+        &self,
+        id: ModelRegistrationId,
+    ) -> Option<(ModelFileId, i32)> {
         self.published_registration(id)?;
         let row = self.registrations.get(id.0 as usize)?;
-        let sync = match self.files.get(row.file.0 as usize)? {
+        let sync = match self.files.get(row.file)? {
             ModelFile::Ready { lods, .. } => lods
                 .source(0)
                 .and_then(|source| self.sources.get(source))
@@ -7004,12 +7009,14 @@ impl ModelCatalog {
                 self.inline_handle(world, index)
             }
             RendererRegistration::Model => {
-                let name = self.names.find_path_bytes(name)?;
+                let name = self.file_id(name)?;
                 let handle = i32::try_from(name.0).ok()?;
-                match self.files.get(name.0 as usize)? {
+                match self.files.get(name)? {
                     ModelFile::Failed(_) => Some(0),
                     ModelFile::LoadedWorld { .. } => Some(handle),
-                    ModelFile::Empty | ModelFile::Ready { .. } => self.models[name.0 as usize]
+                    ModelFile::Empty | ModelFile::Ready { .. } => self
+                        .files
+                        .rows(name)
                         .iter()
                         .copied()
                         .map(|index| &self.registrations[index])
@@ -7051,15 +7058,16 @@ impl ModelCatalog {
         source: RuleSetId,
         variant: RegistrationVariant,
     ) -> Option<i32> {
-        let name = self.names.find_path_bytes(name)?;
+        let name = self.file_id(name)?;
         let handle = i32::try_from(name.0).ok()?;
-        match self.files.get(name.0 as usize)? {
+        match self.files.get(name)? {
             ModelFile::Failed(_) => return Some(0),
             ModelFile::LoadedWorld { .. } => return Some(handle),
             ModelFile::Empty | ModelFile::Ready { .. } => {}
         }
         source_handle(
-            self.models[name.0 as usize]
+            self.files
+                .rows(name)
                 .iter()
                 .copied()
                 .map(|index| &self.registrations[index])
@@ -7302,10 +7310,10 @@ impl ModelCatalog {
     /// Resolve both filename and profile only at registration/configuration
     /// boundaries. A profile mismatch never selects the first same-name entry.
     pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
-        let name = self.names.find_path(path)?;
+        let name = self.file_id(path.as_bytes())?;
         self.published_registration(self.registration_name(name, profile)?)
     }
-    /// Native handles already identify the interned file. Resolve their exact
+    /// Native handles already identify the logical model record. Resolve its exact
     /// presentation registration without repeating filename conversion/lookup.
     pub fn renderer_registration(
         &self,
@@ -7323,7 +7331,7 @@ impl ModelCatalog {
     }
     fn registration_name(
         &self,
-        name: NameId,
+        name: ModelFileId,
         profile: ModelProfile,
     ) -> Option<ModelRegistrationId> {
         self.registration_name_variant(name, profile, RegistrationVariant::Retained)
@@ -7338,7 +7346,7 @@ impl ModelCatalog {
         variant: RegistrationVariant,
     ) -> Option<ModelRegistrationId> {
         renderer_file(&self.files, handle, Some(profile.source_rules))?;
-        self.registration_name_variant(NameId(u32::try_from(handle).ok()?), profile, variant)
+        self.registration_name_variant(ModelFileId(u32::try_from(handle).ok()?), profile, variant)
     }
     /// A logical skin handle is usable only when its selected presentation
     /// registered successfully. Other profiles cannot supply a fallback here.
@@ -7346,7 +7354,7 @@ impl ModelCatalog {
         self.published_registration(registration)?;
         let row = self.registrations.get(registration.0 as usize)?;
         let palette = row.state.ready()?.0.indexed_palette?;
-        let ModelFile::Ready { lods, .. } = self.files.get(row.file.0 as usize)? else {
+        let ModelFile::Ready { lods, .. } = self.files.get(row.file)? else {
             return None;
         };
         match self.sources.get(lods.source(0)?)? {
@@ -7457,11 +7465,12 @@ impl ModelCatalog {
 
     fn registration_name_variant(
         &self,
-        name: NameId,
+        name: ModelFileId,
         profile: ModelProfile,
         variant: RegistrationVariant,
     ) -> Option<ModelRegistrationId> {
-        let rows = self.models.get(name.0 as usize)?;
+        self.files.get(name)?;
+        let rows = self.files.rows(name);
         rows.iter()
             .copied()
             .find(|&index| {
@@ -7471,6 +7480,12 @@ impl ModelCatalog {
                     && entry.state.ready().is_some()
             })
             .map(|index| ModelRegistrationId(index as u32))
+    }
+    fn file_id(&self, path: &[u8]) -> Option<ModelFileId> {
+        self.files.find(self.names.find_path_bytes(path)?)
+    }
+    fn file_name(&self, file: ModelFileId) -> Option<&str> {
+        self.name(self.files.name(file)?)
     }
     fn source_name(&self, source: ModelSourceId) -> Option<&str> {
         self.name(self.sources.name(source)?)
@@ -7497,7 +7512,7 @@ impl ModelCatalog {
         self.published_registration(registration)?;
         let entry = self.registrations.get(registration.0 as usize)?;
         let ready = entry.state.ready()?.0;
-        let ModelFile::Ready { lods, .. } = self.files.get(entry.file.0 as usize)? else {
+        let ModelFile::Ready { lods, .. } = self.files.get(entry.file)? else {
             return None;
         };
         let radii = lods
@@ -7568,7 +7583,7 @@ impl ModelCatalog {
         };
         let animation = match self
             .files
-            .get(self.registrations[registration.0 as usize].file.0 as usize)?
+            .get(self.registrations[registration.0 as usize].file)?
         {
             ModelFile::Ready { lods, .. } => lods
                 .source(if slot == 3 { 0 } else { slot })

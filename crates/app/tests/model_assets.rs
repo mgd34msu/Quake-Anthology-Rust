@@ -634,9 +634,12 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             .collision,
         Some(large.collision)
     );
+    assert!(owner.catalog().file_handle(b"maps/large.bsp").is_some());
     assert_eq!(
-        owner.catalog().file_handle(b"maps/large.bsp"),
-        Some(old_name)
+        owner
+            .catalog()
+            .name(qa_core::primitives::NameId(old_name as u32)),
+        Some("maps/large.bsp")
     );
     assert_eq!(
         owner.catalog().shader_binding(shader, profile),
@@ -983,7 +986,6 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             .registration_cached(request.kind, b"progs/test", profile, None),
         None
     );
-    assert!(!owner.catalog().model_has_tags(old_name));
     fixture.vfs.take_lookup_count();
     let failed_capacity = owner.catalog().capacity();
     let failed_diagnostics = owner.catalog().diagnostics.len();
@@ -1017,7 +1019,6 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             )
             .is_err()
     );
-    assert_eq!(owner.catalog().model_bounds(old_name), None);
     assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
     assert_eq!(owner.assets().counts(), initial);
     let (handle, _, counts) = owner
@@ -1030,7 +1031,13 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
-    assert_eq!(handle, old_name);
+    assert_eq!(owner.catalog().file_handle(b"progs/test"), Some(handle));
+    assert_eq!(
+        owner
+            .catalog()
+            .name(qa_core::primitives::NameId(old_name as u32)),
+        Some("progs/test")
+    );
     assert_eq!(cpu.admitted_assets(), Some(counts));
     assert!(
         owner
@@ -2762,10 +2769,6 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
         catalog.model_handle(b"models/test.md3", RuleSetId::Quake3),
         Some(handle)
     );
-    assert_eq!(
-        catalog.name(qa_core::primitives::NameId(handle as u32)),
-        Some("models/test.md3")
-    );
     assert_eq!(catalog.model_bounds(handle), Some(first_frame));
     let profile = shader_profile(RuleSetId::Quake3);
     let registration = catalog.renderer_registration(handle, profile).unwrap();
@@ -3140,12 +3143,6 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
             .catalog()
             .renderer_registration(handle, profile)
             .is_some()
-    );
-    assert_eq!(
-        owner
-            .catalog()
-            .name(qa_core::primitives::NameId(handle as u32)),
-        Some(path.as_str())
     );
 }
 
@@ -5336,10 +5333,23 @@ fn native_inline_handles_share_the_metadata_table_and_keep_world_namespaces() {
     let meshes = assets.models().len();
     let first_bounds = assets.world(first).unwrap().geometry().models[1].bounds;
     let second_bounds = assets.world(second).unwrap().geometry().models[1].bounds;
-    let mut owner = ModelAssets::new(assets, [], [first, second], Default::default()).unwrap();
+    let mut owner = ModelAssets::new(
+        assets,
+        [],
+        [first, second],
+        ModelLimits {
+            models: 1,
+            name_bytes: 0,
+            inline_models: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let a = owner.register_inline(first, 1).unwrap();
     let b = owner.register_inline(second, 1).unwrap();
     assert_ne!(a, b);
+    assert_eq!(owner.catalog().capacity().names, 1);
+    assert_eq!(owner.catalog().capacity().name_bytes, 0);
     assert_eq!(owner.register_inline(first, 1), Ok(a));
     assert_eq!(owner.catalog().model_bounds(a), Some(first_bounds));
     assert_eq!(owner.catalog().model_bounds(b), Some(second_bounds));

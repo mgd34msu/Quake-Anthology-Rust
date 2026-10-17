@@ -1,14 +1,14 @@
 //! Accepted model transitions own their phase; rendering only borrows it.
 use qa_core::{
     bits::BitSet,
-    primitives::{ModelRef, NameId},
+    primitives::{ModelFileId, ModelRef},
     random::{Algorithm, Random},
 };
 
 #[derive(Clone, Copy, Default)]
 struct ModelPhase {
     reference: Option<ModelRef>,
-    source: Option<(NameId, bool)>,
+    source: Option<(ModelFileId, bool)>,
     random_sync: bool,
     base: f32,
 }
@@ -51,7 +51,7 @@ impl ModelSynchronization {
         cell: usize,
         reference: Option<ModelRef>,
         random_sync: bool,
-        source: Result<Option<(NameId, i32)>, ()>,
+        source: Result<Option<(ModelFileId, i32)>, ()>,
     ) -> bool {
         let Some(row) = self
             .entities
@@ -92,7 +92,7 @@ impl ModelSynchronization {
 
     pub(crate) fn resolve_pending(
         &mut self,
-        mut lookup: impl FnMut(ModelRef) -> Result<Option<(NameId, i32)>, ()>,
+        mut lookup: impl FnMut(ModelRef) -> Result<Option<(ModelFileId, i32)>, ()>,
     ) {
         let mut next = self.pending.next_set(0);
         while let Some(index) = next {
@@ -103,7 +103,7 @@ impl ModelSynchronization {
         }
     }
 
-    fn resolve_at(&mut self, index: usize, source: Result<Option<(NameId, i32)>, ()>) {
+    fn resolve_at(&mut self, index: usize, source: Result<Option<(ModelFileId, i32)>, ()>) {
         let Ok(source) = source else {
             let row = &mut self.entities[index / 4][index % 4];
             row.source = None;

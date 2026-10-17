@@ -5,30 +5,30 @@ use super::*;
 pub(super) struct ModelSourceId(u32);
 
 #[derive(Clone)]
-struct Record {
-    name: NameId,
-    state: ModelSourceFile,
-}
-#[derive(Clone, Default)]
 pub(super) struct ModelSources {
-    records: Vec<Record>,
-    by_name: Vec<Option<ModelSourceId>>,
+    records: Vec<ModelSourceFile>,
+    names: qa_core::bindings::OrdinalBindings<NameId>,
 }
 impl ModelSources {
+    pub(super) fn load(capacity: usize) -> Self {
+        Self {
+            records: Vec::new(),
+            names: qa_core::bindings::OrdinalBindings::load(capacity, capacity, 0, true),
+        }
+    }
     pub(super) fn find(&self, name: NameId) -> Option<ModelSourceId> {
-        self.by_name.get(name.0 as usize).copied().flatten()
+        self.names.ordinal(name).map(ModelSourceId)
     }
     pub(super) fn name(&self, source: ModelSourceId) -> Option<NameId> {
-        Some(self.records.get(source.0 as usize)?.name)
+        self.names.get(source.0)
     }
     pub(super) fn get(&self, source: ModelSourceId) -> Option<&ModelSourceFile> {
-        Some(&self.records.get(source.0 as usize)?.state)
+        self.records.get(source.0 as usize)
     }
     pub(super) fn intern(&mut self, name: NameId) -> Result<ModelSourceId, FileError> {
         if let Some(source) = self.find(name) {
             return Ok(source);
         }
-        let index = name.0 as usize;
         let source = ModelSourceId(
             u32::try_from(self.records.len())
                 .map_err(|_| FileError::capacity("model source slots"))?,
@@ -36,17 +36,10 @@ impl ModelSources {
         self.records
             .try_reserve(1)
             .map_err(|_| FileError::capacity("model source slots"))?;
-        self.by_name
-            .try_reserve((index + 1).saturating_sub(self.by_name.len()))
-            .map_err(|_| FileError::capacity("model source names"))?;
-        if self.by_name.len() <= index {
-            self.by_name.resize(index + 1, None);
-        }
-        self.records.push(Record {
-            name,
-            state: ModelSourceFile::Empty,
-        });
-        self.by_name[index] = Some(source);
+        self.names
+            .set(source.0, Some(name))
+            .map_err(|_| FileError::capacity("model source name binding"))?;
+        self.records.push(ModelSourceFile::Empty);
         Ok(source)
     }
     pub(super) fn invalidate(&mut self, name: NameId) -> bool {
@@ -70,12 +63,12 @@ impl ModelSources {
             *self = previous;
         } else {
             for (record, previous) in self.records.iter_mut().zip(previous.records) {
-                if !matches!(previous.state, ModelSourceFile::Empty) {
-                    record.state = previous.state;
+                if !matches!(previous, ModelSourceFile::Empty) {
+                    *record = previous;
                 }
             }
             for record in &mut self.records {
-                record.state.rollback_resources(retained, retained_tags);
+                record.rollback_resources(retained, retained_tags);
             }
         }
     }
@@ -83,11 +76,11 @@ impl ModelSources {
 impl std::ops::Index<ModelSourceId> for ModelSources {
     type Output = ModelSourceFile;
     fn index(&self, source: ModelSourceId) -> &Self::Output {
-        &self.records[source.0 as usize].state
+        &self.records[source.0 as usize]
     }
 }
 impl std::ops::IndexMut<ModelSourceId> for ModelSources {
     fn index_mut(&mut self, source: ModelSourceId) -> &mut Self::Output {
-        &mut self.records[source.0 as usize].state
+        &mut self.records[source.0 as usize]
     }
 }

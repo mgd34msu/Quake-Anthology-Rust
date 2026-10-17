@@ -1034,18 +1034,17 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
     let mut model_name = None;
     let mut skin_name = None;
     for _ in 0..2 {
-        assert!(
-            owner
-                .prepare_registrations(
-                    &fixture.vfs,
-                    [&model, &skin],
-                    profile,
-                    crate::model_assets::RegistrationVariant::Guard(false),
-                    |_| Ok(()),
-                    |_, _| { Err("reject appended model and skin".to_owned()) }
-                )
-                .is_err()
-        );
+        let error = owner
+            .prepare_registrations(
+                &fixture.vfs,
+                [&model, &skin],
+                profile,
+                crate::model_assets::RegistrationVariant::Guard(false),
+                |_| Ok(()),
+                |_, _| Err("reject appended model and skin".to_owned()),
+            )
+            .unwrap_err();
+        assert!(error.contains("reject appended model and skin"), "{error}");
         assert_eq!(owner.assets().counts(), before);
         assert_eq!(cpu.admitted_assets(), Some(before));
         assert_eq!(
@@ -1083,7 +1082,10 @@ fn model_and_skin_pair_backend_retries_keep_name_ids_and_admitted_bindings() {
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
-    assert_eq!(Some(NameId(handles[0] as u32)), model_name);
+    assert_eq!(
+        owner.catalog.files.name(ModelFileId(handles[0] as u32)),
+        model_name
+    );
     assert!(
         owner
             .catalog()

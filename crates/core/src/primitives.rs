@@ -388,6 +388,10 @@ pub enum MusicControl {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelId(pub u32);
+/// Logical renderer registration, independent of names and individual meshes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelFileId(pub u32);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PcmChannels {

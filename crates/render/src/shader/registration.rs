@@ -6,7 +6,7 @@ use crate::{
         resources::{ImageProfile, ImageSettings},
     },
 };
-use qa_core::primitives::{ClientId, EntityId, ModuleId, NameId, RuleSetId};
+use qa_core::primitives::{ClientId, EntityId, ModelFileId, ModuleId, NameId, RuleSetId};
 
 /// File provenance and presentation are independent of resource names and geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,7 +33,7 @@ impl ModelProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaderResource {
     World(u32),
-    Model(NameId),
+    Model(ModelFileId),
     Skin(u32),
     Graphic(NameId),
 }

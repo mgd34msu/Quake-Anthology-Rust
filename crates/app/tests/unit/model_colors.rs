@@ -287,7 +287,7 @@ fn model_color_sources_and_exact_selections_restore_after_profile_and_reload_rej
     let pixels = raster.pixels().to_vec();
     let prefix = owner.assets().counts();
     let ModelFile::Ready { lods, .. } =
-        owner.catalog.files[owner.catalog.registrations[registration.0 as usize].file.0 as usize]
+        owner.catalog.files[owner.catalog.registrations[registration.0 as usize].file]
     else {
         panic!()
     };
