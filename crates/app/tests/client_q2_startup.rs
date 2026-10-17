@@ -1,5 +1,7 @@
 #[path = "support/client_asset_frames.rs"]
 mod asset_frames;
+#[path = "client_q2_startup/published_pictures.rs"]
+mod published_pictures;
 #[path = "support/q2_startup.rs"]
 mod q2_files;
 #[path = "support/sound_registration.rs"]
@@ -134,10 +136,14 @@ impl Server {
 struct Source {
     backend: asset_frames::Source,
     reject_assets: bool,
+    hud_target: bool,
     servers: Vec<Server>,
     time: u64,
 }
 impl qa_app::renderer::AssetPreparer for Source {
+    fn target_size(&self) -> Option<[u32; 2]> {
+        self.hud_target.then_some([64, 48])
+    }
     fn prepare_assets(&mut self, assets: &Assets, required: Option<Limits>) -> Result<(), String> {
         if self.reject_assets {
             self.backend.attempts += 1;
@@ -292,6 +298,7 @@ fn setup(
         Source {
             backend,
             reject_assets: false,
+            hud_target: false,
             servers,
             time: 100,
         },

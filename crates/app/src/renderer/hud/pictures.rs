@@ -6,7 +6,7 @@ use super::{
 use crate::model_assets::ModelAssets;
 use qa_content::vfs::Vfs;
 use qa_core::{
-    names::file_stem,
+    names::{canonical_path, file_stem},
     primitives::{NameId, RuleSetId},
     text::FixedText,
 };
@@ -20,7 +20,7 @@ pub struct Picture {
     shader: ShaderRegistration,
     size: [u32; 2],
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Pictures {
     entries: Vec<(NameId, Picture)>,
     numbers: [[Option<usize>; 11]; 2],
@@ -41,40 +41,13 @@ impl Pictures {
         };
         let mut paths: Vec<_> = vfs
             .files()
-            .filter_map(|(_, path)| {
-                let path = std::str::from_utf8(path).ok()?;
-                if ImageFormat::from_path(path.as_bytes())? == ImageFormat::Lmp
-                    || !(path.starts_with("pics/")
-                        || path.starts_with("players/")
-                        || path.starts_with("tags/"))
-                {
-                    return None;
-                }
-                let base = file_stem(path);
-                Some(format!("{base}.pcx"))
-            })
+            .filter_map(|(_, path)| picture_path(path))
             .collect();
         paths.sort_unstable();
         paths.dedup();
         owner.graphic_images(vfs, font.profile, |images| {
             for path in paths {
-                let loaded = images
-                    .indexed_pcx(
-                        &path,
-                        palette,
-                        Some(255),
-                        None,
-                        ImageUse {
-                            sampler: bitmap_sampler(),
-                            ..ImageUse::pic()
-                        },
-                    )
-                    .map_err(|e| format!("{e:?}"))
-                    .and_then(|image| {
-                        bitmap_shader(images, &path, image, bitmap_sampler(), None)
-                            .map_err(str::to_owned)
-                    });
-                match loaded {
+                match load_picture(images, palette, &path) {
                     Ok(shader) => result.register_receipt(images.assets, &path, shader)?,
                     Err(error) => {
                         qa_console::logger::console(format_args!("HUD picture {path}: {error}\n"))
@@ -84,6 +57,34 @@ impl Pictures {
             Ok(())
         })?;
         Ok(result)
+    }
+    pub(super) fn downloaded(
+        &self,
+        vfs: &Vfs,
+        owner: &mut ModelAssets,
+        rules: RuleSetId,
+        font: &FontAssets,
+        path: &[u8],
+    ) -> Result<Option<Self>, String> {
+        if !matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
+            return Ok(None);
+        }
+        let (Some(path), Some(palette)) = (picture_path(path), font.palette) else {
+            return Ok(None);
+        };
+        if owner.assets().find_name(&path).is_some_and(|name| {
+            self.entries
+                .binary_search_by_key(&name.0, |entry| entry.0.0)
+                .is_ok()
+        }) {
+            return Ok(None);
+        }
+        let mut candidate = self.clone();
+        owner.graphic_images(vfs, font.profile, |images| {
+            let shader = load_picture(images, palette, &path)?;
+            candidate.register_receipt(images.assets, &path, shader)
+        })?;
+        Ok(Some(candidate))
     }
     pub(crate) fn registrations(&self) -> impl Iterator<Item = &ShaderRegistration> + Clone {
         self.entries.iter().map(|entry| &entry.1.shader)
@@ -224,6 +225,34 @@ impl Pictures {
             x = x.saturating_add(16);
         }
     }
+}
+fn load_picture(
+    images: &mut qa_render::material::resources::Images<'_>,
+    palette: qa_render::PaletteId,
+    path: &str,
+) -> Result<ShaderRegistration, String> {
+    let image = images
+        .indexed_pcx(
+            path,
+            palette,
+            Some(255),
+            None,
+            ImageUse {
+                sampler: bitmap_sampler(),
+                ..ImageUse::pic()
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    bitmap_shader(images, path, image, bitmap_sampler(), None).map_err(str::to_owned)
+}
+fn picture_path(path: &[u8]) -> Option<String> {
+    let path = canonical_path(std::str::from_utf8(path).ok()?);
+    if ImageFormat::from_path(path.as_bytes())? == ImageFormat::Lmp
+        || !(path.starts_with("pics/") || path.starts_with("players/") || path.starts_with("tags/"))
+    {
+        return None;
+    }
+    Some(format!("{}.pcx", file_stem(&path)))
 }
 impl Picture {
     fn draw(

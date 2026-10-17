@@ -133,10 +133,14 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
 
     assert!(
         owner
-            .downloaded(&files.vfs, b"MODELS\\LATER.MD2", |_| panic!(
-                "failed source reset prepared"
-            ))
+            .downloaded(
+                &files.vfs,
+                b"MODELS\\LATER.MD2",
+                |_, _| Ok(None::<()>),
+                |_, _| panic!("failed source reset prepared")
+            )
             .unwrap()
+            .0
     );
     resources.retry_published_file(b"models/later.md2");
     assert_eq!(
@@ -182,10 +186,14 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
     let counts = owner.assets.counts();
     assert!(
         !owner
-            .downloaded(&files.vfs, b"models/later.md2", |_| panic!(
-                "cached publication prepared"
-            ))
+            .downloaded(
+                &files.vfs,
+                b"models/later.md2",
+                |_, _| Ok(None::<()>),
+                |_, _| panic!("cached publication prepared")
+            )
             .unwrap()
+            .0
     );
     assert_eq!(owner.assets.counts(), counts);
 }
@@ -237,10 +245,14 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
     );
     assert!(
         owner
-            .downloaded(&files.vfs, request.name, |_| panic!(
-                "named failure reset prepared"
-            ))
+            .downloaded(
+                &files.vfs,
+                request.name,
+                |_, _| Ok(None::<()>),
+                |_, _| panic!("named failure reset prepared")
+            )
             .unwrap()
+            .0
     );
     assert_eq!(
         owner
@@ -292,10 +304,14 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
     let counts = owner.assets.counts();
     assert!(
         !owner
-            .downloaded(&files.vfs, request.name, |_| panic!(
-                "named failure reset prepared"
-            ))
+            .downloaded(
+                &files.vfs,
+                request.name,
+                |_, _| Ok(None::<()>),
+                |_, _| panic!("named failure reset prepared")
+            )
             .unwrap()
+            .0
     );
     assert_eq!(owner.assets.counts(), counts);
 }
@@ -374,12 +390,17 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
     publish_file(&mut files, "models/test/skin0.pcx", &support::pcx(37));
     assert_eq!(
         owner
-            .downloaded(&files.vfs, b"models/test/skin0.pcx", |assets| {
-                let candidate =
-                    CpuBackend::load_with_assets(8, 8, assets).map_err(str::to_owned)?;
-                assert_eq!(candidate.admitted_assets(), Some(assets.counts()));
-                Err("published material backend rejected".to_owned())
-            })
+            .downloaded(
+                &files.vfs,
+                b"models/test/skin0.pcx",
+                |_, _| Ok(None::<()>),
+                |assets, _| {
+                    let candidate =
+                        CpuBackend::load_with_assets(8, 8, assets).map_err(str::to_owned)?;
+                    assert_eq!(candidate.admitted_assets(), Some(assets.counts()));
+                    Err("published material backend rejected".to_owned())
+                }
+            )
             .unwrap_err(),
         "published material backend rejected"
     );
@@ -404,10 +425,14 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
     );
     assert!(
         owner
-            .downloaded(&files.vfs, b"MoDeLs\\TeSt\\SkIn0.PcX", |assets| {
-                cpu.prepare_assets(assets, None).map_err(str::to_owned)
-            })
+            .downloaded(
+                &files.vfs,
+                b"MoDeLs\\TeSt\\SkIn0.PcX",
+                |_, _| Ok(None::<()>),
+                |assets, _| { cpu.prepare_assets(assets, None).map_err(str::to_owned) }
+            )
             .unwrap()
+            .0
     );
     let admitted = owner.assets.counts();
     assert_eq!(admitted.models, prefix.models);
@@ -467,10 +492,16 @@ fn published_md2_skin_rebinds_only_missing_materials_after_backend_admission() {
     files.vfs.take_lookup_count();
     assert!(
         !owner
-            .downloaded(&files.vfs, b"models/test/skin0.pcx", |_| {
-                panic!("already refreshed material prepared");
-            })
+            .downloaded(
+                &files.vfs,
+                b"models/test/skin0.pcx",
+                |_, _| Ok(None::<()>),
+                |_, _| {
+                    panic!("already refreshed material prepared");
+                }
+            )
             .unwrap()
+            .0
     );
     assert_eq!(files.vfs.take_lookup_count(), 0);
     assert_eq!(owner.assets.counts(), admitted);

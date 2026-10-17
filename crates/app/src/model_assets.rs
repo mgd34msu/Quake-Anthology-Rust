@@ -2286,12 +2286,13 @@ impl RegistrationCheckpoint {
 
 impl ModelAssets {
     /// Admit newly available model images before replacing their fallback choices.
-    pub(crate) fn downloaded(
+    pub(crate) fn downloaded<T>(
         &mut self,
         vfs: &Vfs,
         path: &[u8],
-        prepare: impl FnOnce(&Assets) -> Result<(), String>,
-    ) -> Result<bool, String> {
+        stage: impl FnOnce(&mut Self, bool) -> Result<Option<T>, String>,
+        prepare: impl FnOnce(&Assets, Option<&T>) -> Result<(), String>,
+    ) -> Result<(bool, Option<T>), String> {
         let image = std::str::from_utf8(path)
             .ok()
             .and_then(|path| self.assets.find_name(path));
@@ -2331,22 +2332,18 @@ impl ModelAssets {
                 }
             }
         }
-        if targets.is_empty() {
-            return Ok(self.retry_published_file(path));
-        }
         let initial = self.initial_registration;
         if !initial && self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("download refresh requires a published resource prefix".to_owned());
         }
-        let checkpoint = RegistrationCheckpoint::base(self)?;
-        let result: Result<(), String> = (|| {
-            let image_path = self
-                .assets
-                .name(image.ok_or("published model image")?)
-                .ok_or("published model image name")?
-                .to_owned();
+        let checkpoint = ProfileCheckpoint::capture(self)?;
+        let result: Result<(bool, Option<T>), String> = (|| {
+            let image_path = image
+                .and_then(|image| self.assets.name(image))
+                .map(str::to_owned);
             let mut updates = Vec::with_capacity(targets.len());
             for &(registration, binding, skin, occurrence) in &targets {
+                let image_path = image_path.as_deref().ok_or("published model image name")?;
                 let entry = &self.catalog.registrations[registration];
                 let profile = entry.profile;
                 let (ready, _) = entry.state.ready().ok_or("published model registration")?;
@@ -2404,11 +2401,14 @@ impl ModelAssets {
                 materials.missing_image = None;
                 updates.push((registration, binding, occurrence, materials, receipt));
             }
+            let staged = stage(self, !updates.is_empty())?;
             let counts = self.assets.counts();
-            if !initial {
+            let changed =
+                !updates.is_empty() || staged.is_some() || counts != checkpoint.registration.assets;
+            if !initial && changed {
                 self.validate_admission(counts)
                     .map_err(|error| format!("download publication: {error:?}"))?;
-                prepare(&self.assets)?;
+                prepare(&self.assets, staged.as_ref())?;
             }
             // Every fallible check precedes backend admission. Preserve each
             // occurrence so an already active native remap still selects its target.
@@ -2420,19 +2420,20 @@ impl ModelAssets {
                     value.registrations[occurrence.0 as usize] = receipt;
                 }
             }
-            if !initial {
+            if !initial && changed {
                 self.apply_admission(counts);
             }
-            Ok(())
+            Ok((changed, staged))
         })();
-        if let Err(error) = result {
-            checkpoint
-                .rollback(self, RegistrationRollback::Retry)
-                .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
-            return Err(error);
+        match result {
+            Ok((changed, staged)) => Ok((self.retry_published_file(path) || changed, staged)),
+            Err(error) => {
+                checkpoint
+                    .rollback(self)
+                    .map_err(|rollback| format!("{error}; rollback: {rollback}"))?;
+                Err(error)
+            }
         }
-        self.retry_published_file(path);
-        Ok(true)
     }
 
     fn retry_published_file(&mut self, path: &[u8]) -> bool {

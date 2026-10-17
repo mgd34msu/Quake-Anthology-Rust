@@ -488,8 +488,8 @@ impl SceneWorldAppend<'_> {
 /// A cold HUD candidate occupies the existing role slot only on commit.
 pub struct SceneHudAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
-    target: &'a mut Option<hud::HudAssets>,
-    candidate: hud::HudAssets,
+    target: &'a mut [Option<hud::HudAssets>; 5],
+    candidates: Vec<hud::HudUpdate>,
     ui_commands: &'a mut usize,
     reserved_ui_commands: usize,
 }
@@ -497,9 +497,19 @@ impl SceneHudAppend<'_> {
     pub fn limits(&self) -> Limits {
         self.frontend.limits()
     }
+    pub(crate) fn registrations(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+        self.candidates
+            .iter()
+            .flat_map(hud::HudUpdate::registrations)
+    }
     pub fn commit(self) {
         self.frontend.commit();
-        *self.target = Some(self.candidate);
+        for candidate in self.candidates {
+            let slot = candidate.rules() as usize;
+            candidate.commit(&mut self.target[slot]);
+        }
         *self.ui_commands = self.reserved_ui_commands;
     }
 }
@@ -763,14 +773,48 @@ impl SceneComposer {
             ui_command_capacity(self.console.as_ref(), true)?,
         )?;
         let frontend = self.frontend.stage_capacity(limits)?;
-        let target = &mut self.hud[candidate.rules() as usize];
         Ok(SceneHudAppend {
             frontend,
-            target,
-            candidate,
+            target: &mut self.hud,
+            candidates: vec![hud::HudUpdate::Replace(candidate)],
             ui_commands: &mut self.ui_commands,
             reserved_ui_commands,
         })
+    }
+
+    pub(crate) fn stage_downloaded_hud(
+        &mut self,
+        vfs: &qa_content::vfs::Vfs,
+        owner: &mut crate::model_assets::ModelAssets,
+        path: &[u8],
+        models_changed: bool,
+    ) -> Result<Option<SceneHudAppend<'_>>, String> {
+        let mut candidates = Vec::new();
+        for hud in self.hud.iter().flatten() {
+            if let Some(candidate) = hud.downloaded(vfs, owner, path)? {
+                candidates.push(candidate);
+            }
+        }
+        if candidates.is_empty() && !models_changed {
+            return Ok(None);
+        }
+        let limits = self
+            .frontend
+            .limits()
+            .for_assets(owner.assets())?
+            .for_model_choices(owner.catalog().max_choice_nodes())?;
+        let frontend = match self.frame.as_mut() {
+            Some(frame) => self.frontend.stage_capacity_with_frame(limits, frame),
+            None => self.frontend.stage_capacity(limits),
+        }?;
+        let reserved_ui_commands = self.ui_commands;
+        Ok(Some(SceneHudAppend {
+            frontend,
+            target: &mut self.hud,
+            candidates,
+            ui_commands: &mut self.ui_commands,
+            reserved_ui_commands,
+        }))
     }
 
     pub(crate) fn load_video_graphics(

@@ -1246,10 +1246,13 @@ impl crate::host::FrameHost {
 
     pub(crate) fn finish_client_downloads(
         &mut self,
-        mut prepare: impl FnMut(
+        mut publish: impl FnMut(
+            &mut crate::model_assets::ModelAssets,
+            &Vfs,
+            &[u8],
             &mut Option<crate::renderer::SceneComposer>,
-            &qa_render::Assets,
-        ) -> Result<(), String>,
+            &mut crate::modules::renderer_contexts::Contexts,
+        ) -> Result<bool, String>,
     ) {
         for index in 0..self.runtime.client_resources.len() {
             let Some(resources) = self.runtime.client_resources[index].as_mut() else {
@@ -1276,9 +1279,13 @@ impl crate::host::FrameHost {
                         .model_assets
                         .as_mut()
                         .map_or(Ok(false), |owner| {
-                            owner.downloaded(&self.runtime.vfs, name, |assets| {
-                                prepare(&mut self.runtime.scene, assets)
-                            })
+                            publish(
+                                owner,
+                                &self.runtime.vfs,
+                                name,
+                                &mut self.runtime.scene,
+                                &mut self.renderer_contexts,
+                            )
                         })
                 });
             let previous = std::mem::replace(&mut downloads.transfer, Transfer::Idle);

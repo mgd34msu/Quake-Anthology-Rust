@@ -207,11 +207,36 @@ impl FrameHost {
             true
         };
         if resource_settings_ready {
-            self.finish_client_downloads(|scene, assets| {
-                let backend = preparer
-                    .as_deref_mut()
-                    .ok_or("download refresh requires a resource preparer")?;
-                ModelPreparer { scene, backend }.prepare(assets, None, 0)
+            self.finish_client_downloads(|owner, vfs, path, scene, contexts| {
+                let (changed, append) = owner.downloaded(
+                    vfs,
+                    path,
+                    |owner, models_changed| {
+                        let Some(scene) = scene.as_mut() else {
+                            return Ok(None);
+                        };
+                        let Some(scene) =
+                            scene.stage_downloaded_hud(vfs, owner, path, models_changed)?
+                        else {
+                            return Ok(None);
+                        };
+                        let graphs = contexts.stage_graphics(scene.registrations())?;
+                        Ok(Some((scene, graphs)))
+                    },
+                    |assets, append| {
+                        let backend = preparer
+                            .as_deref_mut()
+                            .ok_or("download refresh requires a resource preparer")?;
+                        backend.prepare_assets(assets, append.map(|append| append.0.limits()))
+                    },
+                )?;
+                if let Some((scene, graphs)) = append {
+                    for graph in graphs {
+                        graph.commit();
+                    }
+                    scene.commit();
+                }
+                Ok(changed)
             });
             self.advance_startup_files();
             if let Some(preparer) = preparer.as_mut() {

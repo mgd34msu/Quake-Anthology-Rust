@@ -125,7 +125,74 @@ pub struct HudAssets {
     notify: Layout,
     pictures: pictures::Pictures,
 }
+pub(crate) enum HudUpdate {
+    Replace(HudAssets),
+    Pictures {
+        rules: RuleSetId,
+        profile: ModelProfile,
+        pictures: pictures::Pictures,
+    },
+}
+impl HudUpdate {
+    pub(crate) fn rules(&self) -> RuleSetId {
+        match self {
+            Self::Replace(hud) => hud.rules,
+            Self::Pictures { rules, .. } => *rules,
+        }
+    }
+    pub(crate) fn registrations(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+        let whole = match self {
+            Self::Replace(hud) => Some(hud),
+            _ => None,
+        };
+        let pictures = match self {
+            Self::Pictures {
+                profile, pictures, ..
+            } => Some((*profile, pictures)),
+            _ => None,
+        };
+        whole
+            .into_iter()
+            .flat_map(|hud| {
+                hud.registrations()
+                    .map(move |receipt| (hud.profile(), receipt))
+            })
+            .chain(pictures.into_iter().flat_map(|(profile, pictures)| {
+                pictures
+                    .registrations()
+                    .map(move |receipt| (profile, receipt))
+            }))
+    }
+    pub(crate) fn commit(self, target: &mut Option<HudAssets>) {
+        match self {
+            Self::Replace(hud) => *target = Some(hud),
+            Self::Pictures { pictures, .. } => {
+                // This candidate was staged from the same retained HUD slot.
+                if let Some(hud) = target {
+                    hud.pictures = pictures;
+                }
+            }
+        }
+    }
+}
 impl HudAssets {
+    pub(crate) fn downloaded(
+        &self,
+        vfs: &qa_content::vfs::Vfs,
+        owner: &mut ModelAssets,
+        path: &[u8],
+    ) -> Result<Option<HudUpdate>, String> {
+        Ok(self
+            .pictures
+            .downloaded(vfs, owner, self.rules, &self.font, path)?
+            .map(|pictures| HudUpdate::Pictures {
+                rules: self.rules,
+                profile: self.profile(),
+                pictures,
+            }))
+    }
     pub fn from_font(rules: RuleSetId, font: Arc<FontAssets>, width: u32) -> Result<Self, String> {
         let rules_data = text_rules(rules);
         let notify = Layout::load(
