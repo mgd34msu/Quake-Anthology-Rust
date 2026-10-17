@@ -47,9 +47,13 @@ impl Ord for FileRef {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+type PackagePrecedence = ((u8, u64), Arc<[u8]>);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MountPrecedence {
     priority: i32,
+    product: u32,
+    package: Option<PackagePrecedence>,
     mount: u32,
 }
 
@@ -60,7 +64,7 @@ pub struct SourcePrecedence {
     mount: MountPrecedence,
 }
 impl SourcePrecedence {
-    /// Greater means higher priority, then later mounted. Different VFS owners
+    /// Product priority, native package order, then mount order. Different VFS owners
     /// have no comparable search order, even if their numeric ranks coincide.
     pub fn compare(&self, other: &Self) -> Option<CmpOrdering> {
         Arc::ptr_eq(&self.owner, &other.owner).then(|| self.mount.cmp(&other.mount))
@@ -79,15 +83,20 @@ pub struct MountInfo {
     pub id: MountId,
     pub path: PathBuf,
     pub kind: MountKind,
-    /// Larger priorities win; equally ranked mounts prefer the last mounted.
+    /// Larger product priorities win. Native package order applies within a
+    /// product; equal-priority products prefer the later mounted root.
     pub priority: i32,
     active: bool,
     settings_only: bool,
+    product: Option<MountId>,
+    package: Option<PackagePrecedence>,
 }
 impl MountInfo {
     fn precedence(&self) -> MountPrecedence {
         MountPrecedence {
             priority: self.priority,
+            product: self.product.unwrap_or(self.id).0,
+            package: self.package.clone(),
             mount: self.id.0,
         }
     }
@@ -227,9 +236,7 @@ impl Vfs {
                 .filter(|(_, entry)| {
                     entry.mount == root.0 as usize
                         && !entry.name.contains(&b'/')
-                        && [b".pak".as_slice(), b".pk3", b".pkz", b".kpf", b".zip"]
-                            .iter()
-                            .any(|extension| entry.name.ends_with(extension))
+                        && ArchiveKind::from_path(&entry.name).is_some()
                 })
                 .filter_map(|(entry, value)| {
                     Some((
@@ -239,20 +246,14 @@ impl Vfs {
                     ))
                 })
                 .collect();
-            packages.sort_unstable_by(|a, b| {
-                package_order(&a.1)
-                    .cmp(&package_order(&b.1))
-                    .then(a.1.cmp(&b.1))
-            });
+            packages.sort_unstable_by(|a, b| compare_packages(&a.1, &b.1));
             let mut mounts = vec![root];
-            for (rank, (reference, _, name)) in packages.into_iter().enumerate() {
+            for (reference, _, name) in packages {
                 let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
                 let archive = Arc::new(Archive::parse(file)?);
                 let name = std::str::from_utf8(&name).map_err(|_| VfsError::Path)?;
                 let native_path = self.mounts[root.0 as usize].path.join(name);
-                let rank = i32::try_from(rank + 1).map_err(|_| VfsError::Capacity)?;
-                let priority = priority.checked_add(rank).ok_or(VfsError::Capacity)?;
-                mounts.push(self.mount_archive(&native_path, priority, archive)?);
+                mounts.push(self.mount_archive_at(&native_path, priority, archive, Some(root))?);
             }
             Ok(mounts)
         })();
@@ -292,7 +293,14 @@ impl Vfs {
     ) -> Result<MountId, VfsError> {
         let root = files::canonicalize(path)?;
         let entries = scan_directory(&root, self.mounts.len(), settings_only, &[])?;
-        self.publish(root, MountKind::Directory, priority, settings_only, entries)
+        self.publish(
+            root,
+            MountKind::Directory,
+            priority,
+            settings_only,
+            None,
+            entries,
+        )
     }
 
     /// Refresh only loose files below this canonical directory prefix. Empty
@@ -321,11 +329,64 @@ impl Vfs {
         Ok(())
     }
 
+    /// Index a completed owned download, then admit package members through
+    /// the same archive loader as startup. Repeated resource-refresh attempts
+    /// reuse the package mount; network publication never replaces its file.
+    pub fn refresh_published_file(
+        &mut self,
+        id: MountId,
+        name: &[u8],
+    ) -> Result<Option<MountId>, VfsError> {
+        let name = normalize(name)?;
+        let root = self
+            .directory_path(id)
+            .ok_or(VfsError::Handle)?
+            .to_path_buf();
+        let prefix = name
+            .iter()
+            .rposition(|&byte| byte == b'/')
+            .map_or(&b""[..], |end| &name[..end]);
+        self.refresh_directory_prefix(id, prefix)?;
+        if ArchiveKind::from_path(&name).is_none() {
+            return Ok(None);
+        }
+        // This authority-bound cold lookup deliberately ignores another
+        // product's higher-priority loose file with the same virtual name.
+        let reference = self
+            .files_in_mount(id)
+            .find(|(_, candidate)| *candidate == name)
+            .map(|(file, _)| file)
+            .ok_or(VfsError::Missing)?;
+        let member = self.origin(&reference).ok_or(VfsError::Handle)?.member;
+        let path = root.join(std::str::from_utf8(member).map_err(|_| VfsError::Path)?);
+        if let Some(existing) = self
+            .mounts
+            .iter()
+            .find(|mount| mount.active && mount.product == Some(id) && mount.path == path)
+        {
+            return Ok(Some(existing.id));
+        }
+        let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
+        let archive = Arc::new(Archive::parse(file)?);
+        let priority = self.mounts[id.0 as usize].priority;
+        self.mount_archive_at(&path, priority, archive, Some(id))
+            .map(Some)
+    }
+
     pub fn mount_archive(
         &mut self,
         path: &Path,
         priority: i32,
         archive: Arc<Archive>,
+    ) -> Result<MountId, VfsError> {
+        self.mount_archive_at(path, priority, archive, None)
+    }
+    fn mount_archive_at(
+        &mut self,
+        path: &Path,
+        priority: i32,
+        archive: Arc<Archive>,
+        product: Option<MountId>,
     ) -> Result<MountId, VfsError> {
         let kind = match archive.kind {
             ArchiveKind::Pak => MountKind::Pak,
@@ -350,7 +411,7 @@ impl Vfs {
                 length: entry.length,
             });
         }
-        self.publish(path.to_path_buf(), kind, priority, false, entries)
+        self.publish(path.to_path_buf(), kind, priority, false, product, entries)
     }
 
     fn publish(
@@ -359,12 +420,27 @@ impl Vfs {
         kind: MountKind,
         priority: i32,
         settings_only: bool,
+        product: Option<MountId>,
         entries: Vec<Entry>,
     ) -> Result<MountId, VfsError> {
         if self.mounts.len() >= 65536 {
             return Err(VfsError::Capacity);
         }
         let id = MountId(self.mounts.len() as u32);
+        // Package names, not an insertion rank, keep retained asset precedence
+        // valid when a later download sorts before an already loaded package.
+        let package = if let Some(product) = product {
+            let root = self
+                .mounts
+                .get(product.0 as usize)
+                .filter(|mount| mount.active && mount.kind == MountKind::Directory)
+                .ok_or(VfsError::Handle)?;
+            let relative = path.strip_prefix(&root.path).map_err(|_| VfsError::Path)?;
+            let name = normalize(relative.as_os_str().as_encoded_bytes())?;
+            Some((package_order(&name), Arc::from(name)))
+        } else {
+            None
+        };
         let mut mounts = self.mounts.clone();
         mounts.push(MountInfo {
             id,
@@ -373,6 +449,8 @@ impl Vfs {
             priority,
             active: true,
             settings_only,
+            product,
+            package,
         });
         let (entries, generation) = self.stage_entries(|_| false, entries)?;
         let index = FileIndex::build(&entries, &mounts)?;
@@ -799,6 +877,10 @@ fn scan_directory(
         }
     }
     Ok(entries)
+}
+
+fn compare_packages(a: &[u8], b: &[u8]) -> CmpOrdering {
+    package_order(a).cmp(&package_order(b)).then(a.cmp(b))
 }
 
 fn package_order(name: &[u8]) -> (u8, u64) {

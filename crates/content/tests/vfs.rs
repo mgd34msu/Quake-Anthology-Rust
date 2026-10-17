@@ -20,6 +20,24 @@ impl Drop for Fixture {
     }
 }
 
+fn pack(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let mut bytes = b"PACK\0\0\0\0\0\0\0\0".to_vec();
+    let mut directory = Vec::new();
+    for &(name, data) in entries {
+        let mut row = [0; 64];
+        row[..name.len()].copy_from_slice(name);
+        row[56..60].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        row[60..64].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        directory.extend(row);
+        bytes.extend(data);
+    }
+    let offset = bytes.len() as u32;
+    bytes[4..8].copy_from_slice(&offset.to_le_bytes());
+    bytes[8..12].copy_from_slice(&(directory.len() as u32).to_le_bytes());
+    bytes.extend(directory);
+    bytes
+}
+
 #[test]
 fn retail_kpf_package_uses_the_same_archive_reader_and_localization_catalog() {
     let Some(root) = std::env::var_os("QA_Q2_RERELEASE_KPF_ROOT") else {
@@ -299,23 +317,6 @@ fn archive_priority_and_native_duplicate_member_order_are_preserved() {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("ranges");
     let path = root.0.join("pak0.pak");
-    fn pack(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
-        let mut bytes = b"PACK\0\0\0\0\0\0\0\0".to_vec();
-        let mut directory = Vec::new();
-        for &(name, data) in entries {
-            let mut row = [0; 64];
-            row[..name.len()].copy_from_slice(name);
-            row[56..60].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
-            row[60..64].copy_from_slice(&(data.len() as u32).to_le_bytes());
-            directory.extend(row);
-            bytes.extend(data);
-        }
-        let offset = bytes.len() as u32;
-        bytes[4..8].copy_from_slice(&offset.to_le_bytes());
-        bytes[8..12].copy_from_slice(&(directory.len() as u32).to_le_bytes());
-        bytes.extend(directory);
-        bytes
-    }
     let skin = b"models/monsters/tank/../ctank/skin.pcx";
     qa_platform::files::write(
         &path,
@@ -797,4 +798,128 @@ fn directory_refresh_preserves_settings_filter_and_failed_scan_is_atomic() {
         vfs.read_to_vec(&accepted, 16, &mut reader).unwrap(),
         b"accepted"
     );
+}
+
+#[test]
+fn published_packages_share_startup_order_keep_handles_and_retry_without_duplicate_mounts() {
+    let root = Fixture::new("published-packages");
+    qa_platform::files::write(root.0.join("shared"), b"loose").unwrap();
+    qa_platform::files::write(root.0.join("pak2.pak"), pack(&[(b"shared", b"pak2")])).unwrap();
+    let mut vfs = Vfs::default();
+    let mounts = vfs.mount_product(&root.0, 100).unwrap();
+    let parent = mounts[0];
+    let retained = vfs.open(b"shared").unwrap();
+    let retained_precedence = vfs.source_precedence(&retained).unwrap();
+    let mut reader = Default::default();
+    let read = |vfs: &Vfs, name: &[u8], reader: &mut qa_formats::archive::ArchiveReader| {
+        let file = vfs.open(name).unwrap();
+        vfs.read_to_vec(&file, 4096, reader).unwrap()
+    };
+    for (name, bytes, expected) in [
+        (
+            "pak10.pak",
+            pack(&[(b"shared", b"pak10"), (b"models/late", b"new model")]),
+            b"pak10".as_slice(),
+        ),
+        ("pak1.pak", pack(&[(b"shared", b"pak1")]), b"pak10"),
+        ("z.pk3", zip::stored_zip(&[(b"shared", b"z")]), b"z"),
+        ("a.pk3", zip::stored_zip(&[(b"shared", b"a")]), b"z"),
+        (
+            "Middle.KPF",
+            zip::stored_zip(&[(b"shared", b"middle")]),
+            b"z",
+        ),
+    ] {
+        qa_platform::files::write(root.0.join(name), bytes).unwrap();
+        let package = vfs
+            .refresh_published_file(parent, name.as_bytes())
+            .unwrap()
+            .unwrap();
+        let count = vfs.mounts().count();
+        if name == "pak1.pak" {
+            let member = vfs.files_in_mount(package).next().unwrap().0;
+            assert_eq!(
+                retained_precedence.compare(&vfs.source_precedence(&member).unwrap()),
+                Some(std::cmp::Ordering::Greater)
+            );
+        }
+        assert_eq!(
+            vfs.refresh_published_file(parent, name.as_bytes()).unwrap(),
+            Some(package)
+        );
+        assert_eq!(vfs.mounts().count(), count);
+        assert_eq!(read(&vfs, b"shared", &mut reader), expected);
+        assert_eq!(
+            vfs.read_to_vec(&retained, 4096, &mut reader).unwrap(),
+            b"pak2"
+        );
+    }
+    assert_eq!(read(&vfs, b"models/late", &mut reader), b"new model");
+    // A winning file from a different mount cannot redirect this authority-bound publication.
+    let other = root.0.join("other");
+    qa_platform::files::create_dir_all(&other).unwrap();
+    qa_platform::files::create_dir_all(other.join("packs")).unwrap();
+    qa_platform::files::write(other.join("packs/new.pk3"), b"not an archive").unwrap();
+    qa_platform::files::write(other.join("shared"), b"higher product").unwrap();
+    vfs.mount_directory(&other, 101).unwrap();
+    qa_platform::files::create_dir_all(root.0.join("packs")).unwrap();
+    qa_platform::files::write(
+        root.0.join("packs/new.pk3"),
+        zip::stored_zip(&[(b"sound/late.wav", b"selected product")]),
+    )
+    .unwrap();
+    let package = vfs
+        .refresh_published_file(parent, b"packs/new.pk3")
+        .unwrap()
+        .unwrap();
+    assert_eq!(vfs.files_in_mount(package).count(), 1);
+    assert_eq!(
+        read(&vfs, b"sound/late.wav", &mut reader),
+        b"selected product"
+    );
+    assert_eq!(read(&vfs, b"packs/new.pk3", &mut reader), b"not an archive");
+    assert_eq!(read(&vfs, b"shared", &mut reader), b"higher product");
+}
+
+#[test]
+fn malformed_published_packages_never_admit_members_or_replace_existing_winners() {
+    let root = Fixture::new("bad-published-packages");
+    qa_platform::files::write(root.0.join("shared"), b"retained").unwrap();
+    let mut vfs = Vfs::default();
+    let parent = vfs.mount_directory(&root.0, 0).unwrap();
+    let retained = vfs.open(b"shared").unwrap();
+    for (name, data) in [
+        ("broken.pk3", b"not a ZIP".to_vec()),
+        (
+            "escape.pk3",
+            zip::stored_zip(&[(b"../outside", b"rejected")]),
+        ),
+    ] {
+        qa_platform::files::write(root.0.join(name), data).unwrap();
+        let count = vfs.mounts().count();
+        assert!(vfs.refresh_published_file(parent, name.as_bytes()).is_err());
+        assert_eq!(vfs.mounts().count(), count);
+        let winning = vfs.open(b"shared").unwrap();
+        assert_eq!(vfs.origin(&winning).unwrap().mount, parent);
+        assert_eq!(
+            vfs.read_to_vec(&winning, 4096, &mut Default::default())
+                .unwrap(),
+            b"retained"
+        );
+        assert!(vfs.open(b"outside").is_none());
+    }
+    qa_platform::files::write(root.0.join("plain"), b"plain bytes").unwrap();
+    assert_eq!(vfs.refresh_published_file(parent, b"plain").unwrap(), None);
+    assert_eq!(vfs.mounts().count(), 1);
+    let mut reader = Default::default();
+    assert_eq!(
+        vfs.read_to_vec(&retained, 4096, &mut reader).unwrap(),
+        b"retained"
+    );
+    for suffix in [b"pak".as_slice(), b"pk3", b"pkz", b"kpf", b"zip"] {
+        assert!(qa_formats::archive::ArchiveKind::from_path(suffix).is_none());
+        let mut path = b"packs/test.".to_vec();
+        path.extend_from_slice(suffix);
+        assert!(qa_formats::archive::ArchiveKind::from_path(&path).is_some());
+    }
 }

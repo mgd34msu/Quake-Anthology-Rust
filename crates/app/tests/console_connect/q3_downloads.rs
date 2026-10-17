@@ -1,5 +1,7 @@
 use super::*;
 use qa_network::downloads::{self, Chunk};
+#[path = "../../../formats/tests/support/stored_zip.rs"]
+mod zip;
 
 fn command(host: &mut FrameHost, source: &mut Source, text: &str, time: u64) {
     host.console.append(text, context()).unwrap();
@@ -223,6 +225,43 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     collect(&mut server, &mut native, 130);
     assert_eq!(bytes(&host, b"maps/broken.bin"), Some(b"abcd".to_vec()));
     assert_eq!(host.local_clients[0], Some(client));
+    let package = zip::stored_zip(&[(b"models/downloaded.bin", b"queued package member")]);
+    command(&mut host, &mut source, "download packs/late.pk3\n", 140);
+    collect(&mut server, &mut native, 140);
+    assert!(bytes(&host, b"models/downloaded.bin").is_none());
+    send(&mut server, socket, local, &mut native, 150, |writer, _| {
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 0,
+                total: Some(package.len() as u32),
+                bytes: &package,
+            },
+            writer,
+        )
+        .unwrap();
+        downloads::write_service(
+            Q3,
+            Chunk::Block {
+                number: 1,
+                total: None,
+                bytes: &[],
+            },
+            writer,
+        )
+        .unwrap();
+        Ok(())
+    });
+    frame(&mut host, &mut source, 150);
+    collect(&mut server, &mut native, 150);
+    assert_eq!(
+        bytes(&host, b"models/downloaded.bin"),
+        Some(b"queued package member".to_vec())
+    );
+    let reference = host.runtime.vfs.open(b"models/downloaded.bin").unwrap();
+    let origin = host.runtime.vfs.origin(&reference).unwrap();
+    assert_eq!(origin.kind, qa_content::vfs::MountKind::Pk3);
+    assert!(origin.path.ends_with("packs/late.pk3"));
 }
 
 #[test]

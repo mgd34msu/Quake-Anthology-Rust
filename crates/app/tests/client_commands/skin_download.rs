@@ -1,6 +1,8 @@
 use super::*;
 #[path = "../support/client_asset_frames.rs"]
 mod frames;
+#[path = "../../../formats/tests/support/stored_zip.rs"]
+mod zip;
 
 struct Reject(usize);
 impl qa_app::renderer::AssetPreparer for Reject {
@@ -24,6 +26,12 @@ fn call(
 }
 
 pub(crate) fn downloaded_skins(native: bool) {
+    for packaged in [false, true] {
+        downloaded_skin(native, packaged);
+    }
+}
+
+fn downloaded_skin(native: bool, packaged: bool) {
     let mut fixture = model_support::Fixture::surfaces();
     let path = "models/late.skin";
     let bytes = b"body,textures/glow\nglow,textures/body\n";
@@ -105,8 +113,25 @@ pub(crate) fn downloaded_skins(native: bool) {
         .bind("cl_allowDownload", context)
         .unwrap();
     host.console.cvars.force_write(allow, "1").unwrap();
+    if packaged {
+        for name in [
+            "allow_download_maps",
+            "allow_download_models",
+            "allow_download_sounds",
+            "allow_download_players",
+        ] {
+            let view = host.console.cvars.bind(name, context).unwrap();
+            host.console.cvars.force_write(view, "1").unwrap();
+        }
+    }
+    let download_path = if packaged { "packs/late.pk3" } else { path };
+    let download_bytes = if packaged {
+        zip::stored_zip(&[(path.as_bytes(), bytes)])
+    } else {
+        bytes.to_vec()
+    };
     host.console
-        .append(&format!("download {path}\n"), context)
+        .append(&format!("download {download_path}\n"), context)
         .unwrap();
     host.execute_commands();
     source.step(&mut host);
@@ -115,7 +140,7 @@ pub(crate) fn downloaded_skins(native: bool) {
         Protocol::Quake2_34,
         qa_network::downloads::Chunk::Sequential {
             percent: 100,
-            bytes: Some(bytes),
+            bytes: Some(&download_bytes),
             compressed: false,
         },
         &mut block,
@@ -199,6 +224,6 @@ pub(crate) fn downloaded_skins(native: bool) {
     assert!(host.runtime.scene.as_mut().unwrap().recycle(packet).is_ok());
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     println!(
-        "queued skin publication, backend rollback and native model bindings passed: native={native}"
+        "queued skin publication, backend rollback and native model bindings passed: native={native}, packaged={packaged}"
     );
 }

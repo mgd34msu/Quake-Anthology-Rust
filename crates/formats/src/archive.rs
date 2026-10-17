@@ -12,6 +12,18 @@ pub enum ArchiveKind {
     Pak,
     Zip,
 }
+impl ArchiveKind {
+    /// Package suffixes in an already canonical VFS path. The archive reader
+    /// still validates its header; a suffix never certifies the file contents.
+    pub fn from_path(path: &[u8]) -> Option<Self> {
+        let suffix = &path[path.iter().rposition(|byte| *byte == b'.')? + 1..];
+        match suffix {
+            b"pak" => Some(Self::Pak),
+            b"pk3" | b"pkz" | b"kpf" | b"zip" => Some(Self::Zip),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compression {
     Stored,

@@ -268,10 +268,7 @@ pub enum AssetCategory {
 
 /// Classify the already canonical content path for native permission cvars.
 pub fn category(protocol: Protocol, name: &[u8]) -> AssetCategory {
-    if [b".pak".as_slice(), b".pkz", b".pk3"]
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
-    {
+    if qa_formats::archive::ArchiveKind::from_path(name).is_some() {
         AssetCategory::Package
     } else {
         content_category(protocol, name)

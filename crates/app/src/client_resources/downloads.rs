@@ -1454,61 +1454,76 @@ impl crate::host::FrameHost {
         ) -> Result<bool, String>,
     ) {
         for index in 0..self.runtime.client_resources.len() {
-            let Some(resources) = self.runtime.client_resources[index].as_mut() else {
-                continue;
-            };
-            let Some(downloads) = &mut resources.downloads else {
-                continue;
-            };
-            let Transfer::Published { request, .. } = &downloads.transfer else {
+            let Some(request) = self.runtime.client_resources[index]
+                .as_ref()
+                .and_then(|resources| resources.downloads.as_ref())
+                .and_then(|downloads| match &downloads.transfer {
+                    Transfer::Published { request, .. } => Some(request.clone()),
+                    _ => None,
+                })
+            else {
                 continue;
             };
             let name = request.name.as_bytes();
-            let prefix = name
-                .iter()
-                .rposition(|&byte| byte == b'/')
-                .map_or(&b""[..], |end| &name[..end]);
             let result = self
                 .runtime
                 .vfs
-                .refresh_directory_prefix(request.mount, prefix)
+                .refresh_published_file(request.mount, name)
                 .map_err(|error| error.to_string())
-                .and_then(|()| {
-                    self.runtime
-                        .model_assets
-                        .as_mut()
-                        .map_or(Ok(false), |owner| {
-                            publish(
-                                owner,
-                                &self.runtime.vfs,
-                                name,
-                                &mut self.runtime.scene,
-                                &mut self.renderer_contexts,
-                            )
-                        })
+                .and_then(|package| {
+                    let vfs = &self.runtime.vfs;
+                    for (_, path) in vfs
+                        .files_in_mount(package.unwrap_or(request.mount))
+                        .filter(|(_, path)| package.is_some() || *path == name)
+                    {
+                        let changed =
+                            self.runtime
+                                .model_assets
+                                .as_mut()
+                                .map_or(Ok(false), |owner| {
+                                    publish(
+                                        owner,
+                                        vfs,
+                                        path,
+                                        &mut self.runtime.scene,
+                                        &mut self.renderer_contexts,
+                                    )
+                                })?;
+                        let skin = path.starts_with(b"skins/");
+                        if skin {
+                            self.player_skin_views.request_refresh();
+                        }
+                        if changed || skin {
+                            for resources in self.runtime.client_resources.iter_mut().flatten() {
+                                if changed {
+                                    resources.retry_published_file(path);
+                                }
+                                if skin {
+                                    resources.startup.invalidate_skins();
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
                 });
+            let Some(resources) = self.runtime.client_resources[index].as_mut() else {
+                continue;
+            };
+            let Some(downloads) = resources.downloads.as_mut() else {
+                continue;
+            };
             let previous = std::mem::replace(&mut downloads.transfer, Transfer::Idle);
             let Transfer::Published { request, bytes } = previous else {
                 continue;
             };
             match result {
-                Ok(changed) => {
-                    if request.name.as_bytes().starts_with(b"skins/") {
-                        self.player_skin_views.request_refresh();
-                        resources.startup.invalidate_skins();
-                    }
+                Ok(()) => {
                     let _ = self.runtime.server.events.console_formatted(format_args!(
                         "Downloaded {} ({} bytes).\n",
                         request.name.as_str(),
                         bytes
                     ));
-                    let published = request.name.clone();
                     downloads.transfer = Transfer::Finished { request, bytes };
-                    if changed {
-                        for resources in self.runtime.client_resources.iter_mut().flatten() {
-                            resources.retry_published_file(published.as_bytes());
-                        }
-                    }
                 }
                 Err(error) => {
                     let _ = self.runtime.server.events.console_formatted(format_args!(
