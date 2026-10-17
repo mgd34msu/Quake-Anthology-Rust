@@ -40,6 +40,7 @@ use std::sync::Arc;
 mod files;
 use files::ModelFiles;
 mod scopes;
+use scopes::{RegistrationIndex, ScopedBindings};
 mod sources;
 use sources::{ModelSourceId, ModelSources};
 
@@ -1411,10 +1412,10 @@ pub struct ModelCatalog {
     files: ModelFiles,
     registration_vfs: SearchView,
     sources: ModelSources,
-    shader_indices: Vec<Option<u32>>,
+    shader_indices: ScopedBindings<RegistrationIndex>,
     shaders: Vec<RegisteredShader>,
     shader_bindings: Vec<ShaderProfileBinding>,
-    skin_indices: Vec<Option<u32>>,
+    skin_indices: ScopedBindings<RegistrationIndex>,
     skins: Vec<RegisteredSkin>,
     shader_catalogs: scopes::Selections<Result<ShaderCatalog, String>>,
     profiles: Vec<ProfileImages>,
@@ -1566,7 +1567,6 @@ struct RegistrationCheckpoint {
     assets: AssetCounts,
     admitted_assets: Option<AssetCounts>,
     palettes: [Option<PaletteId>; 5],
-    names: usize,
     file_count: usize,
     capacity: ModelCapacity,
     registrations: usize,
@@ -1581,10 +1581,8 @@ struct RegistrationCheckpoint {
     inline_count: usize,
     files: Vec<ModelCheckpoint>,
     sources: ModelSources,
-    shader_indices: Vec<(NameId, Option<u32>)>,
     shaders_before: Vec<ShaderCheckpoint>,
     skins_before: Vec<SkinCheckpoint>,
-    skin_indices: Vec<(NameId, Option<u32>)>,
     inline_before: Vec<(usize, Option<ModelFileId>)>,
     images: Vec<Option<ImageRegistrationMark>>,
     reload: Option<ReloadCheckpoint>,
@@ -1960,7 +1958,6 @@ impl RegistrationCheckpoint {
             assets: owner.assets.counts(),
             admitted_assets: catalog.admitted_assets,
             palettes: owner.palettes.checkpoint(),
-            names: catalog.names.len(),
             file_count: catalog.files.len(),
             capacity: catalog.capacity,
             registrations: catalog.registrations.len(),
@@ -1975,10 +1972,8 @@ impl RegistrationCheckpoint {
             inline_count: catalog.inline.len(),
             files: Vec::new(),
             sources: catalog.sources.clone(),
-            shader_indices: Vec::new(),
             shaders_before: Vec::new(),
             skins_before: Vec::new(),
-            skin_indices: Vec::new(),
             inline_before: Vec::new(),
             images,
             reload: None,
@@ -2023,16 +2018,21 @@ impl RegistrationCheckpoint {
                 file_name = catalog.file_id(path.as_bytes(), None);
             }
             RendererRegistration::Skin => {
-                skin_index = find_skin_index(&catalog.names, &catalog.skin_indices, raw);
+                skin_index = find_skin_index(
+                    &catalog.names,
+                    &catalog.skin_indices,
+                    raw,
+                    &catalog.registration_vfs,
+                );
             }
             RendererRegistration::Shader { .. } => {
-                shader_index = find_shader_index(&catalog.names, &catalog.shader_indices, raw);
+                shader_index = find_shader_index(
+                    &catalog.names,
+                    &catalog.shader_indices,
+                    raw,
+                    &catalog.registration_vfs,
+                );
             }
-        }
-        if let Some((group, index)) = shader_index
-            && !self.shader_indices.iter().any(|&(saved, _)| saved == group)
-        {
-            self.shader_indices.push((group, index));
         }
         if let Some((_, Some(index))) = shader_index
             && !self
@@ -2057,11 +2057,6 @@ impl RegistrationCheckpoint {
                     .map(|index| (index, catalog.shader_bindings[index].request.clone()))
                     .collect(),
             });
-        }
-        if let Some((group, index)) = skin_index
-            && !self.skin_indices.iter().any(|&(saved, _)| saved == group)
-        {
-            self.skin_indices.push((group, index));
         }
         if let Some((_, Some(index))) = skin_index
             && !self
@@ -2136,35 +2131,17 @@ impl RegistrationCheckpoint {
                 },
             )?;
         }
-        for (index, skin) in catalog.skin_indices.iter().enumerate() {
-            if skin.is_some() {
-                self.capture_target(
-                    owner,
-                    &RendererRequest {
-                        name: catalog.names.get(NameId(index as u32)).ok_or("skin name")?,
-                        source: RuleSetId::Quake3,
-                        kind: RendererRegistration::Skin,
-                        world: None,
-                    },
-                )?;
-            }
+        for (name, _) in catalog.skin_indices.entries(&catalog.registration_vfs) {
+            self.capture_target(
+                owner,
+                &RendererRequest {
+                    name: catalog.names.get(name).ok_or("skin name")?,
+                    source: RuleSetId::Quake3,
+                    kind: RendererRegistration::Skin,
+                    world: None,
+                },
+            )?;
         }
-        // Existing unbound name groups can acquire a new cached head inside
-        // the transaction, so save those numeric slots as well.
-        self.shader_indices = catalog
-            .shader_indices
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, value)| (NameId(index as u32), value))
-            .collect();
-        self.skin_indices = catalog
-            .skin_indices
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, value)| (NameId(index as u32), value))
-            .collect();
         self.inline_before = catalog
             .inline
             .iter()
@@ -2211,16 +2188,14 @@ impl RegistrationCheckpoint {
                 catalog.files[id] = ModelFile::Empty;
                 catalog.files.rows_mut(id).clear();
             }
-            for index in self.names..catalog.names.len() {
-                catalog.shader_indices[index] = None;
-                catalog.skin_indices[index] = None;
-            }
-            for (group, index) in self.shader_indices {
-                catalog.shader_indices[group.0 as usize] = index;
-            }
-            for (group, index) in self.skin_indices {
-                catalog.skin_indices[group.0 as usize] = index;
-            }
+            catalog
+                .shader_indices
+                .discard_suffix(self.shaders)
+                .map_err(|_| "shader binding rollback")?;
+            catalog
+                .skin_indices
+                .discard_suffix(self.skins)
+                .map_err(|_| "skin binding rollback")?;
         } else {
             // Keep negative metadata, but no value into a discarded resource suffix.
             for entry in &mut catalog.registrations[self.registrations..] {
@@ -2510,8 +2485,8 @@ impl ModelAssets {
             }
         }
         changed |= self.catalog.sources.invalidate(name);
-        if let Some(index) = self.catalog.skin_indices[name.0 as usize] {
-            let skin = &mut self.catalog.skins[index as usize];
+        for index in self.catalog.skin_indices.named(name) {
+            let skin = &mut self.catalog.skins[index.0 as usize];
             let mut retry = false;
             for row in &mut skin.profiles {
                 if row.request == SkinRequest::Named
@@ -3085,9 +3060,12 @@ impl ModelAssets {
             )?;
         }
         let mut skins = Vec::new();
-        for (group, index) in self.catalog.skin_indices.iter().enumerate() {
-            let Some(index) = *index else { continue };
-            for (row, entry) in self.catalog.skins[index as usize]
+        for (name, index) in self
+            .catalog
+            .skin_indices
+            .entries(&self.catalog.registration_vfs)
+        {
+            for (row, entry) in self.catalog.skins[index.0 as usize]
                 .profiles
                 .iter()
                 .enumerate()
@@ -3097,7 +3075,7 @@ impl ModelAssets {
                     let name = self
                         .catalog
                         .names
-                        .get(NameId(group as u32))
+                        .get(name)
                         .ok_or("image refresh skin name")?
                         .to_vec();
                     skins.push((
@@ -3105,7 +3083,7 @@ impl ModelAssets {
                         profile,
                         entry.request,
                         SkinSelection {
-                            skin: index,
+                            skin: index.0,
                             row: row as u32,
                         },
                     ));
@@ -3231,6 +3209,8 @@ impl ModelAssets {
         let (worlds, inline) = inline_bindings(&assets, worlds, limits)?;
         let sources = ModelSources::load(names.capacity());
         let files = ModelFiles::load(names.capacity(), limits.inline_models)?;
+        let shader_indices = ScopedBindings::load(names.capacity(), limits.models);
+        let skin_indices = ScopedBindings::load(names.capacity(), limits.models);
         let capacity = ModelCapacity {
             names: 1,
             inline_bindings: inline.len(),
@@ -3248,10 +3228,10 @@ impl ModelAssets {
                 files,
                 registration_vfs: vfs.default_view(),
                 sources,
-                shader_indices: vec![None],
+                shader_indices,
                 shaders: Vec::new(),
                 shader_bindings: Vec::new(),
-                skin_indices: vec![None],
+                skin_indices,
                 skins: Vec::new(),
                 shader_catalogs: scopes::Selections::new(),
                 profiles: unique,
@@ -3409,6 +3389,7 @@ impl ModelAssets {
                             &self.catalog.names,
                             &self.catalog.skin_indices,
                             request.name.as_ref(),
+                            &self.catalog.registration_vfs,
                         ) else {
                             continue;
                         };
@@ -3471,8 +3452,12 @@ impl ModelAssets {
         profile: ModelProfile,
         variant: RegistrationVariant,
     ) -> Option<RendererAdmission<'_>> {
-        let (_, Some(index)) =
-            find_skin_index(&self.catalog.names, &self.catalog.skin_indices, name)?
+        let (_, Some(index)) = find_skin_index(
+            &self.catalog.names,
+            &self.catalog.skin_indices,
+            name,
+            &self.catalog.registration_vfs,
+        )?
         else {
             return None;
         };
@@ -4143,8 +4128,6 @@ impl ModelAssets {
             .intern(bytes)
             .map_err(|_| CallError::Capacity)?;
         if self.catalog.names.len() != previous {
-            self.catalog.shader_indices.push(None);
-            self.catalog.skin_indices.push(None);
             self.catalog.capacity.names = self.catalog.names.len();
             self.catalog.capacity.name_bytes += bytes.len();
         }
@@ -5544,11 +5527,14 @@ impl ModelAssets {
             RendererRegistration::Model if !name.starts_with(b"*") => {
                 self.catalog.file_id(name, None).map(ShaderResource::Model)
             }
-            RendererRegistration::Skin => {
-                find_skin_index(&self.catalog.names, &self.catalog.skin_indices, name)
-                    .and_then(|(_, index)| index)
-                    .map(|index| ShaderResource::Skin(index + 1))
-            }
+            RendererRegistration::Skin => find_skin_index(
+                &self.catalog.names,
+                &self.catalog.skin_indices,
+                name,
+                &self.catalog.registration_vfs,
+            )
+            .and_then(|(_, index)| index)
+            .map(|index| ShaderResource::Skin(index + 1)),
             _ => None,
         }
     }
@@ -5607,8 +5593,13 @@ impl ModelAssets {
         {
             return Err(CallError::File);
         }
-        let cached = find_shader_index(&self.catalog.names, &self.catalog.shader_indices, raw)
-            .and_then(|(_, index)| index);
+        let cached = find_shader_index(
+            &self.catalog.names,
+            &self.catalog.shader_indices,
+            raw,
+            &self.catalog.registration_vfs,
+        )
+        .and_then(|(_, index)| index);
         if let Some(index) = cached {
             let reloading = self.catalog.shaders[index as usize]
                 .profiles
@@ -5668,7 +5659,14 @@ impl ModelAssets {
                 let name = self.admit_name(qa_render::shader::registration_key(raw))?;
                 let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
                 let index = self.catalog.shaders.len();
-                self.catalog.shader_indices[group.0 as usize] = Some(index as u32);
+                self.catalog
+                    .shader_indices
+                    .bind(
+                        self.catalog.registration_vfs.clone(),
+                        group,
+                        RegistrationIndex(index as u32),
+                    )
+                    .map_err(|_| CallError::Capacity)?;
                 self.catalog.shaders.push(RegisteredShader {
                     name,
                     profiles: (self.catalog.shader_bindings.len()..next).collect(),
@@ -5926,8 +5924,12 @@ impl ModelAssets {
     fn ensure_skin_row(&mut self, path: &str, ui_fullscreen: bool) -> Result<usize, CallError> {
         let name = self.admit_name(path.as_bytes())?;
         let group = self.catalog.names.folded(name).ok_or(CallError::Aborted)?;
-        if let Some(index) = self.catalog.skin_indices[group.0 as usize] {
-            return Ok(index as usize);
+        if let Some(index) = self
+            .catalog
+            .skin_indices
+            .find(&self.catalog.registration_vfs, group)
+        {
+            return Ok(index.0 as usize);
         }
         if self.catalog.skins.len() >= self.catalog.limits.models
             || self.catalog.skins.len() >= i32::MAX as usize
@@ -5935,7 +5937,14 @@ impl ModelAssets {
             return Err(CallError::Capacity);
         }
         let index = self.catalog.skins.len();
-        self.catalog.skin_indices[group.0 as usize] = Some(index as u32);
+        self.catalog
+            .skin_indices
+            .bind(
+                self.catalog.registration_vfs.clone(),
+                group,
+                RegistrationIndex(index as u32),
+            )
+            .map_err(|_| CallError::Capacity)?;
         self.catalog.skins.push(RegisteredSkin {
             name,
             source: None,
@@ -6074,7 +6083,7 @@ impl ModelAssets {
             Ok(selection)
         })();
         if result.is_err() {
-            if find_skin_index(&self.catalog.names, &self.catalog.skin_indices, path.as_bytes())
+            if find_skin_index(&self.catalog.names, &self.catalog.skin_indices, path.as_bytes(), &self.catalog.registration_vfs)
                 .and_then(|(_, index)| index).and_then(|index| self.catalog.skins.get(index as usize))
                 .is_some_and(|entry| matches!(&entry.source, Some(SkinSource::IndexedFailure { layout: failed, .. }) if matches!(request, SkinRequest::Indexed(indexed) if indexed.layout == *failed))) {
                 rollback = RegistrationRollback::Source;
@@ -6603,6 +6612,7 @@ impl ModelAssets {
                 &self.catalog.names,
                 &self.catalog.skin_indices,
                 path.as_bytes(),
+                &self.catalog.registration_vfs,
             )
             .and_then(|(_, index)| index)
             .and_then(|index| {
@@ -6919,7 +6929,12 @@ fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Optio
     if raw.is_empty() {
         return Some(0);
     }
-    let (_, index) = find_shader_index(&catalog.names, &catalog.shader_indices, raw)?;
+    let (_, index) = find_shader_index(
+        &catalog.names,
+        &catalog.shader_indices,
+        raw,
+        &catalog.registration_vfs,
+    )?;
     let index = index?;
     catalog.shader_source_handle(
         index as i32 + 1,
@@ -6931,25 +6946,32 @@ fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Optio
 
 fn find_shader_index(
     names: &NameTable,
-    indices: &[Option<u32>],
+    indices: &ScopedBindings<RegistrationIndex>,
     raw: &[u8],
+    source: &SearchView,
 ) -> Option<(NameId, Option<u32>)> {
     let group = names.find_folded(qa_render::shader::registration_key(raw))?;
-    Some((group, indices.get(group.0 as usize).copied().flatten()))
+    Some((group, indices.find(source, group).map(|index| index.0)))
 }
 fn find_skin_index(
     names: &NameTable,
-    indices: &[Option<u32>],
+    indices: &ScopedBindings<RegistrationIndex>,
     raw: &[u8],
+    source: &SearchView,
 ) -> Option<(NameId, Option<u32>)> {
     let group = names.find_path_group(raw)?;
-    Some((group, indices.get(group.0 as usize).copied().flatten()))
+    Some((group, indices.find(source, group).map(|index| index.0)))
 }
 fn skin_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<i32> {
     if raw.is_empty() {
         return Some(0);
     }
-    let (_, index) = find_skin_index(&catalog.names, &catalog.skin_indices, raw)?;
+    let (_, index) = find_skin_index(
+        &catalog.names,
+        &catalog.skin_indices,
+        raw,
+        &catalog.registration_vfs,
+    )?;
     let handle = i32::try_from(index?.checked_add(1)?).ok()?;
     catalog.skin_source_handle(handle, source, RegistrationVariant::Retained)
 }
@@ -7346,7 +7368,12 @@ impl ModelCatalog {
                 self.model_cached(name, profile, variant)
             }
             RendererRegistration::Shader { lighting, .. } => {
-                let (_, index) = find_shader_index(&self.names, &self.shader_indices, name)?;
+                let (_, index) = find_shader_index(
+                    &self.names,
+                    &self.shader_indices,
+                    name,
+                    &self.registration_vfs,
+                )?;
                 let handle = i32::try_from(index?.checked_add(1)?).ok()?;
                 let entry =
                     self.shader_profile_lighting_variant(handle, profile, lighting, variant)?;
@@ -7359,7 +7386,12 @@ impl ModelCatalog {
                     .cached(if public { handle } else { 0 }, self.admitted_assets)
             }
             RendererRegistration::Skin => {
-                let (_, index) = find_skin_index(&self.names, &self.skin_indices, name)?;
+                let (_, index) = find_skin_index(
+                    &self.names,
+                    &self.skin_indices,
+                    name,
+                    &self.registration_vfs,
+                )?;
                 let index = index?;
                 let handle = i32::try_from(index.checked_add(1)?).ok()?;
                 self.skin_profile_variant(handle, profile, variant)?
@@ -7529,7 +7561,12 @@ impl ModelCatalog {
         lighting: ShaderLighting,
         variant: RegistrationVariant,
     ) -> Option<(&ShaderRegistration, Option<AssetCounts>)> {
-        let (_, index) = find_shader_index(&self.names, &self.shader_indices, name)?;
+        let (_, index) = find_shader_index(
+            &self.names,
+            &self.shader_indices,
+            name,
+            &self.registration_vfs,
+        )?;
         let handle = i32::try_from(index?.checked_add(1)?).ok()?;
         self.shader_profile_lighting_variant(handle, profile, lighting, variant)?
             .state
@@ -7716,7 +7753,12 @@ impl ModelCatalog {
         request: SkinRequest,
         ui: bool,
     ) -> Option<SkinSelection> {
-        let (_, skin) = find_skin_index(&self.names, &self.skin_indices, path.as_bytes())?;
+        let (_, skin) = find_skin_index(
+            &self.names,
+            &self.skin_indices,
+            path.as_bytes(),
+            &self.registration_vfs,
+        )?;
         let skin = skin?;
         let row = self
             .skins

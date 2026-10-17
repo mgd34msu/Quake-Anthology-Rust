@@ -19,6 +19,7 @@ fn selected(owner: &ModelAssets, name: &str) -> SkinSelection {
         &owner.catalog.names,
         &owner.catalog.skin_indices,
         name.as_bytes(),
+        &owner.catalog.registration_vfs,
     )
     .unwrap();
     let skin = skin.unwrap();

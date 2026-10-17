@@ -223,7 +223,12 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
         .names
         .find_path_bytes(b"players/test/new.pcx")
         .unwrap();
-    let skin = owner.catalog.skin_indices[name.0 as usize].unwrap();
+    let skin = owner
+        .catalog
+        .skin_indices
+        .find(&owner.catalog.registration_vfs, name)
+        .unwrap()
+        .0;
     let rows = owner.catalog.skins[skin as usize].profiles.len();
     let (mut owner, mut cpu) = publish(owner);
     let before = owner.assets.counts();
@@ -278,7 +283,14 @@ fn published_named_pcx_reuses_failed_skin_row_and_rolls_back_backend_rejection()
     );
     assert_eq!(owner.assets.counts(), before);
     assert_eq!(owner.catalog.capacity.skins, initial_skin_capacity);
-    assert_eq!(owner.catalog.skin_indices[name.0 as usize], Some(skin));
+    assert_eq!(
+        owner
+            .catalog
+            .skin_indices
+            .find(&owner.catalog.registration_vfs, name)
+            .map(|index| index.0),
+        Some(skin)
+    );
     let (handle, (), _) = owner
         .prepare_registration(
             &files.vfs,

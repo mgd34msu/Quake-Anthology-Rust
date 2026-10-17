@@ -7,6 +7,13 @@ use qa_core::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SelectionId(usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RegistrationIndex(pub(super) u32);
+impl BindingId for RegistrationIndex {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 #[derive(Clone)]
 pub(super) struct Selections<T> {
     entries: Vec<(SearchView, T)>,
@@ -97,5 +104,24 @@ impl<K: BindingId> ScopedBindings<K> {
         self.scopes
             .values()
             .filter_map(move |names| names.get(name.0))
+    }
+    pub(super) fn entries(&self, source: &SearchView) -> impl Iterator<Item = (NameId, K)> + '_ {
+        let names = self.scopes.find(source).map(|id| self.scopes.get(id));
+        (0..self.names).filter_map(move |ordinal| {
+            let ordinal = u32::try_from(ordinal).ok()?;
+            Some((NameId(ordinal), names?.get(ordinal)?))
+        })
+    }
+    /// Records append during cold admission; rollback removes only the rejected suffix.
+    pub(super) fn discard_suffix(&mut self, records: usize) -> Result<(), ()> {
+        for (_, names) in &mut self.scopes.entries {
+            for ordinal in 0..names.capacity() {
+                let ordinal = u32::try_from(ordinal).map_err(|_| ())?;
+                if names.get(ordinal).is_some_and(|id| id.index() >= records) {
+                    names.set(ordinal, None).map_err(|_| ())?;
+                }
+            }
+        }
+        Ok(())
     }
 }
