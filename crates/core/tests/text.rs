@@ -2,8 +2,74 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn prepended_info_updates_keep_native_order_filtering_and_failed_removal() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, InfoUpdate};
+    let rules = InfoRules {
+        bytes: 128,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::Exact,
+    };
+    let mut text = FixedText::<128>::default();
+    text.set_bytes(b"\\protocol\\old\\name\\player\\protocol\\later")
+        .unwrap();
+    for (key, value) in [
+        (b"protocol".as_slice(), b"68".as_slice()),
+        (b"qport", b"27961"),
+        (b"challenge", b"-123"),
+    ] {
+        text.update_info(
+            InfoUpdate::new(key, value, rules)
+                .unwrap()
+                .first_only()
+                .prepend(),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        text.as_bytes(),
+        b"\\challenge\\-123\\qport\\27961\\protocol\\68\\name\\player\\protocol\\later"
+    );
+    text.set_bytes(b"\\keep\\old").unwrap();
+    text.update_info(
+        InfoUpdate::new(
+            b"name",
+            b"\xe1\x01\xff\x80b",
+            InfoRules {
+                filter: InfoBytes::Ascii7Printable,
+                ..rules
+            },
+        )
+        .unwrap()
+        .prepend(),
+    )
+    .unwrap();
+    assert_eq!(text.as_bytes(), b"\\name\\ab\\keep\\old");
+    text.set_bytes(b"\\name\\old\\name\\later\\keep\\x")
+        .unwrap();
+    assert_eq!(
+        text.update_info(
+            InfoUpdate::new(b"name", b"replacement", InfoRules { bytes: 32, ..rules })
+                .unwrap()
+                .first_only()
+                .prepend(),
+        ),
+        Err(InfoError::Capacity)
+    );
+    assert_eq!(text.as_bytes(), b"\\name\\later\\keep\\x");
+    text.update_info(
+        InfoUpdate::new(b"name", b"", rules)
+            .unwrap()
+            .first_only()
+            .prepend(),
+    )
+    .unwrap();
+    assert_eq!(text.as_bytes(), b"\\keep\\x");
+}
+
+#[test]
 fn borrowed_info_iteration_and_fixed_mutation_preserve_native_duplicates() {
-    use qa_core::text::{InfoBytes, InfoRules, InfoUpdate, info_changes, info_pairs, info_value};
+    use qa_core::text::{info_changes, info_pairs, info_value, InfoBytes, InfoRules, InfoUpdate};
     let raw = b"name\\first\\name\\later\\skin\\raw\x80\\incomplete";
     assert_eq!(
         info_pairs(raw).collect::<Vec<_>>(),
@@ -84,7 +150,7 @@ fn byte_replacement_preserves_native_text_and_rejects_growth_atomically() {
 
 #[test]
 fn info_key_and_value_limits_are_independent_and_validate_before_removal() {
-    use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
+    use qa_core::text::{info_set, InfoBytes, InfoError, InfoRules};
     for value_bytes in [64, 256] {
         let rules = InfoRules {
             bytes: 2048,
@@ -113,7 +179,7 @@ fn info_key_and_value_limits_are_independent_and_validate_before_removal() {
 
 #[test]
 fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() {
-    use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
+    use qa_core::text::{info_set, InfoBytes, InfoError, InfoRules};
     let mut buffer = [0xcc; 64];
     let original = b"\\name\\old\\name\\later\\keep\\raw\x80";
     buffer[..original.len()].copy_from_slice(original);
@@ -165,7 +231,7 @@ fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() 
 
 #[test]
 fn info_writer_preserves_native_name_ascii_and_team_byte_rules() {
-    use qa_core::text::{InfoBytes, InfoRules, info_set, info_valid_field};
+    use qa_core::text::{info_set, info_valid_field, InfoBytes, InfoRules};
     for (filter, key, value, expected) in [
         (
             InfoBytes::AboveCarriageReturn,

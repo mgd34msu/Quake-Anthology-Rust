@@ -77,6 +77,7 @@ pub struct InfoUpdate<'a> {
     value: &'a [u8],
     rules: InfoRules,
     remove_all: bool,
+    prepend: bool,
 }
 impl<'a> InfoUpdate<'a> {
     pub fn new(key: &'a [u8], value: &'a [u8], rules: InfoRules) -> Result<Self, InfoError> {
@@ -92,11 +93,17 @@ impl<'a> InfoUpdate<'a> {
             value,
             rules,
             remove_all: true,
+            prepend: false,
         })
     }
     /// Keep later duplicates, as native callers of Info_RemoveKey do.
     pub fn first_only(mut self) -> Self {
         self.remove_all = false;
+        self
+    }
+    /// Place the replacement before retained rows, as Q3's native setter does.
+    pub fn prepend(mut self) -> Self {
+        self.prepend = true;
         self
     }
     pub fn apply(self, output: &mut [u8], length: &mut usize) -> Result<(), InfoError> {
@@ -105,6 +112,7 @@ impl<'a> InfoUpdate<'a> {
             value,
             rules,
             remove_all,
+            prepend,
         } = self;
         if *length >= output.len() {
             return Err(InfoError::Capacity);
@@ -122,6 +130,7 @@ impl<'a> InfoUpdate<'a> {
         if end >= rules.bytes.min(output.len()) {
             return Err(InfoError::Capacity);
         }
+        let start = *length;
         for bytes in [b"\\".as_slice(), key, b"\\", value] {
             for &byte in bytes {
                 let Some(byte) = rules.filter.output(byte) else {
@@ -130,6 +139,9 @@ impl<'a> InfoUpdate<'a> {
                 output[*length] = byte;
                 *length += 1;
             }
+        }
+        if prepend {
+            output[..*length].rotate_right(*length - start);
         }
         output[*length] = 0;
         Ok(())

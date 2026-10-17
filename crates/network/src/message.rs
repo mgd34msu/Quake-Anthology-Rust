@@ -1,6 +1,8 @@
 //! Shared borrowed native message streams. No packet owns a growable buffer.
 //! Q3 msg.c writes low remainder bits, then fixed Huffman codes for whole bytes.
+mod adaptive;
 mod codes;
+pub use adaptive::AdaptiveHuffman;
 use codes::CODES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

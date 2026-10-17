@@ -1,6 +1,7 @@
 //! Borrowed native startup records enter the existing CLIENT resource rows.
 mod q2;
 mod q2_connect;
+mod q3_connect;
 use super::{packet, packet::Protocol};
 use crate::{
     headers::datagram,
@@ -11,6 +12,11 @@ pub use q2::{Q2ReproServerData, Q2ServerData, ResourceStream};
 pub use q2_connect::{
     Q2_CONNECT_PACKET_LENGTH, Q2_CONNECT_USERINFO_BYTES, Q2ConnectAccepted, Q2Connectionless,
     read_q2_connectionless, write_q2_connect, write_q2_getchallenge,
+};
+
+pub use q3_connect::{
+    Q3_CONNECT_USERINFO_BYTES, Q3Connectionless, read_q3_connectionless, write_q3_connect,
+    write_q3_getchallenge,
 };
 
 /// NetQuake's control protocol version is independent of game protocol 15.
