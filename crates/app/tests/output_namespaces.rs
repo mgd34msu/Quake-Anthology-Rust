@@ -442,12 +442,19 @@ fn inactive_and_reconnected_player_lifetimes_release_their_player_holes() {
     numbers.refresh(&table, Some(ModuleId(1)), protocol, [primary, waiting]);
     assert_eq!(numbers.project(&table, old), None);
     assert_eq!(numbers.foreign(old), None);
+    assert_eq!(numbers.number(old), Some(2));
+    assert_eq!(numbers.project(&table, waiting), None);
+    numbers.release_retiring_player(old);
+    numbers.refresh(&table, Some(ModuleId(1)), protocol, [primary, waiting]);
     assert_eq!(numbers.project(&table, waiting), Some(2));
     let replacement = table.reset_client(old).unwrap();
     table.columns.native_entity[replacement.slot as usize] = Some(native(2, 17));
     numbers.refresh(&table, Some(ModuleId(1)), protocol, [primary, replacement]);
     assert_eq!(numbers.project(&table, old), None);
     assert_eq!(numbers.project(&table, waiting), None);
+    assert_eq!(numbers.project(&table, replacement), None);
+    numbers.release_retiring_player(waiting);
+    numbers.refresh(&table, Some(ModuleId(1)), protocol, [primary, replacement]);
     assert_eq!(numbers.project(&table, replacement), Some(2));
     assert_eq!(numbers.entity(2), Some(replacement));
 }
@@ -694,6 +701,9 @@ fn departing_player_numbers_survive_generation_reset_until_captured() {
             .client_reference(&table, departing, ClientId(0))
             .unwrap();
         numbers.retain_player(departing);
+        let retained = numbers.number(departing);
+        assert!(!numbers.bind(departing, retained.unwrap()));
+        assert_eq!(numbers.number(departing), retained);
         let replacement = table.reset_client(departing).unwrap();
         numbers.refresh(&table, Some(ModuleId(1)), protocol, [own, waiting]);
         assert_eq!(

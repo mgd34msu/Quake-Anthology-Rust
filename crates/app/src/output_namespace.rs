@@ -149,7 +149,9 @@ impl NativeNumbers {
         }
         for slot in 0..entities.reserved_slots() {
             if matches!(self.slots[slot].role, MappingRole::InactivePlayer) {
-                self.unmap(slot);
+                if let Some(id) = self.slots[slot].id {
+                    self.retain_player(id);
+                }
             } else if matches!(self.slots[slot].role, MappingRole::Player)
                 && (self
                     .self_claim
@@ -368,6 +370,11 @@ impl NativeNumbers {
             return false;
         }
         if self.slots.get(id.slot as usize).is_some_and(|row| {
+            row.id == Some(id) && matches!(row.role, MappingRole::RetiringPlayer)
+        }) {
+            return false;
+        }
+        if self.slots.get(id.slot as usize).is_some_and(|row| {
             row.id == Some(id)
                 && matches!(row.role, MappingRole::Player | MappingRole::InactivePlayer)
                 && (!matches!(row.role, MappingRole::Player)
@@ -453,7 +460,7 @@ impl NativeNumbers {
         if let Some(row) = self.slots.get_mut(id.slot as usize)
             && row.id == Some(id)
             && row.number.is_some()
-            && matches!(row.role, MappingRole::Player)
+            && matches!(row.role, MappingRole::Player | MappingRole::InactivePlayer)
         {
             row.role = MappingRole::RetiringPlayer;
         }
@@ -472,7 +479,9 @@ impl NativeNumbers {
             && row.id == Some(id)
             && !matches!(row.role, MappingRole::Entity)
         {
-            return row.number;
+            return matches!(row.role, MappingRole::Player)
+                .then_some(row.number)
+                .flatten();
         }
         if let Some(number) = self.number(id)
             && !self.reserved.contains(number as usize)

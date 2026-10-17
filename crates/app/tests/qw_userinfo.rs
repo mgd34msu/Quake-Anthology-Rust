@@ -506,3 +506,55 @@ fn stalled_remote_peer_is_bounded_without_stopping_healthy_userinfo_or_server_ti
         assert_eq!(field(peer.text, b"name"), b"HealthyLatest");
     }
 }
+
+#[test]
+fn module_initiated_close_keeps_the_peer_number_across_a_healthy_snapshot_rebuild() {
+    let (mut host, clients) = pair([2, 7], None);
+    let mut source = Source::default();
+    advance(&mut host, &mut source);
+    host.runtime
+        .server
+        .replace_userinfo_raw(clients[0], b"\\name\\ModuleDrop", 2048)
+        .unwrap();
+    advance(&mut host, &mut source);
+    let healthy = clients[1];
+    let departing = host.runtime.server.clients[clients[0].0 as usize].entity;
+    let number = host.runtime.native_numbers[healthy.0 as usize]
+        .number(departing)
+        .unwrap();
+    // EngineServices::drop_client calls this SERVER transition directly. It
+    // does not enter FrameHost's synchronous disconnect preparation.
+    assert!(host.runtime.server.begin_close(
+        clients[0],
+        departing,
+        EventTime::from_milliseconds(source.time)
+    ));
+    let runtime = &mut host.runtime;
+    // Snapshot preparation uses this same map refresh before output dispatch.
+    runtime.native_numbers[healthy.0 as usize].refresh(
+        &runtime.server.entities,
+        None,
+        Protocol::QuakeWorld28,
+        runtime
+            .server
+            .clients
+            .iter()
+            .filter(|client| client.is_server_active())
+            .map(|client| client.entity),
+    );
+    assert_eq!(
+        runtime.native_numbers[healthy.0 as usize].number(departing),
+        Some(number)
+    );
+    assert!(runtime.disconnect_client(clients[0]));
+    host.local_clients[0] = None;
+    advance(&mut host, &mut source);
+    let peer = host.runtime.client_resources[healthy.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .peer(0)
+        .unwrap();
+    assert!(peer.text.is_empty());
+    assert!(host.runtime.server.clients[healthy.0 as usize].is_active());
+}
