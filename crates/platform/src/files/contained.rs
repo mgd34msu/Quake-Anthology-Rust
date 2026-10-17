@@ -1,4 +1,4 @@
-use super::WriteFile;
+use super::{ReadFile, WriteFile};
 use std::{io, path::Path};
 
 /// Sequential output whose destination stays below a retained directory.
@@ -72,6 +72,27 @@ impl StagedFile {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = bytes;
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    /// Flush buffered writes and read the retained inode without reopening its
+    /// temporary name. Inspection does not change the sequential write offset.
+    pub fn reader(&mut self) -> io::Result<ReadFile> {
+        #[cfg(target_os = "linux")]
+        {
+            let writer = self
+                .staging
+                .as_mut()
+                .and_then(|state| state.file.as_mut())
+                .ok_or(io::ErrorKind::BrokenPipe)?;
+            writer.flush()?;
+            Ok(ReadFile {
+                file: writer.file.get_ref().try_clone()?,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
             Err(io::ErrorKind::Unsupported.into())
         }
     }
@@ -197,6 +218,7 @@ mod linux {
                 let temporary = descriptor_path(parent.as_raw_fd())
                     .join(format!(".qa-download-{}-{number}", std::process::id()));
                 match OpenOptions::new()
+                    .read(true)
                     .write(true)
                     .create_new(true)
                     .mode(0o600)

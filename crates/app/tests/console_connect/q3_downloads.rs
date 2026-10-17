@@ -588,3 +588,107 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     assert_eq!(native.count(b"download baseq3/other.pk3"), 0);
     assert_eq!(bytes(&host, destination.as_bytes()), Some(package));
 }
+
+#[test]
+fn q3_bad_package_stays_unpublished_and_retry_can_complete_the_same_destination() {
+    let mut files = support::Fixture::new(&[]);
+    let mut host = host(1);
+    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let mount = host.runtime.vfs.mounts().next().unwrap().id;
+    let root = host
+        .runtime
+        .vfs
+        .directory_path(mount)
+        .unwrap()
+        .to_path_buf();
+    let mut source = source();
+    let mut server = EventPump::new();
+    let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
+    let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
+    let local = peer(&datagrams(&mut server)[0]);
+    let mut native = accept(
+        &mut host,
+        &mut source,
+        SeatId::FIRST,
+        &mut server,
+        socket,
+        local,
+        0,
+    );
+    host.configure_client_downloads(client, mount, mount, 8192, 128)
+        .unwrap();
+    setting(&mut host, "cl_allowDownload", "1");
+    command(
+        &mut host,
+        &mut source,
+        "download baseq3/custom.pk3 custom.pk3\n",
+        20,
+    );
+    collect(&mut server, &mut native, 20);
+    for (attempt, package) in [
+        b"not a native archive".to_vec(),
+        zip::stored_zip(&[(b"../outside", b"bad member path")]),
+        b"PACK\x0c\0\0\0\0\0\0\0".to_vec(),
+        zip::stored_zip(&[(b"models/kept", b"accepted package")]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let time = 30 + attempt as u64 * 20;
+        send(
+            &mut server,
+            socket,
+            local,
+            &mut native,
+            time,
+            |writer, _| {
+                downloads::write_service(
+                    Q3,
+                    Chunk::Block {
+                        number: 0,
+                        total: Some(package.len() as u32),
+                        bytes: &package,
+                    },
+                    writer,
+                )
+                .unwrap();
+                downloads::write_service(
+                    Q3,
+                    Chunk::Block {
+                        number: 1,
+                        total: None,
+                        bytes: &[],
+                    },
+                    writer,
+                )
+                .unwrap();
+                Ok(())
+            },
+        );
+        frame(&mut host, &mut source, time);
+        collect(&mut server, &mut native, time);
+        if attempt < 3 {
+            assert!(!root.join("custom.pk3").exists());
+            assert!(bytes(&host, b"custom.pk3").is_none());
+            assert!(bytes(&host, b"models/kept").is_none());
+            assert_eq!(native.count(b"donedl"), 0);
+            assert!(
+                qa_platform::files::directory_entries(&root)
+                    .unwrap()
+                    .is_empty()
+            );
+            command(&mut host, &mut source, "retrydownload\n", time + 10);
+            collect(&mut server, &mut native, time + 10);
+        } else {
+            frame(&mut host, &mut source, time + 5);
+            collect(&mut server, &mut native, time + 5);
+            assert_eq!(bytes(&host, b"custom.pk3"), Some(package));
+            assert_eq!(
+                bytes(&host, b"models/kept"),
+                Some(b"accepted package".to_vec())
+            );
+            assert_eq!(native.count(b"donedl"), 1);
+        }
+    }
+    assert_eq!(native.count(b"download baseq3/custom.pk3"), 4);
+}

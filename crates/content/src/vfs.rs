@@ -23,6 +23,31 @@ pub struct SearchView {
     ranks: Arc<[u32]>,
 }
 
+/// One parsed package with VFS member paths admitted before publication.
+/// The retained reader can still name an unpublished staging inode.
+pub struct PreparedArchive {
+    archive: Arc<Archive>,
+    members: Box<[(usize, Box<[u8]>)]>,
+}
+impl PreparedArchive {
+    pub fn read(file: Arc<ReadFile>) -> Result<Self, VfsError> {
+        Self::new(Arc::new(Archive::parse(file)?))
+    }
+    fn new(archive: Arc<Archive>) -> Result<Self, VfsError> {
+        let members = archive
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.directory)
+            .map(|(ordinal, entry)| Ok((ordinal, normalize(&entry.name)?.into_boxed_slice())))
+            .collect::<Result<_, VfsError>>()?;
+        Ok(Self { archive, members })
+    }
+    pub fn archive(&self) -> &Archive {
+        &self.archive
+    }
+}
+
 /// Retained opened source and metadata. Rename/unlink replacements preserve
 /// this opened file; external writes to the same inode remain observable.
 #[derive(Clone)]
@@ -266,10 +291,10 @@ impl Vfs {
             let mut mounts = vec![root];
             for (reference, _, name) in packages {
                 let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
-                let archive = Arc::new(Archive::parse(file)?);
+                let archive = PreparedArchive::read(file)?;
                 let name = std::str::from_utf8(&name).map_err(|_| VfsError::Path)?;
                 let native_path = self.mounts[root.0 as usize].path.join(name);
-                mounts.push(self.mount_archive_at(&native_path, priority, archive, Some(root))?);
+                mounts.push(self.mount_archive_at(&native_path, priority, &archive, Some(root))?);
             }
             Ok(mounts)
         })();
@@ -345,6 +370,7 @@ impl Vfs {
         &mut self,
         id: MountId,
         name: &[u8],
+        prepared: Option<&PreparedArchive>,
     ) -> Result<Option<MountId>, VfsError> {
         let name = normalize(name)?;
         let root = self
@@ -375,8 +401,14 @@ impl Vfs {
         {
             return Ok(Some(existing.id));
         }
-        let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
-        let archive = Arc::new(Archive::parse(file)?);
+        let parsed;
+        let archive = if let Some(prepared) = prepared {
+            prepared
+        } else {
+            let file = self.source_file(&reference).ok_or(VfsError::Handle)?;
+            parsed = PreparedArchive::read(file)?;
+            &parsed
+        };
         let priority = self.mounts[id.0 as usize].priority;
         self.mount_archive_at(&path, priority, archive, Some(id))
             .map(Some)
@@ -388,29 +420,29 @@ impl Vfs {
         priority: i32,
         archive: Arc<Archive>,
     ) -> Result<MountId, VfsError> {
-        self.mount_archive_at(path, priority, archive, None)
+        self.mount_archive_at(path, priority, &PreparedArchive::new(archive)?, None)
     }
     fn mount_archive_at(
         &mut self,
         path: &Path,
         priority: i32,
-        archive: Arc<Archive>,
+        prepared: &PreparedArchive,
         product: Option<MountId>,
     ) -> Result<MountId, VfsError> {
         let mut entries = Vec::new();
-        for (ordinal, entry) in archive.entries.iter().enumerate() {
-            if entry.directory {
-                continue;
-            }
+        let archive = &prepared.archive;
+        for (ordinal, name) in &prepared.members {
+            let ordinal = *ordinal;
+            let entry = &archive.entries[ordinal];
             entries.push(Entry {
                 slot: 0,
                 generation: 0,
                 ordinal,
                 mount: self.mounts.len(),
-                name: normalize(&entry.name)?.into_boxed_slice(),
+                name: name.clone(),
                 original_name: entry.name.clone(),
                 source: EntrySource::Archive {
-                    archive: Arc::clone(&archive),
+                    archive: Arc::clone(archive),
                     entry: ordinal,
                 },
                 length: entry.length,
@@ -422,7 +454,7 @@ impl Vfs {
             false,
             product,
             entries,
-            Some(archive),
+            Some(Arc::clone(archive)),
         )
     }
 

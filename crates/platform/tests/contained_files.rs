@@ -146,6 +146,28 @@ mod linux {
     }
 
     #[test]
+    fn staged_inspection_flushes_and_preserves_the_sequential_write_position() {
+        let root = Fixture::new();
+        let mut staged = root.create("package", 12, 16);
+        staged.append(b"first").unwrap();
+        let reader = staged.reader().unwrap();
+        assert_eq!(reader.length().unwrap(), 5);
+        let mut bytes = [0; 5];
+        reader.read_exact_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"first");
+        staged.append(b"second").unwrap();
+        let later = staged.reader().unwrap();
+        let mut bytes = [0; 11];
+        later.read_exact_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"firstsecond");
+        assert!(!root.0.join("package").exists());
+        assert_eq!(staged.publish().unwrap(), 11);
+        reader.read_exact_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"firstsecond");
+        assert_eq!(fs::read(root.0.join("package")).unwrap(), bytes);
+    }
+
+    #[test]
     fn publication_links_the_open_inode_when_the_temporary_name_is_swapped() {
         let root = Fixture::new();
         let outside = Fixture::new();
@@ -155,6 +177,10 @@ mod linux {
         let temporary = entries(&root.0).pop().unwrap();
         fs::rename(&temporary, root.0.join("moved-stage")).unwrap();
         symlink(outside.0.join("foreign"), &temporary).unwrap();
+        let inspected = staged.reader().unwrap();
+        let mut bytes = [0; 5];
+        inspected.read_exact_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"owned");
         assert_eq!(staged.publish().unwrap(), 5);
         assert_eq!(fs::read(root.0.join("kept")).unwrap(), b"owned");
         assert!(!fs::symlink_metadata(&temporary).is_ok());

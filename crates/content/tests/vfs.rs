@@ -832,7 +832,7 @@ fn published_packages_share_startup_order_keep_handles_and_retry_without_duplica
     ] {
         qa_platform::files::write(root.0.join(name), bytes).unwrap();
         let package = vfs
-            .refresh_published_file(parent, name.as_bytes())
+            .refresh_published_file(parent, name.as_bytes(), None)
             .unwrap()
             .unwrap();
         let count = vfs.mounts().count();
@@ -844,7 +844,8 @@ fn published_packages_share_startup_order_keep_handles_and_retry_without_duplica
             );
         }
         assert_eq!(
-            vfs.refresh_published_file(parent, name.as_bytes()).unwrap(),
+            vfs.refresh_published_file(parent, name.as_bytes(), None)
+                .unwrap(),
             Some(package)
         );
         assert_eq!(vfs.mounts().count(), count);
@@ -869,7 +870,7 @@ fn published_packages_share_startup_order_keep_handles_and_retry_without_duplica
     )
     .unwrap();
     let package = vfs
-        .refresh_published_file(parent, b"packs/new.pk3")
+        .refresh_published_file(parent, b"packs/new.pk3", None)
         .unwrap()
         .unwrap();
     assert_eq!(vfs.files_in_mount(package).count(), 1);
@@ -897,7 +898,10 @@ fn malformed_published_packages_never_admit_members_or_replace_existing_winners(
     ] {
         qa_platform::files::write(root.0.join(name), data).unwrap();
         let count = vfs.mounts().count();
-        assert!(vfs.refresh_published_file(parent, name.as_bytes()).is_err());
+        assert!(
+            vfs.refresh_published_file(parent, name.as_bytes(), None)
+                .is_err()
+        );
         assert_eq!(vfs.mounts().count(), count);
         let winning = vfs.open(b"shared").unwrap();
         assert_eq!(vfs.origin(&winning).unwrap().mount, parent);
@@ -909,7 +913,10 @@ fn malformed_published_packages_never_admit_members_or_replace_existing_winners(
         assert!(vfs.open(b"outside").is_none());
     }
     qa_platform::files::write(root.0.join("plain"), b"plain bytes").unwrap();
-    assert_eq!(vfs.refresh_published_file(parent, b"plain").unwrap(), None);
+    assert_eq!(
+        vfs.refresh_published_file(parent, b"plain", None).unwrap(),
+        None
+    );
     assert_eq!(vfs.mounts().count(), 1);
     let mut reader = Default::default();
     assert_eq!(
@@ -1102,4 +1109,43 @@ fn mounted_q3_metadata_survives_empty_archives_and_retires_with_the_mount() {
     drop(retained_file);
     assert!(retained.upgrade().is_none());
     assert!(vfs.q3_package_checksums(empty).is_some());
+}
+
+#[test]
+fn staged_package_admission_keeps_the_inspected_inode_and_rejects_bad_member_paths() {
+    let root = Fixture::new("staged-package");
+    let mut vfs = Vfs::default();
+    let parent = vfs.mount_directory(&root.0, 0).unwrap();
+    let original = zip::stored_zip(&[(b"models/kept", b"validated source")]);
+    let mut staged =
+        qa_platform::files::StagedFile::create(&root.0, "kept.pk3", 4096, 4096).unwrap();
+    staged.append(&original).unwrap();
+    let package = PreparedArchive::read(Arc::new(staged.reader().unwrap())).unwrap();
+    assert!(!root.0.join("kept.pk3").exists());
+    staged.publish().unwrap();
+    // Renaming a replacement over the filename cannot redirect the inspected
+    // archive's retained source while its publication is being indexed.
+    qa_platform::files::write(root.0.join("replacement"), b"not the inspected package").unwrap();
+    qa_platform::files::rename(root.0.join("replacement"), root.0.join("kept.pk3")).unwrap();
+    let mount = vfs
+        .refresh_published_file(parent, b"kept.pk3", Some(&package))
+        .unwrap()
+        .unwrap();
+    drop(package);
+    let file = vfs.open(b"models/kept").unwrap();
+    assert_eq!(vfs.origin(&file).unwrap().mount, mount);
+    assert_eq!(
+        vfs.read_to_vec(&file, 64, &mut Default::default()).unwrap(),
+        b"validated source"
+    );
+    let mut bad = qa_platform::files::StagedFile::create(&root.0, "bad.pk3", 4096, 4096).unwrap();
+    bad.append(&zip::stored_zip(&[(b"../outside", b"rejected")]))
+        .unwrap();
+    assert!(matches!(
+        PreparedArchive::read(Arc::new(bad.reader().unwrap())),
+        Err(VfsError::Path)
+    ));
+    drop(bad);
+    assert!(!root.0.join("bad.pk3").exists());
+    assert_eq!(vfs.mounts().count(), 2);
 }

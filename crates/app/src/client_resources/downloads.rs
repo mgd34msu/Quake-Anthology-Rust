@@ -1,5 +1,5 @@
 use super::*;
-use qa_content::vfs::{MountId, Vfs};
+use qa_content::vfs::{MountId, PreparedArchive, Vfs};
 use qa_core::{sys_events::SeatId, text::FixedText};
 use qa_network::{channel::TransmitError, downloads::Chunk};
 use qa_platform::files::StagedFile;
@@ -32,6 +32,23 @@ impl Request {
         let mut name = FixedText::default();
         name.set(&canonical).map_err(|_| "download path capacity")?;
         Ok(name)
+    }
+    fn prepare_package(
+        &self,
+        file: &mut StagedFile,
+    ) -> Result<Option<Arc<PreparedArchive>>, String> {
+        let Some(kind) = qa_formats::archive::ArchiveKind::from_path(self.local.as_bytes()) else {
+            return Ok(None);
+        };
+        let reader = file
+            .reader()
+            .map_err(|error| format!("download inspection: {error}"))?;
+        let package = PreparedArchive::read(Arc::new(reader))
+            .map_err(|error| format!("download package: {error}"))?;
+        if package.archive().kind != kind {
+            return Err("download package format differs from its suffix".into());
+        }
+        Ok(Some(Arc::new(package)))
     }
 }
 impl std::fmt::Display for Request {
@@ -81,10 +98,12 @@ enum Transfer {
     Published {
         request: Request,
         bytes: u64,
+        package: Option<Arc<PreparedArchive>>,
     },
     RefreshFailed {
         request: Request,
         bytes: u64,
+        package: Option<Arc<PreparedArchive>>,
     },
     Finished {
         request: Request,
@@ -767,8 +786,16 @@ impl ClientDownload {
                     }
                 }
             }
-            Transfer::RefreshFailed { request, bytes } => {
-                self.transfer = Transfer::Published { request, bytes };
+            Transfer::RefreshFailed {
+                request,
+                bytes,
+                package,
+            } => {
+                self.transfer = Transfer::Published {
+                    request,
+                    bytes,
+                    package,
+                };
                 Ok(())
             }
             other => {
@@ -1096,6 +1123,7 @@ impl ClientDownload {
                     file.append(bytes)
                         .map_err(|error| format!("download write: {error}"))?;
                     if complete {
+                        let package = request.prepare_package(&mut file)?;
                         let bytes = file
                             .publish()
                             .map_err(|error| format!("download publication: {error}"))?;
@@ -1105,6 +1133,7 @@ impl ClientDownload {
                         return Ok(Transfer::Published {
                             request: request.clone(),
                             bytes,
+                            package,
                         });
                     }
                     if bytes.is_empty() && !compressed {
@@ -1160,12 +1189,12 @@ impl ClientDownload {
                 "{}: paused, pending reply={}, retry={}",
                 request, draining, retry
             ),
-            Transfer::Published { request, bytes } => writeln!(
+            Transfer::Published { request, bytes, .. } => writeln!(
                 out,
                 "{}: {} bytes published, content refresh pending",
                 request, bytes
             ),
-            Transfer::RefreshFailed { request, bytes } => writeln!(
+            Transfer::RefreshFailed { request, bytes, .. } => writeln!(
                 out,
                 "{}: {} bytes published, refresh failed; retrydownload retries refresh",
                 request, bytes
@@ -1631,11 +1660,13 @@ impl crate::host::FrameHost {
     ) {
         let mut native_complete = false;
         for index in 0..self.runtime.client_resources.len() {
-            let Some(request) = self.runtime.client_resources[index]
+            let Some((request, package)) = self.runtime.client_resources[index]
                 .as_ref()
                 .and_then(|resources| resources.downloads.as_ref())
                 .and_then(|downloads| match &downloads.transfer {
-                    Transfer::Published { request, .. } => Some(request.clone()),
+                    Transfer::Published {
+                        request, package, ..
+                    } => Some((request.clone(), package.clone())),
                     _ => None,
                 })
             else {
@@ -1645,7 +1676,7 @@ impl crate::host::FrameHost {
             let result = self
                 .runtime
                 .vfs
-                .refresh_published_file(request.mount, name)
+                .refresh_published_file(request.mount, name, package.as_deref())
                 .map_err(|error| error.to_string())
                 .and_then(|package| {
                     let vfs = &self.runtime.vfs;
@@ -1690,7 +1721,12 @@ impl crate::host::FrameHost {
                 continue;
             };
             let previous = std::mem::replace(&mut downloads.transfer, Transfer::Idle);
-            let Transfer::Published { request, bytes } = previous else {
+            let Transfer::Published {
+                request,
+                bytes,
+                package,
+            } = previous
+            else {
                 continue;
             };
             match result {
@@ -1710,7 +1746,11 @@ impl crate::host::FrameHost {
                     let _ = self.runtime.server.events.console_formatted(format_args!(
                         "Downloaded file content refresh rejected: {error}\n"
                     ));
-                    downloads.transfer = Transfer::RefreshFailed { request, bytes };
+                    downloads.transfer = Transfer::RefreshFailed {
+                        request,
+                        bytes,
+                        package,
+                    };
                 }
             }
         }
