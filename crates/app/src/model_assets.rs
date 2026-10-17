@@ -1388,6 +1388,7 @@ pub struct ModelAssets {
     catalog: ModelCatalog,
     palettes: crate::render_settings::PaletteRegistrations,
     initial_registration: bool,
+    registration_vfs: Option<SearchView>,
     image_transaction_active: Option<ImageRefreshMode>,
     replacement_load: [bool; 2],
 }
@@ -2299,6 +2300,8 @@ impl ModelAssets {
         stage: impl FnOnce(&mut Self, bool) -> Result<Option<T>, String>,
         prepare: impl FnOnce(&Assets, Option<&T>) -> Result<(), String>,
     ) -> Result<(bool, Option<T>), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let image = std::str::from_utf8(path)
             .ok()
             .and_then(|path| self.assets.find_name(path));
@@ -2541,6 +2544,8 @@ impl ModelAssets {
         settings: ImageSettings,
         finish: MaterialFinishPolicy,
     ) -> Result<ModelProfile, String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let palette = match crate::render_settings::palette_resource(
             vfs,
             &mut self.assets,
@@ -2604,6 +2609,8 @@ impl ModelAssets {
         profile: ModelProfile,
         compile: impl FnOnce(&mut Images<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let index = self
             .catalog
             .profiles
@@ -2722,6 +2729,8 @@ impl ModelAssets {
         finish: MaterialFinishPolicy,
         prepare: impl FnOnce(&Assets) -> Result<(), String>,
     ) -> Result<(ModelProfile, AssetCounts), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("profile registration requires a published resource prefix".to_owned());
         }
@@ -2794,6 +2803,8 @@ impl ModelAssets {
         mode: ImageRefreshMode,
         operation: impl FnOnce(&mut Self, &[WorldId]) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.image_transaction_active.is_some() {
             return Err("image refresh is already active".to_owned());
         }
@@ -3140,6 +3151,7 @@ impl ModelAssets {
             assets,
             palettes: Default::default(),
             initial_registration: true,
+            registration_vfs: None,
             image_transaction_active: None,
             replacement_load: [true; 2],
             catalog: ModelCatalog {
@@ -3494,6 +3506,8 @@ impl ModelAssets {
         stage: impl FnOnce([RendererAdmission<'_>; N]) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<([i32; N], T, AssetCounts), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let initial = self.initial_registration;
         if !initial && self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("late registration requires a published resource prefix".to_owned());
@@ -3675,6 +3689,8 @@ impl ModelAssets {
         stage: impl FnOnce(ModelView<'_>, crate::renderer::hud::HudAssets) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(T, AssetCounts), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("HUD registration requires a published resource prefix".to_owned());
         }
@@ -3780,6 +3796,8 @@ impl ModelAssets {
         ) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(qa_render::material::world_load::LoadedWorld, T, AssetCounts), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world presentation requires a published resource prefix".to_owned());
         }
@@ -3843,6 +3861,8 @@ impl ModelAssets {
         ) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(crate::map::LoadedMap, T, AssetCounts), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("world registration requires a published resource prefix".to_owned());
         }
@@ -3992,6 +4012,17 @@ impl ModelAssets {
         Ok(name)
     }
 
+    fn bind_registration_vfs(&mut self, vfs: &Vfs) -> Result<(), CallError> {
+        if let Some(view) = &self.registration_vfs {
+            if !vfs.accepts_search(view) {
+                return Err(CallError::File);
+            }
+        } else {
+            self.registration_vfs = Some(vfs.default_view());
+        }
+        Ok(())
+    }
+
     fn admit_file(&mut self, path: &[u8]) -> Result<ModelFileId, CallError> {
         let name = self.admit_name(path)?;
         self.catalog.files.admit(Some(name))
@@ -4047,6 +4078,8 @@ impl ModelAssets {
     /// Static optional requests and native synchronous requests share exactly
     /// one file admission, decode and registration path.
     pub fn register_request(&mut self, vfs: &Vfs, request: ModelRequest<'_>) -> Result<(), String> {
+        self.bind_registration_vfs(vfs)
+            .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         if request.path.is_empty() || request.path.starts_with('*') {
             return Ok(());
         }
@@ -4619,6 +4652,10 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<Bounds, FileError> {
+        self.bind_registration_vfs(vfs).map_err(|kind| FileError {
+            kind,
+            message: "model VFS owner mismatch".to_owned(),
+        })?;
         let name = if let Some(name) = self.catalog.file_id(path.as_bytes()) {
             let file = &self.catalog.files[name];
             let unattempted = !self
@@ -5324,6 +5361,7 @@ impl ModelAssets {
         exact: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
+        self.bind_registration_vfs(vfs)?;
         if raw.is_empty() {
             return Ok(0);
         }
@@ -5630,6 +5668,7 @@ impl ModelAssets {
         source: RuleSetId,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
+        self.bind_registration_vfs(vfs)?;
         let variant = RegistrationVariant::Guard(ui_fullscreen);
         if let Some(handle) = self.catalog.model_source_cached(name, source, variant) {
             return Ok(handle);
@@ -5755,6 +5794,9 @@ impl ModelAssets {
         request: SkinRequest,
         prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
     ) -> Result<SkinSelection, IndexedSkinError> {
+        self.bind_registration_vfs(vfs).map_err(|error| {
+            IndexedSkinError::Rejected(format!("renderer VFS owner: {error:?}"))
+        })?;
         let path = canonical_path(name);
         if path.is_empty() || path.len() >= 64 {
             return Err(IndexedSkinError::Rejected(
@@ -6313,6 +6355,7 @@ impl ModelAssets {
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
     ) -> Result<i32, CallError> {
+        self.bind_registration_vfs(vfs)?;
         if raw.is_empty() {
             return Ok(0);
         }
@@ -6784,6 +6827,7 @@ impl ModelLoader for ModelAssets {
         path: &[u8],
         _source: RuleSetId,
     ) -> Result<Bounds, CallError> {
+        self.bind_registration_vfs(vfs)?;
         let path = std::str::from_utf8(path).map_err(|_| CallError::Text)?;
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);

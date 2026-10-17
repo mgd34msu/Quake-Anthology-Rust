@@ -180,3 +180,89 @@ fn scoped_source_capacity_and_invalidation_preserve_healthy_records() {
     assert_eq!(sources.find(&fixed, NameId(1)), Some(first));
     assert_eq!(sources.find(&default, NameId(1)), Some(second));
 }
+
+#[test]
+fn warm_renderer_resources_reject_a_different_vfs_before_cached_admission() {
+    let files = support::Fixture::surfaces();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut owner =
+        ModelAssets::new(Assets::load().unwrap(), [profile], [], Default::default()).unwrap();
+    let model = owner
+        .register_model(&files.vfs, b"models/test.md3", profile.source_rules)
+        .unwrap();
+    let shader = owner
+        .register_shader(
+            &files.vfs,
+            b"textures/body",
+            profile.source_rules,
+            true,
+            ShaderLighting::TwoDimensional,
+        )
+        .unwrap();
+    let skin = owner
+        .register_skin(&files.vfs, b"models/test.skin", profile.source_rules)
+        .unwrap();
+    let counts = owner.assets.counts();
+    let foreign = Vfs::default();
+    assert_eq!(
+        owner.register_model(&foreign, b"models/test.md3", profile.source_rules),
+        Err(CallError::File)
+    );
+    assert_eq!(
+        owner.precache(&foreign, b"models/test.md3", profile.source_rules),
+        Err(CallError::File)
+    );
+    assert_eq!(
+        owner.register_shader(
+            &foreign,
+            b"textures/body",
+            profile.source_rules,
+            true,
+            ShaderLighting::TwoDimensional
+        ),
+        Err(CallError::File)
+    );
+    assert_eq!(
+        owner.register_skin(&foreign, b"models/test.skin", profile.source_rules),
+        Err(CallError::File)
+    );
+    let request = RendererRequest {
+        name: b"models/test.md3".as_slice(),
+        source: profile.source_rules,
+        kind: RendererRegistration::Model,
+        world: None,
+    };
+    assert!(
+        owner
+            .prepare_registration(
+                &foreign,
+                &request,
+                profile,
+                RegistrationVariant::Retained,
+                |_| panic!("must not stage a foreign cached handle"),
+                |_, _: &()| panic!("must not prepare foreign resources")
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets.counts(), counts);
+    files.vfs.take_lookup_count();
+    assert_eq!(
+        owner.register_model(&files.vfs, b"models/test.md3", profile.source_rules),
+        Ok(model)
+    );
+    assert_eq!(
+        owner.register_shader(
+            &files.vfs,
+            b"textures/body",
+            profile.source_rules,
+            true,
+            ShaderLighting::TwoDimensional
+        ),
+        Ok(shader)
+    );
+    assert_eq!(
+        owner.register_skin(&files.vfs, b"models/test.skin", profile.source_rules),
+        Ok(skin)
+    );
+    assert_eq!(files.vfs.take_lookup_count(), 0);
+}
