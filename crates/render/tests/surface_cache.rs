@@ -22,6 +22,25 @@ fn texture(index: u8, cutout: bool) -> IndexedTexture {
     IndexedTexture::load(16, 16, mips.each_ref().map(Vec::as_slice), cutout).unwrap()
 }
 
+#[test]
+fn indexed_coordinate_extent_checks_storage_without_changing_its_pixels() {
+    let image = texture(17, false).with_coordinate_extent([12, 8]).unwrap();
+    assert_eq!(image.coordinate_extent(), [12, 8]);
+    assert_eq!(image.mip(0).unwrap().width, 16);
+    let image = image.with_coordinate_extent([16, 16]).unwrap();
+    assert_eq!(image.coordinate_extent(), [16, 16]);
+    assert!(
+        image
+            .mip(0)
+            .unwrap()
+            .indices()
+            .iter()
+            .all(|&pixel| pixel == 17)
+    );
+    assert!(texture(17, false).with_coordinate_extent([0, 8]).is_err());
+    assert!(texture(17, false).with_coordinate_extent([17, 8]).is_err());
+}
+
 fn gray_surface(samples: &[u8], styles: [u8; 4]) -> SurfaceSource {
     SurfaceSource::load(
         [0; 2],

@@ -171,6 +171,7 @@ pub struct IndexedTexture {
     id: u64,
     mips: [Option<IndexedMip>; 4],
     transparent_index: Option<u8>,
+    coordinate_extent: [u32; 2],
 }
 
 impl IndexedTexture {
@@ -201,6 +202,7 @@ impl IndexedTexture {
         }
         Ok(Self {
             id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
+            coordinate_extent: [width, height],
             mips: std::array::from_fn(|mip| {
                 Some(IndexedMip {
                     width: (width >> mip).max(1),
@@ -226,6 +228,7 @@ impl IndexedTexture {
         }
         Ok(Self {
             id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
+            coordinate_extent: [width, height],
             mips: [
                 Some(IndexedMip {
                     width,
@@ -241,6 +244,25 @@ impl IndexedTexture {
     }
     pub fn mip(&self, mip: u8) -> Option<&IndexedMip> {
         self.mips.get(mip as usize)?.as_ref()
+    }
+
+    /// A padded skin keeps its row stride while normalized model UVs cover
+    /// the authored skin dimensions. Ordinary images cover their full storage.
+    pub fn with_coordinate_extent(mut self, extent: [u32; 2]) -> Result<Self, &'static str> {
+        let storage = self.mip(0).ok_or("missing indexed base mip")?;
+        if extent
+            .iter()
+            .zip([storage.width, storage.height])
+            .any(|(&size, storage)| size == 0 || size > storage)
+        {
+            return Err("invalid indexed coordinate extent");
+        }
+        self.coordinate_extent = extent;
+        Ok(self)
+    }
+
+    pub fn coordinate_extent(&self) -> [u32; 2] {
+        self.coordinate_extent
     }
 
     pub fn cutout(&self) -> bool {

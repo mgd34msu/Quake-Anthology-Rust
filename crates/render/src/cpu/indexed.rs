@@ -73,6 +73,7 @@ pub(super) struct Raster<'a> {
     pub palette: &'a PaletteLighting,
     pub palette_id: PaletteId,
     mip: Option<&'a IndexedMip>,
+    coordinate_extent: [u32; 2],
     flat_color: Option<u8>,
     transparent_index: Option<u8>,
     wrap: Wrap,
@@ -146,21 +147,28 @@ impl<'a> Raster<'a> {
         } else {
             None
         };
+        let mip = texture
+            .map(|texture| {
+                let requested = match shading {
+                    Shading::Alias { .. } => 0,
+                    Shading::Evaluated { mip } => mip,
+                };
+                (0..=requested)
+                    .rev()
+                    .find_map(|level| texture.mip(level).map(|mip| (level, mip)))
+                    .ok_or("missing native mesh mip")
+            })
+            .transpose()?;
+        let coordinate_extent = texture.zip(mip).map_or([1; 2], |(texture, (level, _))| {
+            texture
+                .coordinate_extent()
+                .map(|size| (size >> level).max(1))
+        });
         Ok(Some(Self {
             palette: palette_resource,
             palette_id: palette,
-            mip: texture
-                .map(|texture| {
-                    let requested = match shading {
-                        Shading::Alias { .. } => 0,
-                        Shading::Evaluated { mip } => mip,
-                    };
-                    (0..=requested)
-                        .rev()
-                        .find_map(|level| texture.mip(level))
-                        .ok_or("missing native mesh mip")
-                })
-                .transpose()?,
+            mip: mip.map(|(_, mip)| mip),
+            coordinate_extent,
             flat_color,
             transparent_index: texture.and_then(|texture| texture.transparent_index()),
             wrap: image.native_sampler.unwrap_or(stage.stage.sampler).wrap,
@@ -204,8 +212,8 @@ impl<'a> Raster<'a> {
             color
         } else {
             let mip = self.mip?;
-            let x = super::texel(coordinates[0], mip.width, self.wrap);
-            let y = super::texel(coordinates[1], mip.height, self.wrap);
+            let x = super::texel(coordinates[0], self.coordinate_extent[0], self.wrap);
+            let y = super::texel(coordinates[1], self.coordinate_extent[1], self.wrap);
             mip.indices()[y * mip.width as usize + x]
         };
         if self.transparent_index == Some(raw) {

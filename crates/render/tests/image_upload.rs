@@ -850,3 +850,38 @@ fn original_image_upload_fixture_export() {
     std::fs::write(directory.join("weighted-input.bin"), input).unwrap();
     std::fs::write(directory.join("weighted-rust.bin"), output).unwrap();
 }
+
+#[test]
+fn exact_upload_extent_uses_native_nearest_and_existing_dimension_validation() {
+    let source = gray(&[10, 20, 30, 40]);
+    let params = UploadParams {
+        extent: UploadExtent::Exact {
+            width: 3,
+            height: 1,
+        },
+        resize: ResizeFilter::Nearest,
+        ..Default::default()
+    };
+    let prepared = prepare_rgba(2, 2, &source, params).unwrap();
+    assert_eq!(prepared.levels.len(), 1);
+    assert_eq!(
+        (prepared.levels[0].width, prepared.levels[0].height),
+        (3, 1)
+    );
+    assert_eq!(&*prepared.levels[0].rgba, gray(&[10, 10, 20]));
+    assert_eq!(source, gray(&[10, 20, 30, 40]));
+    for (width, height) in [(0, 1), (1, 0), (8193, 1), (1, 8193)] {
+        assert_eq!(
+            prepare_rgba(
+                2,
+                2,
+                &source,
+                UploadParams {
+                    extent: UploadExtent::Exact { width, height },
+                    ..params
+                }
+            ),
+            Err(UploadError::Dimensions)
+        );
+    }
+}

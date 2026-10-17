@@ -13,6 +13,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[path = "resources/image_search.rs"]
 mod image_search;
+#[path = "resources/indexed_skin.rs"]
+mod indexed_skin;
 
 #[test]
 fn detached_image_state_keeps_recipe_ids_native_flags_and_conflict_history() {

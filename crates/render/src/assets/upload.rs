@@ -16,6 +16,11 @@ pub enum ExtentRound {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UploadExtent {
     Original,
+    /// Caller-resolved native target, independently of power-of-two policy.
+    Exact {
+        width: u32,
+        height: u32,
+    },
     /// Resize directly to the rounded, dropped and independently capped axes.
     PowerOfTwo {
         round: ExtentRound,
@@ -195,6 +200,20 @@ pub fn prepare_rgba(
     }
     let (mut pixels, mut width, mut height, changed) = match params.extent {
         UploadExtent::Original => (source, width, height, false),
+        UploadExtent::Exact {
+            width: target_width,
+            height: target_height,
+        } => {
+            validate_dimensions(target_width, target_height)?;
+            resize_to(
+                source,
+                width,
+                height,
+                target_width,
+                target_height,
+                params.resize,
+            )
+        }
         UploadExtent::PowerOfTwo {
             round,
             drop,
@@ -203,20 +222,14 @@ pub fn prepare_rgba(
             validate_extent(drop, max_dimension)?;
             let target_width = (rounded(width, round) >> drop).clamp(1, max_dimension);
             let target_height = (rounded(height, round) >> drop).clamp(1, max_dimension);
-            let changed = target_width != width || target_height != height;
-            let pixels = if changed {
-                resample(
-                    &source,
-                    width,
-                    height,
-                    target_width,
-                    target_height,
-                    params.resize,
-                )
-            } else {
-                source
-            };
-            (pixels, target_width, target_height, changed)
+            resize_to(
+                source,
+                width,
+                height,
+                target_width,
+                target_height,
+                params.resize,
+            )
         }
         UploadExtent::PowerOfTwoMip {
             round,
@@ -226,13 +239,14 @@ pub fn prepare_rgba(
         } => {
             validate_extent(drop, max_dimension)?;
             validate_kernel(kernel, false)?;
-            let mut w = rounded(width, round);
-            let mut h = rounded(height, round);
-            let mut pixels = if w != width || h != height {
-                resample(&source, width, height, w, h, params.resize)
-            } else {
-                source
-            };
+            let (mut pixels, mut w, mut h, _) = resize_to(
+                source,
+                width,
+                height,
+                rounded(width, round),
+                rounded(height, round),
+                params.resize,
+            );
             let mut target_width = (w >> drop).max(1);
             let mut target_height = (h >> drop).max(1);
             while target_width > max_dimension || target_height > max_dimension {
@@ -329,6 +343,23 @@ fn apply_lut(pixels: &mut [u8], lut: RgbLut) {
             *channel = lut.0[*channel as usize];
         }
     }
+}
+
+fn resize_to(
+    source: Vec<u8>,
+    width: u32,
+    height: u32,
+    target_width: u32,
+    target_height: u32,
+    filter: ResizeFilter,
+) -> (Vec<u8>, u32, u32, bool) {
+    let changed = target_width != width || target_height != height;
+    let pixels = if changed {
+        resample(&source, width, height, target_width, target_height, filter)
+    } else {
+        source
+    };
+    (pixels, target_width, target_height, changed)
 }
 
 fn resample(

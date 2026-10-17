@@ -10,7 +10,9 @@ use qa_formats::image::{
     AlphaFringe, Colormap, DecodedImage, ImageFormat, IndexedImage, MipTexture, Palette,
     PaletteOptions, RgbaImage, Wad, WadImage, decode,
 };
+mod indexed_skin;
 mod search;
+pub use indexed_skin::{IndexedSkinLayout, IndexedSkinSource, IndexedSkinTranslation};
 pub use search::ImageSearchOrder;
 use search::{SelectedFile, SourceFormat};
 
@@ -166,6 +168,11 @@ pub struct ImageConflict {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
+    TranslatedSkin {
+        decoded: [u32; 2],
+        layout: IndexedSkinLayout,
+        settings: IndexedSkinTranslation,
+    },
     Embedded {
         source: u32,
         palette: PaletteId,
@@ -826,6 +833,7 @@ impl<'a> Images<'a> {
             if matches!(
                 entry.key.recipe,
                 ImageRecipe::Embedded { .. }
+                    | ImageRecipe::TranslatedSkin { .. }
                     | ImageRecipe::LayeredSky { .. }
                     | ImageRecipe::NativeDefault { .. }
                     | ImageRecipe::MissingSkin { .. }
@@ -892,6 +900,7 @@ impl<'a> Images<'a> {
                         .map(|_| ())
                 }
                 ImageRecipe::Embedded { .. }
+                | ImageRecipe::TranslatedSkin { .. }
                 | ImageRecipe::LayeredSky { .. }
                 | ImageRecipe::NativeDefault { .. }
                 | ImageRecipe::MissingSkin { .. } => Ok(()),
@@ -1301,7 +1310,7 @@ impl<'a> Images<'a> {
         let base = texture
             .mip(0)
             .ok_or(ResourceError::Asset("missing indexed base mip"))?;
-        if let [Some(a), Some(b), Some(c), Some(d)] = &mips {
+        let rebuilt = if let [Some(a), Some(b), Some(c), Some(d)] = &mips {
             IndexedTexture::load_masked(base.width, base.height, [a, b, c, d], transparent)
         } else {
             IndexedTexture::load_base(
@@ -1313,7 +1322,10 @@ impl<'a> Images<'a> {
                 transparent,
             )
         }
-        .map_err(ResourceError::Asset)
+        .map_err(ResourceError::Asset)?;
+        rebuilt
+            .with_coordinate_extent(texture.coordinate_extent())
+            .map_err(ResourceError::Asset)
     }
     /// Retain source RGB while converting only software indices to an explicit
     /// target. A resource may provide its source palette independently of the

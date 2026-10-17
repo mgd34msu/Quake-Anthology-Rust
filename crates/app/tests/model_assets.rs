@@ -1,6 +1,8 @@
 #[path = "../../render/tests/support/model_choices.rs"]
 mod model_choices;
 
+#[path = "model_assets/indexed_skins.rs"]
+mod indexed_skins;
 #[path = "model_assets/lods.rs"]
 mod lods;
 #[path = "model_assets/mdc.rs"]

@@ -5,6 +5,9 @@ use qa_core::names::compare_folded;
 use qa_gameplay::rules::appearance::PlayerModelRules;
 use std::fmt::Write;
 
+mod indexed;
+pub(crate) use indexed::PlayerSkinViews;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PlayerModelOptions {
     pub no_skins: i32,
@@ -32,6 +35,7 @@ pub struct PeerMetadata {
 struct PlayerBinding {
     body: Option<CapturedModel>,
     metadata: PeerMetadata,
+    indexed: Option<crate::model_assets::SkinSelection>,
 }
 
 #[derive(Clone)]
@@ -41,6 +45,8 @@ pub(super) struct PlayerBindings {
     models: IndexSpan,
     rules: Option<PlayerModelRules>,
     options: PlayerModelOptions,
+    indexed_options: indexed::IndexedPlayerOptions,
+    indexed_model: Option<u32>,
     pub(super) dirty: bool,
     pub(super) cold_dirty: bool,
     bodies: Box<[PlayerBinding]>,
@@ -62,6 +68,8 @@ impl PlayerBindings {
             models: layout.resources[0],
             rules,
             options: Default::default(),
+            indexed_options: Default::default(),
+            indexed_model: None,
             dirty: true,
             cold_dirty: true,
             bodies: vec![PlayerBinding::default(); count].into_boxed_slice(),
@@ -100,6 +108,11 @@ impl PlayerBindings {
         {
             ClientModelBindings::refresh_capture_images(capture, refresh, catalog, profile)?;
         }
+        for row in &mut self.bodies {
+            if let Some(selection) = row.indexed {
+                row.indexed = Some(catalog.refresh_skin(selection, refresh)?);
+            }
+        }
         Ok(())
     }
     pub(super) fn source(&self) -> RuleSetId {
@@ -111,7 +124,9 @@ impl PlayerBindings {
     pub(super) fn clear_bindings(&mut self) {
         for row in &mut self.bodies {
             row.body = None;
+            row.indexed = None;
         }
+        self.indexed_model = None;
         self.weapons.fill(None);
         self.dirty = true;
         self.cold_dirty = true;
@@ -191,6 +206,9 @@ impl PlayerBindings {
         configs: &ConfigStrings,
         assets: &mut ClientAssets<'_>,
     ) -> u32 {
+        if self.source == RuleSetId::QuakeWorld {
+            return self.refresh_indexed(configs, assets);
+        }
         for row in &mut self.bodies {
             row.body = None;
         }

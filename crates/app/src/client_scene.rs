@@ -119,6 +119,7 @@ mod player_models;
 use player_models::ClientAssets;
 pub use player_models::PeerMetadata;
 pub(crate) use player_models::PlayerModelOptions;
+pub(crate) use player_models::PlayerSkinViews;
 
 /// Received peer metadata shares the player-binding rows. Entity values and
 /// history remain in the connection's existing snapshot ring.
@@ -1660,6 +1661,15 @@ impl ClientSceneInput<'_> {
                 fullbright: capabilities.fullbright,
                 custom_skin: 0,
             };
+            let player_shader = normalized
+                .and_then(|reference| {
+                    self.bindings.indexed_skin(
+                        reference,
+                        record.appearance.native.colormap,
+                        software,
+                    )
+                })
+                .and_then(|selection| self.models.indexed_skin(selection, policy));
             let resolved = if let Some(captured) = captured {
                 captured[slot].as_ref().and_then(|binding| match binding {
                     StaticModel::Captured(binding) => {
@@ -1725,6 +1735,11 @@ impl ClientSceneInput<'_> {
                         pose.angles
                     }
                     SceneBinding::Mesh(choices) => {
+                        let choices = if player_shader.is_some() {
+                            choices.native_only()
+                        } else {
+                            choices
+                        };
                         let info = choices.info();
                         let Some(binding) = choices.first_choice() else {
                             counts.missing_models += 1;
@@ -1775,7 +1790,7 @@ impl ClientSceneInput<'_> {
                         entity,
                         qa_render::shader::reference::ShaderView::direct(),
                         None,
-                        None,
+                        player_shader,
                     )
                 } else {
                     frame.add_entity(entity)

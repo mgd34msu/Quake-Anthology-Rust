@@ -115,6 +115,33 @@ fn prepare(
 }
 
 #[test]
+fn padded_skin_uses_authored_uv_extent_and_storage_row_stride() {
+    let mut assets = Assets::load().unwrap();
+    assets.register_palette(palette(false)).unwrap();
+    let texture = IndexedTexture::load_base(
+        6,
+        3,
+        &[
+            10, 11, 12, 13, 90, 91, 20, 21, 22, 23, 92, 93, 94, 95, 96, 97, 98, 99,
+        ],
+        None,
+    )
+    .unwrap()
+    .with_coordinate_extent([4, 2])
+    .unwrap();
+    let image = assets
+        .register_indexed_image(texture, PaletteId(0))
+        .unwrap();
+    let raster = prepare(&assets, image, None, true);
+    assert_eq!(
+        raster.sample([0.99, 0.99], 0.0, 1.0, 0, 0),
+        Some((23, true))
+    );
+    assert_eq!(raster.sample([1.0, 1.0], 0.0, 1.0, 0, 0), Some((23, true)));
+    assert_eq!(assets.image(image).unwrap().logical_size(), [6, 3]);
+}
+
+#[test]
 fn indexed_mesh_sampler_retains_raw_cutouts_colormap_rows_and_native_wrap() {
     let mut assets = Assets::load().unwrap();
     assets.register_palette(palette(false)).unwrap();

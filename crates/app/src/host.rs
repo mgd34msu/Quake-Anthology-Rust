@@ -390,6 +390,8 @@ pub struct FrameHost {
     fov: CvarHandle,
     q2_fov: (qa_console::cvars::View, qa_console::cvars::View),
     pub(crate) player_model_options: (qa_console::cvars::View, qa_console::cvars::View),
+    pub(crate) player_skin_views: crate::client_scene::PlayerSkinViews,
+    pub(crate) allskins_command: qa_core::primitives::NameId,
     software_waterwarp: qa_console::cvars::View,
     curve_error: qa_console::cvars::View,
     model_lod: [qa_console::cvars::View; 2],
@@ -1284,6 +1286,10 @@ impl FrameHost {
             .bind("cl_noskins", q2_context)
             .zip(console.cvars.bind("cl_vwep", q2_context))
             .ok_or("missing player model cvars")?;
+        let player_skin_views = crate::client_scene::PlayerSkinViews::bind(&console.cvars)?;
+        let allskins_command = console
+            .register_external("allskins")
+            .ok_or("player skin command registration")?;
         let software_waterwarp = console
             .cvars
             .bind("sw_waterwarp", q2_context)
@@ -1410,6 +1416,8 @@ impl FrameHost {
             q2_fov,
             nq_identity,
             player_model_options,
+            player_skin_views,
+            allskins_command,
             software_waterwarp,
             curve_error,
             model_lod,

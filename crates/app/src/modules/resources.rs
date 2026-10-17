@@ -128,6 +128,8 @@ impl FrameHost {
                         resources.state.layout.rules,
                     ) != 0,
                 });
+            self.player_skin_views
+                .update(&self.console.cvars, &mut resources.state.models);
             let rejected = if let Some(owner) = runtime.model_assets.as_mut() {
                 if owner.initial_registration() {
                     resources.state.models.register_player_models(

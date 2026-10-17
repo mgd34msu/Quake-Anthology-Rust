@@ -1309,14 +1309,28 @@ fn console_step(
             FrameStep::Continue
         }
         CommandStep::External(command) => {
+            let context = frame.run.context();
+            let local = context.side == qa_console::catalog::Scope::Client
+                && !context.dedicated
+                && context.producer.is_none_or(|producer| {
+                    host.module_row(producer.module)
+                        .is_some_and(|row| row.request.phase == super::Phase::Client)
+                });
+            if command == host.allskins_command {
+                if local {
+                    host.player_skin_views
+                        .set_all(scratch.arguments().get_bytes(1));
+                } else {
+                    let _ = host
+                        .runtime
+                        .server
+                        .events
+                        .console_bytes(b"allskins is a local client command.\n");
+                }
+                frame.run.reply(CommandReply::Handled);
+                return FrameStep::Continue;
+            }
             if command == host.video_command {
-                let context = frame.run.context();
-                let local = context.side == qa_console::catalog::Scope::Client
-                    && !context.dedicated
-                    && context.producer.is_none_or(|producer| {
-                        host.module_row(producer.module)
-                            .is_some_and(|row| row.request.phase == super::Phase::Client)
-                    });
                 if !local {
                     let _ = host
                         .runtime
