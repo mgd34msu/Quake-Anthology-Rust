@@ -1057,3 +1057,49 @@ fn server_product_files_select_loose_sources_from_the_named_product() {
         assert!(vfs.open_product_file(path).is_none());
     }
 }
+
+#[test]
+fn mounted_q3_metadata_survives_empty_archives_and_retires_with_the_mount() {
+    let fixture = Fixture::new("native-package-metadata");
+    let package = fixture.0.join("empty.pk3");
+    qa_platform::files::write(&package, &zip::stored_zip(&[(b"empty", b"")])).unwrap();
+    let mut vfs = Vfs::default();
+    let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&package).unwrap())).unwrap());
+    let retained = Arc::downgrade(&archive);
+    let expected = archive.q3_checksums().unwrap().checksum();
+    let first = vfs.mount_archive(&package, 1, archive).unwrap();
+    assert_eq!(
+        vfs.q3_package_checksums(first).unwrap().checksum(),
+        expected
+    );
+    let retained_file = vfs.open(b"empty").unwrap();
+    let empty = fixture.0.join("no-members.pk3");
+    qa_platform::files::write(&empty, &zip::stored_zip(&[])).unwrap();
+    let empty = vfs
+        .mount_archive(
+            &empty,
+            1,
+            Arc::new(Archive::parse(Arc::new(ReadFile::open(&empty).unwrap())).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(vfs.files_in_mount(empty).count(), 0);
+    assert!(vfs.q3_package_checksums(empty).is_some());
+    let directory = vfs.mount_directory(&fixture.0, 0).unwrap();
+    assert!(vfs.q3_package_checksums(directory).is_none());
+    let pak = fixture.0.join("native.pak");
+    qa_platform::files::write(&pak, pack(&[(b"entry", b"bytes")])).unwrap();
+    let pak = vfs
+        .mount_archive(
+            &pak,
+            2,
+            Arc::new(Archive::parse(Arc::new(ReadFile::open(&pak).unwrap())).unwrap()),
+        )
+        .unwrap();
+    assert!(vfs.q3_package_checksums(pak).is_none());
+    assert!(vfs.unmount(first));
+    assert!(vfs.q3_package_checksums(first).is_none());
+    assert!(retained.upgrade().is_some());
+    drop(retained_file);
+    assert!(retained.upgrade().is_none());
+    assert!(vfs.q3_package_checksums(empty).is_some());
+}

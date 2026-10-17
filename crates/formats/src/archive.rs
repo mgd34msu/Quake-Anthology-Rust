@@ -5,7 +5,10 @@ use crate::{
     inflate::{InflateFlush, Inflater},
 };
 use qa_platform::files::ReadFile;
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArchiveKind {
@@ -44,6 +47,25 @@ pub struct Archive {
     pub kind: ArchiveKind,
     pub entries: Box<[ArchiveEntry]>,
     file: Arc<ReadFile>,
+    q3: Option<Q3PackageChecksums>,
+}
+
+/// Original Q3 wire verification over nonempty entries' central-directory CRCs.
+/// These values never identify VFS sources or renderer/audio cache entries.
+pub struct Q3PackageChecksums {
+    checksum: OnceLock<u32>,
+    crc_words: Box<[u8]>,
+}
+impl Q3PackageChecksums {
+    pub fn checksum(&self) -> u32 {
+        *self
+            .checksum
+            .get_or_init(|| qa_core::checksum::block_checksum(&self.crc_words))
+    }
+    /// A connection supplies its own native checksum feed at gamestate load.
+    pub fn pure_checksum(&self, feed: u32) -> u32 {
+        qa_core::checksum::block_checksum_key(&self.crc_words, feed)
+    }
 }
 
 /// Caller-owned inflate state, allocated once at load and reset between files.
@@ -134,6 +156,9 @@ fn bytes(file: &ReadFile, size: u64, at: u64, length: u64) -> Result<Vec<u8>, Fo
 }
 
 impl Archive {
+    pub fn q3_checksums(&self) -> Option<&Q3PackageChecksums> {
+        self.q3.as_ref()
+    }
     pub fn find(&self, name: &[u8]) -> Option<usize> {
         self.entries
             .iter()
@@ -183,6 +208,7 @@ impl Archive {
             kind: ArchiveKind::Pak,
             entries: entries.into_boxed_slice(),
             file,
+            q3: None,
         })
     }
 
@@ -216,6 +242,7 @@ impl Archive {
         let central = relative + prefix;
         let directory = bytes(&file, end_offset, central, length)?;
         let mut entries = Vec::with_capacity(usize::from(count));
+        let mut crc_words = Vec::with_capacity(usize::from(count) * 4);
         let mut at = 0usize;
         for _ in 0..count {
             let header = directory
@@ -275,6 +302,9 @@ impl Archive {
             }
             let offset = local_at + 30 + local_names + local_extra;
             range(central, offset, compressed)?;
+            if length != 0 {
+                crc_words.extend_from_slice(&crc.to_le_bytes());
+            }
             entries.push(ArchiveEntry {
                 name: name.into(),
                 directory: name.ends_with(b"/"),
@@ -292,6 +322,10 @@ impl Archive {
             kind: ArchiveKind::Zip,
             entries: entries.into_boxed_slice(),
             file,
+            q3: Some(Q3PackageChecksums {
+                checksum: OnceLock::new(),
+                crc_words: crc_words.into_boxed_slice(),
+            }),
         })
     }
 

@@ -339,3 +339,48 @@ fn shared_inflater_keeps_exact_archive_consumption_and_announced_length_errors()
         .unwrap();
     assert_eq!(&out[..count], payload);
 }
+
+#[path = "support/stored_zip.rs"]
+mod stored;
+
+#[test]
+fn original_q3_package_metadata_uses_directory_order_and_skips_empty_members() {
+    let first = stored::stored_zip(&[(b"z.bin", b"first"), (b"empty", b""), (b"a.bin", b"second")]);
+    let renamed = stored::stored_zip(&[
+        (b"renamed-a", b"first"),
+        (b"directory/", b""),
+        (b"renamed-z", b"second"),
+    ]);
+    let reversed = stored::stored_zip(&[(b"a.bin", b"second"), (b"z.bin", b"first")]);
+    let (_one, archive) = Fixture::parse(&first);
+    let archive = archive.unwrap();
+    let (_two, same) = Fixture::parse(&renamed);
+    let same = same.unwrap();
+    let (_three, other) = Fixture::parse(&reversed);
+    let other = other.unwrap();
+    let first = archive.q3_checksums().unwrap();
+    assert_eq!(first.checksum(), same.q3_checksums().unwrap().checksum());
+    assert_eq!(
+        first.pure_checksum(0x12345678),
+        same.q3_checksums().unwrap().pure_checksum(0x12345678)
+    );
+    assert_ne!(first.checksum(), other.q3_checksums().unwrap().checksum());
+    assert_ne!(first.pure_checksum(0), first.pure_checksum(1));
+    // Keyed values remain connection data; another connection cannot replace one.
+    let key = first.pure_checksum(0x12345678);
+    first.pure_checksum(7);
+    assert_eq!(first.pure_checksum(0x12345678), key);
+}
+
+#[test]
+#[ignore = "requires owned retail Q3 pak0; set QA_RETAIL_Q3_PAK"]
+fn retail_q3_package_matches_original_native_wire_values() {
+    let path = std::env::var_os("QA_RETAIL_Q3_PAK").expect("set QA_RETAIL_Q3_PAK");
+    let archive = Archive::parse(Arc::new(
+        ReadFile::open(std::path::Path::new(&path)).unwrap(),
+    ))
+    .unwrap();
+    let native = archive.q3_checksums().unwrap();
+    assert_eq!(native.checksum(), 1566731103);
+    assert_eq!(native.pure_checksum(0x12345678), 3017657714);
+}

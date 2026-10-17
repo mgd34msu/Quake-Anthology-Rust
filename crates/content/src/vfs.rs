@@ -98,8 +98,13 @@ pub struct MountInfo {
     settings_only: bool,
     product: Option<MountId>,
     package: Option<PackagePrecedence>,
+    archive: Option<Arc<Archive>>,
 }
 impl MountInfo {
+    fn retire(&mut self) {
+        self.active = false;
+        self.archive = None;
+    }
     fn precedence(&self) -> MountPrecedence {
         MountPrecedence {
             priority: self.priority,
@@ -267,7 +272,7 @@ impl Vfs {
         })();
         if result.is_err() {
             for mount in &mut self.mounts[first_mount..] {
-                mount.active = false;
+                mount.retire();
             }
             for entry in &mut self.entries {
                 if entry
@@ -301,14 +306,7 @@ impl Vfs {
     ) -> Result<MountId, VfsError> {
         let root = files::canonicalize(path)?;
         let entries = scan_directory(&root, self.mounts.len(), settings_only, &[])?;
-        self.publish(
-            root,
-            MountKind::Directory,
-            priority,
-            settings_only,
-            None,
-            entries,
-        )
+        self.publish(root, priority, settings_only, None, entries, None)
     }
 
     /// Refresh only loose files below this canonical directory prefix. Empty
@@ -396,10 +394,6 @@ impl Vfs {
         archive: Arc<Archive>,
         product: Option<MountId>,
     ) -> Result<MountId, VfsError> {
-        let kind = match archive.kind {
-            ArchiveKind::Pak => MountKind::Pak,
-            ArchiveKind::Zip => MountKind::Pk3,
-        };
         let mut entries = Vec::new();
         for (ordinal, entry) in archive.entries.iter().enumerate() {
             if entry.directory {
@@ -419,21 +413,33 @@ impl Vfs {
                 length: entry.length,
             });
         }
-        self.publish(path.to_path_buf(), kind, priority, false, product, entries)
+        self.publish(
+            path.to_path_buf(),
+            priority,
+            false,
+            product,
+            entries,
+            Some(archive),
+        )
     }
 
     fn publish(
         &mut self,
         path: PathBuf,
-        kind: MountKind,
         priority: i32,
         settings_only: bool,
         product: Option<MountId>,
         entries: Vec<Entry>,
+        archive: Option<Arc<Archive>>,
     ) -> Result<MountId, VfsError> {
         if self.mounts.len() >= 65536 {
             return Err(VfsError::Capacity);
         }
+        let kind = match archive.as_ref().map(|archive| archive.kind) {
+            None => MountKind::Directory,
+            Some(ArchiveKind::Pak) => MountKind::Pak,
+            Some(ArchiveKind::Zip) => MountKind::Pk3,
+        };
         let id = MountId(self.mounts.len() as u32);
         // Package names, not an insertion rank, keep retained asset precedence
         // valid when a later download sorts before an already loaded package.
@@ -459,6 +465,7 @@ impl Vfs {
             settings_only,
             product,
             package,
+            archive,
         });
         let (entries, generation) = self.stage_entries(|_| false, entries)?;
         let index = FileIndex::build(&entries, &mounts)?;
@@ -780,6 +787,19 @@ impl Vfs {
         })
     }
 
+    /// Native protocol metadata belongs to the retained mounted archive, not
+    /// to a winning member name or a general-purpose content identity.
+    pub fn q3_package_checksums(
+        &self,
+        mount: MountId,
+    ) -> Option<&qa_formats::archive::Q3PackageChecksums> {
+        self.mounts
+            .get(mount.0 as usize)
+            .filter(|mount| mount.active)?
+            .archive
+            .as_ref()?
+            .q3_checksums()
+    }
     pub fn mounts(&self) -> impl Iterator<Item = &MountInfo> {
         self.mounts.iter().filter(|mount| mount.active)
     }
@@ -826,7 +846,7 @@ impl Vfs {
         else {
             return false;
         };
-        mount.active = false;
+        mount.retire();
         for entry in &mut self.entries {
             if entry
                 .as_ref()
