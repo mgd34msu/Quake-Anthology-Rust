@@ -363,7 +363,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     assert_eq!(Some(admitted.id), staged);
     let pixels = images.assets.image(admitted.id).unwrap().rgba.to_vec();
     let mut state = images.into_state();
-    let reload = state.begin_reload();
+    let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
     std::fs::remove_file(root.0.join("env/native.pcx")).unwrap();
     vfs.take_lookup_count();
     let mut images = Images::from_state(&vfs, &mut assets, state);
@@ -535,4 +535,128 @@ fn qw_storage_crop_and_coordinate_domains_stay_independent_of_exact_upload_size(
         assert_eq!(levels.len(), 1);
         assert_eq!([levels[0].width, levels[0].height], [64, 64]);
     }
+}
+
+#[test]
+fn scoped_skin_reload_evicts_exact_external_requests_across_old_source_dimensions() {
+    use qa_render::material::resources::{ImageReloadScope, IndexedSkinReload};
+    let root = source_file();
+    qa_platform::files::write(
+        root.0.join("env/sidecar.lmp"),
+        [
+            2u32.to_le_bytes().as_slice(),
+            1u32.to_le_bytes().as_slice(),
+            &[16, 96],
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let (palette, target) = palettes(&mut assets);
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .unwrap();
+    let settings = IndexedSkinTranslation {
+        crop: None,
+        coordinate_extent: [2, 1],
+        upload_extent: Some([2, 1]),
+        ..request(palette, target)
+    };
+    let alternate = IndexedSkinTranslation {
+        rgba_colors: Some([1, 2]),
+        ..settings
+    };
+    let first = IndexedSkinView::new([2, 1], &[16, 96]).unwrap();
+    let prior_extent = IndexedSkinView::new([2, 2], &[16, 96, 31, 111]).unwrap();
+    let a = images
+        .translated_skin("env/native.pcx", 0, first, settings)
+        .unwrap();
+    let a_extent = images
+        .translated_skin("env/native.pcx", 0, prior_extent, settings)
+        .unwrap();
+    let other_member = images
+        .translated_skin("env/native.pcx", 1, first, settings)
+        .unwrap();
+    let other_colors = images
+        .translated_skin("env/native.pcx", 0, first, alternate)
+        .unwrap();
+    let embedded = images
+        .translated_skin("progs/player.mdl", 0, first, settings)
+        .unwrap();
+    let sidecar = images
+        .indexed_lmp("env/sidecar.lmp", palette, None, settings.usage)
+        .unwrap();
+    let name = images.assets.find_name("env/native.pcx").unwrap();
+    let prefix = images.assets.counts();
+    let mut state = images.into_state();
+    let reload = state.begin_reload(ImageReloadScope::IndexedSkins(&[IndexedSkinReload {
+        name,
+        source: 0,
+        layout: Default::default(),
+        translation: settings,
+    }]));
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    assert_eq!(
+        images
+            .translated_skin("env/native.pcx", 1, first, settings)
+            .unwrap(),
+        other_member
+    );
+    assert_eq!(
+        images
+            .translated_skin("env/native.pcx", 0, first, alternate)
+            .unwrap(),
+        other_colors
+    );
+    assert_eq!(
+        images
+            .translated_skin("progs/player.mdl", 0, first, settings)
+            .unwrap(),
+        embedded
+    );
+    assert_eq!(
+        images
+            .indexed_lmp("env/sidecar.lmp", palette, None, settings.usage)
+            .unwrap(),
+        sidecar
+    );
+    assert_eq!(images.assets.counts(), prefix);
+    let changed = IndexedSkinView::new([4, 1], &[31, 111, 31, 111]).unwrap();
+    let current = images
+        .translated_skin("env/native.pcx", 0, changed, settings)
+        .unwrap();
+    assert_ne!(current.id, a.id);
+    assert_ne!(current.id, a_extent.id);
+    // Both prior decoded dimensions were evicted from the same retained request.
+    assert_ne!(
+        images
+            .translated_skin("env/native.pcx", 0, prior_extent, settings)
+            .unwrap(),
+        a_extent
+    );
+    let mut state = images.into_state();
+    state.restore_reload(reload);
+    assets.discard_registration_suffix(prefix).unwrap();
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    assert_eq!(
+        images
+            .translated_skin("env/native.pcx", 0, first, settings)
+            .unwrap(),
+        a
+    );
+    assert_eq!(
+        images
+            .translated_skin("env/native.pcx", 0, prior_extent, settings)
+            .unwrap(),
+        a_extent
+    );
+    assert_eq!(images.assets.counts(), prefix);
 }

@@ -525,6 +525,48 @@ struct ImageRecord {
     first_requested: NameId,
 }
 
+/// Numeric projection of an existing externally loaded indexed-skin request.
+/// Decoded dimensions are excluded so replacing the source can change its size.
+#[derive(Clone, Copy)]
+pub struct IndexedSkinReload {
+    pub name: NameId,
+    pub source: u32,
+    pub layout: IndexedSkinLayout,
+    pub translation: IndexedSkinTranslation,
+}
+#[derive(Clone, Copy)]
+pub enum ImageReloadScope<'a> {
+    All,
+    IndexedSkins(&'a [IndexedSkinReload]),
+}
+impl ImageReloadScope<'_> {
+    fn selects(self, key: ImageKey) -> bool {
+        match self {
+            Self::All => !matches!(
+                key.recipe,
+                ImageRecipe::NativeDefault { .. } | ImageRecipe::MissingSkin { .. }
+            ),
+            Self::IndexedSkins(requests) => {
+                let ImageRecipe::TranslatedSkin {
+                    source,
+                    layout,
+                    settings,
+                    ..
+                } = key.recipe
+                else {
+                    return false;
+                };
+                requests.iter().any(|request| {
+                    request.name == key.name
+                        && request.source == source
+                        && request.layout == layout
+                        && request.translation == settings
+                })
+            }
+        }
+    }
+}
+
 /// Cold rollback storage for the same image owner; it is never a live lookup cache.
 pub struct ImageReload {
     resolved: Vec<ImageRecord>,
@@ -551,18 +593,21 @@ pub struct ImageRegistrationMark {
 impl ImagesState {
     /// Start a cold replay while retaining procedural helpers under this same policy.
     /// The receipt must be restored before discarding Assets on rejection.
-    pub fn begin_reload(&mut self) -> ImageReload {
+    pub fn begin_reload(&mut self, scope: ImageReloadScope<'_>) -> ImageReload {
         let resolved = std::mem::take(&mut self.resolved);
-        self.resolved
-            .extend(resolved.iter().copied().filter(|entry| {
-                matches!(
-                    entry.key.recipe,
-                    ImageRecipe::NativeDefault { .. } | ImageRecipe::MissingSkin { .. }
-                )
-            }));
+        self.resolved.extend(
+            resolved
+                .iter()
+                .copied()
+                .filter(|entry| !scope.selects(entry.key)),
+        );
+        let conflicts = std::mem::take(&mut self.conflicts);
+        if matches!(scope, ImageReloadScope::IndexedSkins(_)) {
+            self.conflicts.extend(conflicts.iter().cloned());
+        }
         ImageReload {
             resolved,
-            conflicts: std::mem::take(&mut self.conflicts),
+            conflicts,
         }
     }
 

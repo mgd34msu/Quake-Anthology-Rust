@@ -2223,3 +2223,6 @@ fn grouped_spr_keeps_one_mesh_and_authored_frames_through_source_unlink_and_refr
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
     assert_eq!(cpu.admitted_assets(), Some(owner.assets().counts()));
 }
+
+#[path = "indexed_skin_refresh.rs"]
+mod indexed_skin_refresh;

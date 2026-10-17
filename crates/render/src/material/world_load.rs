@@ -4,8 +4,8 @@ use super::{
     finish::{BundleImage, ShaderSlot, finish_material},
     load_catalog,
     resources::{
-        ImageProfile, ImageReload, ImageRole, ImageSettings, ImageUse, Images, ImagesState,
-        IndexedTarget, ResolvedImage, ResourceError,
+        ImageProfile, ImageReload, ImageReloadScope, ImageRole, ImageSettings, ImageUse, Images,
+        ImagesState, IndexedTarget, ResolvedImage, ResourceError,
     },
 };
 use crate::{
@@ -340,7 +340,7 @@ impl WorldMaterialSource {
                 entry
                     .state
                     .as_mut()
-                    .map(|state| (entry.profile, state.begin_reload()))
+                    .map(|state| (entry.profile, state.begin_reload(ImageReloadScope::All)))
             })
             .collect()
     }

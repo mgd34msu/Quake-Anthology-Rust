@@ -102,7 +102,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
     let prefix = images.assets.counts();
     images.set_search_order(order(b"jpeg"));
     let mut state = images.into_state();
-    let reload = state.begin_reload();
+    let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
     std::fs::write(root.0.join("env/native.jpeg"), vec![0; JPEG.len()]).unwrap();
     let mut images = Images::from_state(&vfs, &mut assets, state);
     assert!(matches!(
@@ -122,7 +122,7 @@ fn reload_preserves_rr_original_request_native_dimensions_and_rejected_cache() {
     assert_eq!(images.assets.image(first.id).unwrap().rgba, old_rgba);
     std::fs::write(root.0.join("env/native.jpeg"), JPEG).unwrap();
     let mut state = images.into_state();
-    let reload = state.begin_reload();
+    let reload = state.begin_reload(qa_render::material::resources::ImageReloadScope::All);
     let mut images = Images::from_state(&vfs, &mut assets, state);
     images.replay_reload(&reload).unwrap();
     vfs.take_lookup_count();

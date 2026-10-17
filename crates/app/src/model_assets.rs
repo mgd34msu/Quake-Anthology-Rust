@@ -15,9 +15,9 @@ use qa_render::assets::{
     Stage, StageTexture, TimedGroup,
 };
 use qa_render::material::resources::{
-    ImageRegistrationMark, ImageReload, ImageRole, ImageSearchOrder, ImageSettings, ImageUse,
-    Images, ImagesState, IndexedSkinLayout, IndexedSkinSource, IndexedSkinTranslation,
-    IndexedSkinView, IndexedTarget, ResourceError,
+    ImageRegistrationMark, ImageReload, ImageReloadScope, ImageRole, ImageSearchOrder,
+    ImageSettings, ImageUse, Images, ImagesState, IndexedSkinLayout, IndexedSkinReload,
+    IndexedSkinSource, IndexedSkinTranslation, IndexedSkinView, IndexedTarget, ResourceError,
 };
 use qa_render::material::world_load::{
     NamedShaderLighting, WorldImageReload, WorldPresentationRequest, compile_named_shader,
@@ -157,6 +157,7 @@ pub(crate) struct ImageRefresh {
 pub(crate) enum ImageRefreshMode {
     Reconfigure,
     Reload,
+    IndexedSkins,
 }
 impl ImageRefresh {
     pub(crate) fn profile(&self, old: ModelProfile) -> ModelProfile {
@@ -1501,26 +1502,30 @@ struct RegistrationCheckpoint {
     reload: Option<ReloadCheckpoint>,
 }
 struct ReloadCheckpoint {
+    mode: ImageRefreshMode,
     models: Vec<(usize, RegistrationState<ModelReady>)>,
     shaders: Vec<(usize, RegistrationState<ShaderRegistration>)>,
     skins: Vec<(usize, usize, RegistrationState<SkinReady>)>,
-    bindings: Vec<ModelMaterials>,
-    surfaces: Vec<SurfaceMaterials>,
+    derived: Option<(Vec<ModelMaterials>, Vec<SurfaceMaterials>)>,
     images: Vec<(usize, ImageReload)>,
-    worlds: WorldImageReload,
+    worlds: Option<WorldImageReload>,
 }
 impl ReloadCheckpoint {
     fn replay(&self, vfs: &Vfs, owner: &mut ModelAssets) -> Result<(), String> {
-        for (index, receipt) in &self.images {
-            owner.catalog.profiles[*index].with_images(vfs, &mut owner.assets, |images| {
-                images
-                    .replay_reload(receipt)
-                    .map_err(|error| format!("image replay: {error:?}"))
-            })?;
+        if self.mode == ImageRefreshMode::Reload {
+            for (index, receipt) in &self.images {
+                owner.catalog.profiles[*index].with_images(vfs, &mut owner.assets, |images| {
+                    images
+                        .replay_reload(receipt)
+                        .map_err(|error| format!("image replay: {error:?}"))
+                })?;
+            }
         }
-        self.worlds
-            .replay(vfs, &mut owner.assets)
-            .map_err(|error| format!("world image replay: {error:?}"))?;
+        if let Some(worlds) = &self.worlds {
+            worlds
+                .replay(vfs, &mut owner.assets)
+                .map_err(|error| format!("world image replay: {error:?}"))?;
+        }
         for &(index, _) in &self.models {
             let entry = &owner.catalog.registrations[index];
             let profile = entry.profile;
@@ -1552,9 +1557,17 @@ impl ReloadCheckpoint {
                 .to_vec();
             let request = entry.profiles[row].request;
             let path = std::str::from_utf8(&name).map_err(|_| "skin replay filename")?;
-            owner
-                .admit_skin_request(vfs, path, profile, guard, request)
-                .map_err(|error| format!("skin replay: {error}"))?;
+            if let Err(error) = owner.admit_skin_request(vfs, path, profile, guard, request) {
+                // Source absence or malformed source is a retained native fallback.
+                // Material, capacity and backend errors are transaction failures.
+                let source_failure = matches!(request, SkinRequest::Indexed(indexed)
+                    if matches!(&owner.catalog.skins[skin].source,
+                        Some(SkinSource::IndexedFailure { layout, .. }) if *layout == indexed.layout));
+                if self.mode == ImageRefreshMode::IndexedSkins && source_failure {
+                    continue;
+                }
+                return Err(format!("skin replay: {error}"));
+            }
             if owner.catalog.skins[skin].profiles[row]
                 .state
                 .ready()
@@ -1596,17 +1609,19 @@ impl ReloadCheckpoint {
     }
 
     fn restore(self, owner: &mut ModelAssets) -> Result<(), String> {
-        self.worlds
-            .restore(&mut owner.assets)
-            .map_err(str::to_owned)?;
+        if let Some(worlds) = self.worlds {
+            worlds.restore(&mut owner.assets).map_err(str::to_owned)?;
+        }
         for (index, receipt) in self.images {
             let Some(Ok(state)) = &mut owner.catalog.profiles[index].state else {
                 return Err("image replay owner unavailable".to_owned());
             };
             state.restore_reload(receipt);
         }
-        owner.catalog.bindings = self.bindings;
-        owner.catalog.surfaces = self.surfaces;
+        if let Some((bindings, surfaces)) = self.derived {
+            owner.catalog.bindings = bindings;
+            owner.catalog.surfaces = surfaces;
+        }
         for (index, state) in self.models {
             owner.catalog.registrations[index].state = state;
         }
@@ -1680,68 +1695,151 @@ impl ProfileCheckpoint {
     }
 }
 impl RegistrationCheckpoint {
-    fn begin_reload(&mut self, owner: &mut ModelAssets) -> Result<(), String> {
-        let worlds = owner
-            .assets
-            .begin_world_image_reload()
-            .map_err(str::to_owned)?;
+    fn begin_reload(
+        &mut self,
+        owner: &mut ModelAssets,
+        mode: ImageRefreshMode,
+    ) -> Result<(), String> {
+        let mut selected = Vec::new();
+        let mut ready_skins = 0usize;
+        if mode == ImageRefreshMode::IndexedSkins {
+            for skin in &owner.catalog.skins {
+                for row in &skin.profiles {
+                    let SkinRequest::Indexed(request) = row.request else {
+                        continue;
+                    };
+                    if !matches!(
+                        row.state,
+                        RegistrationState::Ready { .. } | RegistrationState::Failed(_)
+                    ) {
+                        continue;
+                    }
+                    ready_skins += usize::from(row.state.ready().is_some());
+                    let filename = owner
+                        .catalog
+                        .names
+                        .get(skin.name)
+                        .ok_or("indexed reload filename")?;
+                    let filename =
+                        std::str::from_utf8(filename).map_err(|_| "indexed reload filename")?;
+                    if let Some(name) = owner.assets.find_name(filename) {
+                        selected.push(IndexedSkinReload {
+                            name,
+                            source: 0,
+                            layout: request.layout,
+                            translation: request.translation,
+                        });
+                    }
+                }
+            }
+        } else if mode != ImageRefreshMode::Reload {
+            return Err("invalid image replay mode".to_owned());
+        }
+        let skin_capacity = if mode == ImageRefreshMode::IndexedSkins {
+            owner
+                .catalog
+                .capacity
+                .skins
+                .checked_sub(ready_skins)
+                .ok_or("indexed reload skin capacity")?
+        } else {
+            0
+        };
+        let worlds = if mode == ImageRefreshMode::Reload {
+            Some(
+                owner
+                    .assets
+                    .begin_world_image_reload()
+                    .map_err(str::to_owned)?,
+            )
+        } else {
+            None
+        };
         let catalog = &mut owner.catalog;
         let mut images = Vec::new();
         for (index, profile) in catalog.profiles.iter_mut().enumerate() {
             if profile.image_owner.is_none()
                 && let Some(Ok(state)) = &mut profile.state
             {
-                images.push((index, state.begin_reload()));
+                let scope = if mode == ImageRefreshMode::Reload {
+                    ImageReloadScope::All
+                } else {
+                    ImageReloadScope::IndexedSkins(&selected)
+                };
+                images.push((index, state.begin_reload(scope)));
             }
         }
         let mut models = Vec::new();
-        for (index, entry) in catalog.registrations.iter_mut().enumerate() {
-            if entry.state.ready().is_some() {
-                models.push((
-                    index,
-                    std::mem::replace(&mut entry.state, RegistrationState::Reload),
-                ));
-            }
-        }
         let mut shaders = Vec::new();
-        for (index, entry) in catalog.shader_bindings.iter_mut().enumerate() {
-            if entry.state.ready().is_some() {
-                shaders.push((
-                    index,
-                    std::mem::replace(&mut entry.state, RegistrationState::Reload),
-                ));
-            }
-        }
-        let mut skins = Vec::new();
-        for (skin, entry) in catalog.skins.iter_mut().enumerate() {
-            if matches!(
-                entry.source,
-                Some(SkinSource::Indexed { .. } | SkinSource::IndexedFailure { .. })
-            ) {
-                entry.source = None;
-            }
-            for (profile, entry) in entry.profiles.iter_mut().enumerate() {
+        if mode == ImageRefreshMode::Reload {
+            for (index, entry) in catalog.registrations.iter_mut().enumerate() {
                 if entry.state.ready().is_some() {
-                    skins.push((
-                        skin,
-                        profile,
+                    models.push((
+                        index,
+                        std::mem::replace(&mut entry.state, RegistrationState::Reload),
+                    ));
+                }
+            }
+            for (index, entry) in catalog.shader_bindings.iter_mut().enumerate() {
+                if entry.state.ready().is_some() {
+                    shaders.push((
+                        index,
                         std::mem::replace(&mut entry.state, RegistrationState::Reload),
                     ));
                 }
             }
         }
+        let mut skins = Vec::new();
+        for (skin, entry) in catalog.skins.iter_mut().enumerate() {
+            let mut clear_source = false;
+            for (row, profile) in entry.profiles.iter_mut().enumerate() {
+                let selected = if mode == ImageRefreshMode::Reload {
+                    profile.state.ready().is_some()
+                } else {
+                    matches!(profile.request, SkinRequest::Indexed(_))
+                        && matches!(
+                            profile.state,
+                            RegistrationState::Ready { .. } | RegistrationState::Failed(_)
+                        )
+                };
+                if selected {
+                    clear_source |= matches!(profile.request, SkinRequest::Indexed(_));
+                    skins.push((
+                        skin,
+                        row,
+                        std::mem::replace(&mut profile.state, RegistrationState::Reload),
+                    ));
+                }
+            }
+            if (mode == ImageRefreshMode::Reload || clear_source)
+                && matches!(
+                    entry.source,
+                    Some(SkinSource::Indexed { .. } | SkinSource::IndexedFailure { .. })
+                )
+            {
+                entry.source = None;
+            }
+        }
+        let derived = if mode == ImageRefreshMode::Reload {
+            catalog.capacity.bindings = 0;
+            catalog.capacity.surfaces = 0;
+            Some((
+                std::mem::take(&mut catalog.bindings),
+                std::mem::take(&mut catalog.surfaces),
+            ))
+        } else {
+            None
+        };
+        catalog.capacity.skins = skin_capacity;
         self.reload = Some(ReloadCheckpoint {
+            mode,
             models,
             shaders,
             skins,
-            bindings: std::mem::take(&mut catalog.bindings),
-            surfaces: std::mem::take(&mut catalog.surfaces),
+            derived,
             images,
             worlds,
         });
-        catalog.capacity.bindings = 0;
-        catalog.capacity.surfaces = 0;
-        catalog.capacity.skins = 0;
         Ok(())
     }
 
@@ -2456,6 +2554,9 @@ impl ModelAssets {
         if self.image_transaction_active.is_some() {
             return Err("image refresh is already active".to_owned());
         }
+        if mode == ImageRefreshMode::IndexedSkins && world_settings.is_some() {
+            return Err("indexed skin refresh cannot change world settings".to_owned());
+        }
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("image refresh requires a published resource prefix".to_owned());
         }
@@ -2464,8 +2565,8 @@ impl ModelAssets {
         let mut world_rebuild = None;
         self.image_transaction_active = Some(mode);
         let result = (|| {
-            if mode == ImageRefreshMode::Reload {
-                checkpoint.registration.begin_reload(self)?;
+            if mode != ImageRefreshMode::Reconfigure {
+                checkpoint.registration.begin_reload(self, mode)?;
                 checkpoint
                     .registration
                     .reload
@@ -2528,6 +2629,9 @@ impl ModelAssets {
     ) -> Result<ImageRefresh, String> {
         if self.image_transaction_active.is_none() {
             return Err("image refresh requires its cold transaction".to_owned());
+        }
+        if self.image_transaction_active == Some(ImageRefreshMode::IndexedSkins) {
+            return Err("indexed skin refresh cannot reconfigure other resources".to_owned());
         }
         let mut refresh = ImageRefresh::default();
         for &old in profiles {
