@@ -1582,13 +1582,9 @@ impl ReloadCheckpoint {
             let profile = entry.profile;
             let guard =
                 RegistrationVariant::from_collapse(profile, entry.vertex_collapse)?.guard()?;
-            let path = owner
-                .catalog
-                .file_name(entry.file)
-                .ok_or("model replay filename")?
-                .to_owned();
+            let file = entry.file;
             owner
-                .ensure_file_profile(vfs, &path, Some(profile), guard)
+                .ensure_file_record(vfs, file, Some(profile), guard)
                 .map_err(|error| format!("model replay: {}", error.message))?;
             if owner.catalog.registrations[index].state.ready().is_none() {
                 return Err("model replay did not restore its registered presentation".to_owned());
@@ -4665,57 +4661,81 @@ impl ModelAssets {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
-        let name = if let Some(name) = self.catalog.file_id(path.as_bytes()) {
-            let file = &self.catalog.files[name];
-            let unattempted = !self
-                .catalog
-                .profiles
-                .iter()
-                .filter(|images| selected.is_none_or(|profile| images.profile == profile))
-                .all(|images| {
-                    self.catalog.files.rows(name).iter().any(|&row| {
-                        let row = &self.catalog.registrations[row];
-                        row.profile == images.profile
-                            && row.vertex_collapse
-                                == row.profile.finish.compile(ui_fullscreen).collapse_vertex()
-                    })
-                })
-                || self.catalog.files.rows(name).iter().copied().any(|index| {
-                    self.catalog.registrations[index].state.pending()
-                        && self.catalog.registrations[index].vertex_collapse
-                            == self.catalog.registrations[index]
-                                .profile
-                                .finish
-                                .compile(ui_fullscreen)
-                                .collapse_vertex()
-                        && selected.is_none_or(|profile| {
-                            self.catalog.registrations[index].profile == profile
-                        })
-                });
-            if !matches!(file, ModelFile::Empty)
-                && !(matches!(file, ModelFile::Ready { .. }) && unattempted)
-            {
-                return file
-                    .bounds(&self.catalog.sources)
-                    .or_else(|| matches!(file, ModelFile::Ready { .. }).then(Bounds::default))
-                    .ok_or_else(|| match file {
-                        ModelFile::Failed(error) => error.clone(),
-                        _ => FileError {
-                            kind: CallError::File,
-                            message: "empty model filename".to_owned(),
-                        },
-                    });
-            }
-            name
-        } else {
-            self.admit_file(path.as_bytes())
-                .map_err(|_| FileError::capacity("model name capacity"))?
+        let name = match self.catalog.file_id(path.as_bytes()) {
+            Some(name) => name,
+            None => self
+                .admit_file(path.as_bytes())
+                .map_err(|_| FileError::capacity("model name capacity"))?,
         };
+        self.ensure_file_record(vfs, name, selected, ui_fullscreen)
+    }
+
+    fn ensure_file_record(
+        &mut self,
+        vfs: &Vfs,
+        name: ModelFileId,
+        selected: Option<ModelProfile>,
+        ui_fullscreen: bool,
+    ) -> Result<Bounds, FileError> {
+        self.bind_registration_vfs(vfs).map_err(|kind| FileError {
+            kind,
+            message: "model VFS owner mismatch".to_owned(),
+        })?;
+        let file = &self.catalog.files[name];
+        let unattempted = !self
+            .catalog
+            .profiles
+            .iter()
+            .filter(|images| selected.is_none_or(|profile| images.profile == profile))
+            .all(|images| {
+                self.catalog.files.rows(name).iter().any(|&row| {
+                    let row = &self.catalog.registrations[row];
+                    row.profile == images.profile
+                        && row.vertex_collapse
+                            == row.profile.finish.compile(ui_fullscreen).collapse_vertex()
+                })
+            })
+            || self.catalog.files.rows(name).iter().copied().any(|index| {
+                self.catalog.registrations[index].state.pending()
+                    && self.catalog.registrations[index].vertex_collapse
+                        == self.catalog.registrations[index]
+                            .profile
+                            .finish
+                            .compile(ui_fullscreen)
+                            .collapse_vertex()
+                    && selected
+                        .is_none_or(|profile| self.catalog.registrations[index].profile == profile)
+            });
+        if !matches!(file, ModelFile::Empty)
+            && !(matches!(file, ModelFile::Ready { .. }) && unattempted)
+        {
+            return file
+                .bounds(&self.catalog.sources)
+                .or_else(|| matches!(file, ModelFile::Ready { .. }).then(Bounds::default))
+                .ok_or_else(|| match file {
+                    ModelFile::Failed(error) => error.clone(),
+                    _ => FileError {
+                        kind: CallError::File,
+                        message: "empty model filename".to_owned(),
+                    },
+                });
+        }
         let file_name = self
             .catalog
             .files
             .name(name)
             .ok_or_else(|| FileError::capacity("model file name binding"))?;
+        let path = self
+            .catalog
+            .name(file_name)
+            .ok_or_else(|| FileError::capacity("model file name encoding"))?
+            .to_owned();
+        let source_view = self
+            .catalog
+            .files
+            .source_view(name)
+            .ok_or_else(|| FileError::capacity("model source selection"))?
+            .clone();
         let mut rows = self.catalog.files.rows(name).clone();
         let fresh_profiles = rows.is_empty();
         for images in &self.catalog.profiles {
@@ -4751,14 +4771,14 @@ impl ModelAssets {
         *self.catalog.files.rows_mut(name) = rows.clone();
         let lods = match self.catalog.files[name] {
             ModelFile::Ready { lods, .. } => lods,
-            _ => match self.model_lods(vfs.read_view(None), path) {
+            _ => match self.model_lods(vfs.read_view(Some(&source_view)), &path) {
                 Ok(lods) => lods,
                 Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
             },
         };
         let replacement = lods
             .source(0)
-            .and_then(|source| self.replacement_source(vfs.read_view(None), source));
+            .and_then(|source| self.replacement_source(vfs.read_view(Some(&source_view)), source));
         let replacement_frames = replacement.as_ref().and_then(|replacement| {
             let original = &self.catalog.sources[lods.source(0)?];
             let ModelSourceFile::Ready {
@@ -4894,7 +4914,7 @@ impl ModelAssets {
                     .metadata()
                     .is_some_and(|metadata| named_model_shaders(metadata.format))
         }) {
-            match self.shader_catalog(vfs, None) {
+            match self.shader_catalog(vfs, Some(&source_view)) {
                 Ok(id) => Some(id),
                 Err(kind) => {
                     return Err(self.fail_file(

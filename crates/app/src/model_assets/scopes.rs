@@ -40,6 +40,9 @@ impl<T> Selections<T> {
         self.entries.push((view, create()));
         Ok(id)
     }
+    fn view(&self, id: SelectionId) -> &SearchView {
+        &self.entries[id.0].0
+    }
     pub(super) fn get(&self, id: SelectionId) -> &T {
         &self.entries[id.0].1
     }
@@ -68,7 +71,12 @@ impl<K: BindingId> ScopedBindings<K> {
     pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<K> {
         self.scopes.get(self.scopes.find(view)?).get(name.0)
     }
-    pub(super) fn bind(&mut self, view: SearchView, name: NameId, value: K) -> Result<(), ()> {
+    pub(super) fn bind(
+        &mut self,
+        view: SearchView,
+        name: NameId,
+        value: K,
+    ) -> Result<SelectionId, ()> {
         if name.0 as usize >= self.names {
             return Err(());
         }
@@ -79,7 +87,11 @@ impl<K: BindingId> ScopedBindings<K> {
         self.scopes
             .get_mut(id)
             .set(name.0, Some(value))
-            .map_err(|_| ())
+            .map_err(|_| ())?;
+        Ok(id)
+    }
+    pub(super) fn view(&self, id: SelectionId) -> &SearchView {
+        self.scopes.view(id)
     }
     pub(super) fn named(&self, name: NameId) -> impl Iterator<Item = K> + '_ {
         self.scopes

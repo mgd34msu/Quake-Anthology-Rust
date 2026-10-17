@@ -2,6 +2,7 @@
 use super::*;
 
 struct Record {
+    source: Option<super::scopes::SelectionId>,
     state: ModelFile,
     profiles: Vec<usize>,
 }
@@ -19,6 +20,7 @@ impl ModelFiles {
             .ok_or("model file handles")?;
         Ok(Self {
             records: vec![Record {
+                source: None,
                 state: ModelFile::Empty,
                 profiles: Vec::new(),
             }],
@@ -31,6 +33,9 @@ impl ModelFiles {
     }
     pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<ModelFileId> {
         self.selected.find(view, name)
+    }
+    pub(super) fn source_view(&self, id: ModelFileId) -> Option<&SearchView> {
+        Some(self.selected.view(self.records.get(id.0 as usize)?.source?))
     }
     pub(super) fn name(&self, id: ModelFileId) -> Option<NameId> {
         self.names.get(id.0)
@@ -92,15 +97,20 @@ impl ModelFiles {
             .try_reserve(1)
             .map_err(|_| CallError::Capacity)?;
         let name = key.as_ref().map(|(name, _)| *name);
-        if let Some((name, view)) = key {
-            self.selected
-                .bind(view, name, id)
-                .map_err(|_| CallError::Capacity)?;
-        }
+        let source = if let Some((name, view)) = key {
+            Some(
+                self.selected
+                    .bind(view, name, id)
+                    .map_err(|_| CallError::Capacity)?,
+            )
+        } else {
+            None
+        };
         self.names
             .set(id.0, name)
             .map_err(|_| CallError::Capacity)?;
         self.records.push(Record {
+            source,
             state: ModelFile::Empty,
             profiles: Vec::new(),
         });

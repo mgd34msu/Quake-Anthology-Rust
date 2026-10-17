@@ -1411,4 +1411,23 @@ fn selected_md5_source_keeps_animation_and_scale_companions_together() {
         assert!(matches!(owner.catalog.files[*file], ModelFile::Empty));
     }
     assert!(!owner.retry_published_file(b"models/paired.md5mesh"));
+    for (view, file, max_y) in &handles {
+        assert!(
+            owner
+                .catalog
+                .files
+                .source_view(*file)
+                .unwrap()
+                .same_selection(view)
+        );
+        let bounds = owner
+            .ensure_file_record(&files.vfs, *file, None, false)
+            .map_err(|error| error.message)
+            .unwrap();
+        assert_eq!(bounds.maxs.0[1], *max_y);
+        assert_eq!(
+            owner.catalog.files.name(*file),
+            owner.catalog.sources.name(ids[0])
+        );
+    }
 }
