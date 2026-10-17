@@ -266,3 +266,87 @@ fn warm_renderer_resources_reject_a_different_vfs_before_cached_admission() {
     );
     assert_eq!(files.vfs.take_lookup_count(), 0);
 }
+
+#[test]
+fn shader_catalog_cache_keeps_selected_definitions_and_bounds_new_scopes() {
+    let low_script = b"low_only { { map textures/low } } shared { { map textures/low } }";
+    let mut files = support::Fixture::new(&[("scripts/world.shader", low_script.to_vec())]);
+    let high = support::Fixture::new(&[(
+        "scripts/world.shader",
+        b"high_only { { map textures/high } } shared { { map textures/high } }".to_vec(),
+    )]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let empty = files.vfs.search_view([]).unwrap();
+    let mut owner = ModelAssets::new(
+        Assets::load().unwrap(),
+        [],
+        [],
+        ModelLimits {
+            models: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let low_id = owner.shader_catalog(&files.vfs, Some(&low)).unwrap();
+    let high_id = owner.shader_catalog(&files.vfs, Some(&high)).unwrap();
+    let empty_id = owner.shader_catalog(&files.vfs, Some(&empty)).unwrap();
+    let default_id = owner.shader_catalog(&files.vfs, None).unwrap();
+    assert_ne!(low_id, high_id);
+    assert_ne!(default_id, high_id);
+    for (id, present, absent) in [
+        (low_id, "low_only", "high_only"),
+        (high_id, "high_only", "low_only"),
+        (default_id, "high_only", "low_only"),
+    ] {
+        let catalog = owner.catalog.shader_catalogs.get(id).as_ref().unwrap();
+        assert!(catalog.find_canonical(present).is_some());
+        assert!(catalog.find_canonical(absent).is_none());
+        assert_eq!(catalog.definitions.len(), 2);
+        assert!(catalog.diagnostics.is_empty());
+    }
+    assert!(
+        owner
+            .catalog
+            .shader_catalogs
+            .get(empty_id)
+            .as_ref()
+            .unwrap()
+            .definitions
+            .is_empty()
+    );
+    let foreign = Vfs::default();
+    assert_eq!(
+        owner.shader_catalog(&foreign, Some(&low)),
+        Err(CallError::File)
+    );
+    let other = files.vfs.search_view([high_mount, low_mount]).unwrap();
+    assert_eq!(
+        owner.shader_catalog(&files.vfs, Some(&other)),
+        Err(CallError::Capacity)
+    );
+    let root = files.vfs.directory_path(low_mount).unwrap();
+    qa_platform::files::write(
+        root.join("scripts/world.shader"),
+        vec![b' '; low_script.len()],
+    )
+    .unwrap();
+    let same_low = files.vfs.search_view([low_mount, low_mount]).unwrap();
+    assert_eq!(
+        owner.shader_catalog(&files.vfs, Some(&same_low)).unwrap(),
+        low_id
+    );
+    assert!(
+        owner
+            .catalog
+            .shader_catalogs
+            .get(low_id)
+            .as_ref()
+            .unwrap()
+            .find_canonical("low_only")
+            .is_some()
+    );
+}

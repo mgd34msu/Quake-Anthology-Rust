@@ -27,10 +27,11 @@ pub fn load_catalog(
     vfs: &Vfs,
     search: Option<&SearchView>,
 ) -> Result<ShaderCatalog, CatalogLoadError> {
+    let search = vfs.read_view(search).retain()?;
     let mut source_names = Vec::new();
     let mut source_bytes = Vec::new();
     let mut reader = ArchiveReader::default();
-    for (file, name) in vfs.files_with(search) {
+    for (file, name) in vfs.files_with(Some(&search)) {
         if !name.starts_with(b"scripts/") || !name.ends_with(b".shader") {
             continue;
         }

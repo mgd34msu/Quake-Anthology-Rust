@@ -1367,7 +1367,7 @@ pub struct ModelCatalog {
     shader_bindings: Vec<ShaderProfileBinding>,
     skin_indices: Vec<Option<u32>>,
     skins: Vec<RegisteredSkin>,
-    shader_catalog: Option<Result<ShaderCatalog, String>>,
+    shader_catalogs: scopes::Selections<Result<ShaderCatalog, String>>,
     profiles: Vec<ProfileImages>,
     registrations: Vec<RegisteredProfile>,
     bindings: Vec<ModelMaterials>,
@@ -3164,7 +3164,7 @@ impl ModelAssets {
                 shader_bindings: Vec::new(),
                 skin_indices: vec![None],
                 skins: Vec::new(),
-                shader_catalog: None,
+                shader_catalogs: scopes::Selections::new(),
                 profiles: unique,
                 registrations: Vec::new(),
                 bindings: Vec::new(),
@@ -4878,15 +4878,29 @@ impl ModelAssets {
                 Err(error) => return Err(self.fail_file(name, fresh_profiles, error)),
             }
         }
-        if inputs.iter().any(|input| {
+        let shader_catalog = if inputs.iter().any(|input| {
             let source = input.1;
             input.7.is_none()
                 && self.catalog.sources[source]
                     .metadata()
                     .is_some_and(|metadata| named_model_shaders(metadata.format))
         }) {
-            self.shader_catalog(vfs);
-        }
+            match self.shader_catalog(vfs, None) {
+                Ok(id) => Some(id),
+                Err(kind) => {
+                    return Err(self.fail_file(
+                        name,
+                        fresh_profiles,
+                        FileError {
+                            kind,
+                            message: "model shader catalog source".to_owned(),
+                        },
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         let mut renderer_sources = match &self.catalog.files[name] {
             ModelFile::Ready {
                 renderer_sources, ..
@@ -4992,7 +5006,7 @@ impl ModelAssets {
                                         .is_some_and(|metadata| {
                                             metadata.format == ModelFormat::Md2
                                         }),
-                                    self.catalog.shader_catalog.as_ref(),
+                                    shader_catalog.map(|id| self.catalog.shader_catalogs.get(id)),
                                     &mut self.catalog.capacity,
                                     self.catalog.limits,
                                     compile_policy,
@@ -5248,11 +5262,23 @@ impl ModelAssets {
             .collect()
     }
 
-    fn shader_catalog(&mut self, vfs: &Vfs) -> &Result<ShaderCatalog, String> {
-        self.catalog.shader_catalog.get_or_insert_with(|| {
-            qa_render::material::load_catalog(vfs, None)
-                .map_err(|error| format!("shader scripts: {error:?}"))
-        })
+    fn shader_catalog(
+        &mut self,
+        vfs: &Vfs,
+        search: Option<&SearchView>,
+    ) -> Result<scopes::SelectionId, CallError> {
+        self.bind_registration_vfs(vfs)?;
+        let view = vfs
+            .read_view(search)
+            .retain()
+            .map_err(|_| CallError::File)?;
+        self.catalog
+            .shader_catalogs
+            .intern(view.clone(), self.catalog.limits.models, || {
+                qa_render::material::load_catalog(vfs, Some(&view))
+                    .map_err(|error| format!("shader scripts: {error:?}"))
+            })
+            .map_err(|_| CallError::Capacity)
     }
 
     fn admit_tags(&mut self, model: &Model<'_>) -> Result<Option<TagLayout>, String> {
@@ -5522,12 +5548,11 @@ impl ModelAssets {
             ShaderRequest { name, mipmaps }
         };
         let named_lighting = self.shader_lighting(lighting)?;
-        self.shader_catalog(vfs);
+        let catalog_id = self.shader_catalog(vfs, None)?;
         let catalog = self
             .catalog
-            .shader_catalog
-            .as_ref()
-            .ok_or(CallError::Aborted)?
+            .shader_catalogs
+            .get(catalog_id)
             .as_ref()
             .map_err(Clone::clone);
         let mut ready = false;
@@ -6477,7 +6502,7 @@ impl ModelAssets {
                 .and_then(|count| self.catalog.capacity.skins.checked_add(count))
                 .filter(|&count| count <= self.catalog.limits.skins)
                 .ok_or(CallError::Capacity)?;
-            self.shader_catalog(vfs);
+            let catalog_id = self.shader_catalog(vfs, None)?;
             let mut mappings = Vec::with_capacity(rows.len());
             for row in rows {
                 let surface = self.admit_name(row.surface)?;
@@ -6491,9 +6516,9 @@ impl ModelAssets {
             if skin_file {
                 retained_source = Some(SkinSource::Script(bytes));
             }
-            Ok(mappings)
+            Ok((mappings, catalog_id))
         })();
-        let mappings = match mappings {
+        let (mappings, catalog_id) = match mappings {
             Ok(mappings) => mappings,
             Err(error) => {
                 for profile in &mut self.catalog.skins[index].profiles {
@@ -6568,9 +6593,8 @@ impl ModelAssets {
                                     vfs,
                                     &mut self.assets,
                                     self.catalog
-                                        .shader_catalog
-                                        .as_ref()
-                                        .ok_or(CallError::Aborted)?
+                                        .shader_catalogs
+                                        .get(catalog_id)
                                         .as_ref()
                                         .map_err(Clone::clone),
                                     raw,

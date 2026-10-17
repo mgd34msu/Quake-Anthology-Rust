@@ -114,6 +114,13 @@ fn replaced_shader_file_contributes_only_the_winning_definitions() {
             .definitions
             .is_empty()
     );
+    let foreign = Vfs::default();
+    assert!(matches!(
+        load_catalog(&foreign, Some(&low_view)),
+        Err(qa_render::material::CatalogLoadError::Vfs(
+            qa_content::vfs::VfsError::Handle
+        ))
+    ));
     let current = load_catalog(&vfs, None).unwrap();
     assert!(current.find_canonical("old_only").is_none());
     assert!(current.find_canonical("new_only").is_some());

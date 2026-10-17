@@ -1,59 +1,87 @@
-//! Numeric name bindings are partitioned by the same owned VFS selections.
+//! Retained source selections key cold resource and numeric binding tables.
 use qa_content::vfs::SearchView;
 use qa_core::{
     bindings::{BindingId, OrdinalBindings},
     primitives::NameId,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SelectionId(usize);
 #[derive(Clone)]
-struct Scope<K> {
-    view: SearchView,
-    names: OrdinalBindings<K>,
+pub(super) struct Selections<T> {
+    entries: Vec<(SearchView, T)>,
 }
+impl<T> Selections<T> {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+    pub(super) fn find(&self, view: &SearchView) -> Option<SelectionId> {
+        self.entries
+            .iter()
+            .position(|(selected, _)| selected.same_selection(view))
+            .map(SelectionId)
+    }
+    pub(super) fn intern(
+        &mut self,
+        view: SearchView,
+        capacity: usize,
+        create: impl FnOnce() -> T,
+    ) -> Result<SelectionId, ()> {
+        if let Some(id) = self.find(&view) {
+            return Ok(id);
+        }
+        if self.entries.len() >= capacity {
+            return Err(());
+        }
+        self.entries.try_reserve(1).map_err(|_| ())?;
+        let id = SelectionId(self.entries.len());
+        self.entries.push((view, create()));
+        Ok(id)
+    }
+    pub(super) fn get(&self, id: SelectionId) -> &T {
+        &self.entries[id.0].1
+    }
+    fn get_mut(&mut self, id: SelectionId) -> &mut T {
+        &mut self.entries[id.0].1
+    }
+    fn values(&self) -> impl Iterator<Item = &T> {
+        self.entries.iter().map(|(_, value)| value)
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct ScopedBindings<K> {
-    scopes: Vec<Scope<K>>,
+    scopes: Selections<OrdinalBindings<K>>,
     names: usize,
 }
 impl<K: BindingId> ScopedBindings<K> {
     pub(super) fn load(names: usize) -> Self {
         Self {
-            scopes: Vec::new(),
+            scopes: Selections::new(),
             names,
         }
     }
     pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<K> {
-        self.scopes
-            .iter()
-            .find(|scope| scope.view.same_selection(view))?
-            .names
-            .get(name.0)
+        self.scopes.get(self.scopes.find(view)?).get(name.0)
     }
     pub(super) fn bind(&mut self, view: SearchView, name: NameId, value: K) -> Result<(), ()> {
         if name.0 as usize >= self.names {
             return Err(());
         }
-        let index = if let Some(index) = self
+        let names = self.names;
+        let id = self
             .scopes
-            .iter()
-            .position(|scope| scope.view.same_selection(&view))
-        {
-            index
-        } else {
-            self.scopes.try_reserve(1).map_err(|_| ())?;
-            self.scopes.push(Scope {
-                view,
-                names: OrdinalBindings::load(self.names, 0, 0, true),
-            });
-            self.scopes.len() - 1
-        };
-        self.scopes[index]
-            .names
+            .intern(view, names, || OrdinalBindings::load(names, 0, 0, true))?;
+        self.scopes
+            .get_mut(id)
             .set(name.0, Some(value))
             .map_err(|_| ())
     }
     pub(super) fn named(&self, name: NameId) -> impl Iterator<Item = K> + '_ {
         self.scopes
-            .iter()
-            .filter_map(move |scope| scope.names.get(name.0))
+            .values()
+            .filter_map(move |names| names.get(name.0))
     }
 }
