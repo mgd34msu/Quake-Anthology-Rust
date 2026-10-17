@@ -359,3 +359,85 @@ fn empty_and_oversize_messages_fail_before_packet_preparation() {
     assert!(body.is_empty());
     assert_eq!(nq.send_state().unreliable_drops, 0);
 }
+
+#[test]
+fn cancelling_a_q3_fragmented_body_preserves_commands_and_advances_partial_sequences() {
+    use qa_network::channel::commands::CommandContext;
+    for submitted in [false, true] {
+        let mut server = Channel::load(channel::QUAKE3, Endpoint::Server, 16384, 8).unwrap();
+        server
+            .set_command_context(CommandContext::default())
+            .unwrap();
+        server.queue_reliable(b"print keep").unwrap();
+        let mut client = Channel::load(channel::QUAKE3, Endpoint::Client, 16384, 8).unwrap();
+        client
+            .set_command_context(CommandContext::default())
+            .unwrap();
+        let original = server.send_state().sequence;
+        let bytes = vec![42; 4096];
+        server.prepare_server_message(&bytes, EventTime(1)).unwrap();
+        assert!(server.pending_fragments());
+        if submitted {
+            let old = server.pending_packet().unwrap().bytes.to_vec();
+            server.submitted(EventTime(1)).unwrap();
+            assert!(!matches!(
+                client.receive(&old, EventTime(1)).unwrap().delivery,
+                Delivery::Payload(_)
+            ));
+        }
+        assert!(server.cancel_server_message());
+        assert!(!server.pending_fragments());
+        assert!(server.pending_packet().is_none());
+        assert_eq!(
+            server.send_state().sequence,
+            original + u32::from(submitted)
+        );
+        assert_eq!(server.command_state().unwrap().queued, 1);
+        assert_eq!(server.command_state().unwrap().submitted, 0);
+        assert!(!server.cancel_server_message());
+        // The next normal command-only message still owns the same command.
+        let packet = server
+            .prepare_output(EventTime(2))
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        server.submitted(EventTime(2)).unwrap();
+        let received = client.receive(&packet, EventTime(2)).unwrap();
+        let sequence = received.header.sequence;
+        let Delivery::Payload(body) = received.delivery else {
+            panic!("replacement MSG");
+        };
+        let mut body = body.to_vec();
+        let mut commands = Vec::new();
+        client
+            .decode_server_output(&mut body, sequence, |output| {
+                if let qa_network::channel::commands::ServerOutput::ReliableCommand {
+                    text, ..
+                } = output
+                {
+                    commands.push(text.to_vec());
+                }
+            })
+            .unwrap();
+        assert_eq!(commands, [b"print keep".to_vec()]);
+        assert_eq!(server.command_state().unwrap().submitted, 1);
+    }
+    let mut state = Channel::load(channel::QUAKE3, Endpoint::Server, 16384, 8).unwrap();
+    state
+        .set_command_context(CommandContext::default())
+        .unwrap();
+    let mut body = [0; 128];
+    let mut writer = qa_network::message::Writer::new(&mut body, qa_network::message::Encoding::Q3);
+    qa_network::channel::commands::write_gamestate(&mut writer, 0, 0, 0, [], []).unwrap();
+    let bits = writer.bit_position();
+    let length = writer.size();
+    state.queue_server_state(&body[..length], bits, 0).unwrap();
+    state.prepare_output(EventTime(0)).unwrap();
+    assert!(!state.cancel_server_message());
+    assert!(state.pending_packet().is_some());
+    let mut other = Channel::load(channel::QUAKE2, Endpoint::Server, 8192, 8).unwrap();
+    other.prepare(Some(b"keep"), EventTime(0)).unwrap();
+    assert!(!other.cancel_server_message());
+    assert!(other.pending_packet().is_some());
+}

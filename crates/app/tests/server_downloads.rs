@@ -39,6 +39,7 @@ struct Block {
 struct Source {
     transport: frame_source::Sink,
     milliseconds: u64,
+    ticks: u64,
     drop: Option<ClientId>,
     blocks: [Vec<Block>; 2],
     numbered: [Vec<qa_core::primitives::FileChunk<Vec<u8>>>; 2],
@@ -70,7 +71,9 @@ impl Source {
     fn step(&mut self, host: &mut FrameHost) {
         self.milliseconds += 100;
         self.transport.time = EventTime::from_milliseconds(self.milliseconds);
-        assert_eq!(host.frame(self, true).drains, 2);
+        let frame = host.frame(self, true);
+        self.ticks += frame.server_ticks;
+        assert_eq!(frame.drains, 2);
         for packet in std::mem::take(&mut self.transport.packets) {
             if !packet.admitted {
                 continue;
@@ -715,4 +718,187 @@ fn numbered_ring_blocks_share_q3_commands_fragments_and_best_effort_retirement()
             }
         ]
     );
+}
+
+fn q3_package(host: &mut FrameHost) -> Vec<u8> {
+    let root = host
+        .runtime
+        .vfs
+        .mounts()
+        .find(|mount| mount.kind == qa_content::vfs::MountKind::Directory)
+        .unwrap()
+        .path
+        .clone()
+        .join("baseq3");
+    qa_platform::files::create_dir_all(&root).unwrap();
+    let payload: Vec<u8> = (0..19000).map(|index| (index * 29) as u8).collect();
+    let package = zip::stored_zip(&[(b"maps/download.dat", &payload)]);
+    qa_platform::files::write(&root.join("custom.pk3"), &package).unwrap();
+    qa_platform::files::write(&root.join("empty.pk3"), &[]).unwrap();
+    qa_platform::files::write(&root.join("pak0.pk3"), &package).unwrap();
+    host.runtime.vfs.mount_directory(&root, 2).unwrap();
+    package
+}
+
+#[test]
+fn q3_server_window_retains_lost_blocks_and_advances_only_on_native_ack() {
+    use qa_core::primitives::FileChunk;
+    let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+    let package = q3_package(&mut host);
+    let client = ClientId(0);
+    queue(&mut host, client, b"download baseq3/custom.pk3");
+    source.advance(&mut host, 9);
+    assert_eq!(source.numbered[0].len(), 8);
+    for (number, chunk) in source.numbered[0].iter().enumerate() {
+        let FileChunk::Block {
+            number: actual,
+            total,
+            bytes,
+        } = chunk
+        else {
+            panic!("block");
+        };
+        assert_eq!(*actual, number as i16);
+        assert_eq!(*total, (number == 0).then_some(package.len() as u32));
+        assert_eq!(bytes, &package[number * 2048..(number + 1) * 2048]);
+    }
+    // The initial eight blocks are retained until application ACKs arrive,
+    // regardless of channel ACKs or new host frames. A healthy peer progresses.
+    let ticks = source.ticks;
+    queue(&mut host, ClientId(1), b"download baseq3/custom.pk3");
+    source.advance(&mut host, 2);
+    assert!(source.ticks > ticks);
+    assert_eq!(source.numbered[0].len(), 8);
+    assert!(!source.numbered[1].is_empty());
+    source.advance(&mut host, 9);
+    assert!(source.numbered[0].len() > 8);
+    assert_eq!(source.numbered[0][8], source.numbered[0][0]);
+    assert!(
+        source.numbered[0]
+            .iter()
+            .all(|chunk| matches!(chunk, FileChunk::Block { number: 0..=7, .. }))
+    );
+    // ACKs for the original window remain valid while its resend cursor runs.
+    for number in 0..8 {
+        queue(&mut host, client, format!("nextdl {number}").as_bytes());
+    }
+    source.advance(&mut host, 4);
+    let blocks: Vec<_> = source.numbered[0]
+        .iter()
+        .filter_map(|chunk| match chunk {
+            FileChunk::Block { number, bytes, .. } if *number >= 8 => {
+                Some((*number, bytes.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        blocks,
+        vec![
+            (8, package[16384..18432].to_vec()),
+            (9, package[18432..].to_vec()),
+            (10, vec![])
+        ]
+    );
+    for number in 8..=10 {
+        queue(&mut host, client, format!("nextdl {number}").as_bytes());
+    }
+    source.advance(&mut host, 2);
+    let complete = source.numbered[0].len();
+    source.advance(&mut host, 15);
+    assert_eq!(source.numbered[0].len(), complete);
+    assert!(host.runtime.server.clients[0].connection.is_some());
+    assert!(host.runtime.server.clients[1].connection.is_some());
+}
+
+#[test]
+fn q3_server_rejections_stop_and_replacement_are_scoped_to_one_transfer() {
+    use qa_core::primitives::FileChunk;
+    let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+    q3_package(&mut host);
+    let client = ClientId(0);
+    for (request, expected) in [
+        (b"baseq3/pak0.pk3".as_slice(), "Cannot autodownload id pk3"),
+        (b"missionpack/pak1.pk3", "Cannot autodownload Team Arena"),
+        (b"baseq3/empty.pk3", "not found"),
+        (b"baseq3/no.pk3", "not found"),
+        (b"baseq3/../escape.pk3", "not found"),
+        (b"baseq3/config.cfg", "not found"),
+    ] {
+        let previous = source.numbered[0].len();
+        queue(
+            &mut host,
+            client,
+            format!("download {}", String::from_utf8_lossy(request)).as_bytes(),
+        );
+        source.advance(&mut host, 3);
+        let FileChunk::Rejected { size, message } = &source.numbered[0][previous] else {
+            panic!("rejection");
+        };
+        assert_eq!(*size, -1);
+        assert!(String::from_utf8_lossy(message).contains(expected));
+    }
+    setting(&mut host, Protocol::Quake3_68, "sv_allowDownload", "0.5");
+    queue(&mut host, client, b"download baseq3/custom.pk3");
+    source.advance(&mut host, 3);
+    assert!(
+        matches!(source.numbered[0].last().unwrap(), FileChunk::Rejected { message, .. } if String::from_utf8_lossy(message).contains("disabled"))
+    );
+    setting(&mut host, Protocol::Quake3_68, "sv_allowDownload", "1");
+    // Stall the source before cancellation. Its retained ring records must not
+    // be sent as blocks of the later transfer when the sink becomes writable.
+    source.transport.reject = Some(address(client));
+    queue(&mut host, client, b"download baseq3/custom.pk3");
+    source.step(&mut host);
+    queue(&mut host, client, b"stopdl");
+    source.step(&mut host);
+    queue(&mut host, client, b"download baseq3/no.pk3");
+    source.step(&mut host);
+    let before = source.numbered[0].len();
+    source.transport.reject = None;
+    source.advance(&mut host, 3);
+    assert!(
+        source.numbered[0][before..]
+            .iter()
+            .all(|chunk| matches!(chunk, FileChunk::Rejected { .. }))
+    );
+    // An out-of-order native block acknowledgement drops only that peer.
+    queue(&mut host, client, b"download baseq3/custom.pk3");
+    source.step(&mut host);
+    queue(&mut host, client, b"nextdl 7");
+    source.advance(&mut host, 2);
+    assert!(host.runtime.server.clients[0].connection.is_none());
+    assert!(host.runtime.server.clients[1].connection.is_some());
+}
+
+#[test]
+fn q3_download_batches_follow_client_snaps_rate_and_live_server_rate_limit() {
+    for (max_rate, expected) in [(0, 8), (1000, 1), (-1, 1)] {
+        let (_files, mut host, mut source) = fixture([Protocol::Quake3_68; 2], false);
+        q3_package(&mut host);
+        host.runtime
+            .server
+            .replace_userinfo(
+                ClientId(0),
+                b"\\rate\\90000\\snaps\\1",
+                Protocol::Quake3_68.userinfo_rules().unwrap(),
+            )
+            .unwrap();
+        setting(
+            &mut host,
+            Protocol::Quake3_68,
+            "sv_maxRate",
+            &max_rate.to_string(),
+        );
+        queue(&mut host, ClientId(0), b"download baseq3/custom.pk3");
+        source.advance(&mut host, 3);
+        assert_eq!(source.numbered[0].len(), expected);
+        source.advance(&mut host, 3);
+        assert_eq!(source.numbered[0].len(), expected);
+        if max_rate != 0 {
+            setting(&mut host, Protocol::Quake3_68, "sv_maxRate", "0");
+            source.advance(&mut host, 8);
+            assert_eq!(source.numbered[0].len(), 8);
+        }
+    }
 }

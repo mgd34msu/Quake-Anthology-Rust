@@ -474,3 +474,27 @@ fn q3_download_rejections_sizes_and_following_services_keep_the_native_boundary(
         assert_eq!(rejected, 1);
     }
 }
+
+#[test]
+fn q3_original_stock_packages_are_never_distributable() {
+    for product in ["baseq3", "missionpack"] {
+        for number in 0..=8 {
+            for name in [
+                format!("{product}/pak{number}"),
+                format!("{product}/pak{number}.pk3"),
+                format!("{product}:PAK{number}.PK3"),
+            ] {
+                assert_eq!(downloads::q3_stock_package(name.as_bytes()), Some(product));
+            }
+        }
+    }
+    for name in [
+        b"baseq3/pak9.pk3".as_slice(),
+        b"mod/pak0.pk3",
+        b"baseq3/pak00.pk3",
+        b"baseq3/pak1.pk3.extra",
+        b"../baseq3/pak0.pk3",
+    ] {
+        assert_eq!(downloads::q3_stock_package(name), None);
+    }
+}

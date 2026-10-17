@@ -1005,3 +1005,55 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
         );
     }
 }
+
+#[test]
+fn server_product_files_select_loose_sources_from_the_named_product() {
+    let fixture = Fixture::new("server-products");
+    let low = fixture.0.join("low/baseq3");
+    let high = fixture.0.join("high/baseq3");
+    let other = fixture.0.join("mod");
+    for root in [&low, &high, &other] {
+        qa_platform::files::create_dir_all(root).unwrap();
+    }
+    for (root, bytes) in [
+        (&low, b"low".as_slice()),
+        (&high, b"high"),
+        (&other, b"other"),
+    ] {
+        qa_platform::files::write(&root.join("custom.pk3"), bytes).unwrap();
+    }
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&low, 1).unwrap();
+    vfs.mount_directory(&high, 2).unwrap();
+    vfs.mount_directory(&other, 3).unwrap();
+    let package = fixture.0.join("impostor.pk3");
+    qa_platform::files::write(&package, &zip::stored_zip(&[(b"custom.pk3", b"member")])).unwrap();
+    vfs.mount_archive(
+        &package,
+        4,
+        Arc::new(Archive::parse(Arc::new(ReadFile::open(&package).unwrap())).unwrap()),
+    )
+    .unwrap();
+    let read = |file: FileRef| {
+        vfs.read_to_vec(&file, 1024, &mut Default::default())
+            .unwrap()
+    };
+    assert_eq!(read(vfs.open(b"custom.pk3").unwrap()), b"member");
+    assert_eq!(
+        read(vfs.open_product_file(b"baseq3/custom.pk3").unwrap()),
+        b"high"
+    );
+    assert_eq!(
+        read(vfs.open_product_file(b"mod/custom.pk3").unwrap()),
+        b"other"
+    );
+    for path in [
+        b"unknown/custom.pk3".as_slice(),
+        b"baseq3/../custom.pk3",
+        b"../custom.pk3",
+        b"baseq3",
+        b"/custom.pk3",
+    ] {
+        assert!(vfs.open_product_file(path).is_none());
+    }
+}

@@ -363,9 +363,9 @@ impl Runtime {
             renderer_configuration: None,
             scene: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
-            server_downloads: std::iter::repeat_with(server_downloads::ServerDownload::default)
+            server_downloads: std::iter::repeat_with(server_downloads::ServerDownload::load)
                 .take(max_clients)
-                .collect(),
+                .collect::<Result<_, _>>()?,
             client_collision: std::iter::repeat_with(|| None).take(max_clients).collect(),
             native_numbers: std::iter::repeat_with(|| {
                 output_namespace::NativeNumbers::load(

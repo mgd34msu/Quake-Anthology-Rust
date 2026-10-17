@@ -559,16 +559,10 @@ impl Vfs {
     /// Name conversion and candidate traversal are shared by default and scoped
     /// reads. Selection does not mutate another caller's mount order or handles.
     pub fn open_with(&self, path: &[u8], view: Option<&SearchView>) -> Option<FileRef> {
-        self.lookups.fetch_add(1, Ordering::Relaxed);
         if view.is_some_and(|view| !self.accepts_search(view)) {
             return None;
         }
-        let mut normalized = [0; 4096];
-        let length = normalize_into(path, &mut normalized).ok()?;
-        let id = self.names.as_ref()?.find(&normalized[..length])?;
-        let candidates = self
-            .listing
-            .get(self.candidates.get(id.0 as usize)?.range())?;
+        let candidates = self.find_candidates(path)?;
         let slot = if let Some(view) = view {
             candidates
                 .iter()
@@ -582,6 +576,50 @@ impl Vfs {
         } else {
             *candidates.first()?
         };
+        self.reference(slot)
+    }
+
+    fn find_candidates(&self, path: &[u8]) -> Option<&[u32]> {
+        self.lookups.fetch_add(1, Ordering::Relaxed);
+        let mut normalized = [0; 4096];
+        let length = normalize_into(path, &mut normalized).ok()?;
+        let id = self.names.as_ref()?.find(&normalized[..length])?;
+        self.listing
+            .get(self.candidates.get(id.0 as usize)?.range())
+    }
+
+    /// Native SERVER package requests include the product directory. Resolve
+    /// only loose files inside explicitly mounted content roots, never settings
+    /// or an archive member whose name happens to match a distributable package.
+    pub fn open_product_file(&self, path: &[u8]) -> Option<FileRef> {
+        let slash = path.iter().position(|byte| *byte == b'/')?;
+        let product = &path[..slash];
+        if product.is_empty()
+            || product == b"."
+            || product == b".."
+            || product.iter().any(|byte| matches!(byte, b':' | b'\\' | 0))
+        {
+            return None;
+        }
+        let candidates = self.find_candidates(&path[slash + 1..])?;
+        let slot = candidates.iter().copied().find(|&slot| {
+            let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref) else {
+                return false;
+            };
+            let mount = &self.mounts[entry.mount];
+            mount.active
+                && mount.kind == MountKind::Directory
+                && !mount.settings_only
+                && mount
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.bytes()
+                            .map(qa_core::names::path_byte)
+                            .eq(product.iter().copied().map(qa_core::names::path_byte))
+                    })
+        })?;
         self.reference(slot)
     }
 

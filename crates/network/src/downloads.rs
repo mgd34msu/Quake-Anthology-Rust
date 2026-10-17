@@ -215,6 +215,35 @@ pub(crate) fn read_block<'a>(
     })
 }
 
+/// Original Q3 base and Team Arena pak0..pak8 cannot be autodownloaded.
+/// The result names the native product for its rejection message.
+pub fn q3_stock_package(name: &[u8]) -> Option<&'static str> {
+    let mut normalized = [0; 64];
+    if name.len() > normalized.len() {
+        return None;
+    }
+    for (to, from) in normalized.iter_mut().zip(name) {
+        *to = if *from == b':' {
+            b'/'
+        } else {
+            qa_core::names::path_byte(*from)
+        };
+    }
+    let name = &normalized[..name.len()];
+    for product in ["baseq3", "missionpack"] {
+        let Some(name) = name
+            .strip_prefix(product.as_bytes())
+            .and_then(|name| name.strip_prefix(b"/pak"))
+        else {
+            continue;
+        };
+        if matches!(name, [b'0'..=b'8'] | [b'0'..=b'8', b'.', b'p', b'k', b'3']) {
+            return Some(product);
+        }
+    }
+    None
+}
+
 /// Native downloads name a bounded relative content path, never an OS path.
 pub fn validate_path(name: &[u8]) -> Result<(), Error> {
     if name.is_empty()

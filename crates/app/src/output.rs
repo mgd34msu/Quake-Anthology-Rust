@@ -174,7 +174,6 @@ pub(crate) fn dispatch_frame(
     {
         runtime.publish_audio_retirements();
     }
-    runtime.flush_server_downloads();
     runtime.publish_presentation_resets();
     runtime.publish_userinfos();
     let server = &mut runtime.server;
@@ -433,29 +432,50 @@ pub(crate) fn dispatch_frame(
             && let Some(sequence) = connection.pending_output
         {
             let route = connection.route;
-            let (disposition, submitted) = match native::transmit(connection, None, time, |bytes| {
-                crate::transport::admit_output(
-                    &mut runtime.loopback,
-                    &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
-                    qa_core::loopback::Endpoint::Server,
-                    route,
-                    bytes,
+            let cancelled_download = !runtime.server_downloads[slot].accepts_record(sequence)
+                && server.events.batch(id).is_some_and(|mut batch| {
+                    while let Some(record) = server.events.next(&mut batch) {
+                        if record.sequence == sequence {
+                            return matches!(record.event, FrameEvent::FileChunk { .. });
+                        }
+                    }
+                    false
+                })
+                && connection.channel.cancel_server_message();
+            let (disposition, submitted) = if cancelled_download {
+                connection.pending_output = None;
+                (
+                    Some(OutputSubmission::BestEffort),
+                    crate::transport::Submission {
+                        dropped: true,
+                        ..Default::default()
+                    },
                 )
-            }) {
-                Ok(submitted) => submitted,
-                Err(_) => {
-                    counts.native_unsupported += 1;
-                    runtime.output_duplicates.submitted(
-                        id,
-                        sequence,
-                        OutputSubmission::BestEffort,
-                        false,
-                        false,
-                    );
-                    server
-                        .events
-                        .submit(id, sequence, OutputSubmission::BestEffort);
-                    continue;
+            } else {
+                match native::transmit(connection, None, time, |bytes| {
+                    crate::transport::admit_output(
+                        &mut runtime.loopback,
+                        &mut |socket, to, bytes| source.send_packet(socket, to, bytes),
+                        qa_core::loopback::Endpoint::Server,
+                        route,
+                        bytes,
+                    )
+                }) {
+                    Ok(submitted) => submitted,
+                    Err(_) => {
+                        counts.native_unsupported += 1;
+                        runtime.output_duplicates.submitted(
+                            id,
+                            sequence,
+                            OutputSubmission::BestEffort,
+                            false,
+                            false,
+                        );
+                        server
+                            .events
+                            .submit(id, sequence, OutputSubmission::BestEffort);
+                        continue;
+                    }
                 }
             };
             counts.add_native(&submitted);
@@ -502,7 +522,9 @@ pub(crate) fn dispatch_frame(
                 }
                 let mut resource_pending = false;
                 let submission = if let FrameEvent::FileChunk { receiver, chunk } = record.event {
-                    if receiver != client.entity {
+                    if receiver != client.entity
+                        || !runtime.server_downloads[slot].accepts_record(record.sequence)
+                    {
                         return OutputSubmission::BestEffort;
                     }
                     let stored = if let Some(payload) = chunk.payload() {

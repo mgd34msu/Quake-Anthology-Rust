@@ -2981,6 +2981,8 @@ impl FrameHost {
     }
 
     pub fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
+        self.runtime
+            .flush_server_downloads(self.time, &mut self.console.cvars);
         let effect_clients = std::array::from_fn(|seat| {
             let (client, row, _) = self.local_seat(seat)?;
             Some(qa_render::effects::EffectClient {

@@ -526,6 +526,44 @@ impl Channel {
     pub fn pending_fragments(&self) -> bool {
         self.transmit.fragment_pending
     }
+    /// Abandon an ordinary Q3 SERVER body while retaining its reliable commands.
+    /// Snapshots, gamestates and other protocols keep their own delivery rules.
+    pub fn cancel_server_message(&mut self) -> bool {
+        if self.endpoint != Endpoint::Server || !self.policy.command_ack {
+            return false;
+        }
+        let tx = &mut self.transmit;
+        if tx.snapshot_flight.is_some()
+            || tx.server_state_flight.is_some()
+            || tx.pending.is_some_and(|pending| {
+                pending.snapshot.is_some()
+                    || pending.server_state.is_some()
+                    || !matches!(
+                        pending.commit,
+                        Commit::Sequenced { reliable: false }
+                            | Commit::Fragment {
+                                reliable: false,
+                                ..
+                            }
+                    )
+            })
+            || tx.pending.is_none() && !tx.fragment_pending
+        {
+            return false;
+        }
+        // A partially submitted MSG must never share its sequence with a new
+        // body: the peer can already hold its initial fragment.
+        if tx.fragment_pending && tx.state.fragment_offset != 0 {
+            tx.state.sequence = tx.state.sequence.wrapping_add(1);
+        }
+        tx.pending = None;
+        tx.fragment_pending = false;
+        tx.state.fragment_bytes = 0;
+        tx.state.fragment_offset = 0;
+        tx.command_flight = None;
+        tx.state.unreliable_drops = tx.state.unreliable_drops.saturating_add(1);
+        true
+    }
     /// Admission and sequence commitment are one boundary operation. A full
     /// transport retains the exact packet and all of its native metadata.
     pub fn submit_with(
