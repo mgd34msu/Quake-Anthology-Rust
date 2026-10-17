@@ -854,6 +854,7 @@ pub(super) fn setinfo(
     id: ClientId,
     source: RuleSetId,
     args: qa_console::command_text::Arguments<'_>,
+    driver: &mut crate::modules::Driver<'_>,
 ) -> Result<bool, ClientCommandError> {
     use qa_core::{
         primitives::{NativeDelivery, NativeTarget},
@@ -914,10 +915,16 @@ pub(super) fn setinfo(
         emission: None,
         check_portals: false,
     };
-    let rules = userinfo_rules(host)?;
+    let mut rules = userinfo_rules(host)?;
+    if let Some(info) = host.client_info(client.module) {
+        rules.bytes = rules
+            .bytes
+            .max(info.userinfo_bytes)
+            .min(qa_session::clients::USERINFO_BYTES);
+    }
     let mutation = InfoUpdate::new(key, value, rules)
         .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
-    let mut previous = FixedText::<{ qa_compat::quakec::QW_USERINFO_BYTES }>::default();
+    let mut previous = FixedText::<{ qa_session::clients::USERINFO_BYTES }>::default();
     previous
         .set_bytes(
             host.runtime
@@ -941,6 +948,7 @@ pub(super) fn setinfo(
     {
         return Ok(true);
     }
+    let mut restore = true;
     let result = (|| {
         // A native capacity failure may remove a row, so compare the resulting
         // effective value even when the replacement could not be appended.
@@ -956,24 +964,43 @@ pub(super) fn setinfo(
         if info_value(current, key) == old {
             return Ok(());
         }
-        extract_name(host, id, rules)
-            .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+        // An external callback can publish other effects or retire this
+        // lifetime. Never restore earlier bytes across that boundary.
+        restore = false;
+        let notified = host.notify_userinfo_module_client_with_driver(id, driver)?;
+        restore = !notified;
+        if !notified {
+            extract_name(host, id, rules)
+                .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+        }
         let current = host
             .runtime
             .server
             .userinfo(id)
             .ok_or(ClientCommandError::Inactive)?;
-        let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES + 4];
-        let length = qa_network::outputs::peer_update(
-            Protocol::QuakeWorld28,
-            PeerUpdate::SetInfo {
-                slot,
-                key,
-                value: info_value(current, key),
-            },
-            &mut bytes,
-        )
-        .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+        let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES * 4];
+        let mut length = 0;
+        let mut append = |key, value| -> Result<(), ClientCommandError> {
+            length += qa_network::outputs::peer_update(
+                Protocol::QuakeWorld28,
+                PeerUpdate::SetInfo { slot, key, value },
+                &mut bytes[length..],
+            )
+            .map_err(|_| ClientCommandError::Usercmd(ServiceError::Text))?;
+            Ok(())
+        };
+        if notified {
+            let before = peer_info(previous.as_bytes());
+            let after = peer_info(current);
+            for (key, value) in qa_core::text::info_changes(before.as_bytes(), after.as_bytes()) {
+                append(key, value)?;
+            }
+        } else {
+            append(key, info_value(current, key))?;
+        }
+        if length == 0 {
+            return Ok(());
+        }
         host.runtime
             .server
             .events
@@ -981,7 +1008,7 @@ pub(super) fn setinfo(
             .map_err(|_| ClientCommandError::Usercmd(ServiceError::Capacity))?;
         Ok(())
     })();
-    if result.is_err() {
+    if result.is_err() && restore {
         let _ = host
             .runtime
             .server
@@ -989,14 +1016,22 @@ pub(super) fn setinfo(
     }
     result.map(|()| true)
 }
-pub(super) fn userinfo(
-    _: &mut FrameHost,
-    _: ModuleId,
-    _: ClientId,
-    _: &[u8],
-    _driver: &mut crate::modules::Driver<'_>,
-) -> Result<(), ClientCommandError> {
-    Err(ClientCommandError::Unsupported)
+
+fn peer_info(text: &[u8]) -> qa_core::text::FixedText<{ qa_compat::quakec::QW_USERINFO_BYTES }> {
+    use qa_core::text::{FixedText, InfoBytes, InfoRules, InfoUpdate, info_changes};
+    let mut result = FixedText::default();
+    let rules = InfoRules {
+        filter: InfoBytes::AboveCarriageReturn,
+        ..qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld)
+    };
+    for (key, value) in info_changes(b"", text) {
+        if let Ok(update) = InfoUpdate::new(key, value, rules) {
+            // A module's larger native record remains intact in SERVER. QW
+            // drops only fields that do not fit its own field/total limits.
+            let _ = result.update_info(update);
+        }
+    }
+    result
 }
 
 pub(super) fn publish(

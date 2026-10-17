@@ -77,25 +77,49 @@ fn info_pair(info: &[u8], start: usize) -> Option<InfoPair> {
 /// Borrow native info fields in their original order, using the same parser
 /// as lookup and removal. A trailing incomplete field ends iteration.
 pub fn info_pairs(info: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    info_spans(info).map(|pair| (&info[pair.key], &info[pair.value]))
+}
+
+fn info_spans(info: &[u8]) -> impl Iterator<Item = InfoPair> {
     let mut cursor = 0;
     std::iter::from_fn(move || {
         let pair = info_pair(info, cursor)?;
         cursor = pair.value.end;
-        Some((&info[pair.key], &info[pair.value]))
+        Some(pair)
     })
+}
+
+/// Effective first-key changes, including removals as empty values. Reordering
+/// fields and changing a later duplicate do not create native key updates.
+pub fn info_changes<'a>(
+    previous: &'a [u8],
+    current: &'a [u8],
+) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
+    let changed = info_spans(previous).filter_map(move |pair| {
+        let key = &previous[pair.key];
+        if info_value(previous, key, false) != Some(pair.value.clone()) {
+            return None;
+        }
+        let value = info_value(current, key, false).map_or(&b""[..], |range| &current[range]);
+        (value != &previous[pair.value]).then_some((key, value))
+    });
+    let added = info_spans(current).filter_map(move |pair| {
+        let key = &current[pair.key];
+        let value = &current[pair.value.clone()];
+        (info_value(previous, key, false).is_none()
+            && info_value(current, key, false) == Some(pair.value)
+            && !value.is_empty())
+        .then_some((key, value))
+    });
+    changed.chain(added)
 }
 
 /// The first matching value in a native backslash-separated info string.
 /// Callers select native key comparison; returned spans never own or alter text.
 pub fn info_value(info: &[u8], key: &[u8], folded: bool) -> Option<std::ops::Range<usize>> {
-    let mut cursor = 0;
-    while let Some(pair) = info_pair(info, cursor) {
-        if pair.matches(info, key, folded) {
-            return Some(pair.value);
-        }
-        cursor = pair.value.end;
-    }
-    None
+    info_spans(info)
+        .find(|pair| pair.matches(info, key, folded))
+        .map(|pair| pair.value)
 }
 
 /// Compact a native info string in place; the caller owns its NUL terminator.

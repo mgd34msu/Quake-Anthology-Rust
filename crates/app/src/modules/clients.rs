@@ -57,13 +57,15 @@ pub(super) struct ClientLifecycle {
         CommandArgs<'_>,
         &mut crate::modules::Driver<'_>,
     ) -> Result<(), ClientCommandError>,
-    userinfo: fn(
-        &mut FrameHost,
-        ModuleId,
-        ClientId,
-        &[u8],
-        &mut crate::modules::Driver<'_>,
-    ) -> Result<(), ClientCommandError>,
+    userinfo: Option<
+        fn(
+            &mut FrameHost,
+            ModuleId,
+            ClientId,
+            &[u8],
+            &mut crate::modules::Driver<'_>,
+        ) -> Result<(), ClientCommandError>,
+    >,
     publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
 }
 impl ClientLifecycle {
@@ -84,7 +86,7 @@ impl ClientLifecycle {
             finish: no_finish,
             prepare_disconnect: q3::prepare_disconnect,
             text: q3::text,
-            userinfo: q3::userinfo,
+            userinfo: Some(q3::userinfo),
             publish: no_publish,
         }
     }
@@ -114,7 +116,7 @@ impl ClientLifecycle {
             },
             prepare_disconnect: quakec::prepare_disconnect,
             text: quakec::text,
-            userinfo: quakec::userinfo,
+            userinfo: None,
             publish: quakec::publish,
         }
     }
@@ -135,7 +137,7 @@ impl ClientLifecycle {
             finish: no_finish,
             prepare_disconnect: q2_disconnect,
             text: q2_text,
-            userinfo: q2_userinfo,
+            userinfo: Some(q2_userinfo),
             publish: no_publish,
         }
     }
@@ -915,7 +917,7 @@ impl FrameHost {
                 self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
-            if quakec::setinfo(self, id, rules, args)? {
+            if quakec::setinfo(self, id, rules, args, driver)? {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
             let Some((api, _)) = api else {
@@ -971,7 +973,43 @@ impl FrameHost {
                 qa_compat::services::userinfo_rules(table.info.rules),
             )
             .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
-        (table.userinfo)(self, native.module, id, text, driver)
+        self.notify_userinfo_module_client_with_driver(id, driver)
+            .map(|_| ())
+    }
+    /// Wire admission owns the record; the loaded module independently chooses
+    /// whether a native userinfo callback exists.
+    pub(crate) fn notify_userinfo_module_client_with_driver(
+        &mut self,
+        id: ClientId,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<bool, ClientCommandError> {
+        let Some(native) = self.runtime.server.module_moves(id) else {
+            return Ok(false);
+        };
+        let Some(callback) = self
+            .module_row(native.module)
+            .and_then(|row| row.client_lifecycle)
+            .and_then(|table| table.userinfo)
+        else {
+            return Ok(false);
+        };
+        let lifetime = self.runtime.server.clients[id.0 as usize].entity;
+        let mut text =
+            qa_core::text::FixedText::<{ qa_session::clients::USERINFO_BYTES }>::default();
+        text.set_bytes(
+            self.runtime
+                .server
+                .userinfo(id)
+                .ok_or(ClientCommandError::Inactive)?,
+        )
+        .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
+        callback(self, native.module, id, text.as_bytes(), driver)?;
+        if self.runtime.server.module_moves(id) != Some(native)
+            || self.runtime.server.clients[id.0 as usize].entity != lifetime
+        {
+            return Err(ClientCommandError::Inactive);
+        }
+        Ok(true)
     }
     fn userinfo_q2_client(
         &mut self,

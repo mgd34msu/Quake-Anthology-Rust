@@ -18,6 +18,8 @@ const THINK_CLIENT: i32 = 188;
 const COMMAND_ARGC: i32 = 192;
 const COMMAND_ARGV: i32 = 256;
 const USERINFO: i32 = 384;
+const GAME_USERINFO: i32 = 768;
+const CHANGED_USERINFO: &[u8] = b"\\name\\GameName\\skin\\game/blue\0";
 const COMMAND: i32 = 512;
 const ENTITIES: i32 = 4096;
 // Public sharedEntity_t is 516 bytes, distinct from the 272-byte vmCvar_t.
@@ -63,7 +65,7 @@ fn finish(code: &mut Code, value: i32) {
     code.extend([(Op::Const, value), (Op::Leave, 64)]);
 }
 
-fn fixture_program(denial: i32, fail_begin: bool) -> qa_compat::qvm::Vm {
+fn fixture_program(denial: i32, fail_begin: bool, userinfo_mode: i32) -> qa_compat::qvm::Vm {
     let mut code = vec![(Op::Enter, 64)];
     let mut branches = Vec::new();
     for export in 0..=9 {
@@ -118,6 +120,13 @@ fn fixture_program(denial: i32, fail_begin: bool) -> qa_compat::qvm::Vm {
             4 => {
                 import(&mut code, 20, &[0, USERINFO, 64], true);
                 code.push((Op::Pop, 0));
+                if userinfo_mode != 0 {
+                    import(&mut code, 21, &[0, GAME_USERINFO], true);
+                    code.push((Op::Pop, 0));
+                }
+                if userinfo_mode < 0 {
+                    code.extend([(Op::Const, 1), (Op::Const, 0), (Op::DivI, 0), (Op::Pop, 0)]);
+                }
             }
             6 => {
                 code.push((Op::Const, COMMAND_ARGC));
@@ -163,6 +172,8 @@ fn fixture_program(denial: i32, fail_begin: bool) -> qa_compat::qvm::Vm {
     }
     let mut data = vec![0; PLAYERS as usize + 2 * PLAYER_STRIDE as usize];
     data[..14].copy_from_slice(b"masked denial\0");
+    data[GAME_USERINFO as usize..GAME_USERINFO as usize + CHANGED_USERINFO.len()]
+        .copy_from_slice(CHANGED_USERINFO);
     for index in 0..2 {
         let at = ENTITIES as usize + index * ENTITY_STRIDE as usize;
         data[at..at + 4].copy_from_slice(&(index as i32).to_le_bytes());
@@ -194,9 +205,16 @@ fn fixture_with(
     fail_begin: bool,
     bot: bool,
 ) -> (Box<FrameHost>, ClientId, GeometryId) {
-    fixture_extra(denial, phase, missing_export, fail_begin, bot, |_, _| {
-        Vec::new()
-    })
+    fixture_extra(
+        denial,
+        phase,
+        missing_export,
+        fail_begin,
+        bot,
+        Protocol::Quake3_68,
+        0,
+        |_, _| Vec::new(),
+    )
 }
 fn fixture_extra(
     denial: i32,
@@ -204,6 +222,8 @@ fn fixture_extra(
     missing_export: Option<u32>,
     fail_begin: bool,
     bot: bool,
+    protocol: Protocol,
+    userinfo_mode: i32,
     extra: impl FnOnce(&mut Runtime, ClientId) -> Vec<ModuleRequest>,
 ) -> (Box<FrameHost>, ClientId, GeometryId) {
     let mut runtime = Runtime::load(3, []).unwrap();
@@ -276,7 +296,7 @@ fn fixture_extra(
                     movement: RuleSetId::Quake,
                     trace: RuleSetId::Quake2,
                 },
-                Protocol::Quake3_68,
+                protocol,
                 0,
             )
             .unwrap()
@@ -314,7 +334,7 @@ fn fixture_extra(
         rate: TickRate::fixed(50).unwrap(),
         anchor,
         program: Program::Qvm {
-            vm: Box::new(fixture_program(denial, fail_begin)),
+            vm: Box::new(fixture_program(denial, fail_begin, userinfo_mode)),
             imports: &Q3_SERVER,
         },
         entries: (0..=9)
@@ -488,6 +508,12 @@ fn q3_client_text_userinfo_and_disconnect_use_the_same_lifecycle_and_lifetime() 
         host.runtime.server.userinfo(client),
         Some(b"\\name\\After".as_slice())
     );
+    assert!(host.userinfo_module_client(client, b"\\name").is_err());
+    assert_eq!(count(&mut host, 4), 1);
+    assert_eq!(
+        host.runtime.server.userinfo(client),
+        Some(b"\\name\\After".as_slice())
+    );
     assert_eq!(
         host.client_string_command(client, RuleSetId::Quake3, b"disconnect")
             .unwrap(),
@@ -507,11 +533,145 @@ fn q3_client_text_userinfo_and_disconnect_use_the_same_lifecycle_and_lifetime() 
     assert_eq!(count(&mut host, 7), 0);
 }
 
+fn send_qw_command(host: &mut FrameHost, client: ClientId, text: &[u8]) -> Vec<u8> {
+    use qa_core::loopback::Endpoint;
+    let runtime = &mut host.runtime;
+    let channel = &mut runtime
+        .network
+        .get_mut(client, Endpoint::Client)
+        .unwrap()
+        .channel;
+    channel
+        .queue_client_command(Protocol::QuakeWorld28, text)
+        .unwrap();
+    channel.prepare(None, EventTime(0)).unwrap().unwrap();
+    let bytes = channel.pending_packet().unwrap().bytes.to_vec();
+    assert!(
+        channel
+            .submit_with(EventTime(0), |packet| runtime
+                .loopback
+                .send(Endpoint::Client, client, packet)
+                .is_ok())
+            .unwrap()
+            .is_some()
+    );
+    host.drain(&mut Default::default());
+    bytes
+}
+
+#[test]
+fn qw_wire_notifies_the_loaded_q3_module_once_and_retains_both_callback_edits() {
+    use qa_core::loopback::Endpoint;
+    let (mut host, client, _) = fixture_extra(
+        0,
+        Phase::Server,
+        None,
+        false,
+        false,
+        Protocol::QuakeWorld28,
+        1,
+        |_, _| Vec::new(),
+    );
+    host.connect_module_client(MODULE, client, b"\\name\\Tester\\skin\\original")
+        .unwrap();
+    let entity = host.runtime.server.clients[client.0 as usize].entity;
+    assert_eq!(host.client_info(MODULE).unwrap().rules, RuleSetId::Quake3);
+    assert_eq!(
+        host.runtime.snapshots[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .protocol,
+        Protocol::QuakeWorld28
+    );
+    let packet = send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    assert_eq!(count(&mut host, 4), 1);
+    assert_eq!(count(&mut host, 6), 0);
+    assert_eq!(read(&mut host, USERINFO + 6), u32::from_le_bytes(*b"Test"));
+    assert_eq!(
+        host.runtime.server.userinfo(client).unwrap(),
+        &CHANGED_USERINFO[..CHANGED_USERINFO.len() - 1]
+    );
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        entity
+    );
+    host.runtime
+        .loopback
+        .send(Endpoint::Client, client, &packet)
+        .unwrap();
+    host.drain(&mut Default::default());
+    assert_eq!(
+        count(&mut host, 4),
+        1,
+        "stale reliable replay must not invoke the module again"
+    );
+    tick(&mut host, 0);
+    // QW emits a reply only after another client packet opens that request.
+    send_qw_command(&mut host, client, b"");
+    tick(&mut host, 20);
+    let peer = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .peer(0)
+        .unwrap();
+    for (key, value) in [
+        (b"name".as_slice(), b"GameName".as_slice()),
+        (b"skin", b"game/blue"),
+    ] {
+        let range = qa_core::text::info_value(peer.text, key, false)
+            .unwrap_or_else(|| panic!("missing {key:?} from {:?}", peer.text));
+        assert_eq!(&peer.text[range], value);
+    }
+    assert_eq!(count(&mut host, 4), 1);
+    assert!(!host.runtime.quit);
+}
+
+#[test]
+fn mixed_wire_userinfo_callback_error_keeps_accepted_effects_and_other_clients() {
+    let (mut host, client, _) = fixture_extra(
+        0,
+        Phase::Server,
+        None,
+        false,
+        false,
+        Protocol::QuakeWorld28,
+        -1,
+        |_, _| Vec::new(),
+    );
+    host.connect_module_client(MODULE, client, b"\\name\\Tester\\skin\\original")
+        .unwrap();
+    let other = host.runtime.server.clients[0].entity;
+    let entity = host.runtime.server.clients[client.0 as usize].entity;
+    send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 1);
+    assert_eq!(count(&mut host, 4), 1);
+    assert_eq!(
+        host.runtime.server.userinfo(client).unwrap(),
+        &CHANGED_USERINFO[..CHANGED_USERINFO.len() - 1]
+    );
+    assert_eq!(host.runtime.server.clients[0].entity, other);
+    assert!(host.runtime.server.clients[0].is_active());
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        entity
+    );
+    assert!(host.runtime.server.clients[client.0 as usize].is_active());
+    assert!(!host.runtime.quit);
+}
+
 #[test]
 fn rejected_client_import_keeps_termination_and_dispatches_the_server_disconnect_once() {
     const CGAME: ModuleId = ModuleId(3);
-    let (mut host, client, _) =
-        fixture_extra(0, Phase::Server, None, false, false, |runtime, client| {
+    let (mut host, client, _) = fixture_extra(
+        0,
+        Phase::Server,
+        None,
+        false,
+        false,
+        Protocol::Quake3_68,
+        0,
+        |runtime, client| {
             let anchor = runtime
                 .server
                 .entities
@@ -567,7 +727,8 @@ fn rejected_client_import_keeps_termination_and_dispatches_the_server_disconnect
                 files: 0,
                 entity_source: None,
             }]
-        });
+        },
+    );
     host.connect_module_client(MODULE, client, b"\\name\\RejectedView")
         .unwrap();
     let lifetime = host.runtime.server.clients[client.0 as usize].entity;

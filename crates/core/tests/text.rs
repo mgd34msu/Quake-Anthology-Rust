@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 #[test]
 fn borrowed_info_iteration_and_fixed_mutation_preserve_native_duplicates() {
-    use qa_core::text::{InfoBytes, InfoRules, InfoUpdate, info_pairs, info_value};
+    use qa_core::text::{InfoBytes, InfoRules, InfoUpdate, info_changes, info_pairs, info_value};
     let raw = b"name\\first\\name\\later\\skin\\raw\x80\\incomplete";
     assert_eq!(
         info_pairs(raw).collect::<Vec<_>>(),
@@ -32,6 +32,20 @@ fn borrowed_info_iteration_and_fixed_mutation_preserve_native_duplicates() {
     assert_eq!(
         &text.as_bytes()[info_value(text.as_bytes(), b"name", false).unwrap()],
         b"later"
+    );
+    let before = b"\\name\\first\\name\\later\\skin\\base";
+    assert!(
+        info_changes(before, b"\\skin\\base\\name\\first\\name\\other")
+            .next()
+            .is_none()
+    );
+    assert_eq!(
+        info_changes(before, b"\\new\\raw\x80\\name\\after").collect::<Vec<_>>(),
+        [
+            (b"name".as_slice(), b"after".as_slice()),
+            (b"skin", b""),
+            (b"new", b"raw\x80")
+        ]
     );
 }
 

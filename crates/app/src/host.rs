@@ -352,15 +352,14 @@ impl ClientUserinfo {
         channel: &mut qa_network::channel::Channel,
         text: &[u8],
     ) -> Result<(), qa_network::channel::TransmitError> {
-        use qa_core::text::{FixedText, InfoUpdate, info_pairs, info_value};
+        use qa_core::text::{FixedText, InfoUpdate, info_changes, info_value};
         use qa_network::{channel::TransmitError, commands::packet::Protocol};
         let previous = self.queued.clone();
         let rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
         // Shrink first so individually valid replacements cannot overflow the
         // native total while exchanging a long value for a short one.
         for growing in [false, true] {
-            for (key, _) in info_pairs(previous.as_bytes()).chain(info_pairs(text)) {
-                let value = info_value(text, key, false).map_or(&b""[..], |range| &text[range]);
+            for (key, value) in info_changes(previous.as_bytes(), text) {
                 let before = info_value(self.queued.as_bytes(), key, false)
                     .map_or(&b""[..], |range| &self.queued.as_bytes()[range]);
                 if key.starts_with(b"*")
