@@ -12,6 +12,23 @@ struct ResourceAdmission {
     resource: ShaderResource,
     uses: IndexSpan,
 }
+impl ResourceAdmission {
+    fn retained(
+        resources: &[Self],
+        resource: ShaderResource,
+        registrations: usize,
+    ) -> Option<(usize, bool)> {
+        resources
+            .iter()
+            .position(|entry| entry.resource == resource)
+            .map(|index| {
+                (
+                    index,
+                    resources[index].uses.count != 0 || registrations == 0,
+                )
+            })
+    }
+}
 struct Context {
     owner: Owner,
     profile: ModelProfile,
@@ -21,6 +38,7 @@ struct Context {
     shaders: ShaderContext,
     uses: Vec<ShaderNodeId>,
     resources: Vec<ResourceAdmission>,
+    resource_undo: Vec<(usize, IndexSpan)>,
 }
 pub(crate) struct Contexts {
     slots: Vec<Option<Context>>,
@@ -136,6 +154,10 @@ impl Contexts {
         resources
             .try_reserve_exact(budget.1)
             .map_err(|_| "renderer resource capacity")?;
+        let mut resource_undo = Vec::new();
+        resource_undo
+            .try_reserve_exact(budget.1)
+            .map_err(|_| "renderer resource capacity")?;
         self.generation = self
             .generation
             .checked_add(1)
@@ -150,6 +172,7 @@ impl Contexts {
             shaders,
             uses,
             resources,
+            resource_undo,
         });
         Ok(Handle {
             slot: u32::try_from(slot).map_err(|_| "renderer context slots")?,
@@ -398,25 +421,26 @@ fn stage_entries<'a, 'r>(
     budget: (usize, usize),
     entries: impl Iterator<Item = (Option<ShaderResource>, &'r [qa_render::ShaderRegistration])> + Clone,
 ) -> Result<Append<'a>, String> {
-    let additional = entries
-        .clone()
-        .filter(|(resource, _)| {
-            resource.is_some_and(|resource| {
-                !context
-                    .resources
-                    .iter()
-                    .any(|entry| entry.resource == resource)
-            })
-        })
-        .try_fold((0usize, 0usize), |(uses, resources), (_, registrations)| {
+    let additional = entries.clone().try_fold(
+        (0usize, 0usize),
+        |(uses, resources), (resource, registrations)| {
+            let Some(resource) = resource else {
+                return Ok((uses, resources));
+            };
+            let previous =
+                ResourceAdmission::retained(&context.resources, resource, registrations.len());
+            if previous.is_some_and(|(_, retained)| retained) {
+                return Ok((uses, resources));
+            }
             Ok::<_, String>((
                 uses.checked_add(registrations.len())
                     .ok_or("renderer occurrence capacity")?,
                 resources
-                    .checked_add(1)
+                    .checked_add(usize::from(previous.is_none()))
                     .ok_or("renderer resource capacity")?,
             ))
-        })?;
+        },
+    )?;
     let uses = budget.0.max(
         context
             .uses
@@ -443,12 +467,20 @@ fn stage_entries<'a, 'r>(
             .try_reserve_exact(resources - context.resources.len())
             .map_err(|_| "renderer resource capacity")?;
     }
+    if context.resource_undo.capacity() < resources {
+        context
+            .resource_undo
+            .try_reserve_exact(resources)
+            .map_err(|_| "renderer resource capacity")?;
+    }
+    context.resource_undo.clear();
     let retained_uses = context.uses.len();
     let retained_resources = context.resources.len();
     let mut append = Append {
         shaders: Some(context.shaders.append()),
         uses: &mut context.uses,
         resources: &mut context.resources,
+        resource_undo: &mut context.resource_undo,
         retained_uses,
         retained_resources,
         committed: false,
@@ -457,15 +489,16 @@ fn stage_entries<'a, 'r>(
     };
     for (resource, registrations) in entries {
         if let Some(resource) = resource {
-            if let Some(previous) = append
-                .resources
-                .iter()
-                .find(|entry| entry.resource == resource)
-            {
+            let previous =
+                ResourceAdmission::retained(append.resources, resource, registrations.len());
+            if let Some((index, retained)) = previous {
+                let previous = &append.resources[index];
                 if previous.uses.range().end > append.uses.len() {
                     return Err("renderer occurrence span".into());
                 }
-                continue;
+                if retained {
+                    continue;
+                }
             }
             if matches!(resource, ShaderResource::World(_)) {
                 append
@@ -485,14 +518,19 @@ fn stage_entries<'a, 'r>(
                         .map_err(str::to_owned)?,
                 );
             }
-            append.resources.push(ResourceAdmission {
-                resource,
-                uses: IndexSpan {
-                    first,
-                    count: u32::try_from(registrations.len())
-                        .map_err(|_| "renderer occurrence span")?,
-                },
-            });
+            let uses = IndexSpan {
+                first,
+                count: u32::try_from(registrations.len())
+                    .map_err(|_| "renderer occurrence span")?,
+            };
+            if let Some((index, _)) = previous {
+                append
+                    .resource_undo
+                    .push((index, append.resources[index].uses));
+                append.resources[index].uses = uses;
+            } else {
+                append.resources.push(ResourceAdmission { resource, uses });
+            }
         } else {
             for &registration in registrations {
                 let shaders = append.shaders.as_mut().ok_or("renderer context append")?;
@@ -517,6 +555,7 @@ pub(crate) struct Append<'a> {
     shaders: Option<ShaderContextAppend<'a>>,
     uses: &'a mut Vec<ShaderNodeId>,
     resources: &'a mut Vec<ResourceAdmission>,
+    resource_undo: &'a mut Vec<(usize, IndexSpan)>,
     retained_uses: usize,
     retained_resources: usize,
     committed: bool,
@@ -541,9 +580,13 @@ impl Append<'_> {
 impl Drop for Append<'_> {
     fn drop(&mut self) {
         if !self.committed {
+            for &(index, uses) in self.resource_undo.iter().rev() {
+                self.resources[index].uses = uses;
+            }
             self.uses.truncate(self.retained_uses);
             self.resources.truncate(self.retained_resources);
         }
+        self.resource_undo.clear();
     }
 }
 

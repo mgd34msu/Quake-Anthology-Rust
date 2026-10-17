@@ -1583,7 +1583,19 @@ fn register_renderer(
         .is_some_and(|resource| {
             host.renderer_contexts
                 .resource_nodes(scope.context, resource)
-                .is_some()
+                .is_some_and(|nodes| {
+                    !nodes.is_empty()
+                        || owner
+                            .catalog()
+                            .registration_cached_variant(
+                                request.kind,
+                                request.name.as_ref(),
+                                scope.profile,
+                                request.world,
+                                crate::model_assets::RegistrationVariant::Retained,
+                            )
+                            .is_some()
+                })
         }) {
         crate::model_assets::RegistrationVariant::Retained
     } else {

@@ -286,6 +286,9 @@ fn native() -> Program {
 }
 
 fn runtime(clients: usize) -> (Runtime, Vec<ClientId>) {
+    runtime_protocol(clients, Protocol::Quake3_68)
+}
+fn runtime_protocol(clients: usize, protocol: Protocol) -> (Runtime, Vec<ClientId>) {
     let mut runtime = Runtime::load(clients, []).unwrap();
     let ids = (0..clients)
         .map(|seat| {
@@ -304,7 +307,7 @@ fn runtime(clients: usize) -> (Runtime, Vec<ClientId>) {
                         movement: RuleSetId::Quake,
                         trace: RuleSetId::QuakeWorld,
                     },
-                    Protocol::Quake3_68,
+                    protocol,
                     if seat == 0 { 0 } else { 13 },
                 )
                 .unwrap()
@@ -1337,6 +1340,9 @@ fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    scene::downloaded_skins(false);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    scene::downloaded_skins(true);
     input::queued_native_input(false);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     input::queued_native_input(true);

@@ -2459,17 +2459,22 @@ impl ModelAssets {
                 changed = true;
             }
         }
-        if qa_formats::image::ImageFormat::from_path(path)
-            == Some(qa_formats::image::ImageFormat::Pcx)
-            && let Some(index) = self.catalog.skin_indices[name.0 as usize]
-        {
-            for row in &mut self.catalog.skins[index as usize].profiles {
+        if let Some(index) = self.catalog.skin_indices[name.0 as usize] {
+            let skin = &mut self.catalog.skins[index as usize];
+            let mut retry = false;
+            for row in &mut skin.profiles {
                 if row.request == SkinRequest::Named
                     && matches!(row.state, RegistrationState::Failed(_))
                 {
                     row.state = RegistrationState::Unattempted;
-                    changed = true;
+                    retry = true;
                 }
+            }
+            if retry {
+                if matches!(skin.source, Some(SkinSource::Script(_))) {
+                    skin.source = None;
+                }
+                changed = true;
             }
         }
         changed

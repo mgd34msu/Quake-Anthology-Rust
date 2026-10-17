@@ -2,6 +2,8 @@
 mod live_formats;
 #[path = "../../../render/tests/support/world_surfaces.rs"]
 mod mark_world;
+#[path = "skin_download.rs"]
+mod skin_download;
 use super::*;
 pub(super) use live_formats::live_formats;
 use qa_app::model_assets::{ModelAssets, ModelRequest};
@@ -10,6 +12,7 @@ use qa_render::material::world_load::{
     LoadedWorld, LoadedWorldPresentation, WorldPresentationProfile,
 };
 use qa_render::scene::Command;
+pub(super) use skin_download::downloaded_skins;
 
 fn admit_assets(host: &mut FrameHost) -> qa_render::cpu::CpuBackend {
     let backend = qa_render::cpu::CpuBackend::load_with_assets(
@@ -1525,6 +1528,7 @@ fn entity_host(
         named_scene_program(native, ui, b"textures/glow"),
         qa_render::Assets::load().unwrap(),
         ModelRequest::native("", RuleSetId::Quake3, None).profile(),
+        Protocol::Quake3_68,
     )
 }
 
@@ -1534,8 +1538,9 @@ fn entity_host_program(
     program: Program,
     assets: qa_render::Assets,
     profile: qa_app::model_assets::ModelProfile,
+    protocol: Protocol,
 ) -> (FrameHost, qa_app::model_assets::ModelProfile) {
-    let (mut runtime, ids) = runtime(1);
+    let (mut runtime, ids) = runtime_protocol(1, protocol);
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let mut request = request(&mut runtime, ModuleId(1), ids[0], program);
     request.entries = (0..20).collect();
@@ -1732,7 +1737,14 @@ pub(super) fn sprite_entities(native: bool, ui: bool) {
     let palette = model_support::palette(&mut assets);
     let profile = ModelRequest::native("", RuleSetId::Quake3, Some(palette)).profile();
     let models_before = assets.counts().models;
-    let (mut host, profile) = entity_host_program(ui, &mut fixture, program, assets, profile);
+    let (mut host, profile) = entity_host_program(
+        ui,
+        &mut fixture,
+        program,
+        assets,
+        profile,
+        Protocol::Quake3_68,
+    );
     let handle = probe(&mut host, 0, 12, 0);
     assert!(handle > 0);
     assert_eq!(probe(&mut host, 0, 14, handle as u64), 0);
