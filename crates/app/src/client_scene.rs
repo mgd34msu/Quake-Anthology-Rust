@@ -117,9 +117,10 @@ impl<'a> Iterator for SceneBindings<'a> {
 
 mod player_models;
 use player_models::ClientAssets;
+pub use player_models::PeerMetadata;
 pub(crate) use player_models::PlayerModelOptions;
 
-/// Only derived numeric asset bindings live here. Accepted entity values and
+/// Received peer metadata shares the player-binding rows. Entity values and
 /// history remain in the connection's existing snapshot ring.
 #[derive(Clone)]
 pub struct ClientModelBindings {
@@ -169,9 +170,22 @@ impl ClientModelBindings {
         self.cold.clear();
         self.features.fill(ModelFeatures::default());
         if let Some(players) = &mut self.players {
-            players.clear();
+            players.clear_bindings();
         }
         self.colors = None;
+    }
+
+    pub fn peer_metadata(&self, slot: usize) -> Option<PeerMetadata> {
+        self.players.as_ref()?.metadata(slot)
+    }
+    pub(crate) fn receive_peer_metadata(
+        &mut self,
+        update: qa_network::outputs::PeerUpdate<'_>,
+        text: &[u8],
+    ) -> bool {
+        self.players
+            .as_mut()
+            .is_some_and(|players| players.receive(update, text))
     }
 
     pub(crate) fn world_binding(
@@ -415,6 +429,9 @@ impl ClientModelBindings {
         let profile = self.profile;
         let colors = self.colors;
         self.reset();
+        if let Some(players) = &mut self.players {
+            players.clear_received();
+        }
         self.profile = profile;
         self.colors = colors;
         self.world = world;

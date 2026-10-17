@@ -734,7 +734,8 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::NetQuake15, 18)
+                    (Protocol::NetQuake15, 13 | 14 | 17 | 18)
+                    | (Protocol::QuakeWorld28, 14 | 40 | 51)
                     | (
                         Protocol::NetQuake15 | Protocol::QuakeWorld28,
                         2 | 6 | 8 | 24 | 26 | 29 | 32,
@@ -748,6 +749,9 @@ impl Commands {
                                 .map_err(|_| packet::Error::Opcode)?;
                         at += count;
                         match service {
+                            crate::outputs::NativeService::Peer(peer) => {
+                                consume(Incoming::Peer(peer))
+                            }
                             crate::outputs::NativeService::CdTrack(track) => {
                                 consume(Incoming::CdTrack(track))
                             }

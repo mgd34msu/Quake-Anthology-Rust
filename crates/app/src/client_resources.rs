@@ -156,6 +156,12 @@ pub(crate) struct ClientImageRefresh {
     statics: Box<[crate::client_scene::StaticEntity]>,
 }
 
+pub struct PeerInfo<'a> {
+    /// Source-native bytes: a raw NetQuake name or QuakeWorld userinfo.
+    pub text: &'a [u8],
+    pub metadata: crate::client_scene::PeerMetadata,
+}
+
 pub struct ResourceState {
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
@@ -769,6 +775,108 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub fn peer(&self, slot: usize) -> Option<PeerInfo<'_>> {
+        let metadata = self.models.peer_metadata(slot)?;
+        let index = self.layout.players.get(slot)?;
+        Some(PeerInfo {
+            text: self.configs.config(index)?.text,
+            metadata,
+        })
+    }
+
+    pub(crate) fn receive_peer(&mut self, update: qa_network::outputs::PeerUpdate<'_>) -> bool {
+        use qa_network::outputs::PeerUpdate;
+        let slot = usize::from(update.slot());
+        let limit = if self.layout.rules == RuleSetId::Quake {
+            self.server_info
+                .as_ref()
+                .map_or(0, |info| usize::from(info.max_clients))
+        } else {
+            self.layout.players.count as usize
+        };
+        let valid = slot < limit
+            && match update {
+                PeerUpdate::Name { .. } | PeerUpdate::Colors { .. } => {
+                    self.layout.rules == RuleSetId::Quake
+                }
+                PeerUpdate::Frags { .. } => {
+                    matches!(self.layout.rules, RuleSetId::Quake | RuleSetId::QuakeWorld)
+                }
+                PeerUpdate::UserInfo { .. } | PeerUpdate::SetInfo { .. } => {
+                    self.layout.rules == RuleSetId::QuakeWorld
+                }
+            };
+        if !valid {
+            self.rejected += 1;
+            return false;
+        }
+        let Some(index) = self.layout.players.get(slot) else {
+            self.rejected += 1;
+            return false;
+        };
+        let changed = match update {
+            PeerUpdate::Name { name, .. } | PeerUpdate::UserInfo { info: name, .. } => {
+                let capacity = self.configs.capacity(index).unwrap_or(0);
+                self.configs.set(index, &name[..name.len().min(capacity)])
+            }
+            PeerUpdate::SetInfo { key, value, .. } => {
+                let mut bytes = [0; qa_compat::quakec::QW_USERINFO_BYTES];
+                let Some(current) = self.configs.config(index) else {
+                    return false;
+                };
+                let mut length = current.text.len();
+                bytes[..length].copy_from_slice(current.text);
+                let mut rules = qa_compat::services::userinfo_rules(RuleSetId::QuakeWorld);
+                rules.filter = if qa_core::names::compare_folded(key, b"name").is_eq() {
+                    qa_core::text::InfoBytes::AboveCarriageReturn
+                } else if qa_core::names::compare_folded(key, b"team").is_eq() {
+                    qa_core::text::InfoBytes::LowerAscii7
+                } else {
+                    qa_core::text::InfoBytes::Ascii7
+                };
+                if key.starts_with(b"*") {
+                    self.rejected += 1;
+                    return false;
+                }
+                let mutation = match qa_core::text::InfoUpdate::new(key, value, rules) {
+                    Ok(mutation) => mutation,
+                    Err(_) => {
+                        self.rejected += 1;
+                        return false;
+                    }
+                };
+                if let Some(old) = qa_core::text::info_value(current.text, key, false)
+                    && !old.is_empty()
+                    && length.saturating_sub(old.len()).saturating_add(value.len()) > rules.bytes
+                {
+                    self.rejected += 1;
+                    return false;
+                }
+                let result = mutation.first_only().apply(&mut bytes, &mut length);
+                if result.is_err() {
+                    self.rejected += 1;
+                }
+                self.configs.set(index, &bytes[..length])
+            }
+            PeerUpdate::Frags { .. } | PeerUpdate::Colors { .. } => Ok(false),
+        };
+        match changed {
+            Ok(changed) => {
+                if changed {
+                    self.models.config_received(index);
+                }
+                let Some(text) = self.configs.config(index).map(|row| row.text) else {
+                    return false;
+                };
+                self.models.receive_peer_metadata(update, text)
+            }
+            Err(_) => {
+                self.rejected += 1;
+                false
+            }
+        }
+    }
+
     pub(crate) fn image_refresh_selections(
         &self,
         catalog: &ModelCatalog,

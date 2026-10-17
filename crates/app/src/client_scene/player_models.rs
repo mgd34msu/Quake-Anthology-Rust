@@ -19,24 +19,43 @@ impl Default for PlayerModelOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PeerMetadata {
+    pub user_id: Option<i32>,
+    pub colors: Option<u8>,
+    pub frags: i16,
+    pub top_color: i32,
+    pub bottom_color: i32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PlayerBinding {
+    body: Option<CapturedModel>,
+    metadata: PeerMetadata,
+}
+
 #[derive(Clone)]
 pub(super) struct PlayerBindings {
     source: RuleSetId,
     rows: IndexSpan,
     models: IndexSpan,
-    rules: PlayerModelRules,
+    rules: Option<PlayerModelRules>,
     options: PlayerModelOptions,
     pub(super) dirty: bool,
     pub(super) cold_dirty: bool,
-    bodies: Box<[Option<CapturedModel>]>,
+    bodies: Box<[PlayerBinding]>,
     weapons: Box<[Option<CapturedModel>]>,
     weapon_rows: Box<[Option<u32>]>,
     weapon_count: usize,
 }
 impl PlayerBindings {
     pub(super) fn load(layout: ConfigLayout) -> Option<Self> {
-        let rules = qa_gameplay::rules::appearance::policy(layout.rules).player_models()?;
+        if layout.players.count == 0 {
+            return None;
+        }
+        let rules = qa_gameplay::rules::appearance::policy(layout.rules).player_models();
         let count = layout.players.count as usize + 1;
+        let weapons = rules.map_or(0, |rules| rules.weapon_limit);
         Some(Self {
             source: layout.rules,
             rows: layout.players,
@@ -45,9 +64,9 @@ impl PlayerBindings {
             options: Default::default(),
             dirty: true,
             cold_dirty: true,
-            bodies: vec![None; count].into_boxed_slice(),
-            weapons: vec![None; count.checked_mul(rules.weapon_limit)?].into_boxed_slice(),
-            weapon_rows: vec![None; rules.weapon_limit].into_boxed_slice(),
+            bodies: vec![PlayerBinding::default(); count].into_boxed_slice(),
+            weapons: vec![None; count.checked_mul(weapons)?].into_boxed_slice(),
+            weapon_rows: vec![None; weapons].into_boxed_slice(),
             weapon_count: 1,
         })
     }
@@ -57,7 +76,12 @@ impl PlayerBindings {
         profiles: &mut Vec<ModelProfile>,
         worlds: &mut Vec<(WorldId, WorldPresentationId)>,
     ) {
-        for capture in self.bodies.iter().chain(self.weapons.iter()).flatten() {
+        for capture in self
+            .bodies
+            .iter()
+            .filter_map(|row| row.body.as_ref())
+            .chain(self.weapons.iter().flatten())
+        {
             ClientModelBindings::capture_image_selections(*capture, catalog, profiles, worlds);
         }
     }
@@ -71,8 +95,8 @@ impl PlayerBindings {
         for capture in self
             .bodies
             .iter_mut()
-            .chain(self.weapons.iter_mut())
-            .flatten()
+            .filter_map(|row| row.body.as_mut())
+            .chain(self.weapons.iter_mut().flatten())
         {
             ClientModelBindings::refresh_capture_images(capture, refresh, catalog, profile)?;
         }
@@ -84,25 +108,76 @@ impl PlayerBindings {
     pub(super) fn contains(&self, index: usize) -> bool {
         self.rows.contains(index)
     }
-    pub(super) fn clear(&mut self) {
-        self.bodies.fill(None);
+    pub(super) fn clear_bindings(&mut self) {
+        for row in &mut self.bodies {
+            row.body = None;
+        }
         self.weapons.fill(None);
         self.dirty = true;
         self.cold_dirty = true;
     }
+    pub(super) fn clear_received(&mut self) {
+        for row in &mut self.bodies {
+            row.metadata = PeerMetadata::default();
+        }
+    }
+    pub(super) fn metadata(&self, slot: usize) -> Option<PeerMetadata> {
+        (slot < self.rows.count as usize).then(|| self.bodies[slot].metadata)
+    }
+    pub(super) fn receive(
+        &mut self,
+        update: qa_network::outputs::PeerUpdate<'_>,
+        text: &[u8],
+    ) -> bool {
+        use qa_network::outputs::PeerUpdate;
+        let slot = usize::from(update.slot());
+        if slot >= self.rows.count as usize {
+            return false;
+        }
+        let peer = &mut self.bodies[slot].metadata;
+        let old_colors = (peer.colors, peer.top_color, peer.bottom_color);
+        match update {
+            PeerUpdate::UserInfo { user_id, .. } => peer.user_id = Some(user_id),
+            PeerUpdate::Colors { colors, .. } => {
+                peer.colors = Some(colors);
+                peer.top_color = i32::from(colors >> 4);
+                peer.bottom_color = i32::from(colors & 15);
+            }
+            PeerUpdate::Frags { frags, .. } => peer.frags = frags,
+            PeerUpdate::Name { .. } | PeerUpdate::SetInfo { .. } => {}
+        }
+        if matches!(
+            update,
+            PeerUpdate::UserInfo { .. } | PeerUpdate::SetInfo { .. }
+        ) {
+            let color = |key| {
+                qa_core::text::info_value(text, key, false)
+                    .map_or(0, |range| qa_core::text::atoi_prefix(&text[range]))
+            };
+            peer.top_color = color(b"topcolor");
+            peer.bottom_color = color(b"bottomcolor");
+        }
+        if old_colors != (peer.colors, peer.top_color, peer.bottom_color) {
+            self.dirty = true;
+            self.cold_dirty = true;
+        }
+        true
+    }
     fn weapon(&self, player: usize, weapon: usize) -> Option<CapturedModel> {
+        let rules = self.rules?;
         *self.weapons.get(
             player
-                .checked_mul(self.rules.weapon_limit)?
+                .checked_mul(rules.weapon_limit)?
                 .checked_add(weapon)?,
         )?
     }
     fn select(&self, skin: i32, cell: usize) -> Option<CapturedModel> {
+        let rules = self.rules?;
         let base = self.rows.count as usize;
-        let (player, mut weapon) = self.rules.player_selection(skin);
+        let (player, mut weapon) = rules.player_selection(skin);
         let player = if player < base { player } else { base };
         if cell == 0 {
-            return self.bodies[player].or(self.bodies[base]);
+            return self.bodies[player].body.or(self.bodies[base].body);
         }
         if !self.options.visible_weapons || weapon >= self.weapon_count {
             weapon = 0;
@@ -116,12 +191,18 @@ impl PlayerBindings {
         configs: &ConfigStrings,
         assets: &mut ClientAssets<'_>,
     ) -> u32 {
-        self.bodies.fill(None);
+        for row in &mut self.bodies {
+            row.body = None;
+        }
         self.weapons.fill(None);
         self.weapon_rows.fill(None);
         self.weapon_count = 1;
+        let Some(rules) = self.rules else {
+            self.dirty = false;
+            return 0;
+        };
         if self.options.visible_weapons {
-            for ordinal in self.rules.weapon_start..self.models.count as usize {
+            for ordinal in rules.weapon_start..self.models.count as usize {
                 let Some(row) = self
                     .models
                     .get(ordinal)
@@ -130,12 +211,12 @@ impl PlayerBindings {
                     break;
                 };
                 if row.text.is_empty() {
-                    if self.rules.skip_player_model_gap && ordinal == 255 {
+                    if rules.skip_player_model_gap && ordinal == 255 {
                         continue;
                     }
                     break;
                 }
-                if row.text.starts_with(b"#") && self.weapon_count < self.rules.weapon_limit {
+                if row.text.starts_with(b"#") && self.weapon_count < rules.weapon_limit {
                     self.weapon_rows[self.weapon_count] = Some(ordinal as u32);
                     self.weapon_count += 1;
                 }
@@ -156,7 +237,7 @@ impl PlayerBindings {
                 continue;
             }
             self.load_player(player, row.text, configs, assets);
-            unresolved += u32::from(self.bodies[player].is_none());
+            unresolved += u32::from(self.bodies[player].body.is_none());
         }
         self.dirty = false;
         unresolved
@@ -168,8 +249,9 @@ impl PlayerBindings {
         configs: &ConfigStrings,
         assets: &mut ClientAssets<'_>,
     ) {
+        let Some(rules) = self.rules else { return };
         let Some((mut model, mut skin, default_weapon_only)) =
-            parse_player(text, self.options, self.rules)
+            parse_player(text, self.options, rules)
         else {
             return;
         };
@@ -182,7 +264,7 @@ impl PlayerBindings {
         let mut skin_handle = player_path(&["players/", model, "/", skin, ".pcx"])
             .and_then(|path| assets.skin(path.as_bytes()));
         if skin_handle.is_none()
-            && self.rules.female_skin_fallback
+            && rules.female_skin_fallback
             && compare_folded(model.as_bytes(), b"female").is_eq()
         {
             skin = "athena";
@@ -199,7 +281,7 @@ impl PlayerBindings {
             skin_handle = player_path(&["players/", model, "/grunt.pcx"])
                 .and_then(|path| assets.skin(path.as_bytes()));
         }
-        let cyborg = if self.rules.folded_weapon_fallback {
+        let cyborg = if rules.folded_weapon_fallback {
             compare_folded(model.as_bytes(), b"cyborg").is_eq()
         } else {
             model == "cyborg"
@@ -223,26 +305,26 @@ impl PlayerBindings {
                 binding = player_path(&["players/male/", name])
                     .and_then(|path| assets.model(path.as_bytes()));
             }
-            self.weapons[player * self.rules.weapon_limit + weapon] = binding;
+            self.weapons[player * rules.weapon_limit + weapon] = binding;
         }
-        let icon = !self.rules.require_icon
+        let icon = !rules.require_icon
             || player_path(&["players/", model, "/", skin, "_i.pcx"])
                 .and_then(|path| assets.skin(path.as_bytes()))
                 .is_some();
-        let partial_base = player == self.rows.count as usize && self.rules.partial_base;
+        let partial_base = player == self.rows.count as usize && rules.partial_base;
         if !partial_base
             && (body.is_none()
                 || skin_handle.is_none()
                 || self.weapon(player, 0).is_none()
                 || !icon)
         {
-            self.weapons[player * self.rules.weapon_limit] = None;
+            self.weapons[player * rules.weapon_limit] = None;
             return;
         }
         if let Some(body) = &mut body {
             body.custom_skin = skin_handle.unwrap_or(0);
         }
-        self.bodies[player] = body;
+        self.bodies[player].body = body;
     }
 }
 
@@ -511,3 +593,7 @@ impl ClientModelBindings {
         self.players.as_ref()?.select(skin, cell)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/peer_metadata.rs"]
+mod peer_metadata_tests;

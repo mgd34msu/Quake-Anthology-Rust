@@ -136,6 +136,7 @@ pub enum Incoming<'a> {
     },
     Pause(bool),
     PlayerInfo(crate::states::QwPlayerInfo),
+    Peer(crate::outputs::PeerUpdate<'a>),
     PlayerValue {
         index: u8,
         value: i32,

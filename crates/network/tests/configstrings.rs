@@ -27,7 +27,7 @@ fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
         assert_eq!(protocol.resource_layout().resources[0].count, 256);
         assert_eq!(
             qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set()).count,
-            576,
+            592,
         );
     }
     for protocol in [
@@ -43,6 +43,21 @@ fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
             )),
         );
         assert_eq!(protocol.config_layout(), Some(protocol.resource_layout()));
+    }
+}
+
+#[test]
+fn internal_quake_peer_rows_have_no_configstring_wire_adapter() {
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let layout = protocol.resource_layout();
+        for peer in [0, layout.players.count as usize - 1] {
+            let index = layout.players.get(peer).unwrap() as u32;
+            assert_eq!(protocol.config_capacity(index as usize), None);
+            assert_eq!(
+                outputs::configstring(protocol, index, b"peer", &mut [0; 256]),
+                Err(Error::Unsupported)
+            );
+        }
     }
 }
 

@@ -116,6 +116,86 @@ fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() 
 }
 
 #[test]
+fn info_writer_preserves_native_name_ascii_and_team_byte_rules() {
+    use qa_core::text::{InfoBytes, InfoRules, info_set, info_valid_field};
+    for (filter, key, value, expected) in [
+        (
+            InfoBytes::AboveCarriageReturn,
+            b"Name".as_slice(),
+            b"\xe1\r\x0e\x1f \x7f\xff;".as_slice(),
+            b"\\Name\\\xe1\x0e\x1f \x7f\xff;".as_slice(),
+        ),
+        (
+            InfoBytes::Ascii7,
+            b"skin",
+            b"\xe1\x01\xff\x80B;",
+            b"\\skin\\a\x7fB;",
+        ),
+        (
+            InfoBytes::LowerAscii7,
+            b"TEAM",
+            b"ReD\xe1\x7f;\x1f",
+            b"\\team\\reda\x7f;",
+        ),
+    ] {
+        let mut output = [0xcc; 196];
+        let mut length = 0;
+        info_set(
+            &mut output,
+            &mut length,
+            key,
+            value,
+            InfoRules {
+                bytes: 196,
+                key_bytes: 64,
+                value_bytes: 64,
+                filter,
+            },
+        )
+        .unwrap();
+        assert_eq!(&output[..length], expected);
+        assert_eq!(output[length], 0);
+        assert!(!info_valid_field(b"raw\\slash", filter));
+        assert!(!info_valid_field(b"raw\"quote", filter));
+        assert!(info_valid_field(b"semi;colon", filter));
+    }
+    // Validation precedes the native high-bit mask. Q2's printable mode
+    // deliberately validates masked delimiters instead.
+    assert!(info_valid_field(b"\xdc\xa2", InfoBytes::Ascii7));
+    assert!(!info_valid_field(b"\xdc\xa2", InfoBytes::Ascii7Printable));
+}
+
+#[test]
+fn info_update_can_remove_only_the_first_native_duplicate() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, InfoUpdate};
+    let original = b"\\name\\old\\name\\later\\keep\\raw\x80";
+    let mut output = [0xcc; 196];
+    output[..original.len()].copy_from_slice(original);
+    let mut length = original.len();
+    let rules = InfoRules {
+        bytes: 196,
+        key_bytes: 64,
+        value_bytes: 64,
+        filter: InfoBytes::AboveCarriageReturn,
+    };
+    assert!(matches!(
+        InfoUpdate::new(b"name", b"bad\\value", rules),
+        Err(InfoError::Invalid)
+    ));
+    assert_eq!(&output[..length], original);
+    InfoUpdate::new(b"name", b"new\xff", rules)
+        .unwrap()
+        .first_only()
+        .apply(&mut output, &mut length)
+        .unwrap();
+    assert_eq!(
+        &output[..length],
+        b"\\name\\later\\keep\\raw\x80\\name\\new\xff"
+    );
+    assert_eq!(output[length], 0);
+}
+
+#[test]
 fn append_keeps_raw_bytes_and_rejects_overflow_without_changing_text() {
     let mut text = FixedText::<6>::default();
     text.write_str("a").unwrap();

@@ -2827,6 +2827,11 @@ impl FrameHost {
                             return std::ops::ControlFlow::Break(());
                         }
                         match incoming {
+                            Incoming::Peer(update) => {
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.state.receive_peer(update);
+                                }
+                            }
                             Incoming::SignonStage { stage } => {
                                 if awaiting_player {
                                     self.reject_nq_signon(id, format_args!("player assignment missing before native stage {stage}"));

@@ -9,6 +9,7 @@ mod configstrings;
 mod cues;
 mod music;
 mod particles;
+mod peers;
 mod player_values;
 mod static_entities;
 pub use configstrings::{
@@ -19,6 +20,7 @@ use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
 pub use music::{CdTrack, cd_track, read_cd_track};
 pub use particles::{Particle, particle, read_particle};
+pub use peers::{PeerUpdate, peer_update};
 pub use player_values::{
     PLAYER_VALUE_SLOTS, player_value, read_player_value, read_set_angles, separate_player_values,
     set_angles,
@@ -54,6 +56,7 @@ fn read_text<'a>(protocol: Protocol, reader: &mut Reader<'a>) -> Result<&'a [u8]
 /// One borrowed service stream uses the same scalar readers as CLIENT ingress.
 /// Unknown opcodes stop the stream: their payload length cannot be inferred.
 pub enum NativeService<'a> {
+    Peer(PeerUpdate<'a>),
     CdTrack(CdTrack),
     Cue(Cue),
     Particle(Particle),
@@ -67,6 +70,10 @@ pub fn read_native_service(
     bytes: &[u8],
 ) -> Result<(NativeService<'_>, usize), Error> {
     match (protocol, bytes.first().copied().ok_or(Error::Truncated)?) {
+        (Protocol::NetQuake15, 13 | 14 | 17) | (Protocol::QuakeWorld28, 14 | 40 | 51) => {
+            let (peer, length) = peers::read(protocol, bytes)?;
+            Ok((NativeService::Peer(peer), length))
+        }
         (Protocol::NetQuake15 | Protocol::QuakeWorld28, 24) => {
             let mut reader = Reader::new(bytes, Encoding::Bytes);
             reader.read_bits(8)?;
@@ -181,6 +188,7 @@ pub fn native(
         let terminal = matches!(&service, NativeService::Disconnect);
         let target = &mut output[encoded.length..];
         let result = match service {
+            NativeService::Peer(peer) => peer_update(protocol, peer, target),
             NativeService::CdTrack(track) => cd_track(protocol, track, target),
             NativeService::Cue(cue) => project(cue, offset)
                 .and_then(|cue| project_cue(protocol, cue))

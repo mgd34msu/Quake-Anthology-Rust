@@ -86,7 +86,7 @@ fn native_capacities_match_cs_size_and_resources_project_by_ordinal() {
     assert_eq!(classic.project_index(rerelease, 59), Some(29));
     assert_eq!(rerelease.project_index(classic, 31), Some(61));
     assert_eq!(classic.project_index(rerelease, 10814 + 17), Some(800 + 17));
-    assert_eq!(q3.project_index(rerelease, 11582 + 63), Some(544 + 63));
+    assert_eq!(q3.project_index(rerelease, 11582 + 63), None);
     assert_eq!(q3.project_index(rerelease, 11582 + 64), None);
     assert_eq!(q3.project_index(rerelease, 0), None);
 }
@@ -95,7 +95,9 @@ fn native_capacities_match_cs_size_and_resources_project_by_ordinal() {
 fn quake_storage_keeps_resource_limits_and_bounds_native_lightstyles() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let layout = ConfigLayout::for_rules(rules);
-        assert_eq!(layout.count, 576);
+        let peers = if rules == RuleSetId::Quake { 16 } else { 32 };
+        let peer_capacity = if rules == RuleSetId::Quake { 31 } else { 195 };
+        assert_eq!(layout.count, 576 + peers);
         assert_eq!(layout.resources[0].range(), 0..256);
         assert_eq!(layout.resources[1].range(), 256..512);
         assert!(layout.resources[2].range().is_empty());
@@ -109,7 +111,9 @@ fn quake_storage_keeps_resource_limits_and_bounds_native_lightstyles() {
         }
         assert_eq!(layout.style_index(64), None);
         assert_eq!(layout.style_index(usize::MAX), None);
-        assert_eq!(layout.capacity(576), None);
+        assert_eq!(layout.players.range(), 576..576 + peers);
+        assert_eq!(layout.capacity(576), Some(peer_capacity));
+        assert_eq!(layout.capacity(layout.count), None);
         let mut rows =
             ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
                 .unwrap();
@@ -124,7 +128,51 @@ fn quake_storage_keeps_resource_limits_and_bounds_native_lightstyles() {
         rows.set(512, b"").unwrap();
         assert!(rows.config(512).unwrap().text.is_empty());
         assert_eq!(rows.config(1).unwrap().text.len(), MAX_RESOURCE_BYTES);
+        let peer = layout.players.get(peers - 1).unwrap();
+        rows.set(peer, &vec![b'x'; peer_capacity]).unwrap();
+        let revision = rows.config(peer).unwrap().revision;
+        assert_eq!(
+            rows.set(peer, &vec![b'x'; peer_capacity + 1]),
+            Err(ConfigError::Text)
+        );
+        assert_eq!(rows.config(peer).unwrap().revision, revision);
     }
+}
+
+#[test]
+fn player_rows_only_project_between_identical_native_representations() {
+    let layouts = [
+        ConfigLayout::QUAKE,
+        ConfigLayout::QUAKEWORLD,
+        ConfigLayout::QUAKE2,
+        ConfigLayout::QUAKE2_RERELEASE,
+        ConfigLayout::QUAKE3,
+    ];
+    for source in layouts {
+        for target in layouts {
+            for peer in [0, source.players.count as usize - 1] {
+                let expected = if source == target
+                    || (matches!(source.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+                        && matches!(target.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease))
+                {
+                    target.players.get(peer)
+                } else {
+                    None
+                };
+                assert_eq!(
+                    target.project_index(source, source.players.get(peer).unwrap()),
+                    expected
+                );
+            }
+        }
+    }
+    let mut raw = ConfigStrings::load(
+        (0..ConfigLayout::QUAKE.count).map(|index| ConfigLayout::QUAKE.capacity(index).unwrap()),
+    )
+    .unwrap();
+    let row = ConfigLayout::QUAKE.players.get(0).unwrap();
+    raw.set(row, b"name\\with\"quotes\x80").unwrap();
+    assert_eq!(raw.config(row).unwrap().text, b"name\\with\"quotes\x80");
 }
 
 const MAX_RESOURCE_BYTES: usize = qa_core::configstrings::MAX_TEXT;

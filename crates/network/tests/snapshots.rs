@@ -4575,3 +4575,113 @@ fn nq_model_transition_receipts_keep_each_admitted_record_before_the_final_snaps
     assert_eq!((snapshots, connections.command_errors), (1, 0));
     Ok(())
 }
+
+#[test]
+fn native_peer_updates_reach_connected_intake_in_wire_order_once_and_keep_valid_prefixes()
+-> Result<(), Error> {
+    use qa_network::outputs::PeerUpdate;
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let (mut server, mut commands, mut connections) = byte_connection(protocol)?;
+        if protocol == Protocol::QuakeWorld28 {
+            qw_move(&mut connections, &mut server, &mut commands, true)?;
+        }
+        let payload = if protocol == Protocol::NetQuake15 {
+            b"\x0d\x0fraw\\\"name\x80\0\x0e\x0f\x00\x80\x11\x0f\xff\x08after\0".as_slice()
+        } else {
+            b"\x28\x1f\xff\xff\xff\xff\\name\\first\0\x0e\x1f\xff\x7f\x33\x1fname\0second\0\x08\x02after\0".as_slice()
+        };
+        let mut order = Vec::new();
+        let mut deliver = |_: ClientId, endpoint, incoming: Incoming<'_>| {
+            assert_eq!(endpoint, Endpoint::Client);
+            match incoming {
+                Incoming::Peer(PeerUpdate::Name { slot, name }) => {
+                    assert_eq!((slot, name), (15, b"raw\\\"name\x80".as_slice()));
+                    order.push(13);
+                }
+                Incoming::Peer(PeerUpdate::Frags { slot, frags }) => {
+                    assert_eq!(
+                        (slot, frags),
+                        if protocol == Protocol::NetQuake15 {
+                            (15, i16::MIN)
+                        } else {
+                            (31, i16::MAX)
+                        }
+                    );
+                    order.push(14);
+                }
+                Incoming::Peer(PeerUpdate::Colors { slot, colors }) => {
+                    assert_eq!((slot, colors), (15, 255));
+                    order.push(17);
+                }
+                Incoming::Peer(PeerUpdate::UserInfo {
+                    slot,
+                    user_id,
+                    info,
+                }) => {
+                    assert_eq!((slot, user_id, info), (31, -1, b"\\name\\first".as_slice()));
+                    order.push(40);
+                }
+                Incoming::Peer(PeerUpdate::SetInfo { slot, key, value }) => {
+                    assert_eq!(
+                        (slot, key, value),
+                        (31, b"name".as_slice(), b"second".as_slice())
+                    );
+                    order.push(51);
+                }
+                Incoming::Print(print) => {
+                    assert_eq!(print.text, b"after");
+                    order.push(8);
+                }
+                Incoming::PacketTiming { .. } if protocol == Protocol::QuakeWorld28 => (),
+                _ => panic!("peer service fabricated snapshot/configstring data"),
+            }
+            std::ops::ControlFlow::Continue(())
+        };
+        let packet = server
+            .prepare_move(payload, EventTime(2), None, None)
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?;
+        let bytes = packet.bytes.to_vec();
+        server.submitted(EventTime(2)).map_err(|_| Error::Context)?;
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &bytes,
+            EventTime(3),
+            &mut deliver,
+        );
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &bytes,
+            EventTime(4),
+            |_, _, _| panic!("stale packet replayed peer service"),
+        );
+        assert_eq!(
+            order,
+            if protocol == Protocol::NetQuake15 {
+                vec![13, 14, 17, 8]
+            } else {
+                vec![40, 14, 51, 8]
+            }
+        );
+        assert_eq!(connections.command_errors, 0);
+        let mut prefix = 0;
+        if protocol == Protocol::QuakeWorld28 {
+            qw_move(&mut connections, &mut server, &mut commands, true)?;
+        }
+        server_payload(
+            &mut server,
+            &mut connections,
+            b"\x0e\0\xfe\xff\x0e",
+            |_, _, incoming| match incoming {
+                Incoming::Peer(PeerUpdate::Frags { slot: 0, frags: -2 }) => prefix += 1,
+                Incoming::PacketTiming { .. } if protocol == Protocol::QuakeWorld28 => (),
+                _ => panic!("truncated peer service reached consumer"),
+            },
+        )?;
+        assert_eq!(prefix, 1);
+        assert_eq!(connections.command_errors, 1);
+    }
+    Ok(())
+}

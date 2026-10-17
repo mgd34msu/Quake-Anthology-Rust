@@ -4,6 +4,40 @@ use super::info_remove;
 pub enum InfoBytes {
     Exact,
     Ascii7Printable,
+    /// Preserve high bits and every byte above carriage return.
+    AboveCarriageReturn,
+    /// Mask high bits, retaining bytes 32 through 127 inclusive.
+    Ascii7,
+    LowerAscii7,
+}
+impl InfoBytes {
+    fn valid(self, byte: u8) -> bool {
+        match self {
+            Self::Exact => !info_delimiter(byte) && byte >= 32,
+            Self::Ascii7Printable => !info_delimiter(byte & 127),
+            Self::AboveCarriageReturn | Self::Ascii7 | Self::LowerAscii7 => {
+                !matches!(byte, b'\\' | b'"')
+            }
+        }
+    }
+    fn output(self, byte: u8) -> Option<u8> {
+        match self {
+            Self::Exact => Some(byte),
+            Self::Ascii7Printable => {
+                let byte = byte & 127;
+                (32..=126).contains(&byte).then_some(byte)
+            }
+            Self::AboveCarriageReturn => (byte > 13).then_some(byte),
+            Self::Ascii7 | Self::LowerAscii7 => {
+                let byte = byte & 127;
+                (byte >= 32).then_some(if self == Self::LowerAscii7 {
+                    byte.to_ascii_lowercase()
+                } else {
+                    byte
+                })
+            }
+        }
+    }
 }
 #[derive(Clone, Copy)]
 pub struct InfoRules {
@@ -22,13 +56,7 @@ pub fn info_delimiter(byte: u8) -> bool {
     matches!(byte, b'\\' | b'"' | b';')
 }
 pub fn info_valid_field(text: &[u8], filter: InfoBytes) -> bool {
-    text.iter().all(|&byte| {
-        let tested = match filter {
-            InfoBytes::Exact => byte,
-            InfoBytes::Ascii7Printable => byte & 127,
-        };
-        !info_delimiter(tested) && (filter != InfoBytes::Exact || tested >= 32)
-    })
+    text.iter().all(|&byte| filter.valid(byte))
 }
 
 /// Set an exact native key, removing all its previous rows. Validation leaves
@@ -48,6 +76,7 @@ pub struct InfoUpdate<'a> {
     key: &'a [u8],
     value: &'a [u8],
     rules: InfoRules,
+    remove_all: bool,
 }
 impl<'a> InfoUpdate<'a> {
     pub fn new(key: &'a [u8], value: &'a [u8], rules: InfoRules) -> Result<Self, InfoError> {
@@ -58,14 +87,29 @@ impl<'a> InfoUpdate<'a> {
         {
             return Err(InfoError::Invalid);
         }
-        Ok(Self { key, value, rules })
+        Ok(Self {
+            key,
+            value,
+            rules,
+            remove_all: true,
+        })
+    }
+    /// Keep later duplicates, as native callers of Info_RemoveKey do.
+    pub fn first_only(mut self) -> Self {
+        self.remove_all = false;
+        self
     }
     pub fn apply(self, output: &mut [u8], length: &mut usize) -> Result<(), InfoError> {
-        let Self { key, value, rules } = self;
+        let Self {
+            key,
+            value,
+            rules,
+            remove_all,
+        } = self;
         if *length >= output.len() {
             return Err(InfoError::Capacity);
         }
-        *length = info_remove(&mut output[..*length], key, false, true);
+        *length = info_remove(&mut output[..*length], key, false, remove_all);
         output[*length] = 0;
         if value.is_empty() {
             return Ok(());
@@ -80,15 +124,8 @@ impl<'a> InfoUpdate<'a> {
         }
         for bytes in [b"\\".as_slice(), key, b"\\", value] {
             for &byte in bytes {
-                let byte = match rules.filter {
-                    InfoBytes::Exact => byte,
-                    InfoBytes::Ascii7Printable => {
-                        let byte = byte & 127;
-                        if !(32..=126).contains(&byte) {
-                            continue;
-                        }
-                        byte
-                    }
+                let Some(byte) = rules.filter.output(byte) else {
+                    continue;
                 };
                 output[*length] = byte;
                 *length += 1;

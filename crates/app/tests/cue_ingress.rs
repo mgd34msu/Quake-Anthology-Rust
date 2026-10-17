@@ -388,3 +388,6 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
         host.runtime.server.events.unbind(observer);
     }
 }
+
+#[path = "cue_ingress/peers.rs"]
+mod peers;

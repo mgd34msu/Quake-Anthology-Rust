@@ -137,6 +137,7 @@ pub struct ConfigLayout {
     statusbar: IndexSpan,
     scalar: [usize; 3],
     ordinary_bytes: usize,
+    player_bytes: usize,
     light_bytes: usize,
     general_end: usize,
 }
@@ -149,10 +150,10 @@ impl ConfigLayout {
 
     pub const QUAKE: Self = Self {
         rules: RuleSetId::Quake,
-        count: 576,
+        count: 592,
         resources: [span(0, 256), span(256, 256), span(512, 0)],
         resource_policies: [ResourceIndexPolicy::DEFAULT; 3],
-        players: span(0, 0),
+        players: span(576, 16),
         lights: span(512, 64),
         cd_track: None,
         items: span(0, 0),
@@ -160,11 +161,16 @@ impl ConfigLayout {
         statusbar: span(0, 0),
         scalar: [usize::MAX; 3],
         ordinary_bytes: MAX_TEXT + 1,
+        player_bytes: 32,
         light_bytes: 64,
-        general_end: 576,
+        general_end: 592,
     };
     pub const QUAKEWORLD: Self = Self {
         rules: RuleSetId::QuakeWorld,
+        count: 608,
+        players: span(576, 32),
+        player_bytes: 196,
+        general_end: 608,
         ..Self::QUAKE
     };
     pub const QUAKE2: Self = Self {
@@ -180,6 +186,7 @@ impl ConfigLayout {
         statusbar: span(5, 24),
         scalar: [29, 30, 31],
         ordinary_bytes: 64,
+        player_bytes: 64,
         light_bytes: 64,
         general_end: 2080,
     };
@@ -202,6 +209,7 @@ impl ConfigLayout {
         statusbar: span(5, 54),
         scalar: [59, 60, 61],
         ordinary_bytes: 96,
+        player_bytes: 96,
         light_bytes: 96,
         general_end: 12448,
     };
@@ -218,6 +226,7 @@ impl ConfigLayout {
         statusbar: span(0, 0),
         scalar: [usize::MAX; 3],
         ordinary_bytes: 8192,
+        player_bytes: 8192,
         light_bytes: 8192,
         general_end: Q3_GAME_STATE_ROWS,
     };
@@ -245,7 +254,9 @@ impl ConfigLayout {
         if index >= self.count {
             return None;
         }
-        let bytes = if self.lights.contains(index) {
+        let bytes = if self.players.contains(index) {
+            self.player_bytes
+        } else if self.lights.contains(index) {
             self.light_bytes
         } else if self.statusbar.contains(index) {
             (self.statusbar.range().end - index) * self.ordinary_bytes
@@ -265,11 +276,16 @@ impl ConfigLayout {
         if self.rules == source.rules {
             return Some(index);
         }
+        if source.players.contains(index) {
+            return (matches!(self.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+                && matches!(source.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease))
+            .then(|| self.players.get(index - source.players.first as usize))
+            .flatten();
+        }
         for (from, to) in source
             .resources
             .into_iter()
             .zip(self.resources)
-            .chain(std::iter::once((source.players, self.players)))
             .chain(std::iter::once((source.lights, self.lights)))
         {
             if from.contains(index) {

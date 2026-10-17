@@ -929,3 +929,209 @@ fn opaque_print_continuation_is_raw_only_for_the_original_primary_namespace() {
         );
     }
 }
+
+#[test]
+fn peer_services_preserve_native_fields_raw_borrows_and_following_service_boundaries() {
+    use outputs::{NativeService, PeerUpdate};
+    let records: &[(Protocol, &[u8], PeerUpdate<'_>)] = &[
+        (
+            Protocol::NetQuake15,
+            b"\x0d\xffraw\\\"name\x80\0",
+            PeerUpdate::Name {
+                slot: 255,
+                name: b"raw\\\"name\x80",
+            },
+        ),
+        (
+            Protocol::NetQuake15,
+            &[14, 15, 0, 128],
+            PeerUpdate::Frags {
+                slot: 15,
+                frags: i16::MIN,
+            },
+        ),
+        (
+            Protocol::NetQuake15,
+            &[17, 15, 255],
+            PeerUpdate::Colors {
+                slot: 15,
+                colors: 255,
+            },
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &[14, 31, 255, 127],
+            PeerUpdate::Frags {
+                slot: 31,
+                frags: i16::MAX,
+            },
+        ),
+        (
+            Protocol::QuakeWorld28,
+            b"\x28\x1f\0\0\0\x80\\name\\peer\x80\0",
+            PeerUpdate::UserInfo {
+                slot: 31,
+                user_id: i32::MIN,
+                info: b"\\name\\peer\x80",
+            },
+        ),
+        (
+            Protocol::QuakeWorld28,
+            b"\x33\x1fname\0changed\0",
+            PeerUpdate::SetInfo {
+                slot: 31,
+                key: b"name",
+                value: b"changed",
+            },
+        ),
+        (
+            Protocol::QuakeWorld28,
+            b"\x33\0\0\0",
+            PeerUpdate::SetInfo {
+                slot: 0,
+                key: b"",
+                value: b"",
+            },
+        ),
+    ];
+    for &(protocol, wire, expected) in records {
+        let bytes = [wire, &[1]].concat();
+        let (NativeService::Peer(update), consumed) =
+            outputs::read_native_service(protocol, &bytes).unwrap()
+        else {
+            panic!("native peer service")
+        };
+        assert_eq!(update, expected);
+        assert_eq!(consumed, wire.len());
+        let pointer = match update {
+            PeerUpdate::Name { name, .. } => Some((name.as_ptr(), 2)),
+            PeerUpdate::UserInfo { info, .. } => Some((info.as_ptr(), 6)),
+            PeerUpdate::SetInfo { key, value, .. } => {
+                assert_eq!(value.as_ptr(), bytes[3 + key.len()..].as_ptr());
+                Some((key.as_ptr(), 2))
+            }
+            _ => None,
+        };
+        if let Some((pointer, offset)) = pointer {
+            assert_eq!(pointer, bytes[offset..].as_ptr());
+        }
+        assert!(matches!(
+            outputs::read_native_service(protocol, &bytes[consumed..]).unwrap(),
+            (NativeService::Nop, 1)
+        ));
+        let mut output = vec![0xcc; wire.len() + 1];
+        assert_eq!(
+            outputs::peer_update(protocol, update, &mut output).unwrap(),
+            wire.len()
+        );
+        assert_eq!(&output[..wire.len()], wire);
+        assert_eq!(output[wire.len()], 0xcc);
+        for cut in 0..wire.len() {
+            assert!(
+                outputs::read_native_service(protocol, &wire[..cut]).is_err(),
+                "{protocol:?} opcode={} cut={cut}",
+                wire[0]
+            );
+            assert!(outputs::peer_update(protocol, update, &mut output[..cut]).is_err());
+        }
+    }
+}
+
+#[test]
+fn qw_peer_text_consumes_full_native_strings_before_bounded_client_storage() {
+    use outputs::{NativeService, PeerUpdate};
+    let info = vec![b'x'; 200];
+    let mut bytes = vec![40, 31, 255, 255, 255, 255];
+    bytes.extend_from_slice(&info);
+    bytes.extend_from_slice(&[0, 1]);
+    let (
+        NativeService::Peer(PeerUpdate::UserInfo {
+            slot,
+            user_id,
+            info: decoded,
+        }),
+        used,
+    ) = outputs::read_native_service(Protocol::QuakeWorld28, &bytes).unwrap()
+    else {
+        panic!("userinfo")
+    };
+    assert_eq!((slot, user_id), (31, -1));
+    assert_eq!(decoded, info);
+    assert_eq!(used, 207);
+    assert!(matches!(
+        outputs::read_native_service(Protocol::QuakeWorld28, &bytes[used..]).unwrap(),
+        (NativeService::Nop, 1)
+    ));
+    for wire in [
+        b"\x0e\x20\0\0".as_slice(),
+        b"\x28\x20\0\0\0\0\0",
+        b"\x33\x20key\0value\0",
+    ] {
+        assert!(outputs::read_native_service(Protocol::QuakeWorld28, wire).is_err());
+    }
+    // QW does not acquire NQ's raw-name/color services through the common codec.
+    for wire in [b"\x0d\0name\0".as_slice(), b"\x11\0\xff"] {
+        assert!(matches!(
+            outputs::read_native_service(Protocol::QuakeWorld28, wire),
+            Err(Error::Unsupported)
+        ));
+    }
+}
+
+#[test]
+fn peer_native_projection_only_emits_representable_peer_services_not_configstrings() {
+    use qa_core::primitives::RuleSetId;
+    let wire = b"\x0d\x0fname\0\x0e\x0f\xfe\xff\x11\x0f\x4d\x01";
+    for (protocol, expected, unsupported) in [
+        (Protocol::NetQuake15, wire.as_slice(), 0),
+        (
+            Protocol::QuakeWorld28,
+            b"\x0e\x0f\xfe\xff\x01".as_slice(),
+            2,
+        ),
+        (Protocol::Quake2_34, b"\x06".as_slice(), 3),
+        (Protocol::Quake2Repro1038, b"\x06".as_slice(), 3),
+    ] {
+        let mut output = [0xcc; 64];
+        let result = outputs::native(
+            protocol,
+            RuleSetId::Quake,
+            wire,
+            &mut output,
+            true,
+            |_, _| panic!("peer data is not a cue"),
+        )
+        .unwrap();
+        assert_eq!(result.unsupported, unsupported);
+        assert_eq!(&output[..result.length], expected);
+        assert_eq!(output[result.length], 0xcc);
+    }
+    let mut output = [0xcc; 64];
+    let result = outputs::native(
+        Protocol::QuakeWorld28,
+        RuleSetId::Quake,
+        b"\x0e\x20\xfe\xff\x08following\0",
+        &mut output,
+        true,
+        |_, _| panic!("peer data is not a cue"),
+    )
+    .unwrap();
+    assert_eq!(result.unsupported, 1);
+    assert_eq!(&output[..result.length], b"\x08\x02following\0");
+    assert_eq!(output[result.length], 0xcc);
+    assert!(matches!(
+        outputs::read_native_service(Protocol::QuakeWorld28, b"\x0e\x20\xfe\xff"),
+        Err(Error::Opcode)
+    ));
+    assert_eq!(
+        outputs::peer_update(
+            Protocol::QuakeWorld28,
+            outputs::PeerUpdate::Frags {
+                slot: 32,
+                frags: -2
+            },
+            &mut output,
+        ),
+        Err(Error::Unsupported)
+    );
+}
