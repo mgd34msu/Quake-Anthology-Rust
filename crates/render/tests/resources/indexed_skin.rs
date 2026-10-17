@@ -1,5 +1,5 @@
 use super::*;
-use qa_render::material::resources::{IndexedSkinLayout, IndexedSkinTranslation};
+use qa_render::material::resources::{IndexedSkinLayout, IndexedSkinTranslation, IndexedSkinView};
 
 fn source_file() -> Fixture {
     let root = Fixture::new();
@@ -54,6 +54,134 @@ fn layout() -> IndexedSkinLayout {
 }
 
 #[test]
+fn borrowed_native_members_keep_distinct_ordinals_in_the_shared_image_cache() {
+    let root = source_file();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let (palette, target) = palettes(&mut assets);
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .unwrap();
+    let mut settings = request(palette, target);
+    settings.crop = None;
+    settings.coordinate_extent = [2, 1];
+    settings.upload_extent = Some([2, 1]);
+    let first = IndexedSkinView::new([2, 1], &[16, 96]).unwrap();
+    let next = IndexedSkinView::new([2, 1], &[31, 111]).unwrap();
+    vfs.take_lookup_count();
+    let a = images
+        .translated_skin("progs/player.mdl", 0, first, settings)
+        .unwrap();
+    let b = images
+        .translated_skin("progs/player.mdl", 1, next, settings)
+        .unwrap();
+    assert_ne!(a.id, b.id);
+    assert_eq!(
+        &images.assets.image(a.id).unwrap().rgba[..4],
+        &[0, 0, 0, 255]
+    );
+    assert_eq!(
+        &images.assets.image(b.id).unwrap().rgba[..4],
+        &[15, 0, 0, 255]
+    );
+    assert_eq!(
+        images
+            .assets
+            .image(a.id)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        &[42, 43]
+    );
+    assert_eq!(
+        images
+            .assets
+            .image(b.id)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        &[44, 45]
+    );
+    assert_eq!(
+        images
+            .translated_skin("progs/player.mdl", 0, first, settings)
+            .unwrap(),
+        a
+    );
+    assert_eq!(vfs.take_lookup_count(), 0);
+    assert!(IndexedSkinView::new([2, 1], &[16]).is_err());
+    assert!(IndexedSkinView::new([0, 1], &[]).is_err());
+}
+
+#[test]
+fn lmp_skin_source_uses_the_existing_indexed_reader_and_translation_path() {
+    let root = source_file();
+    let bytes: Vec<_> = 2u32
+        .to_le_bytes()
+        .into_iter()
+        .chain(1u32.to_le_bytes())
+        .chain([16, 96])
+        .collect();
+    std::fs::write(root.0.join("env/native.lmp"), bytes).unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let (palette, target) = palettes(&mut assets);
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .unwrap();
+    let source = images
+        .indexed_skin_source("env/native.lmp", Default::default())
+        .unwrap();
+    assert_eq!(source.decoded_extent(), [2, 1]);
+    assert_eq!(source.indices(), &[16, 96]);
+    let mut settings = request(palette, target);
+    settings.crop = None;
+    settings.coordinate_extent = [2, 1];
+    let resolved = images
+        .translated_skin("env/native.lmp", 0, source.view(), settings)
+        .unwrap();
+    assert_eq!(
+        images.assets.image(resolved.id).unwrap().logical_size(),
+        [2, 1]
+    );
+    assert_eq!(
+        images
+            .assets
+            .image(resolved.id)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        &[42, 43]
+    );
+}
+
+#[test]
 fn translated_indexed_skin_retains_padding_dual_colors_palette_mapping_and_cropped_rgba() {
     let root = source_file();
     let mut vfs = Vfs::default();
@@ -83,7 +211,7 @@ fn translated_indexed_skin_retains_padding_dual_colors_palette_mapping_and_cropp
     vfs.take_lookup_count();
     let settings = request(palette, target);
     let resolved = images
-        .translated_skin("env/native.pcx", &source, settings)
+        .translated_skin("env/native.pcx", 0, source.view(), settings)
         .unwrap();
     let image = images.assets.image(resolved.id).unwrap();
     assert_eq!((image.width, image.height), (2, 2));
@@ -116,7 +244,7 @@ fn translated_indexed_skin_retains_padding_dual_colors_palette_mapping_and_cropp
     std::fs::remove_file(root.0.join("env/native.pcx")).unwrap();
     assert_eq!(
         images
-            .translated_skin("ENV\\NATIVE.PCX", &source, settings)
+            .translated_skin("ENV\\NATIVE.PCX", 0, source.view(), settings)
             .unwrap(),
         resolved
     );
@@ -175,12 +303,12 @@ fn translated_skin_cache_keys_keep_each_consumed_crop_color_coordinate_and_uploa
     let mut ids = Vec::new();
     for settings in variants {
         let image = images
-            .translated_skin("env/native.pcx", &source, settings)
+            .translated_skin("env/native.pcx", 0, source.view(), settings)
             .unwrap();
         assert!(!ids.contains(&image.id));
         assert_eq!(
             images
-                .translated_skin("env/native.pcx", &source, settings)
+                .translated_skin("env/native.pcx", 0, source.view(), settings)
                 .unwrap(),
             image
         );
@@ -222,7 +350,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     let result = images.try_registration(|images| -> Result<(), ResourceError> {
         staged = Some(
             images
-                .translated_skin("env/native.pcx", &source, settings)?
+                .translated_skin("env/native.pcx", 0, source.view(), settings)?
                 .id,
         );
         Err(ResourceError::Asset("reject skin backend"))
@@ -230,7 +358,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     assert!(result.is_err());
     assert_eq!(images.assets.counts(), prefix);
     let admitted = images
-        .translated_skin("env/native.pcx", &source, settings)
+        .translated_skin("env/native.pcx", 0, source.view(), settings)
         .unwrap();
     assert_eq!(Some(admitted.id), staged);
     let pixels = images.assets.image(admitted.id).unwrap().rgba.to_vec();
@@ -243,7 +371,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     assert_eq!(images.assets.counts().images, prefix.images + 1);
     assert_eq!(vfs.take_lookup_count(), 0);
     let suffix = images
-        .translated_skin("env/native.pcx", &source, settings)
+        .translated_skin("env/native.pcx", 0, source.view(), settings)
         .unwrap();
     assert_ne!(suffix.id, admitted.id);
     assert_eq!(&*images.assets.image(suffix.id).unwrap().rgba, pixels);
@@ -258,7 +386,7 @@ fn translated_skin_rollback_retry_and_reload_use_the_existing_recipe_owner() {
     let mut images = Images::from_state(&vfs, &mut assets, state);
     assert_eq!(
         images
-            .translated_skin("env/native.pcx", &source, settings)
+            .translated_skin("env/native.pcx", 0, source.view(), settings)
             .unwrap(),
         admitted
     );
@@ -302,7 +430,7 @@ fn indexed_skin_invalid_layout_and_derived_inputs_leave_resource_prefix_unchange
     let settings = request(palette, target);
     for settings in [
         IndexedSkinTranslation {
-            indexed_colors: Some([14, 0]),
+            indexed_colors: Some([16, 0]),
             ..settings
         },
         IndexedSkinTranslation {
@@ -328,14 +456,14 @@ fn indexed_skin_invalid_layout_and_derived_inputs_leave_resource_prefix_unchange
     ] {
         assert!(
             images
-                .translated_skin("env/native.pcx", &source, settings)
+                .translated_skin("env/native.pcx", 0, source.view(), settings)
                 .is_err()
         );
         assert_eq!(images.assets.counts(), prefix);
     }
     assert!(
         images
-            .translated_skin("env/native.pcx", &source, request(palette, target))
+            .translated_skin("env/native.pcx", 0, source.view(), request(palette, target))
             .is_ok()
     );
 }
@@ -390,10 +518,10 @@ fn qw_storage_crop_and_coordinate_domains_stay_independent_of_exact_upload_size(
         },
     };
     let first = images
-        .translated_skin("env/native.pcx", &source, settings)
+        .translated_skin("env/native.pcx", 0, source.view(), settings)
         .unwrap();
     let last_row = images
-        .translated_skin("env/native.pcx", &retained, settings)
+        .translated_skin("env/native.pcx", 0, retained.view(), settings)
         .unwrap();
     assert_ne!(first.id, last_row.id);
     for (id, last) in [(first.id, [0, 0]), (last_row.id, [7, 8])] {

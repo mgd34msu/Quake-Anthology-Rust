@@ -10,19 +10,58 @@ pub struct IndexedSkinLayout {
 /// Accepted source bytes, independent of names, palettes and player colors.
 #[derive(Debug)]
 pub struct IndexedSkinSource {
+    shape: IndexedSkinShape,
+    indices: Box<[u8]>,
+}
+#[derive(Clone, Copy, Debug)]
+struct IndexedSkinShape {
     decoded: [u32; 2],
     layout: IndexedSkinLayout,
-    indices: Box<[u8]>,
+}
+impl IndexedSkinShape {
+    fn storage_extent(self) -> [u32; 2] {
+        self.layout.storage.unwrap_or(self.decoded)
+    }
+}
+/// Borrowed native members and decoded files use the same image recipe.
+#[derive(Clone, Copy, Debug)]
+pub struct IndexedSkinView<'a> {
+    shape: IndexedSkinShape,
+    indices: &'a [u8],
+}
+impl<'a> IndexedSkinView<'a> {
+    pub fn new(decoded: [u32; 2], indices: &'a [u8]) -> Result<Self, ResourceError> {
+        upload::validate_dimensions(decoded[0], decoded[1])?;
+        if indices.len() != decoded[0] as usize * decoded[1] as usize {
+            return Err(ResourceError::Size);
+        }
+        Ok(Self {
+            shape: IndexedSkinShape {
+                decoded,
+                layout: IndexedSkinLayout::default(),
+            },
+            indices,
+        })
+    }
+    fn storage_extent(self) -> [u32; 2] {
+        self.shape.storage_extent()
+    }
 }
 impl IndexedSkinSource {
     pub fn decoded_extent(&self) -> [u32; 2] {
-        self.decoded
+        self.shape.decoded
     }
     pub fn storage_extent(&self) -> [u32; 2] {
-        self.layout.storage.unwrap_or(self.decoded)
+        self.shape.storage_extent()
     }
     pub fn indices(&self) -> &[u8] {
         &self.indices
+    }
+    pub fn view(&self) -> IndexedSkinView<'_> {
+        IndexedSkinView {
+            shape: self.shape,
+            indices: &self.indices,
+        }
     }
 }
 
@@ -44,7 +83,11 @@ impl Images<'_> {
         name: &str,
         layout: IndexedSkinLayout,
     ) -> Result<IndexedSkinSource, ResourceError> {
-        let texture = self.native_texture(name, SourceFormat::Raster(ImageFormat::Pcx), None)?;
+        let format = match ImageFormat::from_path(name.as_bytes()) {
+            Some(format @ (ImageFormat::Pcx | ImageFormat::Lmp)) => format,
+            _ => return Err(ResourceError::Asset("unsupported indexed skin file")),
+        };
+        let texture = self.native_texture(name, SourceFormat::Raster(format), None)?;
         let base = texture
             .mip(0)
             .ok_or(ResourceError::Asset("missing indexed skin base"))?;
@@ -63,8 +106,7 @@ impl Images<'_> {
                 .copy_from_slice(&base.indices()[source..source + base.width as usize]);
         }
         Ok(IndexedSkinSource {
-            decoded,
-            layout,
+            shape: IndexedSkinShape { decoded, layout },
             indices: indices.into_boxed_slice(),
         })
     }
@@ -72,7 +114,8 @@ impl Images<'_> {
     pub fn translated_skin(
         &mut self,
         name: &str,
-        source: &IndexedSkinSource,
+        source_ordinal: u32,
+        source: IndexedSkinView<'_>,
         settings: IndexedSkinTranslation,
     ) -> Result<ResolvedImage, ResourceError> {
         let key = ImageKey {
@@ -81,8 +124,9 @@ impl Images<'_> {
                 .intern_name(name)
                 .map_err(ResourceError::Asset)?,
             recipe: ImageRecipe::TranslatedSkin {
-                decoded: source.decoded,
-                layout: source.layout,
+                source: source_ordinal,
+                decoded: source.shape.decoded,
+                layout: source.shape.layout,
                 settings,
             },
         };
@@ -159,15 +203,13 @@ impl Images<'_> {
                 .assets
                 .prepare_image(id, params)
                 .map_err(ResourceError::Asset)?;
-            if images.state.recipes.rules == RuleSetId::Quake3 {
-                images
-                    .assets
-                    .set_image_native_sampler(
-                        id,
-                        images.state.recipes.effective_use(settings.usage).sampler,
-                    )
-                    .map_err(ResourceError::Asset)?;
-            }
+            images
+                .assets
+                .set_image_native_sampler(
+                    id,
+                    images.state.recipes.effective_use(settings.usage).sampler,
+                )
+                .map_err(ResourceError::Asset)?;
             Ok(images.remember(key, key.name, id, settings.usage))
         })
     }

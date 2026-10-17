@@ -1,3 +1,6 @@
+#[path = "model_colors.rs"]
+mod model_colors;
+
 use super::registration_tests::support;
 use super::*;
 use qa_core::primitives::Vec3;

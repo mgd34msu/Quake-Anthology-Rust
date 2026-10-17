@@ -17,7 +17,7 @@ use qa_render::assets::{
 use qa_render::material::resources::{
     ImageRegistrationMark, ImageReload, ImageRole, ImageSearchOrder, ImageSettings, ImageUse,
     Images, ImagesState, IndexedSkinLayout, IndexedSkinSource, IndexedSkinTranslation,
-    IndexedTarget, ResourceError,
+    IndexedSkinView, IndexedTarget, ResourceError,
 };
 use qa_render::material::world_load::{
     NamedShaderLighting, WorldImageReload, WorldPresentationRequest, compile_named_shader,
@@ -281,19 +281,79 @@ struct ModelChoice {
     pose: AliasPose,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
+enum ShaderMembers<'a> {
+    Models(&'a [ModelMaterials]),
+    Skins(&'a [[ShaderChoice; 4]]),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelShaderMembers<'a> {
-    materials: &'a [ModelMaterials],
+    materials: ShaderMembers<'a>,
     policy: usize,
+}
+impl<'a> ModelShaderMembers<'a> {
+    fn range(self, range: std::ops::Range<usize>) -> Option<Self> {
+        Some(Self {
+            materials: match self.materials {
+                ShaderMembers::Models(rows) => ShaderMembers::Models(rows.get(range)?),
+                ShaderMembers::Skins(rows) => ShaderMembers::Skins(rows.get(range)?),
+            },
+            ..self
+        })
+    }
+    fn choice(
+        mut self,
+        selected: u32,
+        timed: Option<(u32, IndexSpan)>,
+        wrap: bool,
+        frames: bool,
+    ) -> Option<ModelShaderChoice<'a>> {
+        if self.len() == 0 {
+            return None;
+        }
+        if frames {
+            return Some(ModelShaderChoice::Frames { members: self });
+        }
+        let selected = if let Some((group, range)) = timed {
+            self = self.range(range.range())?;
+            if range.count > 1 {
+                return Some(ModelShaderChoice::SkinGroup {
+                    group,
+                    members: self,
+                });
+            }
+            0
+        } else if wrap {
+            selected as usize % self.len()
+        } else if (selected as usize) < self.len() {
+            selected as usize
+        } else {
+            0
+        };
+        Some(ModelShaderChoice::Single(self.nth(selected)?))
+    }
 }
 impl Iterator for ModelShaderMembers<'_> {
     type Item = ShaderChoice;
     fn next(&mut self) -> Option<Self::Item> {
-        let (member, remaining) = self.materials.split_first()?;
-        self.materials = remaining;
-        Some(member.variants[self.policy].shader)
+        match &mut self.materials {
+            ShaderMembers::Models(rows) => {
+                let (member, remaining) = rows.split_first()?;
+                *rows = remaining;
+                Some(member.variants[self.policy].shader)
+            }
+            ShaderMembers::Skins(rows) => {
+                let (member, remaining) = rows.split_first()?;
+                *rows = remaining;
+                Some(member[self.policy])
+            }
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.materials.len(), Some(self.materials.len()))
+        let len = match self.materials {
+            ShaderMembers::Models(rows) => rows.len(),
+            ShaderMembers::Skins(rows) => rows.len(),
+        };
+        (len, Some(len))
     }
 }
 impl ExactSizeIterator for ModelShaderMembers<'_> {}
@@ -414,6 +474,7 @@ pub struct ModelBindings<'a> {
     materials: &'a [ModelMaterials],
     skin: u32,
     policy: ModelMaterialPolicy,
+    profile: ModelProfile,
     custom: Option<(u32, Option<&'a SkinReady>)>,
     registrations: &'a [ShaderRegistration],
     resource: ShaderResource,
@@ -447,60 +508,39 @@ impl<'a> ModelBindings<'a> {
                 };
                 (group, groups[group as usize].members)
             });
-        let skin = if surface.sprite_frames {
-            0
-        } else if let Some((_, members)) = timed {
-            members.first
-        } else if surface.wrap_skins {
-            selected % surface.skins.count
-        } else if selected < surface.skins.count {
-            selected
-        } else {
-            0
-        };
-        let mut binding =
-            self.materials[(surface.skins.first + skin) as usize].variants[self.policy.index()];
+        // Both mesh compilers assign one geometry/pose to all surface skins.
+        let binding = self.materials[surface.skins.first as usize].variants[0];
         let mut registrations = self.registrations;
         let mut resource = self.resource;
         let mut default = ShaderDefault::Global(Some(self.default_shader));
-        let mut shader = if surface.sprite_frames {
-            ModelShaderChoice::Frames {
-                members: ModelShaderMembers {
-                    materials: &self.materials[surface.skins.range()],
-                    policy: self.policy.index(),
-                },
-            }
-        } else {
-            match timed {
-                Some((group, members)) if members.count > 1 => {
-                    let first = (surface.skins.first + members.first) as usize;
-                    ModelShaderChoice::SkinGroup {
-                        group,
-                        members: ModelShaderMembers {
-                            materials: &self.materials[first..first + members.count as usize],
-                            policy: self.policy.index(),
-                        },
-                    }
-                }
-                _ => ModelShaderChoice::Single(binding.shader),
-            }
-        };
+        let mut shader = ModelShaderMembers {
+            materials: ShaderMembers::Models(&self.materials[surface.skins.range()]),
+            policy: self.policy.index(),
+        }
+        .choice(selected, timed, surface.wrap_skins, surface.sprite_frames)?;
         if let Some((handle, custom)) = self.custom.filter(|_| !surface.sprite_frames) {
-            binding.shader = ShaderChoice::Direct(self.default_shader);
+            shader = ModelShaderChoice::Single(ShaderChoice::Direct(self.default_shader));
             if let Some(custom) = custom {
-                let mapping = custom
+                if let Ok(mapping) = custom
                     .mappings
                     .binary_search_by_key(&surface.name.0, |entry| entry.surface.0)
-                    .ok();
-                binding.shader = mapping
-                    .map_or(ShaderChoice::Direct(self.default_shader), |index| {
-                        custom.mappings[index].shaders[self.policy.index()]
-                    });
+                {
+                    let span = custom.mappings[mapping].members;
+                    shader = ModelShaderMembers {
+                        materials: ShaderMembers::Skins(custom.members.get(span.range())?),
+                        policy: self.policy.index(),
+                    }
+                    .choice(
+                        selected,
+                        (span.count > 1).then_some(timed).flatten(),
+                        surface.wrap_skins,
+                        false,
+                    )?;
+                }
                 registrations = &custom.registrations;
                 resource = ShaderResource::Skin(handle);
                 default = ShaderDefault::Named;
             }
-            shader = ModelShaderChoice::Single(binding.shader);
         }
         Some(SelectedModelChoice {
             model: binding.model,
@@ -562,6 +602,45 @@ pub struct ModelLodBindings<'a> {
     )>,
 }
 impl<'a> ModelLodBindings<'a> {
+    pub fn with_skin(
+        mut self,
+        catalog: &'a ModelCatalog,
+        selection: SkinSelection,
+    ) -> Option<Self> {
+        let skin = catalog.skins.get(selection.skin as usize)?;
+        let row = skin.profiles.get(selection.row as usize)?;
+        if !matches!(row.request, SkinRequest::ModelColors(_)) {
+            return None;
+        }
+        let SkinSource::AliasModel(source) = skin.source.as_ref()? else {
+            return None;
+        };
+        let (ready, required) = row.state.ready()?;
+        if !catalog.admitted(required) {
+            return None;
+        }
+        for level in self
+            .levels
+            .iter_mut()
+            .flatten()
+            .chain(self.replacement.iter_mut().map(|(bindings, ..)| bindings))
+        {
+            if level.profile != row.profile {
+                return None;
+            }
+            let ShaderResource::Model(file) = level.resource else {
+                return None;
+            };
+            let ModelFile::Ready { lods, .. } = catalog.files.get(file.0 as usize)? else {
+                return None;
+            };
+            if lods.source(0) != Some(*source) {
+                return None;
+            }
+            level.custom = Some((selection.skin + 1, Some(ready)));
+        }
+        Some(self)
+    }
     pub fn native_only(mut self) -> Self {
         self.replacement = None;
         self.remaining = self
@@ -824,6 +903,7 @@ enum RegistrationRollback {
 }
 #[derive(Clone)]
 enum SkinSource {
+    AliasModel(NameId),
     Script(Arc<[u8]>),
     Indexed {
         layout: IndexedSkinLayout,
@@ -839,6 +919,19 @@ enum SkinSource {
 struct IndexedSkinRequest {
     layout: IndexedSkinLayout,
     translation: IndexedSkinTranslation,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelSkinColors {
+    pub indexed: [u8; 2],
+    pub rgba: [u8; 2],
+    pub upload_extent: Option<[u32; 2]>,
+    pub rgba_crop: Option<[u32; 2]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkinRequest {
+    Named,
+    Indexed(IndexedSkinRequest),
+    ModelColors(ModelSkinColors),
 }
 /// Exact derived body under an ordinary, shared skin filename row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -884,19 +977,20 @@ fn source_handle<'a, T: 'a>(
 
 struct SkinProfile {
     profile: ModelProfile,
-    indexed: Option<IndexedSkinRequest>,
+    request: SkinRequest,
     vertex_collapse: bool,
     state: RegistrationState<SkinReady>,
 }
 #[derive(Debug, PartialEq)]
 struct SkinReady {
     mappings: Box<[SkinMapping]>,
+    members: Box<[[ShaderChoice; 4]]>,
     registrations: Box<[ShaderRegistration]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SkinMapping {
     surface: NameId,
-    shaders: [ShaderChoice; 4],
+    members: IndexSpan,
 }
 /// File-native metadata survives unsupported renderer features. It is not the
 /// bounds of an interpolated mesh or a selected presentation profile.
@@ -1000,6 +1094,7 @@ enum ModelSourceFile {
         precedence: SourcePrecedence,
         metadata: ModelMetadata,
         skin_extent: Option<[u32; 2]>,
+        indexed_skins: Arc<[IndexSpan]>,
         animation: Option<Arc<ModelAnimation>>,
         skeletal: Option<Md5Source>,
         replacement: ReplacementState,
@@ -1455,17 +1550,11 @@ impl ReloadCheckpoint {
                 .get(entry.name)
                 .ok_or("skin replay filename")?
                 .to_vec();
-            if let Some(request) = entry.profiles[row].indexed {
-                let path =
-                    std::str::from_utf8(&name).map_err(|_| "indexed skin replay filename")?;
-                owner
-                    .admit_indexed_skin(vfs, path, profile, guard, request)
-                    .map_err(|error| format!("indexed skin replay: {error}"))?;
-            } else {
-                owner
-                    .admit_skin_profile(vfs, &name, profile.source_rules, Some(profile), guard)
-                    .map_err(|error| format!("skin replay: {error:?}"))?;
-            }
+            let request = entry.profiles[row].request;
+            let path = std::str::from_utf8(&name).map_err(|_| "skin replay filename")?;
+            owner
+                .admit_skin_request(vfs, path, profile, guard, request)
+                .map_err(|error| format!("skin replay: {error}"))?;
             if owner.catalog.skins[skin].profiles[row]
                 .state
                 .ready()
@@ -2270,7 +2359,7 @@ impl ModelAssets {
         }
         for skin in &mut self.catalog.skins {
             skin.profiles.push(SkinProfile {
-                indexed: None,
+                request: SkinRequest::Named,
                 profile,
                 vertex_collapse: profile.finish.compile(false).collapse_vertex(),
                 state: RegistrationState::Unattempted,
@@ -2565,7 +2654,7 @@ impl ModelAssets {
                     skins.push((
                         name,
                         profile,
-                        entry.indexed,
+                        entry.request,
                         SkinSelection {
                             skin: index,
                             row: row as u32,
@@ -2574,25 +2663,26 @@ impl ModelAssets {
                 }
             }
         }
-        for (name, profile, indexed, old_selection) in skins {
-            if let Some(mut request) = indexed {
-                request.translation.target = profile.palette;
-                request.translation.palette = profile
-                    .source_palette
-                    .unwrap_or(request.translation.palette);
+        for (name, profile, mut request, old_selection) in skins {
+            if request != SkinRequest::Named {
+                if let SkinRequest::Indexed(indexed) = &mut request {
+                    indexed.translation.target = profile.palette;
+                    indexed.translation.palette = profile
+                        .source_palette
+                        .unwrap_or(indexed.translation.palette);
+                }
                 let name =
-                    std::str::from_utf8(&name).map_err(|_| "indexed skin refresh filename")?;
+                    std::str::from_utf8(&name).map_err(|_| "derived skin refresh filename")?;
                 let selection = self
-                    .prepare_indexed_skin(
+                    .prepare_skin_request(
                         vfs,
                         name,
                         profile,
                         ui_fullscreen,
-                        request.layout,
-                        request.translation,
+                        request,
                         |assets, _| prepare(assets),
                     )
-                    .map_err(|error| format!("indexed skin refresh: {error}"))?;
+                    .map_err(|error| format!("derived skin refresh: {error}"))?;
                 refresh.skins.push((old_selection, selection));
                 continue;
             }
@@ -3832,12 +3922,40 @@ impl ModelAssets {
                 Image::Indexed { width, height, .. } => Some([*width, *height]),
                 Image::External(_) => None,
             });
+        let indexed_skins = if model.format == ModelFormat::Mdl {
+            model
+                .skins
+                .iter()
+                .map(|skin| {
+                    let Image::Indexed { pixels, .. } = skin else {
+                        return Err(FileError::capacity("native indexed skin source"));
+                    };
+                    let first = pixels
+                        .as_ptr()
+                        .addr()
+                        .checked_sub(bytes.as_ptr().addr())
+                        .filter(|&first| {
+                            first
+                                .checked_add(pixels.len())
+                                .is_some_and(|end| end <= bytes.len())
+                        })
+                        .and_then(|first| u32::try_from(first).ok())
+                        .ok_or_else(|| FileError::capacity("native indexed skin range"))?;
+                    let count = u32::try_from(pixels.len())
+                        .map_err(|_| FileError::capacity("native indexed skin length"))?;
+                    Ok(IndexSpan { first, count })
+                })
+                .collect::<Result<Arc<[_]>, FileError>>()?
+        } else {
+            Arc::from([])
+        };
         drop(model);
         self.catalog.sources[name.0 as usize] = ModelSourceFile::Ready {
             bytes,
             precedence,
             metadata,
             skin_extent,
+            indexed_skins,
             animation,
             skeletal,
             replacement: ReplacementState::Unattempted,
@@ -5153,7 +5271,7 @@ impl ModelAssets {
                 .profiles
                 .iter()
                 .map(|images| SkinProfile {
-                    indexed: None,
+                    request: SkinRequest::Named,
                     profile: images.profile,
                     vertex_collapse: images
                         .profile
@@ -5179,6 +5297,57 @@ impl ModelAssets {
         translation: IndexedSkinTranslation,
         prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
     ) -> Result<SkinSelection, IndexedSkinError> {
+        self.prepare_skin_request(
+            vfs,
+            name,
+            profile,
+            ui_fullscreen,
+            SkinRequest::Indexed(IndexedSkinRequest {
+                layout,
+                translation,
+            }),
+            prepare,
+        )
+    }
+
+    pub fn prepare_model_colors(
+        &mut self,
+        vfs: &Vfs,
+        registration: ModelRegistrationId,
+        colors: ModelSkinColors,
+        ui_fullscreen: bool,
+        prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
+    ) -> Result<SkinSelection, String> {
+        self.catalog
+            .published_registration(registration)
+            .ok_or("model colors require an admitted model")?;
+        let row = &self.catalog.registrations[registration.0 as usize];
+        let profile = row.profile;
+        let path = self
+            .catalog
+            .name(row.file)
+            .ok_or("model color filename")?
+            .to_owned();
+        self.prepare_skin_request(
+            vfs,
+            &path,
+            profile,
+            ui_fullscreen,
+            SkinRequest::ModelColors(colors),
+            prepare,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn prepare_skin_request(
+        &mut self,
+        vfs: &Vfs,
+        name: &str,
+        profile: ModelProfile,
+        ui_fullscreen: bool,
+        request: SkinRequest,
+        prepare: impl FnOnce(&Assets, usize) -> Result<(), String>,
+    ) -> Result<SkinSelection, IndexedSkinError> {
         let path = canonical_path(name);
         if path.is_empty() || path.len() >= 64 {
             return Err(IndexedSkinError::Rejected(
@@ -5191,27 +5360,28 @@ impl ModelAssets {
                 "indexed skin requires a published resource prefix".to_owned(),
             ));
         }
-        let indexed = IndexedSkinRequest {
-            layout,
-            translation,
-        };
         if let Some(selected) =
             self.catalog
-                .find_indexed_skin(&path, profile, indexed, ui_fullscreen)
+                .find_skin_selection(&path, profile, request, ui_fullscreen)
         {
             return Ok(selected);
         }
-        let request = RendererRequest {
+        let target = RendererRequest {
             name: path.as_bytes(),
             source: profile.source_rules,
             kind: RendererRegistration::Skin,
             world: None,
         };
-        let checkpoint = RegistrationCheckpoint::capture(self, [&request])
-            .map_err(IndexedSkinError::Rejected)?;
+        let mut checkpoint =
+            RegistrationCheckpoint::capture(self, [&target]).map_err(IndexedSkinError::Rejected)?;
+        if matches!(request, SkinRequest::ModelColors(_)) {
+            checkpoint
+                .capture_all(self)
+                .map_err(IndexedSkinError::Rejected)?;
+        }
         let mut rollback = RegistrationRollback::Retry;
         let result = (|| {
-            let selection = self.admit_indexed_skin(vfs, &path, profile, ui_fullscreen, indexed)?;
+            let selection = self.admit_skin_request(vfs, &path, profile, ui_fullscreen, request)?;
             let counts = self.assets.counts();
             if !self.initial_registration {
                 self.validate_admission(counts).map_err(|error| {
@@ -5226,7 +5396,7 @@ impl ModelAssets {
         if result.is_err() {
             if find_skin_index(&self.catalog.names, &self.catalog.skin_indices, path.as_bytes())
                 .and_then(|(_, index)| index).and_then(|index| self.catalog.skins.get(index as usize))
-                .is_some_and(|entry| matches!(&entry.source, Some(SkinSource::IndexedFailure { layout: failed, .. }) if *failed == layout)) {
+                .is_some_and(|entry| matches!(&entry.source, Some(SkinSource::IndexedFailure { layout: failed, .. }) if matches!(request, SkinRequest::Indexed(indexed) if indexed.layout == *failed))) {
                 rollback = RegistrationRollback::Source;
             }
             checkpoint
@@ -5234,6 +5404,94 @@ impl ModelAssets {
                 .map_err(IndexedSkinError::Rejected)?;
         }
         result
+    }
+
+    fn admit_skin_request(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        profile: ModelProfile,
+        ui: bool,
+        request: SkinRequest,
+    ) -> Result<SkinSelection, IndexedSkinError> {
+        match request {
+            SkinRequest::Indexed(request) => {
+                self.admit_indexed_skin(vfs, path, profile, ui, request)
+            }
+            SkinRequest::ModelColors(colors) => self
+                .admit_model_colors(vfs, path, profile, ui, colors)
+                .map_err(IndexedSkinError::Rejected),
+            SkinRequest::Named => {
+                let handle = self
+                    .admit_skin_profile(
+                        vfs,
+                        path.as_bytes(),
+                        profile.source_rules,
+                        Some(profile),
+                        ui,
+                    )
+                    .map_err(|error| {
+                        IndexedSkinError::Rejected(format!("skin registration: {error:?}"))
+                    })?;
+                let skin = handle
+                    .checked_sub(1)
+                    .ok_or_else(|| IndexedSkinError::Rejected("skin registration failed".into()))?
+                    as usize;
+                let row = self.catalog.skins[skin]
+                    .profiles
+                    .iter()
+                    .position(|row| {
+                        row.request == SkinRequest::Named
+                            && row.profile == profile
+                            && row.vertex_collapse == profile.finish.compile(ui).collapse_vertex()
+                    })
+                    .ok_or_else(|| IndexedSkinError::Rejected("skin registered row".into()))?;
+                Ok(SkinSelection {
+                    skin: skin as u32,
+                    row: row as u32,
+                })
+            }
+        }
+    }
+
+    fn skin_variant(
+        &mut self,
+        index: usize,
+        profile: ModelProfile,
+        ui: bool,
+        request: SkinRequest,
+    ) -> Result<SkinSelection, String> {
+        let collapse = profile.finish.compile(ui).collapse_vertex();
+        let row = match self.catalog.skins[index].profiles.iter().position(|row| {
+            row.profile == profile && row.vertex_collapse == collapse && row.request == request
+        }) {
+            Some(row) => row,
+            None => {
+                let variants = self
+                    .catalog
+                    .skins
+                    .iter()
+                    .flat_map(|skin| &skin.profiles)
+                    .filter(|row| row.request != SkinRequest::Named)
+                    .count();
+                if variants >= self.catalog.limits.skins {
+                    return Err("derived skin variant capacity".to_owned());
+                }
+                let rows = &mut self.catalog.skins[index].profiles;
+                let row = rows.len();
+                rows.push(SkinProfile {
+                    profile,
+                    vertex_collapse: collapse,
+                    request,
+                    state: RegistrationState::Unattempted,
+                });
+                row
+            }
+        };
+        Ok(SkinSelection {
+            skin: index as u32,
+            row: row as u32,
+        })
     }
 
     fn admit_indexed_skin(
@@ -5255,41 +5513,10 @@ impl ModelAssets {
         let index = self
             .ensure_skin_row(path, ui_fullscreen)
             .map_err(|error| IndexedSkinError::Rejected(format!("indexed skin row: {error:?}")))?;
-        let collapse = profile.finish.compile(ui_fullscreen).collapse_vertex();
-        let row = match self.catalog.skins[index].profiles.iter().position(|entry| {
-            entry.profile == profile
-                && entry.vertex_collapse == collapse
-                && entry.indexed == Some(request)
-        }) {
-            Some(row) => row,
-            None => {
-                let variants = self
-                    .catalog
-                    .skins
-                    .iter()
-                    .flat_map(|skin| &skin.profiles)
-                    .filter(|row| row.indexed.is_some())
-                    .count();
-                if variants >= self.catalog.limits.skins {
-                    return Err(IndexedSkinError::Rejected(
-                        "indexed skin variant capacity".to_owned(),
-                    ));
-                }
-                let rows = &mut self.catalog.skins[index].profiles;
-                let row = rows.len();
-                rows.push(SkinProfile {
-                    profile,
-                    vertex_collapse: collapse,
-                    indexed: Some(request),
-                    state: RegistrationState::Unattempted,
-                });
-                row
-            }
-        };
-        let selection = SkinSelection {
-            skin: index as u32,
-            row: row as u32,
-        };
+        let selection = self
+            .skin_variant(index, profile, ui_fullscreen, SkinRequest::Indexed(request))
+            .map_err(IndexedSkinError::Rejected)?;
+        let row = selection.row as usize;
         if self.catalog.skins[index].profiles[row]
             .state
             .ready()
@@ -5297,58 +5524,12 @@ impl ModelAssets {
         {
             return Ok(selection);
         }
-        let source = match &self.catalog.skins[index].source {
-            Some(SkinSource::Indexed { layout, source }) if *layout == request.layout => {
-                Some(Arc::clone(source))
-            }
-            Some(SkinSource::IndexedFailure {
-                layout,
-                missing,
-                error,
-            }) if *layout == request.layout => {
-                return Err(if *missing {
-                    IndexedSkinError::Missing
-                } else {
-                    IndexedSkinError::Rejected(error.clone())
-                });
-            }
-            _ => None,
-        };
-        let source = match source {
-            Some(source) => source,
-            None => {
-                let decoded = with_image_owner(&mut self.catalog.profiles, image_index, |images| {
-                    images.with_images(vfs, &mut self.assets, |images| {
-                        Ok(images.indexed_skin_source(path, request.layout))
-                    })
-                })
-                .map_err(IndexedSkinError::Rejected)?;
-                match decoded {
-                    Ok(source) => {
-                        let source = Arc::new(source);
-                        self.catalog.skins[index].source = Some(SkinSource::Indexed {
-                            layout: request.layout,
-                            source: Arc::clone(&source),
-                        });
-                        source
-                    }
-                    Err(error) => {
-                        let missing = matches!(error, ResourceError::Missing(_));
-                        let error = format!("indexed skin source: {error:?}");
-                        self.catalog.skins[index].source = Some(SkinSource::IndexedFailure {
-                            layout: request.layout,
-                            missing,
-                            error: error.clone(),
-                        });
-                        self.catalog.skins[index].profiles[row].state =
-                            RegistrationState::Failed(error.clone());
-                        return Err(if missing {
-                            IndexedSkinError::Missing
-                        } else {
-                            IndexedSkinError::Rejected(error)
-                        });
-                    }
-                }
+        let source = match self.skin_source(vfs, path, image_index, index, request.layout) {
+            Ok(source) => source,
+            Err(error) => {
+                self.catalog.skins[index].profiles[row].state =
+                    RegistrationState::Failed(error.to_string());
+                return Err(error);
             }
         };
         let next = self
@@ -5362,7 +5543,7 @@ impl ModelAssets {
             let policy = images.model_policy;
             images.with_images(vfs, &mut self.assets, |images| {
                 let image = images
-                    .translated_skin(path, &source, request.translation)
+                    .translated_skin(path, 0, source.view(), request.translation)
                     .map_err(|error| format!("indexed skin image: {error:?}"))?
                     .id;
                 let variants = alias_image_materials(images.assets, path, 0, image, policy, false)?;
@@ -5372,9 +5553,10 @@ impl ModelAssets {
                 Ok::<_, String>(SkinReady {
                     mappings: vec![SkinMapping {
                         surface: NameId(0),
-                        shaders: variants.map(ShaderChoice::Direct),
+                        members: IndexSpan { first: 0, count: 1 },
                     }]
                     .into_boxed_slice(),
+                    members: vec![variants.map(ShaderChoice::Direct)].into_boxed_slice(),
                     registrations: vec![registration].into_boxed_slice(),
                 })
             })
@@ -5386,6 +5568,303 @@ impl ModelAssets {
             required_assets: (!self.initial_registration).then(|| self.assets.counts()),
         };
         Ok(selection)
+    }
+
+    fn admit_model_colors(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        profile: ModelProfile,
+        ui: bool,
+        colors: ModelSkinColors,
+    ) -> Result<SkinSelection, String> {
+        let file = self
+            .catalog
+            .names
+            .find_path(path)
+            .ok_or("model color file")?;
+        let registration = self
+            .catalog
+            .registration_name_variant(file, profile, RegistrationVariant::Guard(ui))
+            .or_else(|| self.catalog.registration_name(file, profile))
+            .ok_or("model color registration")?;
+        let ready = self.catalog.registrations[registration.0 as usize]
+            .state
+            .ready()
+            .ok_or("model color readiness")?
+            .0;
+        let palette = ready.indexed_palette.ok_or("model color source palette")?;
+        let native = ready.surfaces[0].ok_or("model color native surfaces")?;
+        let native_surfaces: Vec<_> = self.catalog.surfaces[native.range()]
+            .iter()
+            .map(|row| row.name)
+            .collect();
+        let replacement_surfaces: Vec<_> = ready
+            .replacement
+            .as_ref()
+            .map(|row| {
+                self.catalog.surfaces[row.surfaces.range()]
+                    .iter()
+                    .map(|row| row.name)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ModelFile::Ready { lods, .. } = self.catalog.files[file.0 as usize] else {
+            return Err("model color source slots".to_owned());
+        };
+        let source_name = lods.source(0).ok_or("model color native source")?;
+        let ModelSourceFile::Ready {
+            bytes,
+            skin_extent: Some(extent),
+            indexed_skins,
+            replacement,
+            ..
+        } = &self.catalog.sources[source_name.0 as usize]
+        else {
+            return Err("model colors require native indexed MDL skins".to_owned());
+        };
+        let bytes = Arc::clone(bytes);
+        let spans = Arc::clone(indexed_skins);
+        let extent = *extent;
+        if spans.is_empty() {
+            return Err("model color native members".to_owned());
+        }
+        let replacement_names = if replacement_surfaces.is_empty() {
+            None
+        } else {
+            let ReplacementState::Ready(replacement) = replacement else {
+                return Err("model color replacement source".to_owned());
+            };
+            if replacement.skins.len() != replacement_surfaces.len() {
+                return Err("model color replacement surfaces".to_owned());
+            }
+            Some(Arc::clone(&replacement.skins))
+        };
+        let image_index = self
+            .catalog
+            .profiles
+            .iter()
+            .position(|row| row.profile == profile)
+            .ok_or("model color image owner")?;
+        let index = self
+            .ensure_skin_row(path, ui)
+            .map_err(|error| format!("model color row: {error:?}"))?;
+        let selected = self.skin_variant(index, profile, ui, SkinRequest::ModelColors(colors))?;
+        if self.catalog.skins[index].profiles[selected.row as usize]
+            .state
+            .ready()
+            .is_some()
+        {
+            return Ok(selected);
+        }
+        let mut sidecars = Vec::new();
+        if let Some(names) = replacement_names {
+            for (surface, names) in replacement_surfaces.into_iter().zip(names.iter()) {
+                if names.len() != spans.len() {
+                    return Err("model color replacement members".to_owned());
+                }
+                let mut sources = Vec::with_capacity(names.len());
+                for &name in names.iter() {
+                    let path = self
+                        .catalog
+                        .name(name)
+                        .ok_or("model color sidecar filename")?
+                        .to_owned();
+                    let skin = self
+                        .ensure_skin_row(&path, ui)
+                        .map_err(|error| format!("model color sidecar row: {error:?}"))?;
+                    let source = self
+                        .skin_source(vfs, &path, image_index, skin, Default::default())
+                        .map_err(|error| error.to_string())?;
+                    sources.push((path, source));
+                }
+                sidecars.push((surface, sources));
+            }
+        }
+        let count = spans
+            .len()
+            .checked_add(
+                sidecars
+                    .iter()
+                    .map(|(_, members)| members.len())
+                    .sum::<usize>(),
+            )
+            .ok_or("model color member count")?;
+        let next = self
+            .catalog
+            .capacity
+            .skins
+            .checked_add(count)
+            .filter(|&count| count <= self.catalog.limits.skins && count <= u32::MAX as usize)
+            .ok_or("model color skin capacity")?;
+        let compiled = with_image_owner(&mut self.catalog.profiles, image_index, |owner| {
+            let policy = owner.model_policy;
+            owner.with_images(vfs, &mut self.assets, |images| {
+                let mut members = Vec::with_capacity(count);
+                let mut registrations = Vec::with_capacity(count);
+                let mut mappings = Vec::with_capacity(native_surfaces.len() + sidecars.len());
+                let translation = |coordinate_extent, crop| IndexedSkinTranslation {
+                    palette,
+                    target: profile.palette,
+                    indexed_colors: Some(colors.indexed),
+                    rgba_colors: Some(colors.rgba),
+                    crop,
+                    coordinate_extent,
+                    upload_extent: colors.upload_extent,
+                    usage: ImageUse {
+                        role: ImageRole::Skin,
+                        sampler: qa_render::assets::Sampler {
+                            mipmaps: false,
+                            ..Default::default()
+                        },
+                        allow_picmip: false,
+                    },
+                };
+                let crop = colors
+                    .rgba_crop
+                    .filter(|crop| crop[0] <= extent[0] && crop[1] <= extent[1])
+                    .map(|[width, height]| [0, 0, width, height]);
+                for (ordinal, span) in spans.iter().enumerate() {
+                    let source = IndexedSkinView::new(
+                        extent,
+                        bytes.get(span.range()).ok_or("model color member range")?,
+                    )
+                    .map_err(|error| format!("model color source view: {error:?}"))?;
+                    let image = images
+                        .translated_skin(path, ordinal as u32, source, translation(extent, crop))
+                        .map_err(|error| format!("model color image: {error:?}"))?
+                        .id;
+                    let shaders =
+                        alias_image_materials(images.assets, path, ordinal, image, policy, false)?;
+                    registrations.push(
+                        images
+                            .assets
+                            .shader_registration(path.as_bytes(), shaders[0])?,
+                    );
+                    members.push(shaders.map(ShaderChoice::Direct));
+                }
+                for surface in native_surfaces {
+                    mappings.push(SkinMapping {
+                        surface,
+                        members: IndexSpan {
+                            first: 0,
+                            count: spans.len() as u32,
+                        },
+                    });
+                }
+                for (surface, sources) in sidecars {
+                    let first = members.len() as u32;
+                    for (path, source) in sources {
+                        let image = images
+                            .translated_skin(
+                                &path,
+                                0,
+                                source.view(),
+                                translation(source.decoded_extent(), None),
+                            )
+                            .map_err(|error| format!("model color sidecar image: {error:?}"))?
+                            .id;
+                        let shaders =
+                            alias_image_materials(images.assets, &path, 0, image, policy, false)?;
+                        registrations.push(
+                            images
+                                .assets
+                                .shader_registration(path.as_bytes(), shaders[0])?,
+                        );
+                        members.push(shaders.map(ShaderChoice::Direct));
+                    }
+                    mappings.push(SkinMapping {
+                        surface,
+                        members: IndexSpan {
+                            first,
+                            count: members.len() as u32 - first,
+                        },
+                    });
+                }
+                mappings.sort_by_key(|mapping| mapping.surface.0);
+                if mappings
+                    .windows(2)
+                    .any(|rows| rows[0].surface == rows[1].surface)
+                {
+                    return Err("model color duplicate surface".to_owned());
+                }
+                Ok(SkinReady {
+                    mappings: mappings.into_boxed_slice(),
+                    members: members.into_boxed_slice(),
+                    registrations: registrations.into_boxed_slice(),
+                })
+            })
+        })?;
+        self.catalog.capacity.skins = next;
+        self.catalog.skins[index].source = Some(SkinSource::AliasModel(source_name));
+        self.catalog.skins[index].profiles[selected.row as usize].state =
+            RegistrationState::Ready {
+                value: compiled,
+                required_assets: (!self.initial_registration).then(|| self.assets.counts()),
+            };
+        Ok(selected)
+    }
+
+    fn skin_source(
+        &mut self,
+        vfs: &Vfs,
+        path: &str,
+        image_index: usize,
+        index: usize,
+        requested_layout: IndexedSkinLayout,
+    ) -> Result<Arc<IndexedSkinSource>, IndexedSkinError> {
+        let source = match &self.catalog.skins[index].source {
+            Some(SkinSource::Indexed { layout, source }) if *layout == requested_layout => {
+                Some(Arc::clone(source))
+            }
+            Some(SkinSource::IndexedFailure {
+                layout,
+                missing,
+                error,
+            }) if *layout == requested_layout => {
+                return Err(if *missing {
+                    IndexedSkinError::Missing
+                } else {
+                    IndexedSkinError::Rejected(error.clone())
+                });
+            }
+            _ => None,
+        };
+        Ok(match source {
+            Some(source) => source,
+            None => {
+                let decoded = with_image_owner(&mut self.catalog.profiles, image_index, |images| {
+                    images.with_images(vfs, &mut self.assets, |images| {
+                        Ok(images.indexed_skin_source(path, requested_layout))
+                    })
+                })
+                .map_err(IndexedSkinError::Rejected)?;
+                match decoded {
+                    Ok(source) => {
+                        let source = Arc::new(source);
+                        self.catalog.skins[index].source = Some(SkinSource::Indexed {
+                            layout: requested_layout,
+                            source: Arc::clone(&source),
+                        });
+                        source
+                    }
+                    Err(error) => {
+                        let missing = matches!(error, ResourceError::Missing(_));
+                        let error = format!("indexed skin source: {error:?}");
+                        self.catalog.skins[index].source = Some(SkinSource::IndexedFailure {
+                            layout: requested_layout,
+                            missing,
+                            error: error.clone(),
+                        });
+                        return Err(if missing {
+                            IndexedSkinError::Missing
+                        } else {
+                            IndexedSkinError::Rejected(error)
+                        });
+                    }
+                }
+            }
+        })
     }
 
     fn admit_skin_profile(
@@ -5433,7 +5912,7 @@ impl ModelAssets {
         let name = self.catalog.skins[index].name;
         for images in &self.catalog.profiles {
             if !self.catalog.skins[index].profiles.iter().any(|row| {
-                row.indexed.is_none()
+                row.request == SkinRequest::Named
                     && row.profile == images.profile
                     && row.vertex_collapse
                         == images
@@ -5443,7 +5922,7 @@ impl ModelAssets {
                             .collapse_vertex()
             }) {
                 self.catalog.skins[index].profiles.push(SkinProfile {
-                    indexed: None,
+                    request: SkinRequest::Named,
                     profile: images.profile,
                     vertex_collapse: images
                         .profile
@@ -5458,7 +5937,7 @@ impl ModelAssets {
             .profiles
             .iter()
             .filter(|entry| {
-                entry.indexed.is_none()
+                entry.request == SkinRequest::Named
                     && entry.state.pending()
                     && entry.vertex_collapse
                         == entry
@@ -5537,7 +6016,7 @@ impl ModelAssets {
             Ok(mappings) => mappings,
             Err(error) => {
                 for profile in &mut self.catalog.skins[index].profiles {
-                    if profile.indexed.is_none()
+                    if profile.request == SkinRequest::Named
                         && profile.state.pending()
                         && RegistrationVariant::Guard(ui_fullscreen)
                             .matches(profile.profile, profile.vertex_collapse)
@@ -5552,7 +6031,7 @@ impl ModelAssets {
         };
         for row in 0..self.catalog.skins[index].profiles.len() {
             let profile = &mut self.catalog.skins[index].profiles[row];
-            if profile.indexed.is_some()
+            if profile.request != SkinRequest::Named
                 || !profile.state.pending()
                 || profile.vertex_collapse
                     != profile
@@ -5576,6 +6055,7 @@ impl ModelAssets {
                 |images| -> Result<(), CallError> {
                     let alias = !skin_file && images.model_policy.source.indexed_external_pcx;
                     let mut compiled = Vec::with_capacity(mappings.len());
+                    let mut members = Vec::with_capacity(mappings.len());
                     let mut registrations = Vec::with_capacity(mappings.len());
                     let mut failure = None;
                     for (surface, raw) in &mappings {
@@ -5651,8 +6131,12 @@ impl ModelAssets {
                         };
                         compiled.push(SkinMapping {
                             surface: *surface,
-                            shaders: materials,
+                            members: IndexSpan {
+                                first: members.len() as u32,
+                                count: 1,
+                            },
                         });
+                        members.push(materials);
                     }
                     compiled.sort_by_key(|entry| entry.surface.0);
                     compiled.dedup_by_key(|entry| entry.surface.0);
@@ -5664,6 +6148,7 @@ impl ModelAssets {
                         RegistrationState::Ready {
                             value: SkinReady {
                                 mappings: compiled.into_boxed_slice(),
+                                members: members.into_boxed_slice(),
                                 registrations: registrations.into_boxed_slice(),
                             },
                             required_assets: (!self.initial_registration)
@@ -5686,7 +6171,7 @@ impl ModelAssets {
                 .profiles
                 .iter()
                 .find(|entry| {
-                    entry.indexed.is_none()
+                    entry.request == SkinRequest::Named
                         && entry.profile == selected
                         && entry.vertex_collapse
                             == entry
@@ -6446,11 +6931,11 @@ impl ModelCatalog {
             _ => None,
         }
     }
-    fn find_indexed_skin(
+    fn find_skin_selection(
         &self,
         path: &str,
         profile: ModelProfile,
-        indexed: IndexedSkinRequest,
+        request: SkinRequest,
         ui: bool,
     ) -> Option<SkinSelection> {
         let (_, skin) = find_skin_index(&self.names, &self.skin_indices, path.as_bytes())?;
@@ -6462,7 +6947,7 @@ impl ModelCatalog {
             .iter()
             .position(|entry| {
                 entry.profile == profile
-                    && entry.indexed == Some(indexed)
+                    && entry.request == request
                     && entry.vertex_collapse == profile.finish.compile(ui).collapse_vertex()
                     && entry
                         .state
@@ -6484,12 +6969,15 @@ impl ModelCatalog {
             .get(selection.skin as usize)?
             .profiles
             .get(selection.row as usize)?;
-        row.indexed?;
+        if !matches!(row.request, SkinRequest::Indexed(_)) {
+            return None;
+        }
         let (ready, required) = row.state.ready()?;
         if !self.admitted(required) {
             return None;
         }
-        let shader = ready.mappings.first()?.shaders[policy.index()];
+        let span = ready.mappings.first()?.members;
+        let shader = ready.members.get(span.first as usize)?[policy.index()];
         ShaderView::direct().choice(shader, &ready.registrations, None, ShaderDefault::Named)
     }
     pub(crate) fn refresh_skin(
@@ -6523,7 +7011,7 @@ impl ModelCatalog {
     ) -> Option<&SkinProfile> {
         let index = usize::try_from(handle.checked_sub(1)?).ok()?;
         self.skins.get(index)?.profiles.iter().find(|entry| {
-            entry.indexed.is_none()
+            entry.request == SkinRequest::Named
                 && entry.profile == profile
                 && variant.matches(entry.profile, entry.vertex_collapse)
                 && !entry.state.pending()
@@ -6697,6 +7185,7 @@ impl ModelCatalog {
             materials: &self.bindings,
             skin,
             policy,
+            profile: self.registrations[registration.0 as usize].profile,
             custom,
             registrations: &ready.registrations,
             resource: ShaderResource::Model(self.registrations[registration.0 as usize].file),

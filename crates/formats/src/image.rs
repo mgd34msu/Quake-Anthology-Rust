@@ -181,7 +181,7 @@ impl IndexedImage<'_> {
     }
 }
 pub fn player_translation(top: u8, bottom: u8) -> Result<[u8; 256], FormatError> {
-    if top > 13 || bottom > 13 {
+    if top > 15 || bottom > 15 {
         return Err(FormatError::InvalidRange);
     }
     let mut table = std::array::from_fn(|i| i as u8);

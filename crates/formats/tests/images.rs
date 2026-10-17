@@ -122,6 +122,9 @@ fn original_index_controls_cutouts_before_translation_and_fullbright_split() {
     );
     let top = player_translation(9, 3).unwrap();
     assert_eq!(&top[16..32], &(144..160).rev().collect::<Vec<u8>>());
+    let nq = player_translation(14, 15).unwrap();
+    assert_eq!([nq[16], nq[31], nq[96], nq[111]], [239, 224, 255, 240]);
+    assert!(player_translation(16, 0).is_err());
     let mut bytes = vec![0; 16385];
     bytes[16384] = 32;
     let map = Colormap::parse(&bytes).unwrap();

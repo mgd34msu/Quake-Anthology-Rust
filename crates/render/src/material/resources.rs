@@ -12,7 +12,9 @@ use qa_formats::image::{
 };
 mod indexed_skin;
 mod search;
-pub use indexed_skin::{IndexedSkinLayout, IndexedSkinSource, IndexedSkinTranslation};
+pub use indexed_skin::{
+    IndexedSkinLayout, IndexedSkinSource, IndexedSkinTranslation, IndexedSkinView,
+};
 pub use search::ImageSearchOrder;
 use search::{SelectedFile, SourceFormat};
 
@@ -169,6 +171,7 @@ pub struct ImageConflict {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
     TranslatedSkin {
+        source: u32,
         decoded: [u32; 2],
         layout: IndexedSkinLayout,
         settings: IndexedSkinTranslation,

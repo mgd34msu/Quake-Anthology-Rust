@@ -30,7 +30,7 @@ use qa_network::{
     states,
 };
 use qa_render::{
-    Assets, FrontEnd, Limits, Refdef,
+    Assets, FrontEnd, Limits, PaletteId, Refdef,
     assets::{ImageId, StageTexture},
     scene::{Command, DrawKind, Viewport},
     shader::reference::ShaderView,
@@ -47,6 +47,9 @@ struct Source {
     window: WindowRequest,
     pending: Option<WindowRequest>,
     time: u64,
+    reject_publication: bool,
+    publication_attempts: usize,
+    source_palette: PaletteId,
 }
 impl FrameSource for Source {
     fn video_kind(&self) -> Option<qa_app::renderer::Kind> {
@@ -79,6 +82,10 @@ impl FrameSource for Source {
         candidate: qa_app::renderer::PreparedVideo,
     ) -> Result<Arc<RendererConfiguration>, String> {
         let window = self.pending.take().ok_or("missing candidate window")?;
+        self.publication_attempts += 1;
+        if self.reject_publication {
+            return Err("reject translated-skin publication".to_owned());
+        }
         let (backend, configuration) = candidate.into_cpu()?;
         self.assets.cpu = backend;
         self.window = window;
@@ -135,7 +142,7 @@ fn setting(host: &mut FrameHost, name: &str, value: &str) {
         .bind(
             name,
             Context {
-                source: RULES,
+                source: protocol(host).rule_set(),
                 ..Default::default()
             },
         )
@@ -144,17 +151,41 @@ fn setting(host: &mut FrameHost, name: &str, value: &str) {
 }
 
 fn loading() -> (support::Fixture, FrameHost, Source) {
-    let mut fixture = support::Fixture::new(&[
+    loading_model(RULES, support::mdl(), &[], false)
+}
+
+fn loading_model(
+    rules: RuleSetId,
+    player: Vec<u8>,
+    extra: &[(&str, Vec<u8>)],
+    foreign_palette: bool,
+) -> (support::Fixture, FrameHost, Source) {
+    let mut files = vec![
         ("maps/player.bsp", support::world_map(8.0)),
-        ("progs/player.mdl", support::mdl()),
-        ("progs/ordinary.mdl", support::mdl()),
+        ("progs/player.mdl", player.clone()),
+        ("progs/ordinary.mdl", player),
         ("skins/local.pcx", support::pcx_dimensions(296, 194, 16)),
         ("skins/base.pcx", support::pcx_dimensions(296, 194, 96)),
         ("skins/broken.pcx", b"not a PCX".to_vec()),
-    ]);
+    ];
+    files.extend(extra.iter().cloned());
+    let mut fixture = support::Fixture::new(&files);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
-    let profile = ModelRequest::native("", RULES, Some(palette)).profile();
+    let target = if foreign_palette {
+        support::shifted_palette(&mut assets, 17)
+    } else {
+        palette
+    };
+    let profile = qa_app::model_assets::ModelProfile {
+        palette: Some(target),
+        ..ModelRequest::native("", rules, Some(palette)).profile()
+    };
+    let protocol = if rules == RuleSetId::Quake {
+        Protocol::NetQuake15
+    } else {
+        Protocol::QuakeWorld28
+    };
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
     let loaded = qa_app::map::read(&runtime.vfs, "maps/player.bsp")
@@ -166,8 +197,8 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
             Some(palette),
             &[
                 qa_render::material::world_load::WorldPresentationProfile::native(
-                    RULES,
-                    Some(palette),
+                    rules,
+                    Some(target),
                 )
                 .into(),
             ],
@@ -187,7 +218,7 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
         )
         .unwrap();
     for path in [b"progs/player.mdl".as_slice(), b"progs/ordinary.mdl"] {
-        owner.register_model(&runtime.vfs, path, RULES).unwrap();
+        owner.register_model(&runtime.vfs, path, rules).unwrap();
     }
     let (scene, _) = qa_app::renderer::SceneComposer::load(
         Limits::default(),
@@ -207,18 +238,18 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
                 fixture_fallback: false,
             },
             ClientPolicy {
-                input: RULES,
-                client: RULES,
+                input: rules,
+                client: rules,
                 movement: RuleSetId::Quake3,
                 trace: RuleSetId::Quake2,
             },
-            Protocol::QuakeWorld28,
+            protocol,
             0,
         )
         .unwrap();
     assert_eq!(client, CLIENT);
     let resources = runtime.client_resources[0].as_mut().unwrap();
-    let layout = ConfigLayout::for_rules(RULES);
+    let layout = ConfigLayout::for_rules(rules);
     resources
         .state
         .configs
@@ -240,7 +271,15 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
     host.local_clients[0] = Some(CLIENT);
     host.local_worlds[0] = Some((world, presentation.id));
     host.local_presentations[0] = presentation.defaults;
-    host.local_presentation_rules[0] = Some(RULES);
+    host.local_presentation_rules[0] = Some(rules);
+    if rules == RuleSetId::Quake {
+        let mut header = vec![11];
+        header.extend(15u32.to_le_bytes());
+        header.extend([2, 0]);
+        header
+            .extend(b"colored peers\0maps/player.bsp\0progs/player.mdl\0progs/ordinary.mdl\0\0\0");
+        send(&mut host, &header);
+    }
     setting(&mut host, "cl_noskins", "0");
     setting(&mut host, "baseskin", "base");
     setting(&mut host, "gl_nocolors", "0");
@@ -255,6 +294,9 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
         .unwrap()
         .end_initial_registration();
     host.bind_client_model_assets([(CLIENT, profile, Some((world, presentation.id)))]);
+    if rules == RuleSetId::Quake {
+        assert_bound_models(&host, "initial NQ bind");
+    }
     let configuration = Arc::new(RendererConfiguration {
         display: DisplayConfiguration {
             width: 64,
@@ -297,6 +339,9 @@ fn loading() -> (support::Fixture, FrameHost, Source) {
         window: WindowRequest::windowed(64, 48),
         pending: None,
         time: 100,
+        reject_publication: false,
+        publication_attempts: 0,
+        source_palette: palette,
     };
     (fixture, host, source)
 }
@@ -313,19 +358,29 @@ fn drain(host: &mut FrameHost, time: EventTime) {
 }
 
 fn peers(host: &mut FrameHost, updates: &[PeerUpdate<'_>]) {
-    let time = EventTime(host.time.0 + 1_000_000);
-    assert!(host.runtime.send_client_command(
-        CLIENT,
-        &UserCmd::default(),
-        time,
-        &mut frame_source::Sink::default()
-    ));
-    drain(host, time);
+    let protocol = protocol(host);
     let mut bytes = [0; 1400];
     let mut length = 0;
     for &update in updates {
-        length +=
-            outputs::peer_update(Protocol::QuakeWorld28, update, &mut bytes[length..]).unwrap();
+        length += outputs::peer_update(protocol, update, &mut bytes[length..]).unwrap();
+    }
+    send(host, &bytes[..length]);
+}
+
+fn protocol(host: &FrameHost) -> Protocol {
+    host.runtime.snapshots[0].as_ref().unwrap().protocol
+}
+
+fn send(host: &mut FrameHost, bytes: &[u8]) {
+    let time = EventTime(host.time.0 + 1_000_000);
+    if protocol(host) == Protocol::QuakeWorld28 {
+        assert!(host.runtime.send_client_command(
+            CLIENT,
+            &UserCmd::default(),
+            time,
+            &mut frame_source::Sink::default()
+        ));
+        drain(host, time);
     }
     let runtime = &mut host.runtime;
     let channel = &mut runtime
@@ -333,12 +388,7 @@ fn peers(host: &mut FrameHost, updates: &[PeerUpdate<'_>]) {
         .get_mut(CLIENT, Endpoint::Server)
         .unwrap()
         .channel;
-    assert!(
-        channel
-            .prepare(Some(&bytes[..length]), time)
-            .unwrap()
-            .is_some()
-    );
+    assert!(channel.prepare(Some(bytes), time).unwrap().is_some());
     assert!(
         channel
             .submit_with(time, |packet| runtime
@@ -355,58 +405,134 @@ fn peers(host: &mut FrameHost, updates: &[PeerUpdate<'_>]) {
 struct CapturedImage {
     id: ImageId,
     first: u8,
+    second: u8,
     size: [u32; 2],
+    skeletal: bool,
+    rgba: [u8; 4],
+    rgba_second: [u8; 4],
+    prepared: [u32; 2],
 }
 
 fn draw(host: &FrameHost, software: bool) -> [CapturedImage; 3] {
+    draw_at(host, software, 1.0)
+}
+
+fn draw_at(host: &FrameHost, software: bool, time: f64) -> [CapturedImage; 3] {
+    draw_colormaps(host, software, time, [1, 2, 1])
+}
+
+fn draw_colormaps(
+    host: &FrameHost,
+    software: bool,
+    time: f64,
+    colormaps: [u32; 3],
+) -> [CapturedImage; 3] {
     let owner = host.runtime.model_assets.as_ref().unwrap();
     let assets = owner.assets();
-    let projection = EntityProjection::load(Protocol::QuakeWorld28);
-    let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
-    let rows = [(2, 1), (2, 2), (3, 1)].map(|(ordinal, colormap)| {
-        let record = EntityRecord {
-            position: Vec3([32., 0., 0.]),
-            appearance: EntityAppearance {
-                source: RULES,
-                models: [
-                    ModelRef::native(ResourceNamespace::Client(CLIENT), ordinal),
-                    None,
-                    None,
-                    None,
-                ],
-                native: NativeAppearanceTail {
-                    colormap,
+    let protocol = protocol(host);
+    let rules = protocol.rule_set();
+    let projection = EntityProjection::load(protocol);
+    let player_projection = PlayerProjection::load(protocol, &[]);
+    let records =
+        [(2, colormaps[0]), (2, colormaps[1]), (3, colormaps[2])].map(|(ordinal, colormap)| {
+            EntityRecord {
+                position: Vec3([32., 0., 0.]),
+                appearance: EntityAppearance {
+                    source: rules,
+                    models: [
+                        ModelRef::native(ResourceNamespace::Client(CLIENT), ordinal),
+                        None,
+                        None,
+                        None,
+                    ],
+                    native: NativeAppearanceTail {
+                        colormap,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut words = [0; states::QW_ENTITY_WORDS];
-        assert!(projection.reduce(
-            &record,
-            &Default::default(),
-            &mut words,
-            |model, _| Some(model.ordinal),
-            |sound| Some(sound.ordinal),
-            |reference| Some(reference.ordinal())
-        ));
-        Entity {
-            number: 40 + colormap + if ordinal == 3 { 2 } else { 0 },
-            words,
+            }
+        });
+    let nq = entity_rows::<{ states::NQ_ENTITY_WORDS }>(&projection, &records);
+    let qw = entity_rows::<{ states::QW_ENTITY_WORDS }>(&projection, &records);
+    if protocol == Protocol::NetQuake15 {
+        let resources = host.runtime.client_resources[0].as_ref().unwrap();
+        for (row, expected) in nq.iter().zip(&records) {
+            let mut decoded = EntityRecord::default();
+            assert!(projection.apply(&row.words, &mut decoded, ResourceNamespace::Client(CLIENT)));
+            assert_eq!(
+                decoded.appearance.models, expected.appearance.models,
+                "NQ model roundtrip"
+            );
+            assert_eq!(
+                decoded.appearance.native.colormap, expected.appearance.native.colormap,
+                "NQ colormap roundtrip"
+            );
+            assert_eq!(
+                decoded.appearance.frame, expected.appearance.frame,
+                "NQ frame roundtrip"
+            );
+            assert_eq!(
+                decoded.appearance.skin, expected.appearance.skin,
+                "NQ skin roundtrip"
+            );
+            assert_eq!(
+                decoded.appearance.alpha, expected.appearance.alpha,
+                "NQ implicit alpha"
+            );
+            assert_eq!(
+                decoded.appearance.scale, expected.appearance.scale,
+                "NQ implicit scale"
+            );
+            let capabilities =
+                qa_gameplay::rules::appearance::policy(rules).project(&decoded.appearance);
+            let material = qa_app::model_assets::ModelMaterialPolicy {
+                translucent: capabilities.alpha != 1.0,
+                fullbright: capabilities.fullbright,
+                custom_skin: 0,
+            };
+            assert!(
+                resources
+                    .state
+                    .models
+                    .resolve(
+                        decoded.appearance.models[0].unwrap(),
+                        decoded.appearance.skin,
+                        owner.catalog(),
+                        material,
+                    )
+                    .is_some(),
+                "NQ decoded model policy {material:?}"
+            );
         }
-    });
-    let current = ReceivedFrame::QuakeWorld(Frame {
-        sequence: 1,
-        time: ThinkTime::Seconds(1.),
-        command: 0,
-        flags: 0,
-        qw_peers: 0,
-        qw_dead: 0,
-        areas: &[],
-        player: &[],
-        entities: &rows,
-    });
+    }
+    let nq_player = [0; states::NQ_PLAYER_WORDS];
+    let current = if protocol == Protocol::NetQuake15 {
+        ReceivedFrame::NetQuake(Frame {
+            sequence: 1,
+            time: ThinkTime::Seconds(time),
+            command: 0,
+            flags: 0,
+            qw_peers: 0,
+            qw_dead: 0,
+            areas: &[],
+            player: &nq_player,
+            entities: &nq,
+        })
+    } else {
+        ReceivedFrame::QuakeWorld(Frame {
+            sequence: 1,
+            time: ThinkTime::Seconds(time),
+            command: 0,
+            flags: 0,
+            qw_peers: 0,
+            qw_dead: 0,
+            areas: &[],
+            player: &[],
+            entities: &qw,
+        })
+    };
     let player = PlayerState::default();
     let resources = host.runtime.client_resources[0].as_ref().unwrap();
     let input = ClientSceneInput {
@@ -415,7 +541,7 @@ fn draw(host: &FrameHost, software: bool) -> [CapturedImage; 3] {
         current: Some(current),
         previous: None,
         projection: &projection,
-        appearance: qa_gameplay::rules::appearance::policy(RULES),
+        appearance: qa_gameplay::rules::appearance::policy(rules),
         player_projection: &player_projection,
         bindings: &resources.state.models,
         models: owner.catalog(),
@@ -437,12 +563,19 @@ fn draw(host: &FrameHost, software: bool) -> [CapturedImage; 3] {
             width: 64,
             height: 48,
         },
+        model_time: Some(ThinkTime::Seconds(time)),
+        skin_timing: if software {
+            qa_render::scene::SkinTiming::Cumulative
+        } else {
+            qa_render::scene::SkinTiming::LegacyFour
+        },
         ..Default::default()
     };
     let counts = input.append(&mut frame, assets, &refdef, software, None);
     assert_eq!(
         (counts.models, counts.missing_models, counts.rejected),
-        (3, 0, 0)
+        (3, 0, 0),
+        "{protocol:?} colormaps={colormaps:?}",
     );
     assert!(frame.render_scene(refdef, &[], assets, ShaderView::direct()));
     let packet = frame.finish();
@@ -462,18 +595,109 @@ fn draw(host: &FrameHost, software: bool) -> [CapturedImage; 3] {
                 panic!("indexed skin image")
             };
             let image = assets.image(id).unwrap();
+            let prepared = &image.prepared.as_ref().unwrap().levels[0];
             result[item.index as usize] = Some(CapturedImage {
                 id,
                 first: image.indexed.as_ref().unwrap().mip(0).unwrap().indices()[0],
+                second: image.indexed.as_ref().unwrap().mip(0).unwrap().indices()[1],
                 size: image.logical_size(),
+                skeletal: assets
+                    .model(item.mesh.unwrap())
+                    .unwrap()
+                    .skeleton()
+                    .is_some(),
+                rgba: image.rgba[..4].try_into().unwrap(),
+                rgba_second: image.rgba[4..8].try_into().unwrap(),
+                prepared: [prepared.width, prepared.height],
             });
         }
     }
     result.map(Option::unwrap)
 }
 
+fn entity_rows<const N: usize>(
+    projection: &EntityProjection,
+    records: &[EntityRecord; 3],
+) -> [Entity<N>; 3] {
+    std::array::from_fn(|index| {
+        let number = index as u32 + 41;
+        let mut words = [0; N];
+        if projection.words() == N {
+            assert!(projection.reduce(
+                &records[index],
+                &Default::default(),
+                &mut words,
+                |model, _| Some(model.ordinal),
+                |sound| Some(sound.ordinal),
+                |reference| Some(reference.ordinal()),
+            ));
+            if projection.rule_set() == RuleSetId::Quake {
+                let target: &[u32; states::NQ_ENTITY_WORDS] = words.as_slice().try_into().unwrap();
+                let mut wire = [0; 128];
+                let mut writer = qa_network::message::Writer::new(
+                    &mut wire,
+                    qa_network::message::Encoding::Bytes,
+                );
+                assert!(
+                    states::write_nq_entity(
+                        &mut writer,
+                        number,
+                        &[0; states::NQ_ENTITY_WORDS],
+                        target,
+                        false,
+                    )
+                    .unwrap()
+                );
+                let mut reader = qa_network::message::Reader::new(
+                    writer.bytes(),
+                    qa_network::message::Encoding::Bytes,
+                );
+                let accepted =
+                    states::read_nq_entity(&mut reader, &[0; states::NQ_ENTITY_WORDS]).unwrap();
+                assert_eq!(u32::from(accepted.number), number);
+                words.copy_from_slice(&accepted.words.unwrap());
+            }
+        }
+        Entity { number, words }
+    })
+}
+
 fn prepare(host: &mut FrameHost, source: &mut Source) {
     host.register_client_model_assets(Some(&mut source.assets));
+}
+
+fn assert_bound_models(host: &FrameHost, phase: &str) {
+    let resources = host.runtime.client_resources[0].as_ref().unwrap();
+    let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
+    let layout = ConfigLayout::for_rules(protocol(host).rule_set());
+    for (ordinal, path) in [
+        (2, b"progs/player.mdl".as_slice()),
+        (3, b"progs/ordinary.mdl"),
+    ] {
+        assert_eq!(
+            resources
+                .state
+                .configs
+                .config(layout.resources[0].get(ordinal).unwrap())
+                .unwrap()
+                .text,
+            path,
+            "{phase}: accepted native precache {ordinal}",
+        );
+        assert!(
+            resources
+                .state
+                .models
+                .resolve(
+                    ModelRef::native(ResourceNamespace::Client(CLIENT), ordinal as u32).unwrap(),
+                    0,
+                    catalog,
+                    Default::default(),
+                )
+                .is_some(),
+            "{phase}: native precache {ordinal} must have a published model binding"
+        );
+    }
 }
 
 #[test]
@@ -511,11 +735,18 @@ fn received_qw_peers_translate_only_the_registered_player_and_keep_local_skins()
     assert_eq!((native[0].size, native[1].size), ([2, 1], [2, 1]));
     assert_ne!(native[0].id, translated[0].id);
     assert_eq!(native[2], translated[2]);
+    setting(&mut host, "cl_noskins", "1.5");
+    prepare(&mut host, &mut source);
+    assert_eq!(
+        draw(&host, true),
+        translated,
+        "only exact1 disables local QW skins"
+    );
     setting(&mut host, "cl_noskins", "2");
     prepare(&mut host, &mut source);
     assert_eq!(draw(&host, true), translated);
 
-    setting(&mut host, "gl_nocolors", "1");
+    setting(&mut host, "gl_nocolors", "0.5");
     prepare(&mut host, &mut source);
     assert_eq!(
         draw(&host, true),
@@ -604,8 +835,12 @@ fn video_reload_rebinds_received_qw_skin_selections_to_replayed_images() {
             },
         ],
     );
+    setting(&mut host, "gl_playermip", "1");
     prepare(&mut host, &mut source);
     let before = draw(&host, true);
+    assert_eq!(before[0].prepared, [256, 128]);
+    let maximum = host.console.cvars.find("gl_max_size").unwrap();
+    host.console.cvars.set_text(maximum, "64").unwrap();
     let revision = host.runtime.client_resources[0]
         .as_ref()
         .unwrap()
@@ -632,8 +867,351 @@ fn video_reload_rebinds_received_qw_skin_selections_to_replayed_images() {
     assert_ne!(after[1].id, before[1].id);
     assert_eq!(after[0].size, before[0].size);
     assert_eq!(after[1].size, before[1].size);
+    assert_eq!(
+        after[0].prepared,
+        [32, 32],
+        "new profile cap precedes player mip"
+    );
+    assert_eq!(after[1].prepared, [32, 32]);
     let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
     assert_eq!(state.models.revision(), revision);
     assert_eq!(state.peer(0).unwrap().metadata.user_id, Some(101));
     assert_eq!(state.peer(1).unwrap().metadata.user_id, Some(202));
+}
+
+fn colored_mdl(grouped: bool) -> Vec<u8> {
+    let original = support::mdl();
+    let mut bytes = original[..84].to_vec();
+    bytes.extend(i32::from(grouped).to_le_bytes());
+    if grouped {
+        bytes.extend(2i32.to_le_bytes());
+        bytes.extend(0.25f32.to_le_bytes());
+        bytes.extend(1.0f32.to_le_bytes());
+        bytes.extend([16, 96, 17, 97]);
+    } else {
+        bytes.extend([16, 96]);
+    }
+    bytes.extend(&original[90..]);
+    bytes
+}
+
+fn colored_peers(host: &mut FrameHost) {
+    if protocol(host) == Protocol::NetQuake15 {
+        peers(
+            host,
+            &[
+                PeerUpdate::Name {
+                    slot: 0,
+                    name: b"One",
+                },
+                PeerUpdate::Colors {
+                    slot: 0,
+                    colors: 0x23,
+                },
+                PeerUpdate::Name {
+                    slot: 1,
+                    name: b"Two",
+                },
+                PeerUpdate::Colors {
+                    slot: 1,
+                    colors: 0x45,
+                },
+            ],
+        );
+    } else {
+        peers(
+            host,
+            &[
+                PeerUpdate::UserInfo {
+                    slot: 0,
+                    user_id: 101,
+                    info: b"\\name\\One\\skin\\local\\topcolor\\2\\bottomcolor\\3",
+                },
+                PeerUpdate::UserInfo {
+                    slot: 1,
+                    user_id: 202,
+                    info: b"\\name\\Two\\skin\\local\\topcolor\\4\\bottomcolor\\5",
+                },
+            ],
+        );
+    }
+}
+
+fn restart(host: &mut FrameHost, source: &mut Source) {
+    host.console
+        .append(
+            "vid_restart cpu\n",
+            Context {
+                source: protocol(host).rule_set(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    host.execute_commands_with_driver(&mut qa_app::modules::Driver::cache_only());
+    host.frame(source, true);
+}
+
+#[test]
+fn noskins_disables_external_qw_files_but_retains_embedded_player_colors() {
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(false), &[], false);
+    colored_peers(&mut host);
+    prepare(&mut host, &mut source);
+    let external = draw(&host, true);
+    assert_eq!(external[0].size, [320, 200]);
+    setting(&mut host, "cl_noskins", "1");
+    prepare(&mut host, &mut source);
+    let embedded = draw(&host, true);
+    assert_eq!((embedded[0].first, embedded[0].second), (32, 48));
+    assert_eq!((embedded[1].first, embedded[1].second), (64, 80));
+    assert_eq!(embedded[0].size, [2, 1]);
+    assert_ne!(embedded[0].id, external[0].id);
+    assert!(!embedded[0].skeletal);
+
+    peers(
+        &mut host,
+        &[PeerUpdate::SetInfo {
+            slot: 0,
+            key: b"topcolor",
+            value: b"6",
+        }],
+    );
+    prepare(&mut host, &mut source);
+    let changed = draw(&host, true);
+    assert_eq!((changed[0].first, changed[0].second), (96, 48));
+    assert_ne!(changed[0].id, embedded[0].id);
+    assert_eq!(changed[1], embedded[1]);
+    setting(&mut host, "gl_nocolors", "1");
+    prepare(&mut host, &mut source);
+    assert_eq!(draw(&host, true), changed);
+    let plain = draw_colormaps(&host, false, 1.0, [0, 0, 0]);
+    let gl = draw(&host, false);
+    assert_eq!(gl[0], plain[0]);
+    assert_eq!(gl[1], plain[1]);
+    assert_eq!((gl[0].first, gl[0].second), (16, 96));
+}
+
+#[test]
+fn translated_embedded_groups_keep_view_timing_and_survive_reload_rollback() {
+    let (fixture, mut host, mut source) = loading_model(RULES, colored_mdl(true), &[], false);
+    colored_peers(&mut host);
+    setting(&mut host, "cl_noskins", "1");
+    prepare(&mut host, &mut source);
+    let first = draw_at(&host, true, 0.125);
+    let second = draw_at(&host, true, 0.25);
+    assert_eq!((first[0].first, first[0].second), (32, 48));
+    assert_eq!((second[0].first, second[0].second), (33, 49));
+    assert_eq!((first[1].first, second[1].first), (64, 65));
+    assert_ne!(first[0].id, second[0].id);
+    let gl = draw_at(&host, false, 0.1);
+    assert_eq!((gl[0].first, gl[0].second), (33, 49));
+    assert_eq!(draw_at(&host, true, 0.1), first);
+    let before = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .counts();
+    fixture.remove("progs/player.mdl");
+    source.reject_publication = true;
+    restart(&mut host, &mut source);
+    assert_eq!(
+        source.publication_attempts, 1,
+        "rejection reaches the final publication boundary"
+    );
+    assert_eq!(
+        host.runtime
+            .model_assets
+            .as_ref()
+            .unwrap()
+            .assets()
+            .counts(),
+        before
+    );
+    assert_eq!(draw_at(&host, true, 0.125), first);
+    assert_eq!(draw_at(&host, true, 0.25), second);
+    source.reject_publication = false;
+    restart(&mut host, &mut source);
+    assert_eq!(source.publication_attempts, 2);
+    let reloaded_first = draw_at(&host, true, 0.125);
+    let reloaded_second = draw_at(&host, true, 0.25);
+    assert_ne!(reloaded_first[0].id, first[0].id);
+    assert_ne!(reloaded_second[0].id, second[0].id);
+    assert_eq!(
+        (reloaded_first[0].first, reloaded_first[0].second),
+        (32, 48)
+    );
+    assert_eq!(
+        (reloaded_second[0].first, reloaded_second[0].second),
+        (33, 49)
+    );
+    assert_eq!(
+        (reloaded_first[1].first, reloaded_second[1].first),
+        (64, 65)
+    );
+}
+
+#[test]
+fn netquake_colormap_uses_received_colors_before_target_palette_conversion() {
+    let (_fixture, mut host, mut source) =
+        loading_model(RuleSetId::Quake, colored_mdl(false), &[], true);
+    colored_peers(&mut host);
+    assert_bound_models(&host, "NQ peer receipt");
+    let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    for (slot, colors, top, bottom) in [(0, 0x23, 2, 3), (1, 0x45, 4, 5)] {
+        let peer = state.peer(slot).unwrap().metadata;
+        assert_eq!(peer.colors, Some(colors));
+        assert_eq!((peer.top_color, peer.bottom_color), (top, bottom));
+    }
+    let no_skins = host
+        .console
+        .cvars
+        .bind(
+            "cl_noskins",
+            Context {
+                source: RuleSetId::Quake,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.numeric(no_skins).unwrap(), 0.0);
+    let rejected = state.rejected;
+    // Accepted gamestates retire the previous presentation through CLIENT output.
+    host.dispatch_output(&mut source, &mut FrameResult::default());
+    prepare(&mut host, &mut source);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .state
+            .rejected,
+        rejected,
+        "NQ colors must prepare without a rejected source/backend transaction"
+    );
+    assert_bound_models(&host, "NQ cold preparation");
+    let plain = draw_colormaps(&host, true, 1.0, [0, 0, 0]);
+    let translated = draw(&host, true);
+    // The target palette is the source palette rotated by17 entries.
+    assert_eq!((translated[0].first, translated[0].second), (15, 31));
+    assert_eq!((translated[1].first, translated[1].second), (47, 63));
+    assert_eq!(translated[0].rgba, [32, 223, 16, 255]);
+    assert_eq!(translated[1].rgba, [64, 191, 32, 255]);
+    assert_eq!(
+        (translated[2].first, translated[2].second),
+        (15, 31),
+        "ordinary NQ alias uses colormap1 too"
+    );
+    assert_eq!(translated[2].rgba, translated[0].rgba);
+    assert_ne!(plain[0].id, translated[0].id);
+    setting(&mut host, "gl_nocolors", "1");
+    prepare(&mut host, &mut source);
+    assert_eq!(draw(&host, true), translated);
+    let gl = draw(&host, false);
+    assert_eq!(gl[0], plain[0]);
+    assert_eq!(gl[1], plain[1]);
+    let state = &host.runtime.client_resources[0].as_ref().unwrap().state;
+    assert_eq!(state.peer(0).unwrap().metadata.colors, Some(0x23));
+    assert_eq!(state.peer(1).unwrap().metadata.colors, Some(0x45));
+    setting(&mut host, "gl_nocolors", "0");
+    peers(
+        &mut host,
+        &[PeerUpdate::Colors {
+            slot: 0,
+            colors: 0xef,
+        }],
+    );
+    prepare(&mut host, &mut source);
+    let high = draw(&host, true);
+    let palette = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .assets()
+        .palette(source.source_palette)
+        .unwrap();
+    assert_eq!(
+        high[0].rgba,
+        palette.color(239).to_le_bytes(),
+        "NQ color14 reverses the top ramp"
+    );
+    assert_eq!(
+        high[0].rgba_second,
+        palette.color(255).to_le_bytes(),
+        "NQ color15 reverses the bottom ramp"
+    );
+    assert_eq!(high[2].rgba, high[0].rgba);
+    assert_eq!(high[2].rgba_second, high[0].rgba_second);
+}
+
+fn replacement_files() -> Vec<(&'static str, Vec<u8>)> {
+    let lmp =
+        |indices: [u8; 2]| [2u32.to_le_bytes().as_slice(), &1u32.to_le_bytes(), &indices].concat();
+    vec![
+        (
+            "progs/player.md5mesh",
+            br#"MD5Version 10
+commandline "translated sidecar"
+numJoints 1
+numMeshes 1
+joints { "origin" -1 ( 0 0 0 ) ( 0 0 0 ) }
+mesh {
+shader "shirt"
+numverts 3
+vert 0 ( 0 0 ) 0 1
+vert 1 ( 1 0 ) 1 1
+vert 2 ( 0 1 ) 2 1
+numtris 1
+tri 0 0 1 2
+numweights 3
+weight 0 0 1 ( 8 4 0 )
+weight 1 0 1 ( 8 0 4 )
+weight 2 0 1 ( 8 0 0 )
+}
+"#
+            .to_vec(),
+        ),
+        (
+            "progs/player.md5anim",
+            br#"MD5Version 10
+commandline "translated sidecar"
+numFrames 2
+numJoints 1
+frameRate 24
+numAnimatedComponents 1
+hierarchy { "origin" -1 2 0 }
+bounds { ( 0 0 0 ) ( 16 16 16 ) ( 0 0 0 ) ( 16 16 16 ) }
+baseframe { ( 0 0 0 ) ( 0 0 0 ) }
+frame 0 { 0 }
+frame 1 { 2 }
+"#
+            .to_vec(),
+        ),
+        ("progs/shirt_00_00.lmp", lmp([18, 98])),
+        ("progs/shirt_00_01.lmp", lmp([19, 99])),
+    ]
+}
+
+#[test]
+fn embedded_color_choices_keep_the_selected_md5_sidecar_and_native_group_timing() {
+    let files = replacement_files();
+    let (_fixture, mut host, mut source) = loading_model(RULES, colored_mdl(true), &files, false);
+    colored_peers(&mut host);
+    setting(&mut host, "cl_noskins", "1");
+    prepare(&mut host, &mut source);
+    let first = draw_at(&host, true, 0.125);
+    let second = draw_at(&host, true, 0.25);
+    assert!(first[0].skeletal && first[1].skeletal);
+    assert!(second[0].skeletal && second[1].skeletal);
+    assert!(!first[2].skeletal);
+    assert_eq!((first[0].first, first[0].second), (34, 50));
+    assert_eq!((second[0].first, second[0].second), (35, 51));
+    assert_eq!((first[1].first, second[1].first), (66, 67));
+    assert_ne!(first[0].id, second[0].id);
+    setting(&mut host, "gl_nocolors", "1");
+    prepare(&mut host, &mut source);
+    assert_eq!(draw_at(&host, true, 0.125), first);
+    let gl = draw_at(&host, false, 0.1);
+    assert!(gl[0].skeletal && gl[1].skeletal);
+    assert_eq!((gl[0].first, gl[0].second), (19, 99));
 }

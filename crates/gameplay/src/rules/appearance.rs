@@ -43,6 +43,42 @@ impl PlayerModelRules {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerColorRules {
+    pub external_skins: bool,
+    pub rgba_crop: Option<[u32; 2]>,
+    upload_max: [u32; 2],
+    clamp_colors: bool,
+}
+impl PlayerColorRules {
+    const EMBEDDED: Self = Self {
+        external_skins: false,
+        rgba_crop: None,
+        upload_max: [512, 256],
+        clamp_colors: false,
+    };
+    pub fn upload_extent(self, maximum: u32, mip: i32) -> [u32; 2] {
+        self.upload_max
+            .map(|size| (size.min(maximum) >> mip.clamp(0, 31)).max(1))
+    }
+    pub fn colors(self, colors: [i32; 2]) -> ([u8; 2], [u8; 2]) {
+        if !self.clamp_colors {
+            let colors = colors.map(|color| color as u8 & 15);
+            return (colors, colors);
+        }
+        // QW's software colormap treats negative values as 13; GL clamps to 0.
+        let indexed = colors.map(|color| {
+            if (0..=13).contains(&color) {
+                color as u8
+            } else {
+                13
+            }
+        });
+        let rgba = colors.map(|color| color.clamp(0, 13) as u8);
+        (indexed, rgba)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelCellPresentation {
     pub model: ModelInput,
@@ -95,6 +131,7 @@ struct NativeRules {
     random_model_sync: bool,
     player_model: Option<u32>,
     player_models: Option<PlayerModelRules>,
+    player_colors: Option<PlayerColorRules>,
     secondary_model_alpha: Option<f32>,
     linked_shell: Option<&'static [u8]>,
     linked_models: LinkedModels,
@@ -137,6 +174,7 @@ const NEUTRAL: NativeRules = NativeRules {
     random_model_sync: false,
     player_model: None,
     player_models: None,
+    player_colors: None,
     secondary_model_alpha: None,
     linked_shell: None,
     linked_models: LinkedModels::Inherited,
@@ -221,12 +259,19 @@ const Q2: NativeRules = NativeRules {
 };
 const RULES: [NativeRules; 5] = [
     NativeRules {
+        player_colors: Some(PlayerColorRules::EMBEDDED),
         random_model_sync: true,
         alias_pitch_reversed: true,
         world_zero: true,
         ..NEUTRAL
     },
     NativeRules {
+        player_colors: Some(PlayerColorRules {
+            external_skins: true,
+            rgba_crop: Some([296, 194]),
+            clamp_colors: true,
+            ..PlayerColorRules::EMBEDDED
+        }),
         alias_pitch_reversed: true,
         world_zero: true,
         command_body_angles: true,
@@ -307,6 +352,9 @@ impl AppearancePolicy {
     }
     pub fn player_models(self) -> Option<PlayerModelRules> {
         self.rules.player_models
+    }
+    pub fn player_colors(self) -> Option<PlayerColorRules> {
+        self.rules.player_colors
     }
     pub fn model_features(self, path: &[u8]) -> ModelFeatures {
         ModelFeatures {

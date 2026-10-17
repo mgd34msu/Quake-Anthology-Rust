@@ -1661,14 +1661,12 @@ impl ClientSceneInput<'_> {
                 fullbright: capabilities.fullbright,
                 custom_skin: 0,
             };
-            let player_shader = normalized
-                .and_then(|reference| {
-                    self.bindings.indexed_skin(
-                        reference,
-                        record.appearance.native.colormap,
-                        software,
-                    )
-                })
+            let player_skin = normalized.and_then(|reference| {
+                self.bindings
+                    .indexed_skin(reference, record.appearance.native.colormap, software)
+            });
+            let player_shader = player_skin
+                .and_then(player_models::IndexedPlayerSkin::external)
                 .and_then(|selection| self.models.indexed_skin(selection, policy));
             let resolved = if let Some(captured) = captured {
                 captured[slot].as_ref().and_then(|binding| match binding {
@@ -1735,11 +1733,21 @@ impl ClientSceneInput<'_> {
                         pose.angles
                     }
                     SceneBinding::Mesh(choices) => {
-                        let choices = if player_shader.is_some() {
-                            choices.native_only()
-                        } else {
-                            choices
-                        };
+                        let choices =
+                            if let Some(player_models::IndexedPlayerSkin::Model(selection)) =
+                                player_skin
+                            {
+                                let Some(choices) = choices.with_skin(self.models, selection)
+                                else {
+                                    counts.missing_models += 1;
+                                    continue;
+                                };
+                                choices
+                            } else if player_shader.is_some() {
+                                choices.native_only()
+                            } else {
+                                choices
+                            };
                         let info = choices.info();
                         let Some(binding) = choices.first_choice() else {
                             counts.missing_models += 1;

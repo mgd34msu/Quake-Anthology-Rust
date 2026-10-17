@@ -35,7 +35,19 @@ pub struct PeerMetadata {
 struct PlayerBinding {
     body: Option<CapturedModel>,
     metadata: PeerMetadata,
-    indexed: Option<crate::model_assets::SkinSelection>,
+}
+#[derive(Clone, Copy)]
+pub(super) enum IndexedPlayerSkin {
+    External(crate::model_assets::SkinSelection),
+    Model(crate::model_assets::SkinSelection),
+}
+impl IndexedPlayerSkin {
+    pub(super) fn external(self) -> Option<crate::model_assets::SkinSelection> {
+        match self {
+            Self::External(selection) => Some(selection),
+            Self::Model(_) => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -44,9 +56,11 @@ pub(super) struct PlayerBindings {
     rows: IndexSpan,
     models: IndexSpan,
     rules: Option<PlayerModelRules>,
+    color_rules: Option<qa_gameplay::rules::appearance::PlayerColorRules>,
     options: PlayerModelOptions,
     indexed_options: indexed::IndexedPlayerOptions,
     indexed_model: Option<u32>,
+    indexed_models: Box<[Option<IndexedPlayerSkin>]>,
     pub(super) dirty: bool,
     pub(super) cold_dirty: bool,
     bodies: Box<[PlayerBinding]>,
@@ -59,7 +73,9 @@ impl PlayerBindings {
         if layout.players.count == 0 {
             return None;
         }
-        let rules = qa_gameplay::rules::appearance::policy(layout.rules).player_models();
+        let policy = qa_gameplay::rules::appearance::policy(layout.rules);
+        let rules = policy.player_models();
+        let color_rules = policy.player_colors();
         let count = layout.players.count as usize + 1;
         let weapons = rules.map_or(0, |rules| rules.weapon_limit);
         Some(Self {
@@ -67,9 +83,20 @@ impl PlayerBindings {
             rows: layout.players,
             models: layout.resources[0],
             rules,
+            color_rules,
             options: Default::default(),
             indexed_options: Default::default(),
             indexed_model: None,
+            indexed_models: if color_rules.is_some() {
+                vec![
+                    None;
+                    (layout.players.count as usize)
+                        .checked_mul(layout.resources[0].count as usize)?
+                ]
+                .into_boxed_slice()
+            } else {
+                Box::default()
+            },
             dirty: true,
             cold_dirty: true,
             bodies: vec![PlayerBinding::default(); count].into_boxed_slice(),
@@ -108,10 +135,23 @@ impl PlayerBindings {
         {
             ClientModelBindings::refresh_capture_images(capture, refresh, catalog, profile)?;
         }
-        for row in &mut self.bodies {
-            if let Some(selection) = row.indexed {
-                row.indexed = Some(catalog.refresh_skin(selection, refresh)?);
+        for row in &mut self.indexed_models {
+            if let Some(selection) = *row {
+                *row = Some(match selection {
+                    IndexedPlayerSkin::External(selection) => {
+                        IndexedPlayerSkin::External(catalog.refresh_skin(selection, refresh)?)
+                    }
+                    IndexedPlayerSkin::Model(selection) => {
+                        IndexedPlayerSkin::Model(catalog.refresh_skin(selection, refresh)?)
+                    }
+                });
             }
+        }
+        if self.color_rules.is_some()
+            && profile.is_some_and(|profile| refresh.profile(profile) != profile)
+        {
+            self.dirty = true;
+            self.cold_dirty = true;
         }
         Ok(())
     }
@@ -124,8 +164,8 @@ impl PlayerBindings {
     pub(super) fn clear_bindings(&mut self) {
         for row in &mut self.bodies {
             row.body = None;
-            row.indexed = None;
         }
+        self.indexed_models.fill(None);
         self.indexed_model = None;
         self.weapons.fill(None);
         self.dirty = true;
@@ -206,7 +246,7 @@ impl PlayerBindings {
         configs: &ConfigStrings,
         assets: &mut ClientAssets<'_>,
     ) -> u32 {
-        if self.source == RuleSetId::QuakeWorld {
+        if self.color_rules.is_some() {
             return self.refresh_indexed(configs, assets);
         }
         for row in &mut self.bodies {
