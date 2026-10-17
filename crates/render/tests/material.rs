@@ -94,13 +94,29 @@ fn replaced_shader_file_contributes_only_the_winning_definitions() {
     )
     .unwrap();
     let mut vfs = Vfs::default();
-    vfs.mount_directory(&low, 0).unwrap();
-    vfs.mount_directory(&high, 1).unwrap();
-    let catalog = load_catalog(&vfs).unwrap();
+    let low = vfs.mount_directory(&low, 0).unwrap();
+    let high = vfs.mount_directory(&high, 1).unwrap();
+    let catalog = load_catalog(&vfs, None).unwrap();
     assert!(catalog.find_canonical("old_only").is_none());
     assert!(catalog.find_canonical("new_only").is_some());
     assert_eq!(catalog.definitions.len(), 2);
     assert!(catalog.diagnostics.is_empty());
+    let low_view = vfs.search_view([low, high]).unwrap();
+    let low_catalog = load_catalog(&vfs, Some(&low_view)).unwrap();
+    assert!(low_catalog.find_canonical("old_only").is_some());
+    assert!(low_catalog.find_canonical("new_only").is_none());
+    assert_eq!(low_catalog.definitions.len(), 2);
+    assert_eq!(vfs.take_lookup_count(), 0);
+    let empty = vfs.search_view([]).unwrap();
+    assert!(
+        load_catalog(&vfs, Some(&empty))
+            .unwrap()
+            .definitions
+            .is_empty()
+    );
+    let current = load_catalog(&vfs, None).unwrap();
+    assert!(current.find_canonical("old_only").is_none());
+    assert!(current.find_canonical("new_only").is_some());
     drop(vfs);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -132,7 +148,7 @@ fn duplicate_zip_shader_member_contributes_only_the_last_definitions() {
     let mut vfs = Vfs::default();
     vfs.mount_archive(&path, 0, Arc::new(archive)).unwrap();
     let winner = vfs.open(b"scripts/wall.shader").unwrap();
-    let catalog = load_catalog(&vfs).unwrap();
+    let catalog = load_catalog(&vfs, None).unwrap();
     assert!(catalog.find_canonical("old_only").is_none());
     assert!(catalog.find_canonical("new_only").is_some());
     assert!(catalog.find_canonical("shared").is_some());

@@ -959,13 +959,22 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
             vfs.read_to_vec(&reference, 4096, &mut reader).unwrap(),
             expected
         );
+        let listed: Vec<_> = vfs.files_with(Some(view)).collect();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].1, b"same.dat");
+        assert_eq!(listed[1].1, b"unique.dat");
+        assert_eq!(listed[0].0, reference);
     }
     assert!(vfs.open_with(b"same.dat", Some(&empty)).is_none());
+    assert_eq!(vfs.files_with(Some(&empty)).count(), 0);
+    assert_eq!(vfs.files_with(None).count(), 2);
+    assert_eq!(vfs.files().count(), 4);
     assert_eq!(vfs.open(b"same.dat"), Some(default.clone()));
     let other = Vfs::default();
     let foreign = other.search_view([]).unwrap();
     assert!(!vfs.accepts_search(&foreign));
     assert!(vfs.open_with(b"same.dat", Some(&foreign)).is_none());
+    assert_eq!(vfs.files_with(Some(&foreign)).count(), 0);
     // A later mount cannot silently enter an already admitted caller view.
     let path = root.0.join("late");
     qa_platform::files::create_dir_all(&path).unwrap();
@@ -974,6 +983,7 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
     let late = vfs.mount_directory(&path, 99).unwrap();
     assert!(vfs.open(b"late.dat").is_some());
     assert!(vfs.open_with(b"late.dat", Some(&peer)).is_none());
+    assert_eq!(vfs.files_with(Some(&peer)).count(), 2);
     let refreshed = vfs.search_view([late, mounts[0]]).unwrap();
     let current = vfs.open_with(b"same.dat", Some(&refreshed)).unwrap();
     assert_eq!(
@@ -986,6 +996,7 @@ fn independent_search_views_select_cached_candidates_without_mutating_other_call
     );
     vfs.unmount(mounts[0]);
     assert!(vfs.open_with(b"same.dat", Some(&first)).is_none());
+    assert_eq!(vfs.files_with(Some(&first)).count(), 0);
     assert!(vfs.search_view([mounts[0]]).is_err());
     assert!(vfs.open_with(b"same.dat", Some(&peer)).is_some());
     for (name, data, expected) in [

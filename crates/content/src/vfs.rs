@@ -605,7 +605,11 @@ impl Vfs {
             return None;
         }
         let candidates = self.find_candidates(path)?;
-        let slot = if let Some(view) = view {
+        self.reference(self.select_candidate(candidates, view)?)
+    }
+
+    fn select_candidate(&self, candidates: &[u32], view: Option<&SearchView>) -> Option<u32> {
+        if let Some(view) = view {
             candidates
                 .iter()
                 .filter_map(|&slot| {
@@ -614,11 +618,10 @@ impl Vfs {
                     (rank != u32::MAX).then_some((slot, rank))
                 })
                 .min_by_key(|(_, rank)| *rank)
-                .map(|(slot, _)| slot)?
+                .map(|(slot, _)| slot)
         } else {
-            *candidates.first()?
-        };
-        self.reference(slot)
+            candidates.first().copied()
+        }
     }
 
     fn find_candidates(&self, path: &[u8]) -> Option<&[u32]> {
@@ -850,6 +853,25 @@ impl Vfs {
     }
     pub fn files(&self) -> impl Iterator<Item = (FileRef, &[u8])> {
         self.listing.iter().filter_map(|&slot| {
+            let entry = self.entries.get(slot as usize)?.as_ref()?;
+            Some((self.reference(slot)?, entry.name.as_ref()))
+        })
+    }
+
+    /// Enumerate one selected source per name, using the same cached candidate
+    /// spans as open_with. A caller view never admits a newly mounted source.
+    pub fn files_with<'a>(
+        &'a self,
+        view: Option<&'a SearchView>,
+    ) -> impl Iterator<Item = (FileRef, &'a [u8])> + 'a {
+        let spans = if view.is_none_or(|view| self.accepts_search(view)) {
+            self.candidates.as_ref()
+        } else {
+            &[]
+        };
+        // FileIndex owns a freshly sorted NameTable, so span order is lexical.
+        spans.iter().filter_map(move |span| {
+            let slot = self.select_candidate(self.listing.get(span.range())?, view)?;
             let entry = self.entries.get(slot as usize)?.as_ref()?;
             Some((self.reference(slot)?, entry.name.as_ref()))
         })

@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut vfs = Vfs::default();
     vfs.mount_archive(&archive_path, 0, archive)
         .map_err(|error| format!("mount: {error:?}"))?;
-    let catalog = load_catalog(&vfs).map_err(|error| format!("catalog: {error:?}"))?;
+    let catalog = load_catalog(&vfs, None).map_err(|error| format!("catalog: {error:?}"))?;
     let reference = vfs.open(map_name.as_bytes()).ok_or("missing map")?;
     let mut bytes = vec![
         0;

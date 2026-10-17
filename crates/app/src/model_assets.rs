@@ -5196,7 +5196,7 @@ impl ModelAssets {
 
     fn shader_catalog(&mut self, vfs: &Vfs) -> &Result<ShaderCatalog, String> {
         self.catalog.shader_catalog.get_or_insert_with(|| {
-            qa_render::material::load_catalog(vfs)
+            qa_render::material::load_catalog(vfs, None)
                 .map_err(|error| format!("shader scripts: {error:?}"))
         })
     }

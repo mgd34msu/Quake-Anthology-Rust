@@ -608,7 +608,7 @@ impl WorldMaterialSource {
             surfaces,
             legacy_kinds,
             layout,
-            catalog: load_catalog(vfs).map_err(WorldMaterialError::Catalog)?,
+            catalog: load_catalog(vfs, None).map_err(WorldMaterialError::Catalog)?,
             images: Vec::new(),
             lightmaps: Vec::new(),
         })

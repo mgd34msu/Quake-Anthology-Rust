@@ -1,6 +1,6 @@
 //! Material script discovery is a VFS load operation, never a frame operation.
 use crate::shader::{ShaderCatalog, ShaderSource, parse_sources};
-use qa_content::vfs::{Vfs, VfsError};
+use qa_content::vfs::{SearchView, Vfs, VfsError};
 use qa_formats::archive::ArchiveReader;
 
 mod finish;
@@ -23,18 +23,14 @@ impl From<VfsError> for CatalogLoadError {
 
 /// VFS's sorted winning-file index supplies names and precedence. No separate
 /// filesystem scan or hash index exists for shaders.
-pub fn load_catalog(vfs: &Vfs) -> Result<ShaderCatalog, CatalogLoadError> {
+pub fn load_catalog(
+    vfs: &Vfs,
+    search: Option<&SearchView>,
+) -> Result<ShaderCatalog, CatalogLoadError> {
     let mut source_names = Vec::new();
     let mut source_bytes = Vec::new();
     let mut reader = ArchiveReader::default();
-    let mut previous_name: &[u8] = &[];
-    for (file, name) in vfs.files() {
-        // The index includes lower-priority entries immediately after the
-        // winning name. A replaced script must not contribute old definitions.
-        if name == previous_name {
-            continue;
-        }
-        previous_name = name;
+    for (file, name) in vfs.files_with(search) {
         if !name.starts_with(b"scripts/") || !name.ends_with(b".shader") {
             continue;
         }
