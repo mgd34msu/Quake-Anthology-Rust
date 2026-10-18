@@ -3598,10 +3598,74 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
     }
 }
 
+fn verify_reloaded_module_source(module: Vec<u8>, mut ui: Vec<u8>) {
+    let native = module.starts_with(b"\x7fELF") || module.starts_with(b"MZ");
+    let old = b"renderer ui init\n\0";
+    let new = b"updated! ui init\n\0";
+    assert_eq!(old.len(), new.len());
+    let position = ui
+        .windows(old.len())
+        .position(|bytes| bytes == old)
+        .unwrap();
+    let (fixture, mut host, mut source, ids, _) = setup_renderers(module, Some(ui.clone()));
+    queue_gamestate(&mut host, ids[0], "a", 11);
+    queue_gamestate(&mut host, ids[1], "a", 22);
+    until_running(&mut host, &mut source);
+    assert_eq!(marker_count(&host, b"renderer ui init"), 2);
+    ui[position..position + old.len()].copy_from_slice(new);
+    let file = host.runtime.vfs.open(b"vm/ui").unwrap();
+    let origin = host.runtime.vfs.origin(&file).unwrap();
+    let mount = origin.mount;
+    let root = origin.path.to_owned();
+    qa_platform::files::write(root.join("vm/replacement"), &ui).unwrap();
+    qa_platform::files::rename(root.join("vm/replacement"), root.join("vm/ui")).unwrap();
+    host.runtime
+        .vfs
+        .refresh_directory_prefix(mount, b"vm")
+        .unwrap();
+    host.console
+        .append("vid_restart cpu\n", Context::default())
+        .unwrap();
+    host.execute_commands();
+    until_running(&mut host, &mut source);
+    assert_eq!(marker_count(&host, b"updated! ui init"), 2);
+    assert_eq!(marker_count(&host, b"renderer ui init"), 2);
+    for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+    // An invalid replacement fails its owned module, without silently starting
+    // the previously accepted code again or taking down the independent cgames.
+    qa_platform::files::write(root.join("vm/ui"), b"invalid replacement").unwrap();
+    host.runtime
+        .vfs
+        .refresh_directory_prefix(mount, b"vm")
+        .unwrap();
+    host.console
+        .append("vid_restart cpu\n", Context::default())
+        .unwrap();
+    host.execute_commands();
+    for _ in 0..8 {
+        source.step(&mut host);
+    }
+    for module in [ModuleId(3), ModuleId(4)] {
+        assert_eq!(host.module_state(module), Some(State::Failed));
+    }
+    for module in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(module), Some(State::Running));
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+    assert_eq!(marker_count(&host, b"updated! ui init"), 2);
+    host.shutdown_modules_with_driver(&mut source.driver());
+    drop(fixture);
+    println!("selected Q3 image replacement and rejected reload passed: owned_native={native}");
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
     }
+    verify_reloaded_module_source(qvm_file(), qvm_role(true, false));
     connection::verify(false);
     connection::verify(true);
     verify_video_image_restart(
@@ -3627,6 +3691,7 @@ fn main() {
     println!("actual load_q3 QVM same-lifetime restart checks passed");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        verify_reloaded_module_source(native_file(), native_role(true, false));
         verify_video_image_restart(
             native_role_with_graphics(false, false, true),
             native_role_with_graphics(true, false, true),

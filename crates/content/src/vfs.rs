@@ -140,6 +140,18 @@ impl ReadView<'_> {
     pub fn source_precedence(self, file: &FileRef) -> Result<SourcePrecedence, VfsError> {
         self.vfs.source_precedence(file)
     }
+    /// Cold reload may resolve a replacement after the old mount retires. Its
+    /// retained name is metadata, while the new open still enforces this view.
+    pub fn retained_name(self, file: &FileRef) -> Result<&[u8], VfsError> {
+        if !self.vfs.owns_reference(file)
+            || self
+                .search
+                .is_some_and(|view| !self.vfs.accepts_search(view))
+        {
+            return Err(VfsError::Handle);
+        }
+        Ok(&file.entry.name)
+    }
     pub fn origin<'a>(&'a self, file: &'a FileRef) -> Option<Origin<'a>> {
         self.vfs.origin(file)
     }
@@ -951,8 +963,11 @@ impl Vfs {
         self.reference(slot)
     }
 
+    fn owns_reference(&self, reference: &FileRef) -> bool {
+        Arc::ptr_eq(&self.owner, &reference.owner)
+    }
     fn entry<'a>(&self, reference: &'a FileRef) -> Result<&'a Entry, VfsError> {
-        if !Arc::ptr_eq(&self.owner, &reference.owner)
+        if !self.owns_reference(reference)
             || !self
                 .mounts
                 .get(reference.entry.mount)

@@ -112,18 +112,30 @@ impl Q3Spec {
     }
 }
 
+struct ModuleBytes {
+    search: SearchView,
+    source: qa_content::vfs::FileRef,
+    bytes: Vec<u8>,
+}
 fn module_bytes(
     view: ReadView<'_>,
     path: &str,
     reader: &mut ArchiveReader,
-) -> Result<(SearchView, Vec<u8>), String> {
+) -> Result<ModuleBytes, String> {
     let search = view
         .retain()
         .map_err(|error| format!("module {path}: {error}"))?;
+    let source = view
+        .open(path.as_bytes())
+        .ok_or_else(|| format!("module {path}: not found"))?;
     let bytes = view
-        .read_file(path.as_bytes(), 256 * 1024 * 1024, reader)
+        .read_to_vec(&source, 256 * 1024 * 1024, reader)
         .map_err(|error| format!("module {path}: {error}"))?;
-    Ok((search, bytes))
+    Ok(ModuleBytes {
+        search,
+        source,
+        bytes,
+    })
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -177,6 +189,7 @@ fn call_context(
 /// Pristine Q3 module bytes and load-selected ABI choices. Each instantiation
 /// owns fresh VM memory or a fresh native child and its lifecycle callbacks.
 pub struct Q3Image {
+    source: qa_content::vfs::FileRef,
     bytes: Box<[u8]>,
     imports: &'static qa_compat::abi::CallTable,
     player_stats: Option<qa_core::primitives::Q3StatLayout>,
@@ -192,17 +205,34 @@ pub(super) struct Q3Instance {
 
 impl Q3Image {
     pub(super) fn new(
+        source: qa_content::vfs::FileRef,
         bytes: Vec<u8>,
         imports: &'static qa_compat::abi::CallTable,
         player_stats: Option<qa_core::primitives::Q3StatLayout>,
         role_shutdown: Export,
     ) -> Self {
         Self {
+            source,
             bytes: bytes.into_boxed_slice(),
             imports,
             player_stats,
             role_shutdown,
         }
+    }
+
+    pub(super) fn reload(&self, view: ReadView<'_>) -> Result<Self, String> {
+        let path = view
+            .retained_name(&self.source)
+            .map_err(|error| format!("CLIENT module source: {error}"))?;
+        let path = std::str::from_utf8(path).map_err(|_| "CLIENT module path is not UTF-8")?;
+        let loaded = module_bytes(view, path, &mut ArchiveReader::default())?;
+        Ok(Self::new(
+            loaded.source,
+            loaded.bytes,
+            self.imports,
+            self.player_stats,
+            self.role_shutdown,
+        ))
     }
 
     pub(super) fn instantiate(&self) -> Result<Q3Instance, String> {
@@ -300,7 +330,11 @@ pub fn load_q3(
             return Err("invalid Q3 player stat layout".into());
         }
         let module = module_id(requests)?;
-        let (search, bytes) = module_bytes(
+        let ModuleBytes {
+            search,
+            source,
+            bytes,
+        } = module_bytes(
             runtime.vfs.read_view(spec.search.as_ref()),
             &spec.path,
             &mut reader,
@@ -375,6 +409,7 @@ pub fn load_q3(
             ),
         };
         let image = Q3Image::new(
+            source,
             bytes,
             imports,
             matches!(spec.role, Q3Role::Game).then_some(spec.player_stats),
@@ -469,7 +504,7 @@ pub fn load_quakec(
     for spec in specs {
         // Module zero belongs to the existing built-in walk-through provider.
         let module = module_id(&requests)?;
-        let (search, bytes) = module_bytes(
+        let ModuleBytes { search, bytes, .. } = module_bytes(
             runtime.vfs.read_view(spec.search.as_ref()),
             &spec.path,
             &mut reader,

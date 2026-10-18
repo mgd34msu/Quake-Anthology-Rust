@@ -63,7 +63,7 @@ pub fn load_q2(
         let mut reader = ArchiveReader::default();
         let mut clients = Vec::new();
         for spec in specs {
-            let (search, bytes) = module_bytes(
+            let super::ModuleBytes { search, bytes, .. } = module_bytes(
                 runtime.vfs.read_view(spec.search.as_ref()),
                 &spec.path,
                 &mut reader,

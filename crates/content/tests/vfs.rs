@@ -1869,3 +1869,41 @@ fn retained_numeric_file_reads_enforce_the_selected_namespace_and_policy() {
         b"replacement"
     );
 }
+
+#[test]
+fn retained_names_support_owner_checked_reload_after_source_retirement() {
+    let root = Fixture::new("retained-module-name");
+    qa_platform::files::write(root.0.join("module.qvm"), b"original").unwrap();
+    let mut vfs = Vfs::default();
+    let mount = vfs.mount_directory(&root.0, 0).unwrap();
+    let file = vfs.open(b"module.qvm").unwrap();
+    let source = vfs.search_view([mount]).unwrap();
+    assert!(vfs.unmount(mount));
+    assert!(matches!(vfs.length(&file), Err(VfsError::Handle)));
+    assert_eq!(
+        vfs.read_view(Some(&source)).retained_name(&file).unwrap(),
+        b"module.qvm"
+    );
+    qa_platform::files::write(root.0.join("module.qvm"), b"new").unwrap();
+    vfs.mount_directory(&root.0, 10).unwrap();
+    let view = vfs.read_view(None);
+    assert_eq!(
+        view.read_file(
+            view.retained_name(&file).unwrap(),
+            64,
+            &mut Default::default()
+        )
+        .unwrap(),
+        b"new"
+    );
+    let foreign = Vfs::default();
+    assert!(matches!(
+        foreign.read_view(None).retained_name(&file),
+        Err(VfsError::Handle)
+    ));
+    let foreign_source = foreign.default_view();
+    assert!(matches!(
+        vfs.read_view(Some(&foreign_source)).retained_name(&file),
+        Err(VfsError::Handle)
+    ));
+}

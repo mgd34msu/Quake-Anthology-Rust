@@ -2097,12 +2097,19 @@ impl FrameHost {
 
     fn recreate_client_renderer(&mut self, module: ModuleId) -> Result<(), String> {
         let row = self.module_row(module).ok_or("missing CLIENT renderer")?;
-        let mut candidate = row
+        let image = row
             .request
             .q3_image
             .as_ref()
             .ok_or("missing CLIENT renderer image")?
-            .instantiate()?;
+            .reload(
+                self.runtime.vfs.read_view(
+                    self.modules
+                        .as_ref()
+                        .and_then(|modules| modules.storage.file_search(module)),
+                ),
+            )?;
+        let mut candidate = image.instantiate()?;
         if candidate.entries != row.request.entries
             || !candidate
                 .program
@@ -2126,6 +2133,7 @@ impl FrameHost {
             .module_row_mut(module)
             .ok_or("missing CLIENT renderer")?;
         row.request.program = candidate.program;
+        row.request.q3_image = Some(image);
         row.request.prepare = candidate.prepare;
         row.request.shutdown = candidate.shutdown;
         for export in &mut row.request.shutdown {
