@@ -229,7 +229,7 @@ fn warm_renderer_resources_reject_a_different_vfs_before_cached_admission() {
         Err(CallError::File)
     );
     assert_eq!(
-        owner.precache(&foreign, b"models/test.md3", profile.source_rules),
+        owner.precache(&foreign, b"models/test.md3", profile.source_rules, None),
         Err(CallError::File)
     );
     assert_eq!(
@@ -1699,4 +1699,117 @@ fn selected_maps_keep_geometry_palette_and_loaded_world_name_ownership() {
     );
     assert_eq!(assets.counts(), prefix);
     assert_eq!(empty.geometries().count(), 0);
+}
+
+#[test]
+fn native_precache_and_bounds_lookup_keep_selected_models_and_reject_foreign_warm_reads() {
+    let low_model = support::md3();
+    let mut high_model = low_model.clone();
+    let frames = i32::from_le_bytes(high_model[92..96].try_into().unwrap()) as usize;
+    high_model[frames + 56 + 12..frames + 56 + 16].copy_from_slice(&200.0f32.to_le_bytes());
+    let mut files = support::Fixture::new(&[("models/shared.md3", low_model)]);
+    let high_files = support::Fixture::new(&[("models/shared.md3", high_model)]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_path = high_files.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_path, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let empty = files.vfs.search_view([]).unwrap();
+    let mut owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let low_bounds = owner
+        .precache(
+            &files.vfs,
+            b"models/shared.md3",
+            RuleSetId::Quake,
+            Some(&low),
+        )
+        .unwrap();
+    let high_bounds = owner
+        .precache(
+            &files.vfs,
+            b"models/shared.md3",
+            RuleSetId::Quake,
+            Some(&high),
+        )
+        .unwrap();
+    assert_ne!(low_bounds, high_bounds);
+    for (view, bounds) in [(&low, low_bounds), (&high, high_bounds)] {
+        assert_eq!(
+            owner
+                .catalog()
+                .bounds(b"MODELS\\SHARED.MD3", RuleSetId::Quake, Some(view)),
+            Some(bounds)
+        );
+        files.vfs.take_lookup_count();
+        assert_eq!(
+            owner
+                .precache(
+                    &files.vfs,
+                    b"MODELS\\SHARED.MD3",
+                    RuleSetId::Quake,
+                    Some(view)
+                )
+                .unwrap(),
+            bounds
+        );
+        assert_eq!(files.vfs.take_lookup_count(), 0);
+    }
+    assert_eq!(
+        owner
+            .catalog()
+            .bounds(b"models/shared.md3", RuleSetId::Quake, None),
+        None
+    );
+    assert!(
+        owner
+            .precache(
+                &files.vfs,
+                b"models/shared.md3",
+                RuleSetId::Quake,
+                Some(&empty)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .bounds(b"models/shared.md3", RuleSetId::Quake, Some(&empty)),
+        None
+    );
+    let other = Vfs::default();
+    let foreign = other.default_view();
+    assert!(
+        owner
+            .precache(
+                &files.vfs,
+                b"models/shared.md3",
+                RuleSetId::Quake,
+                Some(&foreign)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        owner
+            .catalog()
+            .bounds(b"models/shared.md3", RuleSetId::Quake, Some(&foreign)),
+        None
+    );
+    assert!(
+        owner
+            .precache(&other, b"models/shared.md3", RuleSetId::Quake, Some(&low))
+            .is_err()
+    );
+    assert_eq!(
+        owner
+            .precache(&files.vfs, b"models/shared.md3", RuleSetId::Quake, None)
+            .unwrap(),
+        high_bounds
+    );
 }

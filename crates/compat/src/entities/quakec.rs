@@ -2670,6 +2670,7 @@ impl EntityProjection {
         } else {
             Some((ENGINE_CALLS.model_bounds)(
                 services,
+                context.module,
                 text,
                 context.native_rules,
             )?)

@@ -7251,8 +7251,13 @@ impl ModelLoader for ModelAssets {
         vfs: &Vfs,
         path: &[u8],
         _source: RuleSetId,
+        search: Option<&SearchView>,
     ) -> Result<Bounds, CallError> {
         self.check_registration_vfs(vfs)?;
+        let search = vfs
+            .read_view(search)
+            .retain()
+            .map_err(|_| CallError::File)?;
         let path = std::str::from_utf8(path).map_err(|_| CallError::Text)?;
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);
@@ -7261,13 +7266,13 @@ impl ModelLoader for ModelAssets {
             &self.catalog.names,
             &self.catalog.files,
             path.as_bytes(),
-            Some(&self.catalog.registration_vfs),
+            Some(&search),
         )
         .and_then(|file| file.bounds(&self.catalog.sources))
         {
             return Ok(bounds);
         }
-        self.ensure_file_profile(vfs, &canonical_path(path), None, false, None)
+        self.ensure_file_profile(vfs, &canonical_path(path), None, false, Some(&search))
             .map_err(|error| error.kind)
     }
     fn register_model(
@@ -7352,9 +7357,19 @@ impl ModelLookup for ModelCatalog {
             name,
         )
     }
-    fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))?
-            .bounds(&self.sources)
+    fn bounds(
+        &self,
+        path: &[u8],
+        _source: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Option<Bounds> {
+        file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            Some(search.unwrap_or(&self.registration_vfs)),
+        )?
+        .bounds(&self.sources)
     }
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
         skin_handle(self, name, source)

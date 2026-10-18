@@ -1312,7 +1312,7 @@ impl FrameHost {
         }
     }
     /// Cold registration only. CLIENT rendering never calls module storage.
-    pub fn model_precaches(&self) -> Vec<(RuleSetId, &[u8])> {
+    pub fn model_precaches(&self) -> Vec<(RuleSetId, &[u8], Option<&qa_content::vfs::SearchView>)> {
         let mut names = Vec::new();
         let Some(modules) = &self.modules else {
             return names;
@@ -1336,7 +1336,11 @@ impl FrameHost {
                     && !text.is_empty()
                     && !text.starts_with(b"*")
                 {
-                    names.push((rules, text));
+                    names.push((
+                        rules,
+                        text,
+                        modules.storage.file_search(row.request.context.module),
+                    ));
                 }
             }
         }

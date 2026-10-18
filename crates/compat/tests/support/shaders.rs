@@ -32,7 +32,12 @@ impl qa_compat::services::ModelLookup for ShaderLoader {
     fn model_bounds(&self, _: i32) -> Option<qa_core::primitives::Bounds> {
         None
     }
-    fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<qa_core::primitives::Bounds> {
+    fn bounds(
+        &self,
+        _: &[u8],
+        _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<qa_core::primitives::Bounds> {
         None
     }
     fn shader_handle(&self, name: &[u8], _: RuleSetId) -> Option<i32> {
@@ -55,6 +60,7 @@ impl qa_compat::services::ModelLoader for ShaderLoader {
         _: &qa_content::vfs::Vfs,
         _: &[u8],
         _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<qa_core::primitives::Bounds, CallError> {
         Err(CallError::Unsupported)
     }

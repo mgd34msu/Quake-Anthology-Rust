@@ -24,7 +24,12 @@ impl ModelLookup for Catalog {
     ) -> Option<qa_compat::services::LoadedWorldBinding> {
         None
     }
-    fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<Bounds> {
+    fn bounds(
+        &self,
+        _: &[u8],
+        _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<Bounds> {
         Some(BOUNDS)
     }
     fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
@@ -497,7 +502,12 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
                     collision: None,
                 })
             }
-            fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<Bounds> {
+            fn bounds(
+                &self,
+                _: &[u8],
+                _: RuleSetId,
+                _search: Option<&qa_content::vfs::SearchView>,
+            ) -> Option<Bounds> {
                 None
             }
             fn shader_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {

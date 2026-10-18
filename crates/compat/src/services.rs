@@ -143,7 +143,12 @@ pub trait ModelLookup {
         name: &[u8],
         _search: Option<&qa_content::vfs::SearchView>,
     ) -> Option<LoadedWorldBinding>;
-    fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
+    fn bounds(
+        &self,
+        path: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
         let _ = (name, source);
@@ -184,7 +189,13 @@ pub trait ModelLoader {
         let _ = (vfs, name, source);
         Err(CallError::Unsupported)
     }
-    fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
+    fn precache(
+        &mut self,
+        vfs: &Vfs,
+        path: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Result<Bounds, CallError>;
     fn register_shader(
         &mut self,
         vfs: &Vfs,
@@ -199,7 +210,7 @@ pub trait ModelLoader {
         name: &[u8],
         source: RuleSetId,
     ) -> Result<i32, CallError> {
-        self.precache(vfs, name, source)?;
+        self.precache(vfs, name, source, None)?;
         self.lookup()
             .model_handle(name, source)
             .ok_or(CallError::File)
@@ -1436,8 +1447,10 @@ pub struct EngineCallTable {
         fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<(u32, bool), CallError>,
     pub resource_find:
         fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<Option<u32>, CallError>,
-    pub model_precache: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
-    pub model_bounds: fn(&EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
+    pub model_precache:
+        fn(&mut EngineServices<'_>, ModuleId, &[u8], RuleSetId) -> Result<Bounds, CallError>,
+    pub model_bounds:
+        fn(&EngineServices<'_>, ModuleId, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<u64, CallError>,
@@ -1821,7 +1834,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .resource_lookup(m, r, n, false)?
             .map(|(ordinal, _)| ordinal))
     },
-    model_precache: |s, path, rules| {
+    model_precache: |s, module, path, rules| {
         let text = s
             .cvars
             .read(s.storage.image_search)
@@ -1837,13 +1850,16 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let loader = s.model_loader.as_mut().ok_or(CallError::File)?;
         loader.set_image_search_order(order);
         loader.set_model_replacement_load(enhanced, skeletal);
-        loader.precache(s.vfs, path, rules)
+        loader.precache(s.vfs, path, rules, s.storage.file_search(module))
     },
-    model_bounds: |s, path, rules| {
-        s.model_loader
-            .as_deref()
-            .and_then(|loader| loader.lookup().bounds(path, rules))
-            .or_else(|| s.model_lookup.and_then(|models| models.bounds(path, rules)))
+    model_bounds: |s, module, path, rules| {
+        let search = s.storage.file_search(module);
+        s.vfs
+            .read_view(search)
+            .retain()
+            .map_err(|_| CallError::File)?;
+        s.models()
+            .and_then(|models| models.bounds(path, rules, search))
             .ok_or(CallError::Geometry)
     },
     file_open: |s, m, p| s.file_open(m, p),

@@ -1054,16 +1054,25 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
         let paths: Vec<_> = host
             .model_precaches()
             .into_iter()
-            .map(|(source, path)| (source, std::str::from_utf8(path).unwrap().to_owned()))
+            .map(|(source, path, search)| {
+                (
+                    source,
+                    std::str::from_utf8(path).unwrap().to_owned(),
+                    search.cloned(),
+                )
+            })
             .collect();
-        for (source, path) in paths {
+        for (source, path, search) in paths {
             host.runtime
                 .model_assets
                 .as_mut()
                 .unwrap()
                 .register_request(
                     &host.runtime.vfs,
-                    ModelRequest::native(&path, source, Some(palette)),
+                    ModelRequest {
+                        search: search.as_ref(),
+                        ..ModelRequest::native(&path, source, Some(palette))
+                    },
                 )
                 .unwrap();
         }
@@ -1237,27 +1246,40 @@ fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog(
             .as_ref()
             .unwrap()
             .catalog()
-            .bounds(b"progs/test.mdl", rules);
+            .bounds(b"progs/test.mdl", rules, None);
         assert_eq!(loaded.is_some(), rules == RuleSetId::Quake);
         let precaches = host.model_precaches();
-        assert_eq!(precaches, [(rules, b"progs/test.mdl".as_slice())]);
+        assert_eq!(
+            precaches
+                .iter()
+                .map(|(rules, name, _)| (*rules, *name))
+                .collect::<Vec<_>>(),
+            [(rules, b"progs/test.mdl".as_slice())]
+        );
         // The normal startup bridge registers every module's precaches into
         // this same builder, including QW's name-only registration.
         // Own the cold names only across the split Runtime borrow.
         let requests = precaches
             .into_iter()
-            .map(|(source_rules, path)| {
-                (std::str::from_utf8(path).unwrap().to_owned(), source_rules)
+            .map(|(source_rules, path, search)| {
+                (
+                    std::str::from_utf8(path).unwrap().to_owned(),
+                    source_rules,
+                    search.cloned(),
+                )
             })
             .collect::<Vec<_>>();
-        for (path, source_rules) in &requests {
+        for (path, source_rules, search) in &requests {
             host.runtime
                 .model_assets
                 .as_mut()
                 .unwrap()
                 .register_request(
                     &host.runtime.vfs,
-                    ModelRequest::native(path, *source_rules, Some(palette)),
+                    ModelRequest {
+                        search: search.as_ref(),
+                        ..ModelRequest::native(path, *source_rules, Some(palette))
+                    },
                 )
                 .unwrap();
         }

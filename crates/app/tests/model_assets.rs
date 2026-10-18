@@ -2784,7 +2784,7 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
     )
     .unwrap();
     assert_eq!(
-        owner.precache(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3),
+        owner.precache(&fixture.vfs, b"models/test.md3", RuleSetId::Quake3, None),
         Ok(bounds)
     );
     let handle = owner
@@ -4964,7 +4964,12 @@ fn surface_name_capacity_failure_keeps_registration_transactional() {
     );
     fixture.remove(failed_path);
     assert_eq!(
-        owner.precache(&fixture.vfs, failed_path.as_bytes(), RuleSetId::Quake3),
+        owner.precache(
+            &fixture.vfs,
+            failed_path.as_bytes(),
+            RuleSetId::Quake3,
+            None
+        ),
         Err(CallError::Capacity)
     );
     assert_eq!(
@@ -5044,19 +5049,19 @@ fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_call
     )
     .unwrap();
     let bounds = owner
-        .precache(&fixture.vfs, b"models/first.md2", RuleSetId::Quake2)
+        .precache(&fixture.vfs, b"models/first.md2", RuleSetId::Quake2, None)
         .unwrap();
     assert_eq!(
         owner
             .catalog()
-            .bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake),
+            .bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake, None),
         Some(bounds)
     );
     fixture.remove("models/first.md2");
     fixture.remove(path);
     assert_eq!(
         owner
-            .precache(&fixture.vfs, b"MODELS\\FIRST.MD2", RuleSetId::Quake)
+            .precache(&fixture.vfs, b"MODELS\\FIRST.MD2", RuleSetId::Quake, None)
             .unwrap(),
         bounds
     );
@@ -5064,7 +5069,7 @@ fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_call
     // already gone from the VFS and must not be loaded through a second cache.
     assert_eq!(
         owner
-            .precache(&fixture.vfs, b"models/second.md2", RuleSetId::Quake2)
+            .precache(&fixture.vfs, b"models/second.md2", RuleSetId::Quake2, None)
             .unwrap(),
         bounds
     );
@@ -5091,7 +5096,7 @@ fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_call
             .model
     );
     assert_eq!(
-        catalog.bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake),
+        catalog.bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake, None),
         Some(bounds)
     );
 }
@@ -5115,12 +5120,12 @@ fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
     let mut owner =
         ModelAssets::new(&fixture.vfs, assets, [profile], [], ModelLimits::default()).unwrap();
     let alias = owner
-        .precache(&fixture.vfs, b"progs/group.mdl", RuleSetId::Quake)
+        .precache(&fixture.vfs, b"progs/group.mdl", RuleSetId::Quake, None)
         .unwrap();
     assert_eq!(alias.mins, Vec3([-16.0; 3]));
     assert_eq!(alias.maxs, Vec3([16.0; 3]));
     let sprite = owner
-        .precache(&fixture.vfs, b"progs/group.spr", RuleSetId::Quake)
+        .precache(&fixture.vfs, b"progs/group.spr", RuleSetId::Quake, None)
         .unwrap();
     assert_eq!(sprite.mins, Vec3([-2.0, -2.0, -1.0]));
     assert_eq!(sprite.maxs, Vec3([2.0, 2.0, 1.0]));
@@ -5144,7 +5149,7 @@ fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
         ),
     ] {
         assert_eq!(
-            catalog.bounds(path.as_bytes(), RuleSetId::Quake),
+            catalog.bounds(path.as_bytes(), RuleSetId::Quake, None),
             Some(bounds)
         );
         let metadata = catalog.metadata(path.as_bytes(), None).unwrap();
@@ -5152,7 +5157,10 @@ fn native_metadata_survives_sprite_registration_and_initial_registration_end() {
         assert_eq!(metadata.format, format);
         assert!(catalog.registration(path, profile, None).is_some());
     }
-    assert_eq!(catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake), None);
+    assert_eq!(
+        catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake, None),
+        None
+    );
 }
 
 #[test]
@@ -5591,12 +5599,12 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     for path in [b"maps/start.bsp".as_slice(), b"MAPS\\ABSENT.BSP"] {
         assert_eq!(
             owner
-                .precache(&fixture.vfs, path, RuleSetId::Quake)
+                .precache(&fixture.vfs, path, RuleSetId::Quake, None)
                 .unwrap(),
             expected
         );
         assert_eq!(
-            owner.catalog().bounds(path, RuleSetId::Quake3),
+            owner.catalog().bounds(path, RuleSetId::Quake3, None),
             Some(expected)
         );
     }
@@ -5615,12 +5623,12 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
             .unwrap();
     }
     assert!(matches!(
-        owner.precache(&fixture.vfs, b"maps/unbound.bsp", RuleSetId::Quake),
+        owner.precache(&fixture.vfs, b"maps/unbound.bsp", RuleSetId::Quake, None),
         Err(qa_compat::services::CallError::File)
     ));
     let ModelView { assets, catalog } = owner.view();
     assert_eq!(
-        catalog.bounds(b"MAPS\\START.BSP", RuleSetId::QuakeWorld),
+        catalog.bounds(b"MAPS\\START.BSP", RuleSetId::QuakeWorld, None),
         Some(expected)
     );
     assert_eq!(
@@ -5704,7 +5712,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     bindings.reset();
     assert_eq!(bindings.collision_world(), None);
     assert_eq!(
-        catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
+        catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2, None),
         Some(expected)
     );
     assert_eq!(catalog.metadata(b"maps/start.bsp", None), None);
@@ -5835,20 +5843,22 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
             .is_err()
     );
     assert_eq!(
-        owner.catalog().bounds(b"maps/start.bsp", RuleSetId::Quake),
+        owner
+            .catalog()
+            .bounds(b"maps/start.bsp", RuleSetId::Quake, None),
         Some(bounds)
     );
     assert_eq!(
         owner
             .catalog()
-            .bounds(b"maps/overflow.bsp", RuleSetId::Quake),
+            .bounds(b"maps/overflow.bsp", RuleSetId::Quake, None),
         None
     );
     let catalog = owner.catalog();
     assert_eq!(catalog.capacity().names, 2);
     assert_eq!(catalog.capacity().name_bytes, "maps/start.bsp".len());
     assert_eq!(
-        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
+        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake, None),
         Some(bounds)
     );
     assert_eq!(catalog.resolve_inline(first, 0).unwrap().world, first);
@@ -5880,7 +5890,9 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
                 .is_err()
         );
         assert_eq!(
-            owner.catalog().bounds(b"maps/start.bsp", RuleSetId::Quake),
+            owner
+                .catalog()
+                .bounds(b"maps/start.bsp", RuleSetId::Quake, None),
             None
         );
         let catalog = owner.catalog();
@@ -5896,7 +5908,9 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
             .is_err()
     );
     assert_eq!(
-        owner.catalog().bounds(b"maps/start.bsp", RuleSetId::Quake),
+        owner
+            .catalog()
+            .bounds(b"maps/start.bsp", RuleSetId::Quake, None),
         None
     );
     let catalog = owner.catalog();
@@ -5920,7 +5934,12 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     )
     .unwrap();
     let mesh_bounds = owner
-        .precache(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
+        .precache(
+            &fixture.vfs,
+            b"models/test/tris.md2",
+            RuleSetId::Quake2,
+            None,
+        )
         .unwrap();
     let native_bounds = Bounds {
         mins: Vec3([-1.0; 3]),
@@ -5960,7 +5979,7 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     assert_eq!(
         owner
             .catalog()
-            .bounds(b"models/test/tris.md2", RuleSetId::Quake2),
+            .bounds(b"models/test/tris.md2", RuleSetId::Quake2, None),
         Some(mesh_bounds)
     );
     let ModelView { assets, catalog } = owner.view();
@@ -5977,7 +5996,7 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
     assert!(binding(&catalog, "models/test/tris.md2", profile, 0).is_some());
     assert_eq!(catalog.registration("maps/start.bsp", profile, None), None);
     assert_eq!(
-        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
+        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake, None),
         Some(native_bounds)
     );
 }

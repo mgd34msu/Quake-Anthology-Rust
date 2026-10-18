@@ -339,7 +339,10 @@ fn map_callbacks_run_immediately_with_native_reuse_and_preserved_globals() {
             ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 1)
         );
         assert_eq!(
-            host.model_precaches(),
+            host.model_precaches()
+                .into_iter()
+                .map(|(rules, name, _)| (rules, name))
+                .collect::<Vec<_>>(),
             vec![(rules, b"maps/mixed.bsp".as_slice())]
         );
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);

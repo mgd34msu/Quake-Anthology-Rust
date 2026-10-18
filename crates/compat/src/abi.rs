@@ -1219,7 +1219,12 @@ fn qc_precache<const MODEL: bool>(
                 name,
             )?;
         } else {
-            (ENGINE_CALLS.model_precache)(c.services, name, c.context.native_rules)?;
+            (ENGINE_CALLS.model_precache)(
+                c.services,
+                c.context.module,
+                name,
+                c.context.native_rules,
+            )?;
         }
     }
     Ok(CallValue::Word(u64::from(word)))

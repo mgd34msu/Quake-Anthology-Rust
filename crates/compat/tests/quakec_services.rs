@@ -955,6 +955,8 @@ fn with_brush_services(
 #[derive(Default)]
 struct Models {
     loaded: Vec<(Vec<u8>, RuleSetId)>,
+    loaded_searches: Vec<Option<qa_content::vfs::SearchView>>,
+    expected_search: Option<qa_content::vfs::SearchView>,
     order: qa_render::material::resources::ImageSearchOrder,
     loaded_orders: Vec<qa_render::material::resources::ImageSearchOrder>,
     replacement_load: (bool, bool),
@@ -991,8 +993,17 @@ impl ModelLookup for Models {
     fn shader_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
         None
     }
-    fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds> {
-        (!self.fail
+    fn bounds(
+        &self,
+        path: &[u8],
+        source: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<Bounds> {
+        (self
+            .expected_search
+            .as_ref()
+            .is_none_or(|expected| _search.is_some_and(|search| search.same_selection(expected)))
+            && !self.fail
             && self
                 .loaded
                 .iter()
@@ -1030,14 +1041,17 @@ impl ModelLoader for Models {
         _: &qa_content::vfs::Vfs,
         path: &[u8],
         source: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<Bounds, CallError> {
         self.loaded.push((path.to_vec(), source));
+        self.loaded_searches.push(_search.cloned());
         self.loaded_orders.push(self.order);
         self.loaded_replacements.push(self.replacement_load);
         if self.fail {
             Err(CallError::File)
         } else {
-            self.bounds(path, source).ok_or(CallError::Geometry)
+            self.bounds(path, source, _search)
+                .ok_or(CallError::Geometry)
         }
     }
 }
@@ -6657,4 +6671,48 @@ fn quakec_trace_globals_adopt_foreign_brush_media_from_the_caller_trace_role() {
             },
         );
     }
+}
+
+#[test]
+fn quakec_precache_and_model_bounds_pass_the_calling_modules_file_selection() {
+    let mut models = Models::default();
+    let mut retained = None;
+    with_model_services(RuleSetId::Quake, Some(&mut models), |calls| {
+        let search = calls.services.vfs.search_view([]).unwrap();
+        calls
+            .services
+            .storage
+            .set_file_search(
+                calls.context.module,
+                Some(search.clone()),
+                calls.services.vfs,
+            )
+            .unwrap();
+        let mut vm = vm(4);
+        let name = vm.insert_string(b"progs/selected.mdl").unwrap() as u32;
+        parameters(&mut vm, &[&[name]]);
+        calls.call(&mut vm, 20, 1).unwrap();
+        retained = Some(search);
+    });
+    let selected = retained.unwrap();
+    assert!(
+        models.loaded_searches[0]
+            .as_ref()
+            .unwrap()
+            .same_selection(&selected)
+    );
+    models.expected_search = Some(selected.clone());
+    with_model_services(RuleSetId::Quake, Some(&mut models), |calls| {
+        // A new service owner must not obtain metadata from another owner's
+        // cached file just because the path and rules happen to match.
+        assert_eq!(
+            (ENGINE_CALLS.model_bounds)(
+                calls.services,
+                calls.context.module,
+                b"progs/selected.mdl",
+                RuleSetId::Quake
+            ),
+            Err(CallError::Geometry)
+        );
+    });
 }
