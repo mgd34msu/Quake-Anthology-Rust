@@ -774,12 +774,13 @@ impl PushHost for Host<'_, '_> {
             let (_, entity) =
                 projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
             let rules = self.push_rules()?;
+            let mover = contacts::capture(self.host, entity)?;
             return physics::push_entity(
                 &mut projected::Passenger {
                     host: self.host,
                     driver: self.driver,
                     native,
-                    entity,
+                    mover,
                     rules,
                 },
                 entity,

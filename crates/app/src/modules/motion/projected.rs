@@ -206,13 +206,13 @@ pub(super) struct Passenger<'a, 'd> {
     pub host: &'a mut FrameHost,
     pub driver: &'a mut crate::modules::Driver<'d>,
     pub native: NativeEntity,
-    pub entity: EntityId,
+    pub mover: EntityReference,
     pub rules: PushRules,
 }
 impl Passenger<'_, '_> {
     fn current(&self) -> Option<EntityId> {
         client(self.host, self.native)
-            .filter(|(_, entity)| *entity == self.entity)
+            .filter(|(_, entity)| *entity == self.mover.entity())
             .map(|(_, entity)| entity)
     }
 }
@@ -265,14 +265,13 @@ impl DisplacementHost for Passenger<'_, '_> {
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?
             .time(self.host.time);
-        let mover = contacts::capture(self.host, self.entity)?;
         let current = self.current();
         contacts::impact(
             self.host,
             module,
             super::super::execution::TraceAccess::empty(),
             current,
-            mover,
+            self.mover,
             obstacle,
             time,
             self.driver,

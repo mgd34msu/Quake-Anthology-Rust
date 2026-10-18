@@ -258,6 +258,31 @@ fn qvm_passenger_relink_calls_foreign_quakec_trigger_with_the_transported_pose()
     assert_eq!(qc.vm.image.globals[59], 1.0f32.to_bits());
 }
 
+#[test]
+fn qvm_passenger_impact_keeps_its_capture_after_relink_retires_the_client() {
+    use qa_session::physics::DisplacementHost;
+    let mut f = qvm_passenger_fixture(RuleSetId::Quake, Connection::Local);
+    let obstacle = contacts::capture(&f.host, f.pusher).unwrap();
+    let mover = contacts::capture(&f.host, f.rider).unwrap();
+    assert!(f.host.runtime.disconnect_client(ClientId(0)));
+    assert!(f.host.runtime.server.entities.resolve(f.rider).is_none());
+    let before = f.host.module_counts(B).unwrap().calls;
+    let trace = MotionTrace {
+        trace: qa_world::collision::Trace::clear(Vec3::default()),
+        ground: Some(obstacle),
+    };
+    let mut driver = crate::modules::Driver::cache_only();
+    let mut passenger = projected::Passenger {
+        host: &mut f.host,
+        driver: &mut driver,
+        native: NativeEntity { module: B, slot: 0 },
+        mover,
+        rules: qa_gameplay::rules::motion::push_rules(RuleSetId::Quake).unwrap(),
+    };
+    assert!(matches!(passenger.impact(None, &trace), Ok(None)));
+    assert_eq!(f.host.module_counts(B).unwrap().calls, before);
+}
+
 const A: ModuleId = ModuleId(1);
 const B: ModuleId = ModuleId(2);
 
