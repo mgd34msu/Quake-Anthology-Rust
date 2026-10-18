@@ -249,3 +249,61 @@ fn human_seat_selection_survives_retirement_without_weakening_native_lifetimes()
     );
     assert_eq!(vars.numeric(seat_view).unwrap(), 117.0);
 }
+
+#[test]
+fn saved_seat_columns_exist_before_connections_and_first_binding_keeps_pending_values() {
+    let mut vars = Cvars::new().unwrap();
+    let offline = |seat| Context {
+        seat,
+        cvar_seat: Some(seat),
+        ..Context::default()
+    };
+    for (seat, text) in [(SeatId::FIRST, "111"), (SeatId::ALL[1], "122")] {
+        vars.load_seat_values(seat, qa_core::primitives::RuleSetId::Quake3)
+            .unwrap();
+        let view = vars.bind("cg_fov", offline(seat)).unwrap();
+        vars.write(view, text).unwrap();
+        vars.load_seat_values(seat, qa_core::primitives::RuleSetId::Quake3)
+            .unwrap();
+        assert_eq!(vars.read(view).unwrap().as_str(), text);
+    }
+    let first = offline(SeatId::FIRST);
+    vars.set_user("_profile_module_setting", "42", first, None, 0)
+        .unwrap();
+    let pending = vars
+        .register("_profile_latch", Some("1"), 1 | 32, first)
+        .unwrap();
+    vars.set_runtime_policy(qa_console::cvars::RuntimePolicy {
+        initialized: true,
+        server_active: false,
+    });
+    vars.write(pending, "23").unwrap();
+    let owner = client(7, 44, 0);
+    vars.load_client_values(
+        owner.client_lifetime.unwrap(),
+        Some((owner.seat, owner.source)),
+    )
+    .unwrap();
+    assert_eq!(
+        vars.read(vars.bind("cg_fov", owner).unwrap())
+            .unwrap()
+            .as_str(),
+        "111"
+    );
+    assert_eq!(
+        vars.read(vars.bind("_profile_module_setting", owner).unwrap())
+            .unwrap()
+            .as_str(),
+        "42"
+    );
+    let rebound = vars.bind("_profile_latch", owner).unwrap();
+    assert_eq!(vars.latched(rebound).unwrap().unwrap().as_str(), "23");
+    let peer = vars.bind("cg_fov", offline(SeatId::ALL[1])).unwrap();
+    assert_eq!(vars.read(peer).unwrap().as_str(), "122");
+    assert_eq!(
+        vars.read(vars.bind("cg_fov", Context::default()).unwrap())
+            .unwrap()
+            .as_str(),
+        "90"
+    );
+}

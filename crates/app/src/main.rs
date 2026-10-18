@@ -469,6 +469,13 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let local_policies = staged_map.as_ref().map(|(_, base)| {
+        std::array::from_fn::<_, { SeatId::COUNT }, _>(|index| {
+            let mut policy = seat_policies[index].unwrap_or(*base);
+            policy.input = seat_input_rules[index].unwrap_or(policy.input);
+            policy
+        })
+    });
     let stock_server_rules = server_rules.or_else(|| {
         staged_map
             .as_ref()
@@ -542,27 +549,24 @@ fn run() -> Result<(), String> {
             &mut console,
             &mut runtime,
             &input.profile_product(policy.client),
-            policy.client,
-            policy.movement,
+            &local_policies
+                .as_ref()
+                .ok_or("missing local seat policies")?[..seat_count],
         )?;
         println!(
-            "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"connected_seats\":{seat_count},\"history_imported\":false,\"settings_only\":true}}",
+            "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":{},\"connected_seats\":{seat_count},\"history_imported\":false,\"settings_only\":true}}",
             imported_profile.consumed(),
             serde_json::to_string(&imported_profile.files)
                 .map_err(|e| format!("profile report: {e}"))?,
             imported_profile.cvars,
             imported_profile.bindings,
-            imported_profile.unsupported
+            imported_profile.unsupported,
+            imported_profile.seats.len()
         );
     }
     // Saved settings are already in the one table. Explicit CLI values win
     // before image/material registration consumes its cold settings.
-    for (name, value, context) in &startup_sets {
-        console
-            .cvars
-            .set_user(name, value, *context, None, 0)
-            .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
-    }
+    qa_app::profile::apply_overrides(&mut console, &startup_sets)?;
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     assets.set_image_search_order(qa_app::render_settings::image_search(
         &console.cvars,
@@ -661,8 +665,9 @@ fn run() -> Result<(), String> {
         }
         for (index, slot) in local_clients.iter_mut().enumerate().take(seat_count) {
             let seat = SeatId::new(index as u8).ok_or("invalid local seat")?;
-            let mut policy = seat_policies[index].unwrap_or(policy);
-            policy.input = seat_input_rules[index].unwrap_or(policy.input);
+            let policy = local_policies
+                .as_ref()
+                .ok_or("missing local seat policies")?[index];
             let rules = policy.movement;
             let traces = policy.trace;
             let spawn = loaded.spawns[index];

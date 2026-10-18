@@ -613,6 +613,9 @@ fn drain(runtime: &mut Runtime, queue: &mut SysEventQueue, records: &mut Vec<Rec
                     Incoming::Acknowledged { receipt, .. } => {
                         records.push(Record::Ack { client, receipt });
                     }
+                    Incoming::MoveStart { .. } => {
+                        assert_eq!(endpoint, Endpoint::Server);
+                    }
                     _ => panic!("unexpected queued Q3 record"),
                 }
                 ControlFlow::Continue(())

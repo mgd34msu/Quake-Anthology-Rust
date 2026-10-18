@@ -6,6 +6,7 @@ use qa_core::sys_events::SeatId;
 pub(super) struct ClientColumn {
     owner: Option<(ClientId, EntityId)>,
     local: Option<(SeatId, RuleSetId)>,
+    activated: bool,
 }
 
 struct ClientArchive {
@@ -151,8 +152,46 @@ impl Cvars {
         owner: (ClientId, EntityId),
         local: Option<(SeatId, RuleSetId)>,
     ) -> Result<(), WriteError> {
+        if let Some((seat, _)) = local
+            && let Some(index) = self.seat_column(seat).map(|column| column - 1)
+            && !self.clients[index].activated
+        {
+            self.refresh_changes();
+            self.retire_client_owner(owner.0);
+            self.clients[index].owner = Some(owner);
+            self.clients[index].local = local;
+            self.clients[index].activated = true;
+            return Ok(());
+        }
+        self.load_value_column(Some(owner), local)
+    }
+
+    /// A saved local profile has a seat but no connection lifetime yet. Its
+    /// first connection adopts the same column, including module-user values
+    /// and pending latches; subsequent connections use the native archive rule.
+    pub fn load_seat_values(&mut self, seat: SeatId, source: RuleSetId) -> Result<(), WriteError> {
+        if self.has_seat_values(seat) {
+            return Ok(());
+        }
+        self.load_value_column(None, Some((seat, source)))
+    }
+
+    fn retire_client_owner(&mut self, client: ClientId) {
+        for row in &mut self.clients {
+            if row.owner.is_some_and(|previous| previous.0 == client) {
+                row.owner = None;
+            }
+        }
+    }
+
+    fn load_value_column(
+        &mut self,
+        owner: Option<(ClientId, EntityId)>,
+        local: Option<(SeatId, RuleSetId)>,
+    ) -> Result<(), WriteError> {
         let reserved = local.and_then(|(seat, _)| self.seat_column(seat).map(|column| column - 1));
-        if let Some(index) = self.clients.iter().position(|row| row.owner == Some(owner))
+        if let Some(owner) = owner
+            && let Some(index) = self.clients.iter().position(|row| row.owner == Some(owner))
             && reserved.is_none_or(|reserved| reserved == index)
             && local.is_none_or(|(seat, _)| {
                 self.clients[index].local.is_none_or(|(old, _)| seat == old)
@@ -169,7 +208,10 @@ impl Cvars {
             reserved
         } else {
             self.clients.iter().position(|row| {
-                row.local.is_none() && row.owner.is_none_or(|previous| previous.0 == owner.0)
+                row.local.is_none()
+                    && row
+                        .owner
+                        .is_none_or(|previous| owner.is_some_and(|owner| previous.0 == owner.0))
             })
         };
         let column = previous.map_or(self.texts.len(), |index| index + 1);
@@ -177,10 +219,8 @@ impl Cvars {
             .and_then(|index| self.clients[index].local)
             .map(|(seat, source)| self.local_archive(column, seat, source))
             .transpose()?;
-        for row in &mut self.clients {
-            if row.owner.is_some_and(|previous| previous.0 == owner.0) {
-                row.owner = None;
-            }
+        if let Some(owner) = owner {
+            self.retire_client_owner(owner.0);
         }
         if previous.is_none() {
             let total = self
@@ -203,8 +243,9 @@ impl Cvars {
             }
             self.texts.push(text);
             self.clients.push(ClientColumn {
-                owner: Some(owner),
+                owner,
                 local,
+                activated: owner.is_some(),
             });
             self.info_revisions.push([[0; INFO_FLAGS.len()]; 5]);
             let projections = self.projection_count();
@@ -231,8 +272,9 @@ impl Cvars {
                     .any(|handle| handle.0 as usize / stride == column)
             });
             self.clients[column - 1] = ClientColumn {
-                owner: Some(owner),
+                owner,
                 local,
+                activated: owner.is_some(),
             };
             for index in 0..self.stride {
                 self.values[column * self.stride + index] = inherited(&self.values[index]);
@@ -254,7 +296,12 @@ impl Cvars {
                 self.publish(handle, text.as_str())?;
             }
             for (mut view, text) in retained.details {
-                view.context.client_lifetime = Some(owner);
+                view.context.client_lifetime = owner;
+                view.context.cvar_seat = if owner.is_none() {
+                    local.map(|(seat, _)| seat)
+                } else {
+                    None
+                };
                 self.save_detail(view, text.as_str(), false)?;
             }
         }

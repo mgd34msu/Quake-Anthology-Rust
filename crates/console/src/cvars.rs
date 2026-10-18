@@ -1256,6 +1256,10 @@ impl Cvars {
             })
             .map(|detail| detail.text.as_str())
             .or_else(|| {
+                self.inherited_detail_view(view, true)
+                    .and_then(|parent| self.pending_detail(parent))
+            })
+            .or_else(|| {
                 let replaced = self.pending.iter().any(|pending| {
                     pending.handles().any(|handle| {
                         self.pending_affects(handle, view.handle)
@@ -1748,6 +1752,27 @@ impl Cvars {
         self.refresh_changes();
         Ok(())
     }
+    fn inherited_detail_view(&self, mut view: View, pending: bool) -> Option<View> {
+        let inherited = |handle| {
+            self.inherits(handle)
+                && (!pending
+                    || !self
+                        .pending
+                        .iter()
+                        .any(|write| write.handles().any(|changed| changed == handle)))
+        };
+        if !inherited(view.handle)
+            || !self
+                .dependency_rows(view)
+                .all(|row| inherited(self.slot_in(row as usize, view)))
+        {
+            return None;
+        }
+        view.handle = self.root(view.handle);
+        view.context.client_lifetime = None;
+        view.context.cvar_seat = None;
+        Some(view)
+    }
     fn detail(&self, view: View) -> Option<&str> {
         self.details.get(self.projection_index(view)?)?[view.context.source as usize]
             .as_ref()
@@ -1758,6 +1783,10 @@ impl Cvars {
                         .all(|(h, revision)| self.generation(*h) == *revision)
             })
             .map(|d| d.text.as_str())
+            .or_else(|| {
+                self.inherited_detail_view(view, false)
+                    .and_then(|parent| self.detail(parent))
+            })
     }
     fn save_detail(&mut self, view: View, text: &str, modified: bool) -> Result<(), WriteError> {
         if modified {

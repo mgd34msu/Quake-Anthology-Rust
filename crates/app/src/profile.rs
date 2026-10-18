@@ -5,7 +5,7 @@ use qa_console::{catalog::Scope, commands::Console, views::Context};
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::{
     names::canonical_path,
-    primitives::RuleSetId,
+    primitives::{ClientPolicy, RuleSetId},
     sys_events::{EventTime, SeatId},
 };
 use qa_formats::archive::ArchiveReader;
@@ -19,10 +19,16 @@ pub struct Import {
     pub cvars: u32,
     pub bindings: u32,
     pub unsupported: u32,
+    pub seats: Vec<SeatId>,
 }
 impl Import {
     pub fn consumed(&self) -> bool {
-        !self.files.is_empty() && self.cvars + self.bindings != 0
+        !self.files.is_empty() && (self.cvars + self.bindings != 0 || !self.seats.is_empty())
+    }
+    fn applied_to(&mut self, seat: SeatId) {
+        if !self.seats.contains(&seat) {
+            self.seats.push(seat);
+        }
     }
 }
 
@@ -48,10 +54,14 @@ fn put(
     source: RuleSetId,
     name: &str,
     value: &str,
+    selected: Option<SeatId>,
     report: &mut Import,
 ) {
     let context = Context {
         source,
+        seat: selected.unwrap_or(console.cvars.context().seat),
+        client_lifetime: None,
+        cvar_seat: selected,
         ..console.cvars.context()
     };
     let server = Context {
@@ -61,6 +71,10 @@ fn put(
     let context = if console.cvars.bind(name, context).is_none()
         && console.cvars.bind(name, server).is_some()
     {
+        if selected.is_some() {
+            report.unsupported += 1;
+            return;
+        }
         server
     } else {
         context
@@ -79,8 +93,15 @@ fn entries(
     console: &mut Console<Runtime>,
     value: &Value,
     source: RuleSetId,
+    selected: Option<SeatId>,
     report: &mut Import,
 ) -> Result<(), String> {
+    if let Some(seat) = selected {
+        console
+            .cvars
+            .load_seat_values(seat, source)
+            .map_err(|e| format!("profile seat cvars: {e:?}"))?;
+    }
     let rows = value.as_array().ok_or("profile entries must be a list")?;
     if rows.len() > 16384 {
         return Err("too many profile cvars".into());
@@ -98,7 +119,10 @@ fn entries(
         if name.contains('\0') || value.contains('\0') || !names.insert(name) {
             return Err("invalid or duplicate profile cvar".into());
         }
-        put(console, source, name, value, report);
+        put(console, source, name, value, selected, report);
+    }
+    if let Some(seat) = selected {
+        report.applied_to(seat);
     }
     Ok(())
 }
@@ -149,17 +173,22 @@ fn seat(
     console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     value: &Value,
+    seat_id: SeatId,
     source: RuleSetId,
     apply_preferences: bool,
     report: &mut Import,
 ) -> Result<(), String> {
+    console
+        .cvars
+        .load_seat_values(seat_id, source)
+        .map_err(|e| format!("profile seat cvars: {e:?}"))?;
     if let Some(rows) = value.get("bindings").and_then(Value::as_array) {
         if rows.len() > 4096 {
             return Err("too many saved bindings".into());
         }
         runtime
             .input
-            .unbind_all(SeatId::FIRST, EventTime::default(), &mut ColdTarget);
+            .unbind_all(seat_id, EventTime::default(), &mut ColdTarget);
         for row in rows {
             let Some(control) = row.get("input").and_then(control) else {
                 report.unsupported += 1;
@@ -195,7 +224,7 @@ fn seat(
                 if runtime
                     .input
                     .bind_text(
-                        SeatId::FIRST,
+                        seat_id,
                         control,
                         &command,
                         EventTime::default(),
@@ -212,6 +241,7 @@ fn seat(
             }
         }
     }
+    report.applied_to(seat_id);
     if !apply_preferences {
         return Ok(());
     }
@@ -221,6 +251,7 @@ fn seat(
             source,
             "cl_run",
             if always { "1" } else { "0" },
+            Some(seat_id),
             report,
         );
     }
@@ -233,7 +264,14 @@ fn seat(
             ("forward", "m_forward"),
         ] {
             if let Some(number) = mouse.get(field).and_then(Value::as_f64) {
-                put(console, source, name, &number.to_string(), report);
+                put(
+                    console,
+                    source,
+                    name,
+                    &number.to_string(),
+                    Some(seat_id),
+                    report,
+                );
             }
         }
         if let Some(number) = mouse.get("pitch").and_then(Value::as_f64) {
@@ -242,7 +280,14 @@ fn seat(
             } else {
                 number
             };
-            put(console, source, "m_pitch", &pitch.to_string(), report);
+            put(
+                console,
+                source,
+                "m_pitch",
+                &pitch.to_string(),
+                Some(seat_id),
+                report,
+            );
         }
         for (field, name) in [
             ("filter", "m_filter"),
@@ -251,7 +296,14 @@ fn seat(
             ("lookSpring", "lookspring"),
         ] {
             if let Some(value) = mouse.get(field).and_then(Value::as_bool) {
-                put(console, source, name, if value { "1" } else { "0" }, report);
+                put(
+                    console,
+                    source,
+                    name,
+                    if value { "1" } else { "0" },
+                    Some(seat_id),
+                    report,
+                );
             }
         }
     }
@@ -264,12 +316,10 @@ pub fn load(
     console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     product: &str,
-    client: RuleSetId,
-    movement: RuleSetId,
+    policies: &[ClientPolicy],
 ) -> Result<Import, String> {
-    let mut report = Import::default();
     let Some(root) = qa_platform::saved_profile_root() else {
-        return Ok(report);
+        return Ok(Import::default());
     };
     let mount = runtime
         .vfs
@@ -280,11 +330,36 @@ pub fn load(
         .files_in_mount(mount)
         .map(|(file, name)| (file, name.to_vec()))
         .collect();
+    let result = import_files(console, runtime, product, policies, &files);
+    // Settings mounts never enter the live game asset namespace, even after a
+    // malformed profile. Preserve the original import error after cleanup.
+    let removed = runtime.vfs.unmount(mount);
+    if !removed && result.is_ok() {
+        return Err("profile mount lost during import".into());
+    }
+    result
+}
+
+fn import_files(
+    console: &mut Console<Runtime>,
+    runtime: &mut Runtime,
+    product: &str,
+    policies: &[ClientPolicy],
+    files: &[(FileRef, Vec<u8>)],
+) -> Result<Import, String> {
+    let mut report = Import::default();
     let canonical = files
         .iter()
         .find(|(_, name)| name.as_slice() == b"cvars/shared/canonical.json");
-    let default_source = client;
-    let movement_source = movement;
+    if policies.len() > SeatId::COUNT {
+        return Err("too many local profile policies".into());
+    }
+    let primary = policies
+        .first()
+        .copied()
+        .ok_or("profile requires a local seat policy")?;
+    let policy = |seat: SeatId| policies.get(seat.index()).copied().unwrap_or(primary);
+    let default_source = primary.client;
     let prefix = canonical_path(&format!("{product}/"));
     if let Some((file, name)) = canonical {
         let value = document(&runtime.vfs, file)?;
@@ -295,18 +370,30 @@ pub fn load(
             console,
             value.get("entries").ok_or("canonical entries missing")?,
             RuleSetId::Quake3,
+            None,
             &mut report,
         )?;
-        if let Some(players) = value.get("players").and_then(Value::as_array) {
+        if let Some(players) = value.get("players") {
+            let players = players
+                .as_array()
+                .ok_or("canonical players must be a list")?;
             for player in players {
-                if player.get("seat").and_then(Value::as_u64) == Some(0) {
-                    entries(
-                        console,
-                        player.get("entries").ok_or("player entries missing")?,
-                        RuleSetId::Quake3,
-                        &mut report,
-                    )?;
+                let seat = player
+                    .get("seat")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u8::try_from(n).ok())
+                    .and_then(SeatId::new)
+                    .ok_or("invalid canonical player seat")?;
+                if report.seats.contains(&seat) {
+                    return Err("duplicate canonical player seat".into());
                 }
+                entries(
+                    console,
+                    player.get("entries").ok_or("player entries missing")?,
+                    RuleSetId::Quake3,
+                    Some(seat),
+                    &mut report,
+                )?;
             }
         }
         report
@@ -322,7 +409,7 @@ pub fn load(
             "cvars/movement/",
             "cvars/input/",
         ] {
-            for (file, name) in &files {
+            for (file, name) in files {
                 let Ok(path) = std::str::from_utf8(name) else {
                     continue;
                 };
@@ -338,44 +425,65 @@ pub fn load(
                     .and_then(Value::as_str)
                     .and_then(RuleSetId::parse)
                     .ok_or("unknown profile cvar dialect")?;
-                let expected = if stage == "cvars/movement/" {
-                    movement_source
-                } else {
-                    default_source
+                let role = |policy: ClientPolicy| match stage {
+                    "cvars/movement/" => policy.movement,
+                    "cvars/input/" => policy.input,
+                    _ => policy.client,
                 };
-                if file_source != expected {
-                    continue;
+                let rows = value.get("entries").ok_or("profile entries missing")?;
+                if stage == "cvars/client/" || stage == "cvars/input/" {
+                    let Some(seat) = relative
+                        .rsplit('/')
+                        .next()
+                        .and_then(|name| name.strip_suffix(".json"))
+                        .and_then(|index| index.parse::<u8>().ok())
+                        .and_then(SeatId::new)
+                    else {
+                        report.unsupported += 1;
+                        continue;
+                    };
+                    if role(policy(seat)) != file_source {
+                        continue;
+                    }
+                    entries(console, rows, file_source, Some(seat), &mut report)?;
+                } else {
+                    if role(primary) == file_source {
+                        entries(console, rows, file_source, None, &mut report)?;
+                    }
+                    for (index, selected) in policies.iter().copied().enumerate() {
+                        if role(selected) == file_source {
+                            entries(
+                                console,
+                                rows,
+                                file_source,
+                                Some(SeatId::ALL[index]),
+                                &mut report,
+                            )?;
+                        }
+                    }
                 }
-                if (stage == "cvars/client/" || stage == "cvars/input/")
-                    && !relative.ends_with("/0.json")
-                {
-                    continue;
-                }
-                entries(
-                    console,
-                    value.get("entries").ok_or("profile entries missing")?,
-                    file_source,
-                    &mut report,
-                )?;
                 report.files.push(path.to_owned());
             }
         }
     }
-    let seat_name = format!("{prefix}input/seat-1.json");
-    if let Some((file, _)) = files
-        .iter()
-        .find(|(_, name)| name.as_slice() == seat_name.as_bytes())
-    {
-        let value = document(&runtime.vfs, file)?;
-        seat(
-            console,
-            runtime,
-            &value,
-            default_source,
-            canonical.is_none(),
-            &mut report,
-        )?;
-        report.files.push(seat_name);
+    for seat_id in SeatId::ALL {
+        let seat_name = format!("{prefix}input/seat-{}.json", seat_id.index() + 1);
+        if let Some((file, _)) = files
+            .iter()
+            .find(|(_, name)| name.as_slice() == seat_name.as_bytes())
+        {
+            let value = document(&runtime.vfs, file)?;
+            seat(
+                console,
+                runtime,
+                &value,
+                seat_id,
+                policy(seat_id).input,
+                canonical.is_none(),
+                &mut report,
+            )?;
+            report.files.push(seat_name);
+        }
     }
     let view_name = format!("{prefix}view.json");
     if canonical.is_none()
@@ -390,17 +498,44 @@ pub fn load(
                 default_source,
                 "cg_fov",
                 &fov.to_string(),
+                None,
                 &mut report,
             );
         }
         report.files.push(view_name);
     }
-    // Imported numeric/text values remain in the one cvar table. Profile mounts
-    // leave the live asset namespace after load, including non-imported files.
-    if !runtime.vfs.unmount(mount) {
-        return Err("profile mount lost during import".into());
-    }
     Ok(report)
+}
+
+/// Startup overrides precede connection creation and apply to every prepared
+/// local column as well as the inherited defaults. The ordinary setter still
+/// owns all native alias conversion, flags and rejection behavior.
+pub fn apply_overrides(
+    console: &mut Console<Runtime>,
+    settings: &[(String, String, Context)],
+) -> Result<(), String> {
+    for (name, value, context) in settings {
+        let mut contexts = vec![*context];
+        if context.side != Scope::Server {
+            for seat in SeatId::ALL {
+                if console.cvars.has_seat_values(seat) {
+                    contexts.push(Context {
+                        seat,
+                        cvar_seat: Some(seat),
+                        client_lifetime: None,
+                        ..*context
+                    });
+                }
+            }
+        }
+        for context in contexts {
+            console
+                .cvars
+                .set_user(name, value, context, None, 0)
+                .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

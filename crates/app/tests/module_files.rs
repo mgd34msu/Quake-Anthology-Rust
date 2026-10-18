@@ -68,7 +68,7 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
             let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
             runtime.vfs.mount_directory(&files.0, 0).unwrap();
             let mut console = Console::new(Context::default()).unwrap();
-            let mut storage = ServiceStorage::load(&[], 2, &console.cvars).unwrap();
+            let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 2, &console.cvars).unwrap();
             let mut scratch = runtime.geometry.scratch();
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
@@ -183,7 +183,7 @@ fn shared_seek_reuses_pak_and_deflate_readers_across_backward_and_large_offsets(
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     runtime.vfs.mount_product(&files.0, 0).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[], 2, &console.cvars).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 2, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     let owner = ModuleId(1);

@@ -285,10 +285,28 @@ fn queued_stdin_bind_and_editor_exec_keep_the_connections_publication_time_files
         )
         .unwrap();
         host.execute_commands();
-        let fov = host.console.cvars.find("cg_fov").unwrap();
+        let global = host.console.cvars.find("cg_fov").unwrap();
+        let fov = host
+            .console
+            .cvars
+            .client_handle(
+                global,
+                (
+                    client,
+                    host.runtime.server.clients[client.0 as usize].entity,
+                ),
+            )
+            .unwrap();
         assert_eq!(host.console.cvars.value(fov), 91., "input route {route}");
+        assert_eq!(host.console.cvars.value(global), 90.);
         host.console
-            .append("cg_fov 131\n", Context::default())
+            .append(
+                "cg_fov 131\n",
+                Context {
+                    cvar_seat: Some(SeatId::FIRST),
+                    ..Context::default()
+                },
+            )
             .unwrap();
         host.execute_commands();
     }

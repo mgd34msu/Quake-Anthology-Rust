@@ -581,7 +581,19 @@ fn quakeworld_queued_pause_and_push_latency_drive_the_same_client_clock() {
             },
         )
         .unwrap();
-    assert_eq!(host.console.cvars.numeric(push).unwrap(), 0.0);
+    let selected = host
+        .console
+        .cvars
+        .client_view(
+            push,
+            (
+                client,
+                host.runtime.server.clients[client.0 as usize].entity,
+            ),
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.numeric(selected).unwrap(), 0.0);
+    assert_eq!(host.console.cvars.numeric(push).unwrap(), 500.0);
     source.time_ms = 20_000;
     source.packets.push((client, packet(2, &[24, 1])));
     host.frame(&mut source, true);

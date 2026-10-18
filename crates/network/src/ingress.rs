@@ -933,10 +933,36 @@ impl Connections {
                                 &mut connection.channel,
                                 output,
                                 |incoming| {
-                                    delivered = true;
                                     accepted +=
                                         u64::from(matches!(incoming, Incoming::Command { .. }));
-                                    consume(client, endpoint, incoming)
+                                    match incoming {
+                                        Incoming::MoveStart {
+                                            output,
+                                            first,
+                                            native_weapon,
+                                            entered,
+                                        } => {
+                                            let flow = consume(
+                                                client,
+                                                endpoint,
+                                                Incoming::MoveStart {
+                                                    output,
+                                                    first,
+                                                    native_weapon,
+                                                    entered,
+                                                },
+                                            );
+                                            delivered |= *entered || flow.is_break();
+                                            flow
+                                        }
+                                        incoming => {
+                                            delivered |= !matches!(
+                                                incoming,
+                                                Incoming::MoveBegin | Incoming::MoveEnd
+                                            );
+                                            consume(client, endpoint, incoming)
+                                        }
+                                    }
                                 },
                             )
                         });

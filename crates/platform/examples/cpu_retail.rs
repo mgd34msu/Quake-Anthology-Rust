@@ -488,13 +488,7 @@ fn run() -> Result<(), String> {
     })
     .map_err(|e| e.to_string())?;
     let profile_product = input.profile_product(policy.client).into_owned();
-    let imported = profile::load(
-        &mut console,
-        &mut runtime,
-        &profile_product,
-        policy.client,
-        rules,
-    )?;
+    let imported = profile::load(&mut console, &mut runtime, &profile_product, &[policy])?;
     if !imported.consumed() {
         return Err("copied saved profile contained no applicable settings".into());
     }

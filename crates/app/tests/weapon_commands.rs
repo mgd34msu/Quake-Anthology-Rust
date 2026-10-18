@@ -326,7 +326,8 @@ fn queued_weapon_selection_cannot_cross_a_reused_connection_generation() {
         Some(client)
     );
     host.drain(&mut FrameResult::default());
-    assert_eq!(host.runtime.network.commands, 1);
+    // The retired channel is rejected before decoding its queued usercmd.
+    assert_eq!(host.runtime.network.commands, 0);
     assert_eq!(
         host.runtime.server.clients[client.0 as usize]
             .command

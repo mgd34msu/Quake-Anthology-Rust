@@ -115,6 +115,15 @@ fn alias_button_metadata_and_manual_commands_keep_the_originating_seat() {
             "unbindall; alias +held +forward; alias -held -forward; bind JOY1 +held",
         ),
     );
+    host.console
+        .append_line(
+            "bind JOY1 +held",
+            Context {
+                seat: second,
+                ..host.console.cvars.context()
+            },
+        )
+        .unwrap();
     host.frame(&mut Source(0), true);
     event(
         &mut host,
