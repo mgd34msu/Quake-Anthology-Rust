@@ -932,6 +932,15 @@ impl FrameHost {
                 self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
+            if rules == RuleSetId::Quake3 && args.get_bytes(0) == b"userinfo" {
+                self.receive_client_userinfo(
+                    id,
+                    qa_network::commands::packet::Protocol::Quake3_68,
+                    args.get_bytes(1),
+                    driver,
+                )?;
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
             if rules == RuleSetId::Quake3 && q3::pure_command(self, id, args, driver)? {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }

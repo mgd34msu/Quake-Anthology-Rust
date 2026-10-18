@@ -2869,7 +2869,7 @@ impl FrameHost {
         }
     }
 
-    fn receive_client_userinfo(
+    pub(crate) fn receive_client_userinfo(
         &mut self,
         id: ClientId,
         protocol: qa_network::commands::packet::Protocol,

@@ -390,18 +390,18 @@ fn q3_client_text_userinfo_and_disconnect_use_the_same_lifecycle_and_lifetime() 
     assert_eq!(count(&mut host, 7), 0);
 }
 
-fn send_qw_command(host: &mut FrameHost, client: ClientId, text: &[u8]) -> Vec<u8> {
+fn send_client_command(host: &mut FrameHost, client: ClientId, text: &[u8]) -> Vec<u8> {
     use qa_core::loopback::Endpoint;
     let runtime = &mut host.runtime;
-    let channel = &mut runtime
-        .network
-        .get_mut(client, Endpoint::Client)
-        .unwrap()
-        .channel;
-    channel
-        .queue_client_command(Protocol::QuakeWorld28, text)
-        .unwrap();
-    channel.prepare(None, EventTime(0)).unwrap().unwrap();
+    let connection = runtime.network.get_mut(client, Endpoint::Client).unwrap();
+    let protocol = connection.commands.as_ref().unwrap().protocol;
+    let commands = connection.commands.as_ref().unwrap();
+    let channel = &mut connection.channel;
+    channel.queue_client_command(protocol, text).unwrap();
+    let mut control = [0; 1400];
+    let length = commands.encode_control(channel, &mut control).unwrap();
+    let body = (protocol == Protocol::Quake3_68).then_some(&control[..length]);
+    channel.prepare(body, EventTime(0)).unwrap().unwrap();
     let bytes = channel.pending_packet().unwrap().bytes.to_vec();
     assert!(
         channel
@@ -414,6 +414,64 @@ fn send_qw_command(host: &mut FrameHost, client: ClientId, text: &[u8]) -> Vec<u
     );
     host.drain(&mut Default::default());
     bytes
+}
+
+#[test]
+fn q3_wire_userinfo_uses_the_shared_record_and_only_the_userinfo_callback() {
+    use qa_core::loopback::Endpoint;
+    let (mut host, client, _) = fixture(0, Phase::Server, None);
+    host.connect_module_client(MODULE, client, b"\\name\\Tester")
+        .unwrap();
+    let entity = host.runtime.server.clients[client.0 as usize].entity;
+    let other = host.runtime.server.clients[0].entity;
+    let packet = send_client_command(
+        &mut host,
+        client,
+        b"userinfo \"\\name\\Wire Player\" ignored",
+    );
+    assert_eq!(count(&mut host, 4), 1);
+    assert_eq!(
+        count(&mut host, 6),
+        0,
+        "engine commands must not enter GAME_CLIENT_COMMAND"
+    );
+    assert_eq!(
+        host.runtime.server.userinfo(client),
+        Some(b"\\name\\Wire Player".as_slice())
+    );
+    assert_eq!(read(&mut host, USERINFO + 6), u32::from_le_bytes(*b"Wire"));
+    host.runtime
+        .loopback
+        .send(Endpoint::Client, client, &packet)
+        .unwrap();
+    host.drain(&mut Default::default());
+    assert_eq!(
+        count(&mut host, 4),
+        1,
+        "native reliable retransmission must not repeat callbacks"
+    );
+    send_client_command(&mut host, client, b"userinfo \"\\name\"");
+    assert_eq!(count(&mut host, 4), 1);
+    assert_eq!(count(&mut host, 6), 0);
+    assert_eq!(
+        host.runtime.server.userinfo(client),
+        Some(b"\\name\\Wire Player".as_slice())
+    );
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].entity,
+        entity
+    );
+    assert_eq!(host.runtime.server.clients[0].entity, other);
+    assert!(host.runtime.server.clients[0].is_active());
+    assert!(host.runtime.server.clients[client.0 as usize].is_active());
+    send_client_command(&mut host, client, b"userinfo \"\\name\\Wire Player\"");
+    assert_eq!(
+        count(&mut host, 4),
+        2,
+        "a new native command still invokes the callback for identical text"
+    );
+    assert_eq!(count(&mut host, 6), 0);
+    assert_eq!(host.module_counts(MODULE).unwrap().traps, 0);
 }
 
 #[test]
@@ -440,7 +498,7 @@ fn qw_wire_notifies_the_loaded_q3_module_once_and_retains_both_callback_edits() 
             .protocol,
         Protocol::QuakeWorld28
     );
-    let packet = send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    let packet = send_client_command(&mut host, client, b"setinfo skin wire/red");
     assert_eq!(count(&mut host, 4), 1);
     assert_eq!(count(&mut host, 6), 0);
     assert_eq!(read(&mut host, USERINFO + 6), u32::from_le_bytes(*b"Test"));
@@ -464,7 +522,7 @@ fn qw_wire_notifies_the_loaded_q3_module_once_and_retains_both_callback_edits() 
     );
     tick(&mut host, 0);
     // QW emits a reply only after another client packet opens that request.
-    send_qw_command(&mut host, client, b"");
+    send_client_command(&mut host, client, b"");
     tick(&mut host, 20);
     let peer = host.runtime.client_resources[client.0 as usize]
         .as_ref()
@@ -500,7 +558,7 @@ fn mixed_wire_userinfo_callback_error_keeps_accepted_effects_and_other_clients()
         .unwrap();
     let other = host.runtime.server.clients[0].entity;
     let entity = host.runtime.server.clients[client.0 as usize].entity;
-    send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    send_client_command(&mut host, client, b"setinfo skin wire/red");
     assert_eq!(host.module_counts(MODULE).unwrap().traps, 1);
     assert_eq!(count(&mut host, 4), 1);
     assert_eq!(
@@ -818,7 +876,7 @@ fn accepted_userinfo_survives_text_pressure_without_repeating_the_module_callbac
         held.push(lease);
     }
     let rejected = host.runtime.server.events.rejected_publications();
-    send_qw_command(&mut host, client, b"setinfo skin wire/red");
+    send_client_command(&mut host, client, b"setinfo skin wire/red");
     assert_eq!(count(&mut host, 4), 1);
     tick(&mut host, 0);
     assert!(host.runtime.server.events.rejected_publications() > rejected);
@@ -831,7 +889,7 @@ fn accepted_userinfo_survives_text_pressure_without_repeating_the_module_callbac
         host.runtime.server.events.texts.release(lease);
     }
     for tick_number in 1..=8 {
-        send_qw_command(&mut host, client, b"");
+        send_client_command(&mut host, client, b"");
         tick(&mut host, tick_number * 20);
     }
     let peer = host.runtime.client_resources[client.0 as usize]
