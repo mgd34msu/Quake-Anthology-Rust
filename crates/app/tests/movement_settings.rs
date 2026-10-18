@@ -228,6 +228,7 @@ fn client_prediction_resolves_the_movement_role_settings_after_snapshot_applicat
             catalog,
             profile,
             Some((world, presentation)),
+            None
         ),
         0
     );

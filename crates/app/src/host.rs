@@ -438,7 +438,7 @@ struct VideoRequest {
 pub struct FrameHost {
     pub(crate) modules: Option<crate::modules::Modules>,
     pub(crate) renderer_contexts: crate::modules::renderer_contexts::Contexts,
-    pub(crate) muzzle_sounds: crate::audio::MuzzleSounds,
+    pub(crate) cue_random: qa_core::random::Random,
     pub console: Console<Runtime>,
     pub runtime: Runtime,
     pub queue: SysEventQueue,
@@ -1521,7 +1521,7 @@ impl FrameHost {
                 0,
             ),
             execution: crate::modules::ExecutionSlot::reserve(1)?,
-            muzzle_sounds: crate::audio::MuzzleSounds::default(),
+            cue_random: qa_core::random::Random::new(5489),
             console,
             runtime,
             queue: SysEventQueue::load(1024, 256 * 1024).map_err(|e| format!("{e:?}"))?,
@@ -2961,6 +2961,9 @@ impl FrameHost {
                                 source: protocol.rule_set(),
                                 seat,
                                 event_time: Some(time),
+                                file_search: self.runtime.client_resources[client.0 as usize]
+                                    .as_ref()
+                                    .and_then(|resources| resources.state.file_source()),
                                 client_lifetime: Some((
                                     client,
                                     self.runtime.server.clients[client.0 as usize].entity,
@@ -3818,6 +3821,7 @@ impl FrameHost {
                     EventKind::ConsoleLine(text) => {
                         let seat = self.console.cvars.context().seat;
                         let mut target = ConsoleInput {
+                            files: self.client_file_sources(),
                             console: &mut self.console,
                             events: &mut self.runtime.server.events,
                             time: event.time,
@@ -3845,17 +3849,29 @@ impl FrameHost {
         self.queue = queue;
     }
 
+    fn client_file_sources(&self) -> [Option<qa_core::primitives::FileSearchId>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let (client, _, _) = self.local_seat(seat)?;
+            self.runtime.client_resources[client.0 as usize]
+                .as_ref()?
+                .state
+                .file_source()
+        })
+    }
+
     fn dispatch_input(
         &mut self,
         event: qa_core::sys_events::SysEvent<'_>,
         driver: &mut crate::modules::Driver<'_>,
     ) {
         use qa_input::{DispatchCursor, DispatchStep, InputAtom, InputCapture};
+        let files = self.client_file_sources();
         let mut cursor = DispatchCursor::new(event);
         loop {
             let step = self.runtime.input.advance(
                 cursor,
                 &mut ConsoleInput {
+                    files,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time: event.time,
@@ -3872,6 +3888,7 @@ impl FrameHost {
                     repeat,
                     time,
                 } => ConsoleInput {
+                    files,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time,
@@ -3882,6 +3899,7 @@ impl FrameHost {
                 } => {
                     let caught = self.console.editor.seat() == Some(seat);
                     ConsoleInput {
+                        files,
                         console: &mut self.console,
                         events: &mut self.runtime.server.events,
                         time,
@@ -3905,6 +3923,7 @@ impl FrameHost {
                 resume,
                 capture,
                 &mut ConsoleInput {
+                    files,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time: event.time,
@@ -4118,15 +4137,35 @@ impl FrameHost {
 }
 
 struct ConsoleInput<'a> {
+    files: [Option<qa_core::primitives::FileSearchId>; SeatId::COUNT],
     console: &'a mut Console<Runtime>,
     events: &'a mut qa_core::events::EventRing,
     time: EventTime,
 }
+impl ConsoleInput<'_> {
+    fn context(
+        &self,
+        seat: SeatId,
+        time: EventTime,
+        key_source: Option<qa_core::sys_events::KeySource>,
+        producer: Option<qa_core::primitives::CommandProducer>,
+    ) -> qa_console::views::Context {
+        qa_console::views::Context {
+            seat,
+            event_time: Some(time),
+            key_source,
+            producer,
+            file_search: self.files[seat.index()],
+            ..self.console.cvars.context()
+        }
+    }
+}
 impl Target for ConsoleInput<'_> {
     fn key(&mut self, seat: SeatId, control: u16, down: bool, repeat: bool) -> bool {
+        let context = self.context(seat, self.time, None, None);
         match self
             .console
-            .edit_key(seat, control, down, repeat, self.time, |text| {
+            .edit_key(control, down, repeat, context, |text| {
                 let _ = self.events.console_formatted(text);
             }) {
             Ok(caught) => caught,
@@ -4161,13 +4200,7 @@ impl Target for ConsoleInput<'_> {
         producer: Option<qa_core::primitives::CommandProducer>,
         text: &[u8],
     ) -> bool {
-        let context = qa_console::views::Context {
-            seat,
-            event_time: Some(time),
-            key_source: source,
-            producer,
-            ..self.console.cvars.context()
-        };
+        let context = self.context(seat, time, source, producer);
         if let Err(error) = self.console.append_line_bytes(text, context) {
             self.events.reject_publication();
             let _ = self

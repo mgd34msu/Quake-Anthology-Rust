@@ -167,7 +167,21 @@ pub(super) fn wire_music_reaches_shared_paint() {
     ] {
         let mut fixture = fixture::Fixture::new();
         fixture.numbered();
+        let mut conflicting = fixture::Fixture::new();
+        conflicting.numbered();
+        let high_root = conflicting.vfs.mounts().next().unwrap().path.clone();
+        qa_platform::files::write(
+            high_root.join("music/02.ogg"),
+            include_bytes!("../../../formats/tests/fixtures/sounds/stereo.ogg"),
+        )
+        .unwrap();
+        // numbered() publishes another mount containing the added tracks.
+        // Capture both low-source mounts before adding the conflicting winner.
+        let selected: Vec<_> = fixture.vfs.mounts().map(|mount| mount.id).collect();
+        let view = fixture.vfs.search_view(selected.into_iter().rev()).unwrap();
+        fixture.vfs.mount_directory(&high_root, 100).unwrap();
         let mut runtime = Runtime::load(2, []).unwrap();
+        runtime.vfs = std::mem::take(&mut fixture.vfs);
         let id = runtime
             .connect_local(
                 SeatId::FIRST,
@@ -189,7 +203,14 @@ pub(super) fn wire_music_reaches_shared_paint() {
                 0,
             )
             .unwrap();
-        runtime.vfs = std::mem::take(&mut fixture.vfs);
+        runtime.client_resources[id.0 as usize] = qa_app::client_resources::ClientResources::load(
+            id,
+            protocol,
+            RuleSetId::Quake3,
+            &runtime.vfs,
+            Some(&view),
+        )
+        .unwrap();
         let mut host = FrameHost::load(
             Console::new(Context::default()).unwrap(),
             runtime,

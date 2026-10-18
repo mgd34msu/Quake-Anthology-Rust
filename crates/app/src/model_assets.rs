@@ -6023,20 +6023,34 @@ impl ModelAssets {
         name: &[u8],
         source: RuleSetId,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Result<i32, CallError> {
         self.check_registration_vfs(vfs)?;
+        let search = vfs
+            .read_view(search)
+            .retain()
+            .map_err(|_| CallError::File)?;
         let variant = RegistrationVariant::Guard(ui_fullscreen);
-        if let Some(handle) = self.catalog.model_source_cached(name, source, variant) {
+        if let Some(handle) = self
+            .catalog
+            .model_source_cached(name, source, variant, Some(&search))
+        {
             return Ok(handle);
         }
         let path = std::str::from_utf8(name).map_err(|_| CallError::Text)?;
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);
         }
-        self.ensure_file_profile(vfs, &canonical_path(path), None, ui_fullscreen, None)
-            .map_err(|error| error.kind)?;
+        self.ensure_file_profile(
+            vfs,
+            &canonical_path(path),
+            None,
+            ui_fullscreen,
+            Some(&search),
+        )
+        .map_err(|error| error.kind)?;
         self.catalog
-            .model_source_cached(name, source, variant)
+            .model_source_cached(name, source, variant, Some(&search))
             .filter(|&handle| handle > 0)
             .ok_or(CallError::File)
     }
@@ -7293,7 +7307,7 @@ impl ModelLoader for ModelAssets {
     ) -> Result<i32, CallError> {
         // Engine precaches capture the non-UI preload policy. Native renderer
         // requests and live CLIENT preparation supply their own guard.
-        self.preload_model(vfs, name, source, false)
+        self.preload_model(vfs, name, source, false, None)
     }
     fn register_inline(&mut self, world: WorldId, index: u32) -> Result<i32, CallError> {
         self.admit_inline(world, index)
@@ -7618,8 +7632,9 @@ impl ModelCatalog {
         name: &[u8],
         source: RuleSetId,
         variant: RegistrationVariant,
+        search: Option<&SearchView>,
     ) -> Option<i32> {
-        let name = self.file_id(name, None)?;
+        let name = self.file_id(name, search)?;
         let handle = i32::try_from(name.0).ok()?;
         match self.files.get(name)? {
             ModelFile::Failed(_) => return Some(0),
@@ -7704,8 +7719,16 @@ impl ModelCatalog {
         }
     }
 
-    pub fn color_binding(&self, profile: ModelProfile) -> Option<ModelColorId> {
-        let index = image_profile_index(&self.profiles, profile, &self.registration_vfs)?;
+    pub fn color_binding(
+        &self,
+        profile: ModelProfile,
+        search: Option<&SearchView>,
+    ) -> Option<ModelColorId> {
+        let index = image_profile_index(
+            &self.profiles,
+            profile,
+            search.unwrap_or(&self.registration_vfs),
+        )?;
         let owner = self.profiles[index].image_owner.unwrap_or(index);
         self.profiles[owner].colors.as_ref()?;
         Some(ModelColorId(owner as u32))

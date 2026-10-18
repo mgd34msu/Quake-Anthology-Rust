@@ -28,6 +28,7 @@ use qa_world::collision::{
 };
 
 struct Fixture {
+    vfs: qa_content::vfs::Vfs,
     store: CollisionStore,
     geometry: GeometryId,
     models: ModelAssets,
@@ -123,10 +124,17 @@ impl Fixture {
             .unwrap();
         let mut bindings = ClientModelBindings::load(client, layout);
         assert_eq!(
-            bindings.bind_all(&configs, catalog, profile, Some((world, presentation))),
+            bindings.bind_all(
+                &configs,
+                catalog,
+                profile,
+                Some((world, presentation)),
+                None
+            ),
             0
         );
         Self {
+            vfs,
             store,
             geometry,
             models: builder,
@@ -186,6 +194,8 @@ impl Fixture {
             client,
             self.protocol,
             self.protocol.rule_set(),
+            &self.vfs,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -203,6 +213,7 @@ impl Fixture {
                 self.models.catalog(),
                 ModelRequest::native("", self.protocol.rule_set(), None).profile(),
                 Some((self.world, self.presentation)),
+                None
             ),
             0
         );

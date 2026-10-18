@@ -1569,15 +1569,21 @@ fn foreign_presentation_colors_bind_and_generate_missing_blends_at_load() {
     )
     .unwrap();
     owner.register_request(&fixture.vfs, foreign).unwrap();
-    assert!(owner.catalog().color_binding(uncolored).is_none());
-    let binding = owner.catalog().color_binding(foreign.profile()).unwrap();
+    assert!(owner.catalog().color_binding(uncolored, None).is_none());
+    let binding = owner
+        .catalog()
+        .color_binding(foreign.profile(), None)
+        .unwrap();
     assert!(owner.initial_registration());
     owner.end_initial_registration();
     owner.end_initial_registration();
     assert!(!owner.initial_registration());
     let ModelView { assets, catalog } = owner.view();
     fixture.remove("models/test/tris.md2");
-    assert_eq!(catalog.color_binding(foreign.profile()), Some(binding));
+    assert_eq!(
+        catalog.color_binding(foreign.profile(), None),
+        Some(binding)
+    );
     let colors = catalog.colors(binding).unwrap();
     assert_eq!((colors.source, colors.target), (source, target));
     assert_eq!(colors.indices[33], 189);
@@ -2654,7 +2660,10 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
     let client = ClientId(7);
     let reference = ModelRef::native(ResourceNamespace::Client(client), 50).unwrap();
     let mut bindings = ClientModelBindings::load(client, layout);
-    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 0);
+    assert_eq!(
+        bindings.bind_all(&configs, &catalog, profile, None, None),
+        0
+    );
     let projection = EntityProjection::load(Protocol::Quake2_34);
     let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut player = PlayerState::default();
@@ -2681,6 +2690,7 @@ fn client_models_and_view_weapons_submit_all_md3_surfaces_to_the_shared_scene() 
         &configs,
         Some(catalog),
         qa_app::client_scene::StaticWorld::Selected(None),
+        None,
     )];
     let input = ClientSceneInput {
         synchronization: None,
@@ -5704,7 +5714,8 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
             &configs,
             &catalog,
             ModelRequest::native("", RuleSetId::Quake2, None).profile(),
-            Some((first, WorldPresentationId(0)))
+            Some((first, WorldPresentationId(0))),
+            None
         ),
         0
     );
@@ -5728,7 +5739,12 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     configs
         .set(layout.resources[0].get(2).unwrap(), b"")
         .unwrap();
-    assert!(bindings.config_changed(layout.resources[0].get(2).unwrap(), &configs, &catalog));
+    assert!(bindings.config_changed(
+        layout.resources[0].get(2).unwrap(),
+        &configs,
+        &catalog,
+        None
+    ));
     assert!(bindings.revision() > revision);
     assert_eq!(
         bindings.collision_model(
@@ -6075,7 +6091,10 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         .unwrap();
     let client = ClientId(7);
     let mut bindings = ClientModelBindings::load(client, layout);
-    assert_eq!(bindings.bind_all(&configs, &catalog, profile, None), 1);
+    assert_eq!(
+        bindings.bind_all(&configs, &catalog, profile, None, None),
+        1
+    );
     let projection = EntityProjection::load(Protocol::Quake2_34);
     let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let player = PlayerState::default();
@@ -6105,7 +6124,13 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             selected
         );
         assert_eq!(
-            bindings.bind_all(&configs, &catalog, profile, Some((selected, presentation))),
+            bindings.bind_all(
+                &configs,
+                &catalog,
+                profile,
+                Some((selected, presentation)),
+                None
+            ),
             0
         );
         let mut front = qa_render::FrontEnd::load(Default::default()).unwrap();
@@ -6115,6 +6140,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             &configs,
             Some(catalog),
             qa_app::client_scene::StaticWorld::Selected(None),
+            None,
         )];
         let input = ClientSceneInput {
             synchronization: None,
@@ -6176,6 +6202,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         &configs,
         Some(catalog),
         qa_app::client_scene::StaticWorld::Selected(None),
+        None,
     )];
     let input = ClientSceneInput {
         synchronization: None,
@@ -6212,5 +6239,10 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
     configs
         .set(layout.resources[0].get(50).unwrap(), b"*1")
         .unwrap();
-    assert!(!bindings.config_changed(layout.resources[0].get(50).unwrap(), &configs, &catalog));
+    assert!(!bindings.config_changed(
+        layout.resources[0].get(50).unwrap(),
+        &configs,
+        &catalog,
+        None
+    ));
 }

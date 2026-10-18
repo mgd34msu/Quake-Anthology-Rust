@@ -141,7 +141,8 @@ fn loading_with_connection(
             .unwrap()
     });
     if client.is_none() {
-        runtime.client_resources[0] = ClientResources::load(ClientId(0), protocol, rules).unwrap();
+        runtime.client_resources[0] =
+            ClientResources::load(ClientId(0), protocol, rules, &runtime.vfs, None).unwrap();
     }
     let resources = runtime.client_resources[0].as_mut().unwrap();
     let layout = ConfigLayout::for_rules(rules);
@@ -543,6 +544,7 @@ fn rerelease_named_shell_features_are_cached_per_cell_and_frozen_for_statics() {
                 .configs,
             Some(catalog),
             qa_app::client_scene::StaticWorld::Selected(None),
+            None,
         )];
     let (counts, before) = draw(&host, rules, record, None);
     assert_eq!((counts.models, counts.missing_models), (3, 0));

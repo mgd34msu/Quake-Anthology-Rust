@@ -618,7 +618,17 @@ fn window_editor_submits_a_human_origin_even_with_a_module_context_selected() {
         console.editor.character(SeatId::FIRST, value).unwrap();
     }
     console
-        .edit_key(SeatId::FIRST, 40, true, false, EventTime(9), |_| {})
+        .edit_key(
+            40,
+            true,
+            false,
+            qa_console::views::Context {
+                seat: SeatId::FIRST,
+                event_time: Some(EventTime(9)),
+                ..Default::default()
+            },
+            |_| {},
+        )
         .unwrap();
     console.discard_producer(&mut host, a).unwrap();
     console.execute_frame(&mut host);

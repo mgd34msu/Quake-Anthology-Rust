@@ -92,7 +92,17 @@ fn window_line_uses_existing_commands_and_retains_it_when_buffer_is_full() {
         .unwrap();
     assert!(
         console
-            .edit_key(seat, 40, true, false, EventTime(8), |_| {})
+            .edit_key(
+                40,
+                true,
+                false,
+                qa_console::views::Context {
+                    seat: seat,
+                    event_time: Some(EventTime(8)),
+                    ..Default::default()
+                },
+                |_| {}
+            )
             .is_err()
     );
     assert_eq!(console.editor.line(), "cg_fov 123");
@@ -100,7 +110,17 @@ fn window_line_uses_existing_commands_and_retains_it_when_buffer_is_full() {
     console.execute_frame(&mut host);
     assert!(
         console
-            .edit_key(seat, 40, true, false, EventTime(9), |_| {})
+            .edit_key(
+                40,
+                true,
+                false,
+                qa_console::views::Context {
+                    seat: seat,
+                    event_time: Some(EventTime(9)),
+                    ..Default::default()
+                },
+                |_| {}
+            )
             .unwrap()
     );
     assert!(console.editor.line().is_empty());

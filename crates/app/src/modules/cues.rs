@@ -108,7 +108,10 @@ impl FrameHost {
             }
         };
         for &recipe in recipes {
-            if let Some(sound) = self.muzzle_sounds.choose(recipe) {
+            if let Some(sound) = self.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .and_then(|resources| resources.state.muzzle_sound(recipe, &mut self.cue_random))
+            {
                 self.present_sound(SoundEvent {
                     sound,
                     spatial: sound_policy,

@@ -567,7 +567,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     assert_eq!(owner.assets().model(sprite_model).unwrap().frame_count(), 2);
     let registrations = models.map(|id| owner.catalog().renderer_registration(id, first).unwrap());
     let original = binding(owner.catalog(), "models/a.md2", first, 0).unwrap();
-    let colors = owner.catalog().color_binding(first);
+    let colors = owner.catalog().color_binding(first, None);
     let shaders = [
         (b"ui_a.part/first.tga".as_slice(), false),
         (b"ui_b.part/first.tga".as_slice(), true),
@@ -603,7 +603,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         )
         .unwrap();
     assert_eq!(before, counts);
-    assert_eq!(owner.catalog().color_binding(first), colors);
+    assert_eq!(owner.catalog().color_binding(first, None), colors);
     for (id, registration) in models.into_iter().zip(registrations) {
         assert_eq!(
             owner.catalog().renderer_registration(id, first),
@@ -757,7 +757,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         render_indexed_on(&mut cpu, owner.assets(), original, palette),
         pixels
     );
-    assert_eq!(owner.catalog().color_binding(first), colors);
+    assert_eq!(owner.catalog().color_binding(first, None), colors);
     assert_eq!(owner.catalog().capacity().registrations, 6);
     assert_eq!(owner.catalog().capacity().frame_vertices, 20);
     assert_eq!(owner.catalog().capacity().indices, 12);

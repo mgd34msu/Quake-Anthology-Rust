@@ -130,6 +130,7 @@ pub struct PeerInfo<'a> {
 }
 
 pub struct ResourceState {
+    files: qa_content::vfs::FileSearch,
     pub configs: ConfigStrings,
     pub models: ClientModelBindings,
     pub layout: ConfigLayout,
@@ -141,8 +142,11 @@ pub struct ResourceState {
     world_readiness: WorldReadiness,
     client_capacity: u32,
     sounds: qa_audio::SoundBindings,
+    sound_source: Option<qa_audio::SoundSource>,
     sound_dirty: qa_core::bits::BitSet,
     sound_attached: bool,
+    cues_prepared: bool,
+    muzzle_sounds: qa_audio::SoundBindings,
     player_sounds: [Option<(qa_core::primitives::SoundId, u32)>;
         qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
     sound_policy: SpatialPolicy,
@@ -157,8 +161,17 @@ impl ClientResources {
         client: ClientId,
         protocol: Protocol,
         sound_rules: RuleSetId,
+        vfs: &qa_content::vfs::Vfs,
+        search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<Option<Self>, String> {
         let layout = protocol.resource_layout();
+        let files = vfs
+            .bind_search(search)
+            .map_err(|error| format!("client files: {error}"))?;
+        let sound_source = files
+            .id()
+            .is_none()
+            .then_some(qa_audio::SoundSource::DEFAULT);
         Ok(Some(Self {
             udp_lease: None,
             downloads: None,
@@ -169,6 +182,7 @@ impl ClientResources {
             startup: ClientStartup::default(),
             nq_spawn_parameters: Default::default(),
             state: ResourceState {
+                files,
                 configs: ConfigStrings::load(
                     (0..layout.count).map(|index| layout.capacity(index).unwrap_or(0)),
                 )
@@ -185,8 +199,13 @@ impl ClientResources {
                 world_readiness: WorldReadiness::Unmanaged,
                 client_capacity: qa_network::snapshots::snapshot_limits(protocol).client_capacity,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
+                sound_source,
                 sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
                 sound_attached: false,
+                cues_prepared: false,
+                muzzle_sounds: qa_audio::SoundBindings::load(
+                    qa_gameplay::rules::q2::sounds::PATHS.len() + 1,
+                ),
                 player_sounds: [None; qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS.len()],
                 sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
                 loop_spatial: qa_gameplay::rules::loop_spatial_policy(sound_rules),
@@ -322,6 +341,7 @@ impl ClientResources {
             self.state.sounds = sounds;
             self.state.sound_dirty = dirty;
             self.state.sound_attached = false;
+            self.state.cues_prepared = false;
         }
         self.startup.begin_q2(data)?;
         let mut level_name = qa_core::text::FixedText::default();
@@ -453,8 +473,11 @@ impl ClientResources {
         self.state.models.configs_replaced();
         self.state.reset_world_request();
         if let Some(catalog) = catalog {
-            self.state.rejected +=
-                u64::from(self.state.models.refresh_all(&self.state.configs, catalog));
+            self.state.rejected += u64::from(self.state.models.refresh_all(
+                &self.state.configs,
+                catalog,
+                Some(self.state.files.view()),
+            ));
         }
         for ordinal in 1..self.state.layout.resources[1].count as usize {
             self.state.sound_dirty.insert(ordinal);
@@ -818,6 +841,29 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub fn file_search(&self) -> &qa_content::vfs::SearchView {
+        self.files.view()
+    }
+    pub fn file_source(&self) -> Option<qa_core::primitives::FileSearchId> {
+        self.files.id()
+    }
+    pub fn bind_models(
+        &mut self,
+        catalog: &ModelCatalog,
+        profile: crate::model_assets::ModelProfile,
+        world: Option<(
+            qa_render::world::WorldId,
+            qa_render::world::WorldPresentationId,
+        )>,
+    ) -> u32 {
+        self.models.bind_all(
+            &self.configs,
+            catalog,
+            profile,
+            world,
+            Some(self.files.view()),
+        )
+    }
     pub fn peer(&self, slot: usize) -> Option<PeerInfo<'_>> {
         let metadata = self.models.peer_metadata(slot)?;
         let index = self.layout.players.get(slot)?;
@@ -951,7 +997,9 @@ impl ResourceState {
                     .refresh_static_images(entity, refresh, catalog)?;
             }
         }
-        staged.models.refresh_images(refresh, catalog)?;
+        staged
+            .models
+            .refresh_images(refresh, catalog, Some(self.files.view()))?;
         Ok(staged)
     }
 
@@ -968,9 +1016,14 @@ impl ResourceState {
     ) -> Result<ClientImageRefresh, String> {
         let mut staged = ClientImageRefresh::capture(self, false);
         views.update(cvars, Some(seat), &mut staged.models, Some(request));
-        staged
-            .models
-            .refresh_indexed_skins(&self.configs, owner, vfs, preparer, ui_fullscreen)?;
+        staged.models.refresh_indexed_skins(
+            &self.configs,
+            owner,
+            vfs,
+            preparer,
+            ui_fullscreen,
+            Some(self.files.view()),
+        )?;
         Ok(staged)
     }
 
@@ -1229,9 +1282,13 @@ impl ResourceState {
                 )
             });
         }
-        *slot = self
-            .models
-            .capture_static(record, &self.configs, lookup, world);
+        *slot = self.models.capture_static(
+            record,
+            &self.configs,
+            lookup,
+            world,
+            Some(self.files.view()),
+        );
         self.rejected += u64::from(slot.rejected);
         self.static_entity_count += 1;
         self.static_dirty = true;
@@ -1267,7 +1324,8 @@ impl ResourceState {
         self.animation
             .resolve_pending(|reference| self.models.animation_source(reference, catalog));
         for entity in &mut self.static_entities[..self.static_entity_count] {
-            self.models.complete_static(entity, catalog);
+            self.models
+                .complete_static(entity, catalog, Some(self.files.view()));
         }
     }
 
@@ -1278,9 +1336,14 @@ impl ResourceState {
         preparer: &mut dyn crate::renderer::AssetPreparer,
         ui_fullscreen: bool,
     ) -> (u32, bool) {
-        let (rejected, published) =
-            self.models
-                .prepare_pending(&self.configs, owner, vfs, preparer, ui_fullscreen);
+        let (rejected, published) = self.models.prepare_pending(
+            &self.configs,
+            owner,
+            vfs,
+            preparer,
+            ui_fullscreen,
+            Some(self.files.view()),
+        );
         if self.static_dirty
             && let Some((static_rejected, static_published)) = self.models.prepare_static(
                 &mut self.static_entities[..self.static_entity_count],
@@ -1288,6 +1351,7 @@ impl ResourceState {
                 vfs,
                 preparer,
                 ui_fullscreen,
+                Some(self.files.view()),
             )
         {
             self.static_dirty = false;
@@ -1353,11 +1417,51 @@ impl ResourceState {
             .iter_mut()
             .zip(qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS)
         {
-            *binding = bank.registered_handle(path.as_bytes()).and_then(|handle| {
-                Some((bank.registered_sound(handle)?, u32::try_from(handle).ok()?))
+            *binding = self.sound_source.and_then(|source| {
+                let handle = bank.registered_handle_in(source, path.as_bytes())?;
+                Some((
+                    bank.registered_sound_in(source, handle)?,
+                    u32::try_from(handle).ok()?,
+                ))
             });
         }
+        self.muzzle_sounds.attach(bank);
+        for (index, path) in qa_gameplay::rules::q2::sounds::PATHS.iter().enumerate() {
+            if self
+                .muzzle_sounds
+                .bind_path_in(
+                    Some(bank),
+                    self.sound_source,
+                    index as u32 + 1,
+                    path.as_bytes(),
+                )
+                .is_err()
+            {
+                return false;
+            }
+        }
         self.refresh_sounds(Some(bank))
+    }
+    pub(crate) fn muzzle_sound(
+        &self,
+        recipe: qa_gameplay::rules::q2::sounds::MuzzleSound,
+        random: &mut qa_core::random::Random,
+    ) -> Option<qa_core::primitives::SoundId> {
+        let offset = if recipe.choices.count > 1 {
+            random.next_u32() % recipe.choices.count
+        } else {
+            0
+        };
+        self.muzzle_sounds.sound(recipe.choices.first + offset + 1)
+    }
+
+    pub(crate) fn bind_sound_assets(
+        &mut self,
+        assets: &mut crate::audio::SoundAssets,
+        vfs: &qa_content::vfs::Vfs,
+    ) -> bool {
+        self.cues_prepared = false;
+        self.prepare_sounds(assets, vfs)
     }
 
     /// Accepted config changes are prepared before the packet's following cues.
@@ -1366,8 +1470,23 @@ impl ResourceState {
         &mut self,
         assets: &mut crate::audio::SoundAssets,
         vfs: &qa_content::vfs::Vfs,
-    ) {
+    ) -> bool {
         use qa_compat::services::SoundRegistrar;
+        let bind_cues = !self.cues_prepared;
+        if bind_cues {
+            self.cues_prepared = true;
+            self.sound_source = match assets.admit_source(vfs.read_view(Some(self.files.view()))) {
+                Ok(source) => Some(source),
+                Err(_) => {
+                    self.rejected += 1;
+                    None
+                }
+            };
+            match assets.prepare_cues(vfs, self.layout.rules, Some(self.files.view())) {
+                Ok(warnings) => self.rejected += warnings.len() as u64,
+                Err(_) => self.rejected += 1,
+            }
+        }
         if !self.sound_attached {
             self.sounds.attach(assets.bank());
             self.sound_attached = true;
@@ -1381,12 +1500,15 @@ impl ResourceState {
             let sound = if config.text.is_empty() {
                 Ok(None)
             } else {
-                assets.precache(vfs, config.text, self.layout.rules, None)
+                assets.precache(vfs, config.text, self.layout.rules, Some(self.files.view()))
             };
             let admitted = sound.as_ref().ok().copied().flatten();
             self.rejected += u64::from(sound.is_err());
             self.rejected += u64::from(self.sounds.set(ordinal as u32, admitted).is_err());
         }
+        let complete = !bind_cues || self.bind_sounds(assets.bank());
+        self.rejected += u64::from(!complete);
+        complete
     }
 
     fn refresh_sounds(&mut self, bank: Option<&qa_audio::Bank>) -> bool {
@@ -1403,7 +1525,13 @@ impl ResourceState {
             };
             if self
                 .sounds
-                .bind_name(bank, ordinal as u32, config.text, self.layout.rules)
+                .bind_name_in(
+                    bank,
+                    self.sound_source,
+                    ordinal as u32,
+                    config.text,
+                    self.layout.rules,
+                )
                 .is_err()
             {
                 complete = false;
@@ -1441,8 +1569,12 @@ impl ResourceState {
                     }
                 }
                 if changed && let Some(catalog) = catalog {
-                    self.rejected +=
-                        u64::from(!self.models.config_changed(index, &self.configs, catalog));
+                    self.rejected += u64::from(!self.models.config_changed(
+                        index,
+                        &self.configs,
+                        catalog,
+                        Some(self.files.view()),
+                    ));
                 }
                 if changed && self.layout.resources[1].contains(index) {
                     let ordinal = index - self.layout.resources[1].first as usize;
@@ -1451,7 +1583,13 @@ impl ResourceState {
                     }
                     self.rejected += u64::from(
                         self.sounds
-                            .bind_name(bank, ordinal as u32, text, self.layout.rules)
+                            .bind_name_in(
+                                bank,
+                                self.sound_source,
+                                ordinal as u32,
+                                text,
+                                self.layout.rules,
+                            )
                             .is_err(),
                     );
                 }

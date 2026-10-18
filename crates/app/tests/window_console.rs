@@ -199,3 +199,97 @@ fn full_command_buffer_reports_queued_stdin_rejection_through_the_output_ring() 
             .starts_with(b"Input command:")
     );
 }
+
+#[path = "model_assets/support.rs"]
+#[allow(dead_code)]
+mod source_files;
+
+#[test]
+fn queued_stdin_bind_and_editor_exec_keep_the_connections_publication_time_files() {
+    use qa_app::{
+        client_policy::ClientPolicy, client_resources::ClientResources, map::SpawnAnchor,
+    };
+    use qa_core::primitives::{RuleSetId, Vec3};
+    use qa_network::commands::packet::Protocol;
+    let mut low = source_files::Fixture::new(&[("source.cfg", b"cg_fov 91\n".to_vec())]);
+    let high = source_files::Fixture::new(&[("source.cfg", b"cg_fov 131\n".to_vec())]);
+    let low_mount = low.vfs.mounts().next().unwrap().id;
+    let root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = low.vfs.mount_directory(&root, 10).unwrap();
+    let low_view = low.vfs.search_view([low_mount]).unwrap();
+    let high_view = low.vfs.search_view([high_mount]).unwrap();
+    let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut low.vfs);
+    let client = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Vec3::default(),
+                angles: Vec3::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy::select(Some(RuleSetId::Quake3), None, None, None, None).unwrap(),
+            Protocol::Quake3_68,
+            0,
+        )
+        .unwrap();
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(client);
+    host.console
+        .append("bind x \"exec source.cfg\"\n", Context::default())
+        .unwrap();
+    host.execute_commands();
+    for route in 0..3 {
+        host.runtime.client_resources[client.0 as usize] = ClientResources::load(
+            client,
+            Protocol::Quake3_68,
+            RuleSetId::Quake3,
+            &host.runtime.vfs,
+            Some(&low_view),
+        )
+        .unwrap();
+        match route {
+            0 => push(&mut host, EventKind::ConsoleLine("exec source.cfg"), 1),
+            1 => {
+                key(&mut host, 27, true, false, 1);
+                key(&mut host, 27, false, false, 2);
+            }
+            _ => {
+                host.console.editor.set_active(SeatId::FIRST, true);
+                push(
+                    &mut host,
+                    EventKind::Text {
+                        device: DeviceId::Keyboard(0),
+                        text: "exec source.cfg",
+                    },
+                    1,
+                );
+                key(&mut host, 40, true, false, 2);
+            }
+        }
+        host.drain(&mut Default::default());
+        // Changing the connection after admission cannot retarget queued exec.
+        host.runtime.client_resources[client.0 as usize] = ClientResources::load(
+            client,
+            Protocol::Quake3_68,
+            RuleSetId::Quake3,
+            &host.runtime.vfs,
+            Some(&high_view),
+        )
+        .unwrap();
+        host.execute_commands();
+        let fov = host.console.cvars.find("cg_fov").unwrap();
+        assert_eq!(host.console.cvars.value(fov), 91., "input route {route}");
+        host.console
+            .append("cg_fov 131\n", Context::default())
+            .unwrap();
+        host.execute_commands();
+    }
+}

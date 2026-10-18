@@ -4,6 +4,7 @@ use crate::model_assets::{
     ModelProfile, ModelRegistrationId,
 };
 use crate::snapshots::{GunAnimation, Interpolation};
+use qa_content::vfs::SearchView;
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
@@ -310,6 +311,7 @@ impl ClientModelBindings {
         &mut self,
         refresh: &crate::model_assets::ImageRefresh,
         catalog: &ModelCatalog,
+        search: Option<&SearchView>,
     ) -> Result<(), String> {
         let old_profile = self.profile;
         for model in self.registrations.iter_mut().flatten() {
@@ -326,7 +328,7 @@ impl ClientModelBindings {
         self.profile = self.profile.map(|profile| refresh.profile(profile));
         self.colors = self
             .profile
-            .and_then(|profile| catalog.color_binding(profile));
+            .and_then(|profile| catalog.color_binding(profile, search));
         Ok(())
     }
 
@@ -534,11 +536,13 @@ impl ClientModelBindings {
         index: usize,
         configs: &ConfigStrings,
         models: &ModelCatalog,
+        search: Option<&SearchView>,
     ) -> bool {
         self.config_changed_with(
             index,
             configs,
             &mut ClientAssets::Frozen {
+                search,
                 catalog: models,
                 profile: self.profile,
             },
@@ -557,7 +561,7 @@ impl ClientModelBindings {
                 .as_ref()
                 .is_some_and(|players| players.contains(index))
             {
-                self.refresh_player_models(configs, assets.catalog()) == 0
+                self.refresh_player_models(configs, assets.catalog(), assets.search()) == 0
             } else {
                 true
             };
@@ -631,10 +635,11 @@ impl ClientModelBindings {
         models: &ModelCatalog,
         profile: ModelProfile,
         world: Option<(WorldId, WorldPresentationId)>,
+        search: Option<&SearchView>,
     ) -> u32 {
         self.reset();
         self.profile = Some(profile);
-        self.colors = models.color_binding(profile);
+        self.colors = models.color_binding(profile, search);
         self.world = world.map(|(render, presentation)| {
             (
                 qa_compat::services::LoadedWorldBinding {
@@ -645,7 +650,7 @@ impl ClientModelBindings {
             )
         });
         self.configs_replaced();
-        self.refresh_all(configs, models)
+        self.refresh_all(configs, models, search)
     }
 
     pub(crate) fn configs_replaced(&mut self) {
@@ -666,12 +671,14 @@ impl ClientModelBindings {
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> (u32, bool) {
         let Some(profile) = self.profile else {
             return (0, false);
         };
         let mut published = false;
         let mut assets = ClientAssets::Prepared {
+            search,
             owner,
             vfs,
             profile,
@@ -699,11 +706,16 @@ impl ClientModelBindings {
 
     /// A new accepted gamestate replaces rows without changing the loaded
     /// presentation profile or world binding.
-    pub(crate) fn refresh_all(&mut self, configs: &ConfigStrings, models: &ModelCatalog) -> u32 {
+    pub(crate) fn refresh_all(
+        &mut self,
+        configs: &ConfigStrings,
+        models: &ModelCatalog,
+        search: Option<&SearchView>,
+    ) -> u32 {
         let missing = self.range.range().fold(0, |missing, index| {
-            missing + u32::from(!self.config_changed(index, configs, models))
+            missing + u32::from(!self.config_changed(index, configs, models, search))
         });
-        missing + self.refresh_player_models(configs, models) as u32
+        missing + self.refresh_player_models(configs, models, search) as u32
     }
 
     /// A cold catalog publication retries unresolved ordinals without changing
@@ -712,19 +724,20 @@ impl ClientModelBindings {
         &mut self,
         configs: &ConfigStrings,
         models: &ModelCatalog,
+        search: Option<&SearchView>,
     ) -> u32 {
         let mut rejected = 0;
         let mut ordinal = self.pending.next_set(0);
         while let Some(index) = ordinal {
             ordinal = self.pending.next_set(index + 1);
             if let Some(row) = self.range.get(index) {
-                rejected += u32::from(!self.config_changed(row, configs, models));
+                rejected += u32::from(!self.config_changed(row, configs, models, search));
             }
         }
         if let Some(players) = &mut self.players {
             players.dirty = true;
         }
-        rejected + self.refresh_player_models(configs, models)
+        rejected + self.refresh_player_models(configs, models, search)
     }
 
     pub fn resolve<'a>(
@@ -825,6 +838,7 @@ impl ClientModelBindings {
         configs: &ConfigStrings,
         lookup: Option<&dyn qa_compat::services::ModelLookup>,
         world: StaticWorld,
+        search: Option<&SearchView>,
     ) -> StaticEntity {
         let mut rejected = 0;
         let models = std::array::from_fn(|slot| {
@@ -886,7 +900,7 @@ impl ClientModelBindings {
                     let (world, presentation) = world.selected()?;
                     Some((lookup.inline_handle(world, index)?, Some(presentation)))
                 } else {
-                    Some((lookup.file_handle(row.text, None)?, None))
+                    Some((lookup.file_handle(row.text, search)?, None))
                 }
             });
             let features = policy.model_features(row.text);
@@ -972,7 +986,12 @@ impl ClientModelBindings {
             }
         }
     }
-    pub(crate) fn complete_static(&self, entity: &mut StaticEntity, models: &ModelCatalog) {
+    pub(crate) fn complete_static(
+        &self,
+        entity: &mut StaticEntity,
+        models: &ModelCatalog,
+        search: Option<&SearchView>,
+    ) {
         if self.profile.is_none() {
             return;
         }
@@ -995,6 +1014,7 @@ impl ClientModelBindings {
                     world.selected(),
                     *features,
                     &mut ClientAssets::Frozen {
+                        search,
                         catalog: models,
                         profile: *profile,
                     },
@@ -1078,6 +1098,7 @@ impl ClientModelBindings {
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Option<(u32, bool)> {
         self.profile?;
         let mut rejected = 0;
@@ -1110,6 +1131,7 @@ impl ClientModelBindings {
                 }
                 *cold_dirty = false;
                 let mut assets = ClientAssets::Prepared {
+                    search,
                     owner,
                     vfs,
                     profile: selected,

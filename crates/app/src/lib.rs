@@ -776,7 +776,13 @@ impl Runtime {
             binding.load_visibility(visibility);
         }
         let mut resources = if seat.is_some() {
-            client_resources::ClientResources::load(id, protocol, client.client_rules)?
+            client_resources::ClientResources::load(
+                id,
+                protocol,
+                client.client_rules,
+                &self.vfs,
+                None,
+            )?
         } else {
             None
         };

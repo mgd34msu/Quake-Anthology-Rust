@@ -1237,20 +1237,19 @@ impl FrameHost {
                     .map_err(|e| format!("native sound preparation: {e:?}"))?;
             }
         }
+        if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
+            for resources in self.runtime.client_resources.iter_mut().flatten() {
+                if !resources.state.bind_sound_assets(assets, &self.runtime.vfs) {
+                    return Err("client sound binding failed".into());
+                }
+            }
+        }
         let bank = self
             .runtime
             .sound_assets
             .as_deref()
             .ok_or("sound assets unavailable")?
             .bank();
-        self.muzzle_sounds
-            .bind(bank)
-            .map_err(|e| format!("muzzle sound binding: {e:?}"))?;
-        for resources in self.runtime.client_resources.iter_mut().flatten() {
-            if !resources.state.bind_sounds(bank) {
-                return Err("client sound binding failed".into());
-            }
-        }
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
                 if let Some(sounds) = modules
@@ -1278,11 +1277,6 @@ impl FrameHost {
         }
         for publication in &mut self.runtime.config_publications {
             publication.bind_sounds(bank);
-        }
-        if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
-            for resources in self.runtime.client_resources.iter_mut().flatten() {
-                resources.prepare_sounds(assets, &self.runtime.vfs);
-            }
         }
         self.publish_module_signon();
         Ok(())

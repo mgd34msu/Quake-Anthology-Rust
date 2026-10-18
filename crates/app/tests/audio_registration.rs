@@ -656,9 +656,15 @@ fn repeated_client_binding_preserves_a_completed_source_rejection() {
     let sound = bank.find("sound/invalid-loop.wav").unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.sound_assets = Some(Box::new(SoundAssets::from_bank(&runtime.vfs, bank)));
-    let mut resources = ClientResources::load(ClientId(0), Protocol::Quake2_34, RuleSetId::Quake3)
-        .unwrap()
-        .unwrap();
+    let mut resources = ClientResources::load(
+        ClientId(0),
+        Protocol::Quake2_34,
+        RuleSetId::Quake3,
+        &runtime.vfs,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert!(resources.apply(
         ConfigLayout::QUAKE2.resources[1].get(1).unwrap(),
         b"invalid-loop.wav",
@@ -958,4 +964,88 @@ fn pure_read_policy_cannot_reuse_a_warmed_unrestricted_sound_alias() {
         ),
         Ok(handle)
     );
+}
+
+#[test]
+fn client_config_sounds_keep_each_connections_selected_pcm() {
+    use qa_app::{Runtime, client_resources::ClientResources, host::FrameHost};
+    use qa_console::{commands::Console, views::Context};
+    use qa_core::primitives::ClientId;
+    use qa_network::commands::packet::Protocol;
+    use qa_session::timing::TickRate;
+    let mut low = Files::ready();
+    let mut changed = support::wav();
+    changed[44..46].copy_from_slice(&777i16.to_le_bytes());
+    let high = Files::new(&[("sound/test.wav", changed)]);
+    let low_mount = low.vfs.mounts().next().unwrap().id;
+    let high_mount = low.vfs.mount_directory(&high.root, 10).unwrap();
+    let views = [
+        low.vfs.search_view([low_mount]).unwrap(),
+        low.vfs.search_view([high_mount]).unwrap(),
+    ];
+    let mut runtime = Runtime::load(4, []).unwrap();
+    runtime.vfs = std::mem::take(&mut low.vfs);
+    for (slot, protocol) in [Protocol::Quake2_34, Protocol::Quake3_68]
+        .into_iter()
+        .enumerate()
+    {
+        for (source, view) in views.iter().enumerate() {
+            let index = slot * 2 + source;
+            let mut resources = ClientResources::load(
+                ClientId(index as u32),
+                protocol,
+                protocol.rule_set(),
+                &runtime.vfs,
+                Some(view),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(resources.apply(
+                resources.state.layout.resources[1].get(1).unwrap(),
+                if protocol == Protocol::Quake3_68 {
+                    b"sound/test.wav"
+                } else {
+                    b"test.wav"
+                },
+                None,
+                None,
+            ));
+            runtime.client_resources[index] = Some(resources);
+        }
+    }
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    // Warm the unrestricted winner first: it must never supply the low client.
+    qa_app::audio::load_bank(&mut host, &["sound/test.wav".into()], RuleSetId::Quake3).unwrap();
+    let before = host.runtime.sound_assets.as_ref().unwrap().reads;
+    let ids = (0..4)
+        .map(|slot| {
+            let sound = host.runtime.client_resources[slot]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(1)
+                .unwrap();
+            assert_eq!(
+                host.runtime
+                    .sound_bank()
+                    .unwrap()
+                    .sample(sound)
+                    .unwrap()
+                    .samples[0],
+                if slot % 2 == 0 { 1024 } else { 777 }
+            );
+            sound
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(ids[0], ids[2]);
+    assert_eq!(ids[1], ids[3]);
+    host.bind_sounds().unwrap();
+    assert_eq!(host.runtime.sound_assets.as_ref().unwrap().reads, before);
 }

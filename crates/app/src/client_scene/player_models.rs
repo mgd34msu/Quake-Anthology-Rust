@@ -391,10 +391,12 @@ pub(super) enum ClientAssets<'a> {
         vfs: &'a qa_content::vfs::Vfs,
         source: RuleSetId,
         ui_fullscreen: bool,
+        search: Option<&'a SearchView>,
     },
     Frozen {
         catalog: &'a ModelCatalog,
         profile: Option<ModelProfile>,
+        search: Option<&'a SearchView>,
     },
     Prepared {
         owner: &'a mut ModelAssets,
@@ -403,9 +405,17 @@ pub(super) enum ClientAssets<'a> {
         preparer: &'a mut dyn crate::renderer::AssetPreparer,
         ui_fullscreen: bool,
         published: &'a mut bool,
+        search: Option<&'a SearchView>,
     },
 }
 impl ClientAssets<'_> {
+    pub(super) fn search(&self) -> Option<&SearchView> {
+        match self {
+            Self::Loading { search, .. }
+            | Self::Frozen { search, .. }
+            | Self::Prepared { search, .. } => *search,
+        }
+    }
     pub(super) fn catalog(&self) -> &ModelCatalog {
         match self {
             Self::Loading { loader, .. } => loader.catalog(),
@@ -416,6 +426,7 @@ impl ClientAssets<'_> {
 
     fn prepare(&mut self, path: &[u8], kind: RendererRegistration) -> Option<i32> {
         let Self::Prepared {
+            search,
             owner,
             vfs,
             profile,
@@ -427,7 +438,7 @@ impl ClientAssets<'_> {
             return None;
         };
         let request = RendererRequest {
-            search: None,
+            search: (*search).cloned(),
             name: path,
             source: profile.source_rules,
             kind,
@@ -453,13 +464,14 @@ impl ClientAssets<'_> {
     pub(super) fn model(&mut self, path: &[u8]) -> Option<CapturedModel> {
         let model = match self {
             Self::Loading {
+                search,
                 loader,
                 vfs,
                 source,
                 ui_fullscreen,
             } => {
                 let handle = loader
-                    .preload_model(vfs, path, *source, *ui_fullscreen)
+                    .preload_model(vfs, path, *source, *ui_fullscreen, *search)
                     .ok()
                     .filter(|&handle| handle > 0)?;
                 ModelCapture::Registered {
@@ -467,8 +479,12 @@ impl ClientAssets<'_> {
                     presentation: None,
                 }
             }
-            Self::Frozen { catalog, profile } => ModelCapture::Bound(ClientModel::Mesh(
-                catalog.renderer_registration(catalog.file_handle(path, None)?, (*profile)?)?,
+            Self::Frozen {
+                search,
+                catalog,
+                profile,
+            } => ModelCapture::Bound(ClientModel::Mesh(
+                catalog.renderer_registration(catalog.file_handle(path, *search)?, (*profile)?)?,
             )),
             Self::Prepared { .. } => {
                 let handle = self.prepare(path, RendererRegistration::Model)?;
@@ -489,17 +505,22 @@ impl ClientAssets<'_> {
     fn skin(&mut self, path: &[u8]) -> Option<i32> {
         match self {
             Self::Loading {
+                search,
                 loader,
                 vfs,
                 source,
                 ui_fullscreen,
             } => loader
-                .preload_skin(vfs, path, *source, *ui_fullscreen, None)
+                .preload_skin(vfs, path, *source, *ui_fullscreen, *search)
                 .ok()
                 .filter(|&handle| handle > 0),
-            Self::Frozen { catalog, profile } => {
+            Self::Frozen {
+                search,
+                catalog,
+                profile,
+            } => {
                 let handle = catalog
-                    .skin_handle(path, (*profile)?.source_rules, None)
+                    .skin_handle(path, (*profile)?.source_rules, *search)
                     .filter(|&handle| handle > 0)?;
                 catalog.renderer_skin(handle, (*profile)?).then_some(handle)
             }
@@ -633,6 +654,7 @@ impl ClientModelBindings {
         vfs: &qa_content::vfs::Vfs,
         source: RuleSetId,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> u32 {
         let Some(players) = &mut self.players else {
             return 0;
@@ -644,6 +666,7 @@ impl ClientModelBindings {
         players.refresh(
             configs,
             &mut ClientAssets::Loading {
+                search,
                 loader,
                 vfs,
                 source,
@@ -655,6 +678,7 @@ impl ClientModelBindings {
         &mut self,
         configs: &ConfigStrings,
         catalog: &ModelCatalog,
+        search: Option<&SearchView>,
     ) -> u32 {
         let Some(players) = &mut self.players else {
             return 0;
@@ -665,6 +689,7 @@ impl ClientModelBindings {
         players.refresh(
             configs,
             &mut ClientAssets::Frozen {
+                search,
                 catalog,
                 profile: self.profile,
             },

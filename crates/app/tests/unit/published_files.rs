@@ -72,9 +72,15 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
         .unwrap()
         .model;
     let client = ClientId(3);
-    let mut resources = ClientResources::load(client, Protocol::Quake2_34, RuleSetId::Quake2)
-        .unwrap()
-        .unwrap();
+    let mut resources = ClientResources::load(
+        client,
+        Protocol::Quake2_34,
+        RuleSetId::Quake2,
+        &files.vfs,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     let layout = resources.state.layout;
     let later_row = layout.resources[0].get(2).unwrap();
     resources
@@ -88,10 +94,13 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
         .set(layout.resources[0].get(3).unwrap(), b"models/ready.md2")
         .unwrap();
     assert_eq!(
-        resources
-            .state
-            .models
-            .bind_all(&resources.state.configs, owner.catalog(), profile, None),
+        resources.state.models.bind_all(
+            &resources.state.configs,
+            owner.catalog(),
+            profile,
+            None,
+            None
+        ),
         1
     );
     let reference = ModelRef::native(ResourceNamespace::Client(client), 2).unwrap();
@@ -106,7 +115,8 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             &mut owner,
             &files.vfs,
             &mut prepare,
-            false
+            false,
+            None
         ),
         (1, true)
     );
@@ -122,7 +132,8 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             &mut owner,
             &files.vfs,
             &mut prepare,
-            false
+            false,
+            None
         ),
         (0, false)
     );
@@ -152,7 +163,8 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             &mut owner,
             &files.vfs,
             &mut prepare,
-            false
+            false,
+            None
         ),
         (0, true)
     );

@@ -81,12 +81,12 @@ impl FrameHost {
         };
         let catalog = owner.catalog();
         for resources in self.runtime.client_resources.iter_mut().flatten() {
-            resources.state.rejected += u64::from(
-                resources
-                    .state
-                    .models
-                    .admission_published(&resources.state.configs, catalog),
-            );
+            let search = resources.state.file_search().clone();
+            resources.state.rejected += u64::from(resources.state.models.admission_published(
+                &resources.state.configs,
+                catalog,
+                Some(&search),
+            ));
             resources.state.complete_static_models(catalog);
         }
     }
@@ -299,6 +299,7 @@ impl FrameHost {
                 &mut resources.state.models,
                 None,
             );
+            let search = resources.state.file_search().clone();
             let mut backend_failed = false;
             let rejected = if let Some(owner) = runtime.model_assets.as_mut() {
                 if owner.initial_registration() {
@@ -308,6 +309,7 @@ impl FrameHost {
                         &runtime.vfs,
                         source,
                         ui_fullscreen,
+                        Some(&search),
                     )
                 } else if let Some(preparer) = preparer.as_deref_mut() {
                     let mut preparer = ModelPreparer {
@@ -325,10 +327,11 @@ impl FrameHost {
                     backend_failed = preparer.failed;
                     rejected
                 } else {
-                    resources
-                        .state
-                        .models
-                        .refresh_player_models(&resources.state.configs, owner.catalog())
+                    resources.state.models.refresh_player_models(
+                        &resources.state.configs,
+                        owner.catalog(),
+                        Some(&search),
+                    )
                 }
             } else {
                 0
@@ -547,6 +550,7 @@ impl FrameHost {
         let Some(request) = resources.state.pending_world() else {
             return resources.state.world_ready();
         };
+        let search = resources.state.file_search().clone();
         let revision = request.revision;
         let config_row = request.row;
         let epoch = resources.state.models.revision();
@@ -602,7 +606,7 @@ impl FrameHost {
             let selected = resources.state.models.world_binding()?.0;
             let owner = self.runtime.model_assets.as_ref()?;
             let world = request
-                .with_name(|name| owner.catalog().loaded_world(name, None))
+                .with_name(|name| owner.catalog().loaded_world(name, Some(&search)))
                 .ok()??;
             if world != selected || world.collision.is_none() {
                 return None;
@@ -612,7 +616,7 @@ impl FrameHost {
             }
             let presentation = owner
                 .view()
-                .world_presentation(world.render, Some(profile), None, None)
+                .world_presentation(world.render, Some(profile), None, Some(&search))
                 .filter(|entry| {
                     entry.compile_policy.collapse_vertex()
                         == profile.finish.compile(false).collapse_vertex()
@@ -705,7 +709,7 @@ impl FrameHost {
                 presentation_rules,
                 image_settings,
                 crate::render_settings::material_finish(&self.console.cvars)?,
-                None,
+                Some(&search),
                 |assets| preparer.prepare_assets(assets, None),
             )?;
             let current = || {
@@ -740,13 +744,13 @@ impl FrameHost {
                 );
             presentation.image_settings = profile.image_settings;
             presentation.finish = profile.finish;
-            if let Some(world) = owner.catalog().loaded_world(path.as_bytes(), None) {
+            if let Some(world) = owner.catalog().loaded_world(path.as_bytes(), Some(&search)) {
                 if world.collision.is_none() {
                     return Err("CLIENT world has no collision model".to_owned());
                 }
                 if let Some(presentation) = owner
                     .view()
-                    .world_presentation(world.render, Some(profile), None, None)
+                    .world_presentation(world.render, Some(profile), None, Some(&search))
                     .filter(|entry| {
                         scene.has_world(world.render)
                             && entry.compile_policy.collapse_vertex()
@@ -761,7 +765,7 @@ impl FrameHost {
                     profile,
                     presentation,
                     false,
-                    None,
+                    Some(&search),
                     |view, loaded| scene.stage_world(view.assets, loaded),
                     |assets, append| {
                         if !current() {
@@ -779,15 +783,19 @@ impl FrameHost {
                 .q2_mut()
                 .and_then(|state| state.world_input.take())
             {
-                Some(input) if input.virtual_path == path => input,
-                _ => crate::map::read(runtime.vfs.read_view(None), &path)?,
+                Some(input)
+                    if input.virtual_path == path && input.search().same_selection(&search) =>
+                {
+                    input
+                }
+                _ => crate::map::read(runtime.vfs.read_view(Some(&search)), &path)?,
             };
             let (loaded, (append, scratches), _) = owner.prepare_world(
                 &runtime.vfs,
                 &mut runtime.geometry,
                 input,
                 crate::model_assets::WorldRegistration {
-                    search: None,
+                    search: Some(search.clone()),
                     profile,
                     presentation,
                     options: crate::render_settings::world_load_options(
@@ -1003,8 +1011,7 @@ impl FrameHost {
         if let (Some(resources), Some(owner)) =
             (self.runtime.client_resources[slot].as_mut(), owner)
         {
-            resources.state.rejected += u64::from(resources.state.models.bind_all(
-                &resources.state.configs,
+            resources.state.rejected += u64::from(resources.state.bind_models(
                 owner.catalog(),
                 profile,
                 Some((world.render, presentation.id)),
@@ -1397,12 +1404,8 @@ impl FrameHost {
             else {
                 continue;
             };
-            resources.state.rejected += u64::from(resources.state.models.bind_all(
-                &resources.state.configs,
-                models,
-                profile,
-                world,
-            ));
+            resources.state.rejected +=
+                u64::from(resources.state.bind_models(models, profile, world));
         }
         for resources in self.runtime.client_resources.iter_mut().flatten() {
             resources.state.complete_static_models(models);

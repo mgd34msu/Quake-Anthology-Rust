@@ -13,43 +13,6 @@ use qa_core::{
 use std::num::NonZeroU32;
 pub mod music;
 
-/// Client cue recipes hold numeric bindings into the one PCM bank.
-pub(crate) struct MuzzleSounds {
-    bindings: qa_audio::SoundBindings,
-    random: qa_core::random::Random,
-}
-impl Default for MuzzleSounds {
-    fn default() -> Self {
-        Self {
-            bindings: qa_audio::SoundBindings::load(
-                qa_gameplay::rules::q2::sounds::PATHS.len() + 1,
-            ),
-            random: qa_core::random::Random::new(5489),
-        }
-    }
-}
-impl MuzzleSounds {
-    pub(crate) fn bind(&mut self, bank: &Bank) -> Result<(), qa_audio::SoundBindingError> {
-        self.bindings.attach(bank);
-        for (index, path) in qa_gameplay::rules::q2::sounds::PATHS.iter().enumerate() {
-            self.bindings
-                .bind_path(Some(bank), index as u32 + 1, path.as_bytes())?;
-        }
-        Ok(())
-    }
-    pub(crate) fn choose(
-        &mut self,
-        recipe: qa_gameplay::rules::q2::sounds::MuzzleSound,
-    ) -> Option<qa_core::primitives::SoundId> {
-        let offset = if recipe.choices.count > 1 {
-            self.random.next_u32() % recipe.choices.count
-        } else {
-            0
-        };
-        self.bindings.sound(recipe.choices.first + offset + 1)
-    }
-}
-
 /// Shared CLIENT poses are sampled once before bounded PCM mixahead.
 /// A sound's native namespace selects its owning connection, not a seat slot.
 pub fn respatialize(
@@ -182,7 +145,7 @@ impl SoundAssets {
         }
         view.retain().map_err(|_| CallError::File)
     }
-    fn admit_source(
+    pub(crate) fn admit_source(
         &mut self,
         view: ReadView<'_>,
     ) -> Result<SoundSource, qa_compat::services::CallError> {
@@ -303,6 +266,53 @@ impl SoundAssets {
             Some(failure) if attempt.first => Ok(Some(failure.message.clone())),
             _ => Ok(None),
         }
+    }
+    pub(crate) fn prepare_cues(
+        &mut self,
+        vfs: &Vfs,
+        rules: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Result<Vec<String>, String> {
+        let mut warnings = Vec::new();
+        match rules {
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
+                for path in qa_gameplay::rules::q2::sounds::PATHS {
+                    if let Some(warning) =
+                        self.precache_path(vfs, path.as_bytes(), rules, false, search)?
+                    {
+                        warnings.push(warning);
+                    }
+                }
+            }
+            RuleSetId::Quake3 => {
+                let source = self
+                    .admit_source(vfs.read_view(search))
+                    .map_err(|error| format!("player sound source: {error:?}"))?;
+                for path in qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS {
+                    let attempted = self
+                        .bank
+                        .registered_handle_in(source, path.as_bytes())
+                        .is_some();
+                    match qa_compat::services::SoundRegistrar::register(
+                        self,
+                        vfs,
+                        path.as_bytes(),
+                        rules,
+                        search,
+                    ) {
+                        Ok(_) => {}
+                        Err(qa_compat::services::CallError::File) => {
+                            if !attempted {
+                                warnings.push(format!("sound {path}: native media unavailable"));
+                            }
+                        }
+                        Err(error) => return Err(format!("player sound registration: {error:?}")),
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(warnings)
     }
     fn default_warning(&self) -> Option<&str> {
         let sound = self.bank.attempted(Bank::DEFAULT_SOUND)?;
@@ -491,8 +501,6 @@ pub fn load_registered_sounds(
                     Ok(())
                 })?;
             }
-            // Native cue sources, not map or movement roles, select this cold
-            // recipe admission. A foreign client protocol can still receive cues.
             let q2_cues = host.runtime.snapshots.iter().flatten().any(|client| {
                 matches!(
                     client.protocol,
@@ -503,19 +511,6 @@ pub fn load_registered_sounds(
                 modules.has_sound_source(RuleSetId::Quake2)
                     || modules.has_sound_source(RuleSetId::Quake2Rerelease)
             });
-            if q2_cues {
-                for path in qa_gameplay::rules::q2::sounds::PATHS {
-                    if let Some(warning) = loader.precache_path(
-                        &host.runtime.vfs,
-                        path.as_bytes(),
-                        RuleSetId::Quake2,
-                        false,
-                        None,
-                    )? {
-                        warnings.push(warning);
-                    }
-                }
-            }
             let q3_cues =
                 host.runtime.snapshots.iter().flatten().any(|client| {
                     client.protocol == qa_network::commands::packet::Protocol::Quake3_68
@@ -523,27 +518,14 @@ pub fn load_registered_sounds(
                     .modules
                     .as_ref()
                     .is_some_and(|modules| modules.has_sound_source(RuleSetId::Quake3));
-            if q3_cues {
-                for path in qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS {
-                    let attempted = loader.bank.registered_handle(path.as_bytes()).is_some();
-                    match qa_compat::services::SoundRegistrar::register(
-                        loader,
-                        &host.runtime.vfs,
-                        path.as_bytes(),
-                        RuleSetId::Quake3,
-                        None,
-                    ) {
-                        Ok(_) => {}
-                        Err(qa_compat::services::CallError::File) => {
-                            // Native registration failures retain handle zero. A
-                            // repeated cold call never reopens or repeats the warning.
-                            if !attempted {
-                                warnings.push(format!("sound {path}: native media unavailable"));
-                            }
-                        }
-                        Err(error) => return Err(format!("player sound registration: {error:?}")),
-                    }
-                }
+            for source in [
+                q2_cues.then_some(RuleSetId::Quake2),
+                q3_cues.then_some(RuleSetId::Quake3),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                warnings.extend(loader.prepare_cues(&host.runtime.vfs, source, None)?);
             }
             Ok(())
         })();
@@ -854,6 +836,7 @@ fn client_music_owner(
 ) -> Option<(
     qa_core::primitives::MusicOwner,
     qa_core::primitives::MusicPlayback,
+    Option<qa_core::primitives::FileSearchId>,
 )> {
     let row = runtime.server.clients.get(client.0 as usize)?;
     let binding = runtime.snapshots.get(client.0 as usize)?.as_ref()?;
@@ -863,16 +846,21 @@ fn client_music_owner(
             client: Some((client, row.entity)),
         },
         qa_gameplay::rules::music_playback(binding.protocol.rule_set()),
+        runtime
+            .client_resources
+            .get(client.0 as usize)
+            .and_then(Option::as_ref)
+            .and_then(|resources| resources.state.file_source()),
     ))
 }
 
 pub(crate) fn cd_track(runtime: &mut Runtime, client: qa_core::primitives::ClientId, number: u32) {
-    if let Some((owner, playback)) = client_music_owner(runtime, client) {
+    if let Some((owner, playback, file_search)) = client_music_owner(runtime, client) {
         let _ = runtime
             .server
             .events
             .music_control(qa_core::primitives::MusicControl::Track {
-                file_search: None,
+                file_search,
                 owner,
                 playback,
                 number,
@@ -893,12 +881,18 @@ pub(crate) fn config_music(
         cd_track(runtime, client, u32::try_from(number).unwrap_or(0));
         return;
     }
-    let Some((owner, playback)) = client_music_owner(runtime, client) else {
+    let Some((owner, playback, file_search)) = client_music_owner(runtime, client) else {
         return;
     };
+    let Ok(selected) = runtime.vfs.file_search(file_search) else {
+        return;
+    };
+    let view = runtime
+        .vfs
+        .read_view(selected.as_ref().map(qa_content::vfs::FileSearch::view));
     // A mounted filename remains literal. Otherwise decode the authored
     // intro/loop pair using the shared borrowed data reader.
-    let (intro, loop_track) = if runtime.vfs.open(text).is_some() {
+    let (intro, loop_track) = if view.open(text).is_some() {
         (text, text)
     } else {
         let mut words = qa_formats::text::Tokens::words(text);
@@ -920,10 +914,10 @@ pub(crate) fn config_music(
             .music_control(qa_core::primitives::MusicControl::Stop { only_active: false });
         return;
     }
-    let Ok(intro) = music_path(runtime.vfs.read_view(None), intro) else {
+    let Ok(intro) = music_path(view, intro) else {
         return;
     };
-    let Ok(loop_track) = music_path(runtime.vfs.read_view(None), loop_track) else {
+    let Ok(loop_track) = music_path(view, loop_track) else {
         return;
     };
     let _ = runtime.server.events.music(
@@ -931,6 +925,6 @@ pub(crate) fn config_music(
         playback,
         intro.as_bytes(),
         loop_track.as_bytes(),
-        None,
+        file_search,
     );
 }

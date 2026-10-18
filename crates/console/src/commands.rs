@@ -568,23 +568,20 @@ impl<H: Host> Console<H> {
     /// module commands. Failed admission keeps the editable line intact.
     pub fn edit_key(
         &mut self,
-        seat: SeatId,
         control: u16,
         down: bool,
         repeat: bool,
-        time: EventTime,
+        context: Context,
         mut print: impl FnMut(Output<'_>),
     ) -> Result<bool, TextError> {
-        match self.editor.key(seat, control, down, repeat) {
+        match self.editor.key(context.seat, control, down, repeat) {
             crate::editor::EditAction::Ignored => Ok(false),
             crate::editor::EditAction::Caught => Ok(true),
             crate::editor::EditAction::Submit => {
                 let context = Context {
-                    seat,
-                    event_time: Some(time),
                     key_source: None,
                     producer: None,
-                    ..self.cvars.context()
+                    ..context
                 };
                 self.buffer.append_line(self.editor.line(), context)?;
                 print(format_args!("]{}\n", self.editor.line()));

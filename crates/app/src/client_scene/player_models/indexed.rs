@@ -246,6 +246,7 @@ impl PlayerBindings {
             return Ok(0);
         }
         let ClientAssets::Prepared {
+            search,
             owner,
             profile,
             vfs,
@@ -329,7 +330,7 @@ impl PlayerBindings {
                             *ui_fullscreen,
                             layout,
                             translation,
-                            None,
+                            *search,
                             |assets, choices| preparer.prepare_model_assets(assets, choices),
                         )
                     };
@@ -413,6 +414,7 @@ impl ClientModelBindings {
         vfs: &qa_content::vfs::Vfs,
         preparer: &mut dyn crate::renderer::AssetPreparer,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Result<u32, String> {
         let Some(profile) = self.profile else {
             return Ok(0);
@@ -427,6 +429,7 @@ impl ClientModelBindings {
         let rejected = players.refresh_indexed(
             configs,
             &mut ClientAssets::Prepared {
+                search,
                 owner,
                 vfs,
                 profile,

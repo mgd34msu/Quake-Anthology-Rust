@@ -829,6 +829,67 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
         None
     );
     assert_eq!(files.vfs.take_lookup_count(), 0);
+    // Actual CLIENT ordinals must bind through the same selected model
+    // sources, including when the default cache has already been warmed.
+    for (slot, (search, &(file, _))) in [Some(&low), Some(&high), None]
+        .into_iter()
+        .zip(&records)
+        .enumerate()
+    {
+        let client = qa_core::primitives::ClientId(slot as u32);
+        let mut resources = crate::client_resources::ClientResources::load(
+            client,
+            qa_network::commands::packet::Protocol::Quake3_68,
+            RuleSetId::Quake3,
+            &files.vfs,
+            search,
+        )
+        .unwrap()
+        .unwrap();
+        let row = resources.state.layout.resources[0].get(2).unwrap();
+        resources
+            .state
+            .configs
+            .set(row, request.path.as_bytes())
+            .unwrap();
+        assert_eq!(
+            resources.state.bind_models(owner.catalog(), profile, None),
+            0
+        );
+        let reference = qa_core::primitives::ModelRef::native(
+            qa_core::primitives::ResourceNamespace::Client(client),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            resources
+                .state
+                .models
+                .animation_source(reference, owner.catalog()),
+            Ok(Some(
+                owner
+                    .catalog()
+                    .registration_source(
+                        owner
+                            .catalog()
+                            .renderer_registration(file.0 as i32, profile)
+                            .unwrap(),
+                    )
+                    .unwrap()
+            )),
+        );
+    }
+    assert!(
+        crate::client_resources::ClientResources::load(
+            qa_core::primitives::ClientId(0),
+            qa_network::commands::packet::Protocol::Quake3_68,
+            RuleSetId::Quake3,
+            &files.vfs,
+            Some(&foreign),
+        )
+        .is_err()
+    );
+    assert_eq!(files.vfs.take_lookup_count(), 0);
     for &(file, expected) in &records {
         let registration = owner
             .catalog
@@ -1937,4 +1998,66 @@ fn warmed_model_dependencies_do_not_escape_a_restricted_read_selection() {
         assets.cached_model_source(&order, b"models/player.md2"),
         Some(original)
     );
+}
+
+#[path = "../support/sound_registration.rs"]
+#[allow(dead_code)]
+mod sound_files;
+
+#[test]
+fn connection_fixed_sound_cues_use_the_same_selected_bank_as_config_sounds() {
+    use crate::client_resources::ClientResources;
+    use qa_core::{primitives::ClientId, random::Random};
+    use qa_gameplay::rules::feedback::PlayerSoundBinding;
+    use qa_network::commands::packet::Protocol;
+    let mut low = support::Fixture::new(&[
+        ("sound/player/land1.wav", sound_files::wav()),
+        ("sound/weapons/blastf1a.wav", sound_files::wav()),
+    ]);
+    let mut changed = sound_files::wav();
+    changed[44..46].copy_from_slice(&777i16.to_le_bytes());
+    let high = support::Fixture::new(&[
+        ("sound/player/land1.wav", changed.clone()),
+        ("sound/weapons/blastf1a.wav", changed),
+    ]);
+    let low_mount = low.vfs.mounts().next().unwrap().id;
+    let high_root = high.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = low.vfs.mount_directory(&high_root, 10).unwrap();
+    let scopes = [
+        low.vfs.search_view([low_mount]).unwrap(),
+        low.vfs.search_view([high_mount]).unwrap(),
+        low.vfs.search_view([]).unwrap(),
+    ];
+    let mut sounds = crate::audio::SoundAssets::load(&low.vfs, 1024, 65536).unwrap();
+    for protocol in [Protocol::Quake3_68, Protocol::Quake2_34] {
+        for (scope, expected) in scopes.iter().zip([Some(1024), Some(777), None]) {
+            let mut client = ClientResources::load(
+                ClientId(0),
+                protocol,
+                protocol.rule_set(),
+                &low.vfs,
+                Some(scope),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(client.state.bind_sound_assets(&mut sounds, &low.vfs));
+            let mut random = Random::new(5489);
+            let sound = if protocol == Protocol::Quake3_68 {
+                client
+                    .state
+                    .player_sound(PlayerSoundBinding::Fixed(0))
+                    .map(|(sound, _)| sound)
+            } else {
+                let recipe = qa_gameplay::rules::q2::sounds::player(RuleSetId::Quake2, 0)[0];
+                client.state.muzzle_sound(recipe, &mut random)
+            };
+            assert_eq!(
+                sound.map(|sound| sounds.bank().sample(sound).unwrap().samples[0]),
+                expected
+            );
+            let reads = sounds.reads;
+            assert!(client.state.bind_sound_assets(&mut sounds, &low.vfs));
+            assert_eq!(sounds.reads, reads);
+        }
+    }
 }
