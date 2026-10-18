@@ -4,6 +4,8 @@ use qa_core::{
     events::{EventRing, FrameEvent, OutputSubmission, OutputTarget, dispatch_consumer},
     primitives::{ClientId, ModuleId},
 };
+#[path = "server_info/directory.rs"]
+mod directory;
 
 fn set(cvars: &mut Cvars, name: &str, value: &str) {
     let context = Context {

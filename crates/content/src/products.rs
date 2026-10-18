@@ -64,7 +64,7 @@ pub fn remote_directory(
     let mut directory = qa_core::text::FixedText::default();
     for byte in requested {
         directory
-            .append_bytes(&[byte.to_ascii_lowercase()])
+            .append_bytes(&[qa_core::names::path_byte(*byte)])
             .map_err(|_| crate::vfs::VfsError::Path)?;
     }
     Ok(directory)

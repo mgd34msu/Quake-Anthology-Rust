@@ -52,6 +52,7 @@ fn host(source: RuleSetId) -> FrameHost {
         TickRate::FrameDriven,
         vec![ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 module,

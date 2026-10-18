@@ -123,6 +123,7 @@ fn request(
     data[160..177].copy_from_slice(b"sound/steady.wav\0");
     ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             module,

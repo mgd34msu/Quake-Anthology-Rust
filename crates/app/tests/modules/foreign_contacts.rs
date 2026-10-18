@@ -171,6 +171,7 @@ pub(in crate::modules) fn request(
     (
         ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 native_rules: rules,

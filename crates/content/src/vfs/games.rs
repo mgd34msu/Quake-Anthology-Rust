@@ -14,7 +14,49 @@ fn installed_directory(parent: &Path, name: &[u8]) -> Result<Option<PathBuf>, Vf
         .transpose()
 }
 
+fn game_root(
+    root: &Path,
+    spec: &products::ProductSpec,
+    directory: &[u8],
+) -> Result<bool, VfsError> {
+    Ok(
+        products::root_metadata(root).is_some_and(|metadata| metadata.root_hint == spec.root_hint)
+            || root
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().eq_ignore_ascii_case(directory))
+            || match root.parent() {
+                Some(parent) => installed_directory(parent, spec.directory)?.is_some(),
+                None => false,
+            },
+    )
+}
+
 impl Vfs {
+    pub fn source_directory<'a>(&'a self, file: &FileRef) -> Result<&'a Path, VfsError> {
+        let entry = self.entry(file)?;
+        Ok(self.product_directory(&self.mounts[entry.mount]))
+    }
+
+    /// Infer a native directory only from an identified install or its adjacent
+    /// base assets. Arbitrary synthetic program roots supply no native default.
+    pub fn source_game_directory(
+        &self,
+        source: &FileRef,
+        base: ProductId,
+    ) -> Result<Option<qa_core::text::FixedText<MAX_PATH_BYTES>>, VfsError> {
+        let spec = STOCK.get(base.0 as usize).ok_or(VfsError::Handle)?;
+        let root = self.source_directory(source)?;
+        if !game_root(root, spec, b"")? {
+            return Ok(None);
+        }
+        let name = root.file_name().ok_or(VfsError::Path)?.as_encoded_bytes();
+        Ok(Some(if name.eq_ignore_ascii_case(spec.directory) {
+            qa_core::text::FixedText::default()
+        } else {
+            products::remote_directory(base, name)?
+        }))
+    }
+
     /// Select a server's mod and its stock ancestry inside the caller's installed
     /// roots. Existing readers, archive ordering and FileRefs remain authoritative.
     pub fn game_search(
@@ -38,13 +80,7 @@ impl Vfs {
             let Some(parent) = root.parent() else {
                 continue;
             };
-            let matching = products::root_metadata(root)
-                .is_some_and(|metadata| metadata.root_hint == spec.root_hint)
-                || root.file_name().is_some_and(|name| {
-                    name.as_encoded_bytes()
-                        .eq_ignore_ascii_case(directory.as_bytes())
-                })
-                || installed_directory(parent, spec.directory)?.is_some();
+            let matching = game_root(root, spec, directory.as_bytes())?;
             if matching && !parents.iter().any(|existing| existing == parent) {
                 parents.push(parent.to_path_buf());
             }

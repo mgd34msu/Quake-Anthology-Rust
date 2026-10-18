@@ -220,6 +220,7 @@ fn fixture(rules: RuleSetId) -> Fixture {
     });
     let request = ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             native_rules: rules,
@@ -523,6 +524,7 @@ fn console_fallback_propagates_only_the_internal_owner_scope() {
         .id;
     let request = ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             module: MODULE,

@@ -220,3 +220,27 @@ fn policy_and_cheat_checks_use_cached_handles_without_name_lookup() {
     assert_eq!(vars.write(protected, "3"), Err(WriteError::Cheats));
     assert_eq!(vars.lookup_count(), 0);
 }
+
+#[test]
+fn load_selected_defaults_preserve_explicit_values_and_pending_native_writes() {
+    let mut vars = Cvars::new().unwrap();
+    let context = context(RuleSetId::Quake3);
+    let view = vars
+        .register("_load_default", Some("old"), 32, context)
+        .unwrap();
+    let native = vars.native_view(view).unwrap();
+    vars.set_runtime_policy(running(false));
+    vars.write(view, "pending").unwrap();
+    vars.load_default(view, "selected").unwrap();
+    assert_eq!(vars.read(view).unwrap().as_str(), "selected");
+    assert!(!vars.is_explicit(view.canonical()));
+    assert_eq!(vars.latched(view).unwrap().unwrap().as_str(), "pending");
+    let count = vars.native_snapshot(native, context).unwrap().1;
+    vars.load_default(view, "selected").unwrap();
+    assert_eq!(vars.native_snapshot(native, context).unwrap().1, count);
+    vars.apply_latch(view).unwrap();
+    vars.load_default(view, "replacement").unwrap();
+    assert_eq!(vars.read(view).unwrap().as_str(), "pending");
+    vars.reset(view.canonical());
+    assert_eq!(vars.read(view).unwrap().as_str(), "replacement");
+}

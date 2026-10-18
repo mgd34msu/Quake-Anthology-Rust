@@ -111,6 +111,7 @@ fn request(runtime: &mut Runtime, module: ModuleId, first: &[u8]) -> ModuleReque
     let context = Context::default();
     ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             module,

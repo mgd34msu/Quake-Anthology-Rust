@@ -72,6 +72,7 @@ fn qvm_spawn_tokens_use_session_dispatch_and_explicit_module_syntax() {
                 .id;
             ModuleRequest {
                 search: None,
+                source: None,
                 q3_image: None,
                 context: CallContext {
                     native_rules: qa_core::primitives::RuleSetId::Quake3,
@@ -285,6 +286,7 @@ fn lifecycle_host_for_modules(
             let vm = service_program::program(&operations, &[0; 16]);
             ModuleRequest {
                 search: None,
+                source: None,
                 q3_image: None,
                 context: CallContext {
                     native_rules: qa_core::primitives::RuleSetId::Quake3,
@@ -754,6 +756,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
     let requests = vec![
         ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,
@@ -789,6 +792,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         },
         ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 native_rules: RuleSetId::Quake,
@@ -901,6 +905,7 @@ fn quakec_runtime_host(rules: RuleSetId, vm: Vm, mut runtime: Runtime) -> FrameH
         TickRate::FrameDriven,
         vec![ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 native_rules: rules,
@@ -2178,6 +2183,7 @@ fn scheduling_role_selects_clock_arithmetic_and_phase_independently_of_program_f
             };
             ModuleRequest {
                 search: None,
+                source: None,
                 q3_image: None,
                 context: CallContext {
                     module,

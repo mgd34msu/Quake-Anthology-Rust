@@ -199,6 +199,7 @@ fn fixture_program(vm: qa_compat::qvm::Vm) -> (Box<FrameHost>, ClientId) {
         .id;
     let request = ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             native_rules: RuleSetId::Quake3,

@@ -2,7 +2,7 @@
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
 use qa_content::{
     products::{self, Edition},
-    vfs::{MountKind, ReadView, SearchView, Vfs, normalize},
+    vfs::{ReadView, SearchView, Vfs, normalize},
 };
 use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags, Vec3};
 use qa_formats::{
@@ -211,15 +211,9 @@ pub fn read(vfs: ReadView<'_>, name: &str) -> Result<MapInput, String> {
         syntax: source.lineage(),
         bytes: bsp.bytes(Lump::Entities).into(),
     };
-    let origin = vfs.origin(&file).ok_or("missing map origin")?;
-    let directory = if origin.kind == MountKind::Directory {
-        origin.path
-    } else {
-        origin
-            .path
-            .parent()
-            .ok_or("map archive has no product directory")?
-    };
+    let directory = vfs
+        .source_directory(&file)
+        .map_err(|error| format!("map product directory: {error}"))?;
     let product = directory
         .file_name()
         .and_then(|name| name.to_str())

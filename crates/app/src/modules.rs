@@ -152,6 +152,8 @@ impl Program {
 pub struct ModuleRequest {
     /// Requested program namespace, retained across connection admission/restarts.
     pub search: Option<qa_content::vfs::SearchView>,
+    /// One retained program-file origin, independent of the mutable search view.
+    pub source: Option<qa_content::vfs::FileRef>,
     pub context: CallContext,
     pub phase: Phase,
     pub timing_rules: RuleSetId,
@@ -658,7 +660,7 @@ impl ThinkWorld for FrameHost {
 impl FrameHost {
     /// The caller supplies namespace, scheduling and import-table roles at load.
     pub fn load_modules(
-        console: qa_console::commands::Console<Runtime>,
+        mut console: qa_console::commands::Console<Runtime>,
         mut runtime: Runtime,
         world_rate: TickRate,
         requests: Vec<ModuleRequest>,
@@ -684,6 +686,7 @@ impl FrameHost {
                 request.entries.push(export.entry);
             }
         }
+        info::load_directory_default(&mut console.cvars, &runtime.vfs, &requests)?;
         runtime.prepare_traces(requests.iter().map(|request| request.context.trace_rules))?;
         let providers = requests
             .iter()
@@ -2222,12 +2225,18 @@ impl FrameHost {
         {
             return Ok(());
         }
-        let image = row
+        let (source, image) = row
             .request
             .q3_image
             .as_ref()
             .ok_or("missing CLIENT renderer image")?
-            .reload(self.runtime.vfs.read_view(Some(files.view())))?;
+            .reload(
+                row.request
+                    .source
+                    .as_ref()
+                    .ok_or("missing CLIENT renderer source")?,
+                self.runtime.vfs.read_view(Some(files.view())),
+            )?;
         let mut candidate = image.instantiate()?;
         if candidate.entries != row.request.entries
             || !candidate
@@ -2256,6 +2265,7 @@ impl FrameHost {
         let row = modules.row_mut(module).ok_or("missing CLIENT renderer")?;
         row.request.context.console.file_search = files.id();
         row.request.program = candidate.program;
+        row.request.source = Some(source);
         row.request.q3_image = Some(image);
         row.request.prepare = candidate.prepare;
         row.request.shutdown = candidate.shutdown;

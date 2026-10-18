@@ -250,6 +250,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
         .id;
     let request = ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             module: MODULE,
@@ -297,6 +298,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
             .id;
         requests.push(ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: client_context,
             timing_rules: RuleSetId::Quake3,

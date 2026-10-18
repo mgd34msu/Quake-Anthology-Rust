@@ -162,6 +162,9 @@ impl<'vfs> ReadView<'vfs> {
     pub fn source_precedence(self, file: &FileRef) -> Result<SourcePrecedence, VfsError> {
         self.vfs.source_precedence(file)
     }
+    pub fn source_directory(self, file: &FileRef) -> Result<&'vfs std::path::Path, VfsError> {
+        self.vfs.source_directory(file)
+    }
     /// Cold reload may resolve a replacement after the old mount retires. Its
     /// retained name is metadata, while the new open still enforces this view.
     pub fn retained_name(self, file: &FileRef) -> Result<&[u8], VfsError> {

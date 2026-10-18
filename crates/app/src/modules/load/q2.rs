@@ -63,7 +63,11 @@ pub fn load_q2(
         let mut reader = ArchiveReader::default();
         let mut clients = Vec::new();
         for spec in specs {
-            let super::ModuleBytes { search, bytes, .. } = module_bytes(
+            let super::ModuleBytes {
+                search,
+                source: program_source,
+                bytes,
+            } = module_bytes(
                 runtime.vfs.read_view(spec.search.as_ref()),
                 &spec.path,
                 &mut reader,
@@ -140,6 +144,7 @@ pub fn load_q2(
             api_arguments[0] = Argument::Word(game.imports_address);
             requests.push(ModuleRequest {
                 search: Some(search),
+                source: Some(program_source),
                 q3_image: None,
                 context: super::call_context(
                     module,

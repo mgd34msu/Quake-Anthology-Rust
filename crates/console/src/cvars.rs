@@ -132,6 +132,15 @@ struct PendingWrite {
     changes: [Option<(CvarHandle, FixedText<64>)>; 33],
     details: [Option<PendingDetail>; 2],
 }
+impl Default for PendingWrite {
+    fn default() -> Self {
+        Self {
+            texts: [None, None],
+            changes: std::array::from_fn(|_| None),
+            details: [None, None],
+        }
+    }
+}
 impl PendingWrite {
     fn values(&self) -> impl Iterator<Item = (CvarHandle, &str)> {
         self.texts
@@ -659,6 +668,40 @@ impl Cvars {
         Ok(view)
     }
 
+    /// A capability may select its native reset default at load. Explicit
+    /// values and pending writes retain priority over the inferred default.
+    pub fn load_default(&mut self, view: View, text: &str) -> Result<(), WriteError> {
+        self.validate_view(view)?;
+        let mut changes = PendingWrite::default();
+        self.prepare_write(view, text, false, &mut changes)?;
+        self.publish_defaults(view.context.source, &changes, |_, _| true)?;
+        self.refresh_changes();
+        Ok(())
+    }
+
+    fn publish_defaults(
+        &mut self,
+        source: RuleSetId,
+        changes: &PendingWrite,
+        replace: impl Fn(CvarHandle, bool) -> bool,
+    ) -> Result<(), WriteError> {
+        for (handle, text) in changes.values() {
+            if !replace(handle, self.default_available(handle, source)) {
+                continue;
+            }
+            let id = self
+                .names
+                .intern(text.as_bytes())
+                .map_err(|_| WriteError::Capacity)?;
+            let default = &mut self.values[handle.0 as usize].module_defaults[source as usize];
+            if *default != Some(id) {
+                *default = Some(id);
+                self.mark_change(handle);
+            }
+        }
+        Ok(())
+    }
+
     /// Module names enter the existing table using capacity reserved at load.
     /// Catalog defaults and previously written values survive registration.
     /// Flags use the registry's common meanings; ABIs convert native bits.
@@ -699,25 +742,11 @@ impl Cvars {
             if let Some(default) = default
                 && (adopt_user_default || !self.default_available(view.handle, context.source))
             {
-                let mut changes = PendingWrite {
-                    texts: [None, None],
-                    changes: std::array::from_fn(|_| None),
-                    details: [None, None],
-                };
+                let mut changes = PendingWrite::default();
                 self.prepare_write(view, default, false, &mut changes)?;
-                for (handle, text) in changes.values() {
-                    if (adopt_user_default && handle == view.handle)
-                        || !self.default_available(handle, context.source)
-                    {
-                        let id = self
-                            .names
-                            .intern(text.as_bytes())
-                            .map_err(|_| WriteError::Capacity)?;
-                        self.values[handle.0 as usize].module_defaults[context.source as usize] =
-                            Some(id);
-                        self.mark_change(handle);
-                    }
-                }
+                self.publish_defaults(context.source, &changes, |handle, available| {
+                    adopt_user_default && handle == view.handle || !available
+                })?;
             }
             if let Some(user_value) = user_value {
                 self.publish(view.handle, user_value.as_str())?;
@@ -1698,11 +1727,7 @@ impl Cvars {
         {
             return Ok(());
         }
-        let mut changes = PendingWrite {
-            texts: [None, None],
-            changes: std::array::from_fn(|_| None),
-            details: [None, None],
-        };
+        let mut changes = PendingWrite::default();
         let pending = self.prepare_write(view, text, enforce, &mut changes)?;
         if native_q3
             && pending

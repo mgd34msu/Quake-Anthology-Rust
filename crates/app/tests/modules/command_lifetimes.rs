@@ -92,6 +92,7 @@ fn request(
     });
     ModuleRequest {
         search: None,
+        source: None,
         q3_image: None,
         context: CallContext {
             module,

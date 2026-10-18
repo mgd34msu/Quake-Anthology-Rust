@@ -192,7 +192,6 @@ fn call_context(
 /// Pristine Q3 module bytes and load-selected ABI choices. Each instantiation
 /// owns fresh VM memory or a fresh native child and its lifecycle callbacks.
 pub struct Q3Image {
-    source: qa_content::vfs::FileRef,
     bytes: Box<[u8]>,
     imports: &'static qa_compat::abi::CallTable,
     player_stats: Option<qa_core::primitives::Q3StatLayout>,
@@ -208,14 +207,12 @@ pub(super) struct Q3Instance {
 
 impl Q3Image {
     pub(super) fn new(
-        source: qa_content::vfs::FileRef,
         bytes: Vec<u8>,
         imports: &'static qa_compat::abi::CallTable,
         player_stats: Option<qa_core::primitives::Q3StatLayout>,
         role_shutdown: Export,
     ) -> Self {
         Self {
-            source,
             bytes: bytes.into_boxed_slice(),
             imports,
             player_stats,
@@ -223,18 +220,24 @@ impl Q3Image {
         }
     }
 
-    pub(super) fn reload(&self, view: ReadView<'_>) -> Result<Self, String> {
+    pub(super) fn reload(
+        &self,
+        source: &qa_content::vfs::FileRef,
+        view: ReadView<'_>,
+    ) -> Result<(qa_content::vfs::FileRef, Self), String> {
         let path = view
-            .retained_name(&self.source)
+            .retained_name(source)
             .map_err(|error| format!("CLIENT module source: {error}"))?;
         let path = std::str::from_utf8(path).map_err(|_| "CLIENT module path is not UTF-8")?;
         let loaded = module_bytes(view, path, &mut ArchiveReader::default())?;
-        Ok(Self::new(
+        Ok((
             loaded.source,
-            loaded.bytes,
-            self.imports,
-            self.player_stats,
-            self.role_shutdown,
+            Self::new(
+                loaded.bytes,
+                self.imports,
+                self.player_stats,
+                self.role_shutdown,
+            ),
         ))
     }
 
@@ -428,7 +431,6 @@ pub fn load_q3(
             ),
         };
         let image = Q3Image::new(
-            source,
             bytes,
             imports,
             matches!(spec.role, Q3Role::Game).then_some(spec.player_stats),
@@ -476,6 +478,7 @@ pub fn load_q3(
             },
             anchor,
             program,
+            source: Some(source),
             q3_image,
             entries,
             frame: Export {
@@ -523,7 +526,11 @@ pub fn load_quakec(
     for spec in specs {
         // Module zero belongs to the existing built-in walk-through provider.
         let module = module_id(&requests)?;
-        let ModuleBytes { search, bytes, .. } = module_bytes(
+        let ModuleBytes {
+            search,
+            source,
+            bytes,
+        } = module_bytes(
             runtime.vfs.read_view(spec.search.as_ref()),
             &spec.path,
             &mut reader,
@@ -573,6 +580,7 @@ pub fn load_quakec(
             phase: Phase::Server,
             rate: TickRate::FrameDriven,
             anchor,
+            source: Some(source),
             q3_image: None,
             program: Program::quakec(
                 vm,

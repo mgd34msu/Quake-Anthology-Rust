@@ -8,6 +8,55 @@ use qa_core::{
 };
 
 type Generation = (u64, u64, u64, Option<FileSearchId>);
+
+pub(super) fn load_directory_default(
+    cvars: &mut Cvars,
+    vfs: &Vfs,
+    requests: &[super::ModuleRequest],
+) -> Result<(), String> {
+    let base = qa_content::products::native_base(RuleSetId::Quake3).ok_or("Q3 base product")?;
+    let mut selected: Option<FixedText<{ qa_core::names::MAX_PATH_BYTES }>> = None;
+    for request in requests.iter().filter(|request| {
+        request.phase == super::Phase::Server && request.context.native_rules == RuleSetId::Quake3
+    }) {
+        let Some(source) = request.source.as_ref() else {
+            continue;
+        };
+        let Some(directory) = vfs
+            .source_game_directory(source, base)
+            .map_err(|error| format!("SERVER program origin: {error}"))?
+        else {
+            continue;
+        };
+        if selected
+            .as_ref()
+            .is_some_and(|selected| selected.as_bytes() != directory.as_bytes())
+        {
+            // One host has one canonical filesystem setting. A mixed provider
+            // set must not inherit whichever program happened to load last.
+            return Ok(());
+        }
+        selected = Some(directory);
+    }
+    if let Some(directory) = selected {
+        let view = cvars
+            .bind(
+                "fs_game",
+                Context {
+                    source: RuleSetId::Quake3,
+                    side: qa_console::catalog::Scope::Server,
+                    role: qa_console::views::Role::Engine,
+                    ..Context::default()
+                },
+            )
+            .ok_or("missing fs_game")?;
+        cvars
+            .load_default(view, directory.as_str())
+            .map_err(|error| format!("SERVER game directory default: {error:?}"))?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Row {
     text: FixedText<MAX_TEXT>,

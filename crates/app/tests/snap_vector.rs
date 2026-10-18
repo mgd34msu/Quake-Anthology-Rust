@@ -251,6 +251,7 @@ fn session_dispatch_calls_snap_import_from_qvm_game_and_cgame() {
             .id;
         let request = ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,

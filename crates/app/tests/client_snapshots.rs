@@ -458,6 +458,7 @@ fn host_with_initializer(
         output = address;
         requests.push(ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context: CallContext {
                 module,
@@ -536,6 +537,7 @@ fn host_with_initializer(
         operations.extend([(Const, 0), (Leave, 64)]);
         requests.push(ModuleRequest {
             search: None,
+            source: None,
             q3_image: None,
             context,
             phase: Phase::Server,
