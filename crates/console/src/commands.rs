@@ -715,20 +715,6 @@ impl<H: Host> Console<H> {
             }
             run.context
         };
-        // Human console input remains usable after disconnect. Its optional
-        // value namespace is a hint, unlike a native command's lifetime guard.
-        let context = if context.client_lifetime.is_none()
-            && context
-                .cvar_client
-                .is_some_and(|(client, lifetime)| !host.client_command_live(client, lifetime))
-        {
-            Context {
-                cvar_client: None,
-                ..context
-            }
-        } else {
-            context
-        };
         run.context = context;
         if matches!(
             context.source,

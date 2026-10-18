@@ -480,7 +480,7 @@ impl Cvars {
         let context = Context {
             side: Scope::Client,
             client_lifetime: None,
-            cvar_client: None,
+            cvar_seat: None,
             ..context
         };
         let [cheats, download] =
@@ -927,7 +927,7 @@ impl Cvars {
         self.validate_view(view)?;
         view.context = Context {
             client_lifetime: view.context.client_lifetime,
-            cvar_client: view.context.cvar_client,
+            cvar_seat: view.context.cvar_seat,
             ..native_context(view.context)
         };
         let binding = view.binding as usize;
@@ -2050,7 +2050,11 @@ impl Cvars {
                     } else {
                         Scope::Client
                     },
-                    cvar_client: None,
+                    cvar_seat: self
+                        .column_owner(column)
+                        .is_none()
+                        .then(|| self.column_seat(column))
+                        .flatten(),
                     client_lifetime: self.column_owner(column),
                     client_policy: None,
                     ..self.context

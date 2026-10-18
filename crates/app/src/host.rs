@@ -4075,8 +4075,10 @@ impl FrameHost {
                 seat: SeatId::new(seat as u8).unwrap_or(SeatId::FIRST),
                 ..self.console.cvars.context()
             };
-            if let Some((id, client, _)) = self.local_seat(seat) {
-                context.cvar_client = Some((id, client.entity));
+            if self.console.cvars.has_seat_values(context.seat) {
+                context.cvar_seat = Some(context.seat);
+            }
+            if let Some((id, _, _)) = self.local_seat(seat) {
                 context.file_search = self.runtime.client_resources[id.0 as usize]
                     .as_ref()
                     .and_then(|resources| resources.state.file_source());

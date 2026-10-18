@@ -324,6 +324,7 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
             .get(healthy, Endpoint::Server)
             .is_some()
     );
+    queued(&mut host, &mut source, "fov 117\n", 45);
     queued(&mut host, &mut source, &format!("connect {address}\n"), 50);
     let replacement = host.local_clients[0].unwrap();
     let settings = Context {
@@ -338,7 +339,7 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
             .cvars
             .numeric(host.console.cvars.bind("fov", settings).unwrap())
             .unwrap(),
-        111.0
+        117.0
     );
     assert!(host.console.cvars.read(old_fov).is_err());
     let root = host.console.cvars.bind("fov", context()).unwrap();

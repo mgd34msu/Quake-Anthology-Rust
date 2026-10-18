@@ -193,3 +193,59 @@ fn moving_a_connection_to_another_seat_does_not_transfer_the_old_seats_preferenc
         111.0
     );
 }
+
+#[test]
+fn human_seat_selection_survives_retirement_without_weakening_native_lifetimes() {
+    let mut vars = Cvars::new().unwrap();
+    let first = client(0, 1, 0);
+    vars.load_client_values(
+        first.client_lifetime.unwrap(),
+        Some((first.seat, first.source)),
+    )
+    .unwrap();
+    let native = vars.bind("cg_fov", first).unwrap();
+    let human = Context {
+        client_lifetime: None,
+        cvar_seat: Some(first.seat),
+        ..first
+    };
+    let seat_view = vars.bind("cg_fov", human).unwrap();
+    vars.write(seat_view, "111").unwrap();
+    assert_eq!(vars.numeric(native).unwrap(), 111.0);
+
+    let peer = client(0, 2, 1);
+    vars.load_client_values(
+        peer.client_lifetime.unwrap(),
+        Some((peer.seat, peer.source)),
+    )
+    .unwrap();
+    assert!(!vars.has_client_values(first.client_lifetime.unwrap()));
+    assert!(
+        vars.bind(
+            "cg_fov",
+            Context {
+                cvar_seat: Some(first.seat),
+                ..first
+            }
+        )
+        .is_none()
+    );
+    assert!(vars.read(native).is_err());
+    vars.write(seat_view, "117").unwrap();
+    assert_eq!(vars.numeric(seat_view).unwrap(), 117.0);
+    assert_eq!(
+        vars.numeric(vars.bind("cg_fov", peer).unwrap()).unwrap(),
+        90.0
+    );
+    let next = client(7, 1, 0);
+    vars.load_client_values(
+        next.client_lifetime.unwrap(),
+        Some((next.seat, next.source)),
+    )
+    .unwrap();
+    assert_eq!(
+        vars.numeric(vars.bind("cg_fov", next).unwrap()).unwrap(),
+        117.0
+    );
+    assert_eq!(vars.numeric(seat_view).unwrap(), 117.0);
+}

@@ -32,7 +32,7 @@ pub(super) fn native_context(context: Context) -> Context {
         key_source: None,
         producer: None,
         client_lifetime: None,
-        cvar_client: None,
+        cvar_seat: None,
         client_policy: None,
         ..context
     }
@@ -70,12 +70,28 @@ impl Cvars {
             .checked_sub(1)
             .and_then(|index| self.clients[index].owner)
     }
+    pub(super) fn column_seat(&self, column: usize) -> Option<SeatId> {
+        column
+            .checked_sub(1)
+            .and_then(|index| self.clients[index].local.map(|(seat, _)| seat))
+    }
+    fn seat_column(&self, seat: SeatId) -> Option<usize> {
+        self.clients
+            .iter()
+            .position(|row| row.local.is_some_and(|(local, _)| local == seat))
+            .map(|index| index + 1)
+    }
+    pub fn has_seat_values(&self, seat: SeatId) -> bool {
+        self.seat_column(seat).is_some()
+    }
     pub(super) fn context_column(&self, context: Context) -> Option<usize> {
         if context.side == Scope::Server {
             return Some(0);
         }
-        match context.cvar_client.or(context.client_lifetime) {
-            None => Some(0),
+        match context.client_lifetime {
+            None => context
+                .cvar_seat
+                .map_or(Some(0), |seat| self.seat_column(seat)),
             Some(owner) => self
                 .clients
                 .iter()
@@ -135,11 +151,7 @@ impl Cvars {
         owner: (ClientId, EntityId),
         local: Option<(SeatId, RuleSetId)>,
     ) -> Result<(), WriteError> {
-        let reserved = local.and_then(|(seat, _)| {
-            self.clients
-                .iter()
-                .position(|row| row.local.is_some_and(|(previous, _)| previous == seat))
-        });
+        let reserved = local.and_then(|(seat, _)| self.seat_column(seat).map(|column| column - 1));
         if let Some(index) = self.clients.iter().position(|row| row.owner == Some(owner))
             && reserved.is_none_or(|reserved| reserved == index)
             && local.is_none_or(|(seat, _)| {
@@ -260,7 +272,7 @@ impl Cvars {
             source,
             seat,
             client_lifetime: None,
-            cvar_client: None,
+            cvar_seat: None,
             ..self.context
         };
         let mut retained = Vec::new();
@@ -361,7 +373,7 @@ impl Cvars {
             side: Scope::Client,
             role: Role::Cgame,
             client_lifetime: Some(owner),
-            cvar_client: None,
+            cvar_seat: None,
             ..self.context
         };
         self.context_column(context).ok_or(WriteError::Capacity)?;
@@ -416,7 +428,7 @@ impl Cvars {
 
     pub fn client_view(&self, mut view: View, owner: (ClientId, EntityId)) -> Option<View> {
         view.context.client_lifetime = Some(owner);
-        view.context.cvar_client = None;
+        view.context.cvar_seat = None;
         view.handle = self.context_handle(view.handle, view.context)?;
         Some(view)
     }
@@ -438,7 +450,7 @@ impl Cvars {
     ) -> Option<[CvarHandle; N]> {
         let column = self.context_column(Context {
             client_lifetime: Some(owner),
-            cvar_client: None,
+            cvar_seat: None,
             side: Scope::Client,
             ..self.context
         })?;
@@ -456,7 +468,7 @@ impl Cvars {
             handle,
             Context {
                 client_lifetime: Some(owner),
-                cvar_client: None,
+                cvar_seat: None,
                 side: Scope::Client,
                 ..self.context
             },
