@@ -620,3 +620,105 @@ fn file_selection_metadata_does_not_split_cvar_policy_or_native_handles() {
         None
     );
 }
+
+#[test]
+fn native_info_generations_ignore_telemetry_and_pending_latches_but_track_membership() {
+    let mut cvars = Cvars::new().unwrap();
+    let q3 = context(RuleSetId::Quake3);
+    let telemetry = cvars
+        .register("_qa_info_telemetry", Some("0"), 0, q3)
+        .unwrap();
+    let user = cvars
+        .register("_qa_live_user", Some("before"), 2, q3)
+        .unwrap();
+    let server = cvars
+        .register("_qa_live_server", Some("before"), 4, q3)
+        .unwrap();
+    let system = cvars
+        .register("_qa_live_system", Some("before"), 8 | 32, q3)
+        .unwrap();
+    let generations = [2, 4, 8].map(|flag| cvars.info_generation(q3.source, flag));
+    cvars.force_write(telemetry, "1").unwrap();
+    assert_eq!(
+        [2, 4, 8].map(|flag| cvars.info_generation(q3.source, flag)),
+        generations
+    );
+    cvars.set_latch_active(system.canonical(), true);
+    cvars.write(system, "after").unwrap();
+    assert_eq!(
+        [2, 4, 8].map(|flag| cvars.info_generation(q3.source, flag)),
+        generations
+    );
+    cvars.apply_latch(system).unwrap();
+    assert!(cvars.info_generation(q3.source, 8) > generations[2]);
+    assert_eq!(cvars.info_generation(q3.source, 2), generations[0]);
+    assert_eq!(cvars.info_generation(q3.source, 4), generations[1]);
+    cvars.force_write(server, "after").unwrap();
+    assert!(cvars.info_generation(q3.source, 4) > generations[1]);
+    let user_before = cvars.info_generation(q3.source, 2);
+    // FullSet removes the old info key even when its value is unchanged.
+    cvars.full_set(user, "before", 0).unwrap();
+    assert!(cvars.info_generation(q3.source, 2) > user_before);
+    let user_removed = cvars.info_generation(q3.source, 2);
+    cvars.force_write(user, "unpublished").unwrap();
+    assert_eq!(cvars.info_generation(q3.source, 2), user_removed);
+    cvars.register("_qa_live_user", None, 2, q3).unwrap();
+    assert!(cvars.info_generation(q3.source, 2) > user_removed);
+    cvars.reset_lookup_count();
+    for _ in 0..10 {
+        assert_eq!(
+            cvars.info_generation(q3.source, 6),
+            cvars
+                .info_generation(q3.source, 2)
+                .max(cvars.info_generation(q3.source, 4))
+        );
+    }
+    assert_eq!(cvars.lookup_count(), 0);
+}
+
+#[test]
+fn native_info_generations_follow_alias_operands_server_scope_and_other_seats() {
+    use qa_core::sys_events::SeatId;
+    let mut cvars = Cvars::new().unwrap();
+    let q1 = context(RuleSetId::Quake);
+    let color = cvars.bind("_cl_color", q1).unwrap();
+    cvars.full_set(color, "18", 2).unwrap();
+    let before = cvars.info_generation(q1.source, 2);
+    let secondary = cvars.bind("color2", q1).unwrap();
+    cvars.force_write(secondary, "1").unwrap();
+    assert_ne!(cvars.read(color).unwrap().as_str(), "18");
+    assert!(cvars.info_generation(q1.source, 2) > before);
+    for source in RuleSetId::ALL {
+        let server = Context {
+            side: qa_console::catalog::Scope::Server,
+            source,
+            ..Context::default()
+        };
+        if source != RuleSetId::Quake {
+            let password = cvars.bind("password", server).unwrap();
+            cvars.full_set(password, "old", 4).unwrap();
+            let before = cvars.info_generation(source, 4);
+            cvars.force_write(password, "new").unwrap();
+            assert!(cvars.info_generation(source, 4) > before, "{source:?}");
+        }
+        let seat = Context {
+            source,
+            seat: SeatId::new(1).unwrap(),
+            ..Context::default()
+        };
+        let name = cvars
+            .bind(
+                if source == RuleSetId::Quake {
+                    "_cl_name"
+                } else {
+                    "name"
+                },
+                seat,
+            )
+            .unwrap();
+        cvars.full_set(name, "seat two", 2).unwrap();
+        let before = cvars.info_generation(source, 2);
+        cvars.force_write(name, "renamed seat two").unwrap();
+        assert!(cvars.info_generation(source, 2) > before, "{source:?}");
+    }
+}

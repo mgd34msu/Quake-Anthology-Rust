@@ -17,6 +17,7 @@ const EMPTY: u16 = u16::MAX;
 const MODULE_CVARS: usize = 1024;
 pub(crate) const USER_CREATED: u32 = 128;
 const ROLES: [Role; 3] = [Role::Engine, Role::Game, Role::Cgame];
+const INFO_FLAGS: [u32; 3] = [2, 4, 8];
 
 /// Q3 Cvar_Get/Cvar_Set validate names before lookup; other native sources
 /// keep their byte-exact spellings in the same table.
@@ -246,6 +247,7 @@ pub struct Cvars {
     dirty_projections: StampSet,
     context: Context,
     revision_clock: u64,
+    info_revisions: [[u64; INFO_FLAGS.len()]; 5],
     native_views: Vec<NativeView>,
     native_heads: Box<[Option<u32>]>,
     runtime_policy: RuntimePolicy,
@@ -389,6 +391,7 @@ impl Cvars {
             lookups: std::cell::Cell::new(0),
             context,
             revision_clock: 0,
+            info_revisions: [[0; INFO_FLAGS.len()]; 5],
             native_views: Vec::with_capacity(BINDINGS.len() + MODULE_CVARS * ROLES.len()),
             native_heads: vec![None; BINDINGS.len() + MODULE_CVARS].into_boxed_slice(),
             defaults: (0..DEFINITIONS.len())
@@ -501,6 +504,11 @@ impl Cvars {
             }
         }
         self.refresh_projections();
+        // Changing the registry's default policy may change info projections
+        // in sources other than the newly selected console context.
+        self.revision_clock = self.revision_clock.wrapping_add(1);
+        self.info_revisions
+            .fill([self.revision_clock; INFO_FLAGS.len()]);
     }
     fn slot(&self, row: usize, seat: u8) -> CvarHandle {
         CvarHandle(
@@ -800,6 +808,28 @@ impl Cvars {
     }
     pub fn revision(&self) -> u64 {
         self.revision_clock
+    }
+    /// Applied native USERINFO (2), SERVERINFO (4) or SYSTEMINFO (8) changes.
+    /// A source stamp covers all seats and roles; unrelated cvars and pending
+    /// latches do not invalidate info strings. This is registry state, not a
+    /// fingerprint of their contents.
+    pub fn info_generation(&self, source: RuleSetId, flags: u32) -> u64 {
+        INFO_FLAGS
+            .into_iter()
+            .zip(self.info_revisions[source as usize])
+            .filter_map(|(flag, generation)| (flags & flag != 0).then_some(generation))
+            .max()
+            .unwrap_or(0)
+    }
+    fn mark_info(&mut self, source: RuleSetId, flags: u32, generation: u64) {
+        for (flag, revision) in INFO_FLAGS
+            .into_iter()
+            .zip(&mut self.info_revisions[source as usize])
+        {
+            if flags & flag != 0 {
+                *revision = (*revision).max(generation);
+            }
+        }
     }
     /// Native handles refer to cached views of this registry, never another
     /// name/value table. Registration uses capacity reserved at registry load.
@@ -1357,6 +1387,11 @@ impl Cvars {
             return Err(error);
         }
         self.mark_change(view.handle);
+        // A new flag override also replaces other aliases' catalog flags.
+        // Invalidate all native info categories when that membership changes.
+        if previous != Some(flags) {
+            self.mark_info(view.context.source, 2 | 4 | 8, self.revision_clock);
+        }
         self.refresh_changes();
         Ok(())
     }
@@ -1827,29 +1862,41 @@ impl Cvars {
         let span = self.projection_rows[index];
         for projection in span.range() {
             let projections = std::array::from_fn(|source| {
+                let context = Context {
+                    source: RuleSetId::ALL[source],
+                    role: Role::Engine,
+                    seat: qa_core::sys_events::SeatId::new(
+                        (projection - span.first as usize) as u8,
+                    )
+                    .unwrap_or(qa_core::sys_events::SeatId::FIRST),
+                    event_time: None,
+                    key_source: None,
+                    producer: None,
+                    client_lifetime: None,
+                    client_policy: None,
+                    ..self.context
+                };
+                let Some(handle) = self.binding_slot(binding, context) else {
+                    return [Err(conversion::Error::PolicyRequired); ROLES.len()];
+                };
+                let view = View {
+                    handle,
+                    binding: index as u16,
+                    context,
+                };
+                if binding.native_sources & (1 << source as u8) != 0 {
+                    let flags = self.flags(view);
+                    if flags & (2 | 4 | 8) != 0 {
+                        self.mark_info(context.source, flags, self.view_generation(view));
+                    }
+                }
                 std::array::from_fn(|role| {
-                    let context = Context {
-                        file_search: None,
-                        source: RuleSetId::ALL[source],
-                        side: self.context.side,
-                        role: ROLES[role],
-                        dedicated: self.context.dedicated,
-                        seat: qa_core::sys_events::SeatId::new(
-                            (projection - span.first as usize) as u8,
-                        )
-                        .unwrap_or(qa_core::sys_events::SeatId::FIRST),
-                        event_time: None,
-                        key_source: None,
-                        producer: None,
-                        client_lifetime: None,
-                        client_policy: None,
-                    };
                     let view = View {
-                        handle: self
-                            .binding_slot(binding, context)
-                            .ok_or(conversion::Error::PolicyRequired)?,
-                        binding: index as u16,
-                        context,
+                        context: Context {
+                            role: ROLES[role],
+                            ..context
+                        },
+                        ..view
                     };
                     self.read(view).map(|text| {
                         (
@@ -1888,6 +1935,12 @@ impl Cvars {
             }
             if index >= self.catalog_values {
                 self.refresh_native(BINDINGS.len() + index - self.catalog_values);
+                let value = &self.values[index];
+                let flags = value.command_flags;
+                let generation = value.revision;
+                for source in RuleSetId::ALL {
+                    self.mark_info(source, flags[source as usize].unwrap_or(0), generation);
+                }
             }
         }
         for i in 0..self.dirty_bindings.len() {

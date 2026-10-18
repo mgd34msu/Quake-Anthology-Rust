@@ -2787,7 +2787,6 @@ impl FrameHost {
 
     fn queue_client_userinfo(&mut self) {
         use qa_network::commands::packet::Protocol;
-        let revision = self.console.cvars.revision();
         let mut bytes = [0; qa_session::clients::USERINFO_BYTES];
         for seat in SeatId::ALL {
             let index = seat.index();
@@ -2813,9 +2812,6 @@ impl FrameHost {
                 cache.revision = None;
                 cache.queued.clear();
             }
-            if cache.revision == Some(revision) {
-                continue;
-            }
             let Some(connection) = self
                 .runtime
                 .network
@@ -2838,6 +2834,10 @@ impl FrameHost {
             else {
                 continue;
             };
+            let revision = self.console.cvars.info_generation(protocol.rule_set(), 2);
+            if cache.revision == Some(revision) {
+                continue;
+            }
             let Ok(length) = ClientUserinfo::serialize(
                 &self.console.cvars,
                 protocol,
