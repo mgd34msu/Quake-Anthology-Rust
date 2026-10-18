@@ -1567,250 +1567,285 @@ impl FrameHost {
                             publication.begin(row.request.context.module, revision)
                         })
                 });
-            if !changed {
-                continue;
-            }
-            let mut complete = true;
-            // General rows and native resource claims belong to the primary
-            // namespace; secondary filenames use its free destination slots.
-            if let Some(row) = modules
-                .row(client.module)
-                .filter(|row| row.state == State::Running)
-            {
-                let source = ConfigLayout::for_rules(row.request.context.native_rules);
-                for native_index in 0..row.request.configstrings.min(source.count) {
-                    let Ok((text, revision)) =
-                        modules.storage.configstring(client.module, native_index)
-                    else {
-                        continue;
-                    };
-                    if !publication.needs(native_index, revision) {
-                        continue;
-                    }
-                    if source.rules == RuleSetId::Quake3
-                        && target.rules == RuleSetId::Quake3
-                        && row.server_info.is_some()
-                        && native_index <= ConfigLayout::Q3_SYSTEM_INFO
-                    {
-                        // SERVER info is projected from engine cvars, not a
-                        // module's empty or private copy of those two rows.
-                        publication.seen(native_index, revision);
-                        continue;
-                    }
-                    let target_index = target.project_index(source, native_index);
-                    if source.resources[0].contains(native_index) {
-                        let ordinal = native_index - source.resources[0].first as usize;
-                        if ordinal != 0 && !publication.primary_model_fits(ordinal as u32) {
-                            if let Some(name) = modules
-                                .model_name(client.module, ordinal as u32, model_world, None)
-                                .and_then(|model| model.name)
-                                && !publish_model(
-                                    publication,
-                                    &mut runtime.server.events,
-                                    output,
-                                    ClientId(index as u32),
-                                    client.module,
-                                    source.rules,
-                                    native_index as u32,
-                                    target,
-                                    protocol,
-                                    name,
-                                    text,
-                                )
-                            {
-                                complete = false;
-                                break;
-                            }
+            if changed {
+                let mut complete = true;
+                // General rows and native resource claims belong to the primary
+                // namespace; secondary filenames use its free destination slots.
+                if let Some(row) = modules
+                    .row(client.module)
+                    .filter(|row| row.state == State::Running)
+                {
+                    let source = ConfigLayout::for_rules(row.request.context.native_rules);
+                    for native_index in 0..row.request.configstrings.min(source.count) {
+                        let Ok((text, revision)) =
+                            modules.storage.configstring(client.module, native_index)
+                        else {
+                            continue;
+                        };
+                        if !publication.needs(native_index, revision) {
+                            continue;
+                        }
+                        if source.rules == RuleSetId::Quake3
+                            && target.rules == RuleSetId::Quake3
+                            && row.server_info.is_some()
+                            && native_index <= ConfigLayout::Q3_SYSTEM_INFO
+                        {
+                            // SERVER info is projected from engine cvars, not a
+                            // module's empty or private copy of those two rows.
                             publication.seen(native_index, revision);
                             continue;
                         }
-                        publication.primary_model(
-                            ordinal as u32,
-                            !text.is_empty(),
-                            modules
-                                .model_name(client.module, ordinal as u32, model_world, None)
-                                .and_then(|model| model.name),
-                        );
-                    }
-                    let is_sound = source.resources[1].contains(native_index);
-                    let mut sample = None;
-                    if is_sound {
-                        let ordinal = native_index - source.resources[1].first as usize;
-                        sample = modules
-                            .storage
-                            .sound_id(client.module, source.resources[1], ordinal as i32)
-                            .ok()
-                            .flatten();
-                        publication.primary_sound(ordinal as u32, !text.is_empty(), sample);
-                    }
-                    let Some(destination) = target_index else {
-                        publication.unsupported += 1;
-                        publication.seen(native_index, revision);
-                        continue;
-                    };
-                    if target.max_clients() == Some(destination) {
-                        // Player ordinals belong to this connection's native
-                        // namespace, independently of the publishing module.
-                        publication.seen(native_index, revision);
-                        continue;
-                    }
-                    // Preserve exact text only when both native filename
-                    // codecs agree, including Quake's literal prefix bytes.
-                    let converted;
-                    let text = if is_sound
-                        && !text.is_empty()
-                        && !qa_audio::same_sound_codec(source.rules, target.rules)
-                    {
-                        let Some(name) = runtime
-                            .sound_assets
-                            .as_deref()
-                            .map(crate::audio::SoundAssets::bank)
-                            .zip(sample)
-                            .and_then(|(bank, sample)| {
-                                qa_audio::native_sound_name(target.rules, bank, sample)
-                            })
-                        else {
+                        let target_index = target.project_index(source, native_index);
+                        if source.resources[0].contains(native_index) {
+                            let ordinal = native_index - source.resources[0].first as usize;
+                            if ordinal != 0 && !publication.primary_model_fits(ordinal as u32) {
+                                if let Some(name) = modules
+                                    .model_name(client.module, ordinal as u32, model_world, None)
+                                    .and_then(|model| model.name)
+                                    && !publish_model(
+                                        publication,
+                                        &mut runtime.server.events,
+                                        output,
+                                        ClientId(index as u32),
+                                        client.module,
+                                        source.rules,
+                                        native_index as u32,
+                                        target,
+                                        protocol,
+                                        name,
+                                        text,
+                                    )
+                                {
+                                    complete = false;
+                                    break;
+                                }
+                                publication.seen(native_index, revision);
+                                continue;
+                            }
+                            publication.primary_model(
+                                ordinal as u32,
+                                !text.is_empty(),
+                                modules
+                                    .model_name(client.module, ordinal as u32, model_world, None)
+                                    .and_then(|model| model.name),
+                            );
+                        }
+                        let is_sound = source.resources[1].contains(native_index);
+                        let mut sample = None;
+                        if is_sound {
+                            let ordinal = native_index - source.resources[1].first as usize;
+                            sample = modules
+                                .storage
+                                .sound_id(client.module, source.resources[1], ordinal as i32)
+                                .ok()
+                                .flatten();
+                            publication.primary_sound(ordinal as u32, !text.is_empty(), sample);
+                        }
+                        let Some(destination) = target_index else {
+                            publication.unsupported += 1;
+                            publication.seen(native_index, revision);
+                            continue;
+                        };
+                        if target.max_clients() == Some(destination) {
+                            // Player ordinals belong to this connection's native
+                            // namespace, independently of the publishing module.
+                            publication.seen(native_index, revision);
+                            continue;
+                        }
+                        // Preserve exact text only when both native filename
+                        // codecs agree, including Quake's literal prefix bytes.
+                        let converted;
+                        let text = if is_sound
+                            && !text.is_empty()
+                            && !qa_audio::same_sound_codec(source.rules, target.rules)
+                        {
+                            let Some(name) = runtime
+                                .sound_assets
+                                .as_deref()
+                                .map(crate::audio::SoundAssets::bank)
+                                .zip(sample)
+                                .and_then(|(bank, sample)| {
+                                    qa_audio::native_sound_name(target.rules, bank, sample)
+                                })
+                            else {
+                                publication.unsupported += 1;
+                                publication.published(destination, None);
+                                publication.seen(native_index, revision);
+                                continue;
+                            };
+                            converted = name;
+                            converted.as_bytes()
+                        } else {
+                            text
+                        };
+                        if protocol
+                            .config_capacity(destination)
+                            .is_none_or(|limit| text.len() > limit)
+                        {
                             publication.unsupported += 1;
                             publication.published(destination, None);
                             publication.seen(native_index, revision);
                             continue;
-                        };
-                        converted = name;
-                        converted.as_bytes()
-                    } else {
-                        text
-                    };
-                    if protocol
-                        .config_capacity(destination)
-                        .is_none_or(|limit| text.len() > limit)
-                    {
-                        publication.unsupported += 1;
-                        publication.published(destination, None);
-                        publication.seen(native_index, revision);
-                        continue;
-                    }
-                    if runtime.server.events.needs_resync(output) {
-                        complete = false;
-                        break;
-                    }
-                    match runtime.server.events.publish_configstring(
-                        Some(OutputTarget::Client(ClientId(index as u32))),
-                        client.module,
-                        source.rules,
-                        native_index as u32,
-                        destination as u32,
-                        text,
-                    ) {
-                        Ok(sequence) => {
-                            publication.published(destination, Some(sequence));
-                            publication.seen(native_index, revision);
                         }
-                        Err(_) => {
+                        if runtime.server.events.needs_resync(output) {
                             complete = false;
                             break;
                         }
+                        match runtime.server.events.publish_configstring(
+                            Some(OutputTarget::Client(ClientId(index as u32))),
+                            client.module,
+                            source.rules,
+                            native_index as u32,
+                            destination as u32,
+                            text,
+                        ) {
+                            Ok(sequence) => {
+                                publication.published(destination, Some(sequence));
+                                publication.seen(native_index, revision);
+                            }
+                            Err(_) => {
+                                complete = false;
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-            publication.release_aliases();
-            publication.release_model_aliases();
-            for row in modules
-                .rows
-                .iter()
-                .flatten()
-                .filter(|row| row.state == State::Running)
-            {
-                let module = row.request.context.module;
-                let Some(models) = modules
-                    .storage
-                    .resources(module)
-                    .map(|resources| resources[0])
-                else {
-                    continue;
-                };
-                for ordinal in 1..models.count {
-                    if module == client.module
-                        && (!publication.primary_model_fits(ordinal)
-                            || publication.model_alias_fits(ordinal))
-                    {
-                        continue;
-                    }
-                    let Some(name) = modules
-                        .model_name(module, ordinal, model_world, None)
-                        .and_then(|model| model.name)
-                    else {
-                        continue;
-                    };
-                    let Some(text) = modules.storage.resource_name(name) else {
-                        continue;
-                    };
-                    if !publish_model(
-                        publication,
-                        &mut runtime.server.events,
-                        output,
-                        ClientId(index as u32),
-                        module,
-                        row.request.context.native_rules,
-                        models.first + ordinal,
-                        target,
-                        protocol,
-                        name,
-                        text,
-                    ) {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-            if let Some(bank) = runtime
-                .sound_assets
-                .as_deref()
-                .map(crate::audio::SoundAssets::bank)
-            {
-                // Running secondary module resources get first claim on free
-                // slots; resolving a PCM handle never rebuilds or hashes a path.
-                for row in modules.rows.iter().flatten().filter(|row| {
-                    row.state == State::Running && row.request.context.module != client.module
-                }) {
+                publication.release_aliases();
+                publication.release_model_aliases();
+                for row in modules
+                    .rows
+                    .iter()
+                    .flatten()
+                    .filter(|row| row.state == State::Running)
+                {
                     let module = row.request.context.module;
-                    let Some(sounds) = modules
+                    let Some(models) = modules
                         .storage
                         .resources(module)
-                        .map(|resources| resources[1])
+                        .map(|resources| resources[0])
                     else {
                         continue;
                     };
-                    for ordinal in 1..sounds.count {
-                        let Some(sound) = modules
-                            .storage
-                            .sound_id(module, sounds, ordinal as i32)
-                            .ok()
-                            .flatten()
+                    for ordinal in 1..models.count {
+                        if module == client.module
+                            && (!publication.primary_model_fits(ordinal)
+                                || publication.model_alias_fits(ordinal))
+                        {
+                            continue;
+                        }
+                        let Some(name) = modules
+                            .model_name(module, ordinal, model_world, None)
+                            .and_then(|model| model.name)
                         else {
                             continue;
                         };
-                        if !publish_sound(
+                        let Some(text) = modules.storage.resource_name(name) else {
+                            continue;
+                        };
+                        if !publish_model(
                             publication,
                             &mut runtime.server.events,
                             output,
                             ClientId(index as u32),
                             module,
                             row.request.context.native_rules,
-                            sounds.first + ordinal,
+                            models.first + ordinal,
                             target,
                             protocol,
-                            bank,
-                            sound,
+                            name,
+                            text,
                         ) {
                             complete = false;
                             break;
                         }
                     }
                 }
-                // Registered PCM names are immutable. Preserve old numeric
-                // events after a primary row rewrite by relocating their sample,
-                // including when its module no longer declares the old ordinal.
-                for sound in 1..bank.len() {
+                if let Some(bank) = runtime
+                    .sound_assets
+                    .as_deref()
+                    .map(crate::audio::SoundAssets::bank)
+                {
+                    // Running secondary module resources get first claim on free
+                    // slots; resolving a PCM handle never rebuilds or hashes a path.
+                    for row in modules.rows.iter().flatten().filter(|row| {
+                        row.state == State::Running && row.request.context.module != client.module
+                    }) {
+                        let module = row.request.context.module;
+                        let Some(sounds) = modules
+                            .storage
+                            .resources(module)
+                            .map(|resources| resources[1])
+                        else {
+                            continue;
+                        };
+                        for ordinal in 1..sounds.count {
+                            let Some(sound) = modules
+                                .storage
+                                .sound_id(module, sounds, ordinal as i32)
+                                .ok()
+                                .flatten()
+                            else {
+                                continue;
+                            };
+                            if !publish_sound(
+                                publication,
+                                &mut runtime.server.events,
+                                output,
+                                ClientId(index as u32),
+                                module,
+                                row.request.context.native_rules,
+                                sounds.first + ordinal,
+                                target,
+                                protocol,
+                                bank,
+                                sound,
+                            ) {
+                                complete = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if complete {
+                    for row in modules
+                        .rows
+                        .iter()
+                        .flatten()
+                        .filter(|row| row.state == State::Running)
+                    {
+                        if let Ok(revision) =
+                            modules.storage.config_revision(row.request.context.module)
+                        {
+                            publication.finish(row.request.context.module, revision);
+                        }
+                    }
+                }
+            }
+            // Only sounds retained for this native consumer need a fallback
+            // filename. CLIENT-only media must not consume its reliable window.
+            // The ordinary output pass can send these later config records while
+            // retaining the earlier sound until its prerequisite receives an ACK.
+            if let Some(bank) = runtime
+                .sound_assets
+                .as_deref()
+                .map(crate::audio::SoundAssets::bank)
+                && let Some(mut batch) = runtime.server.events.batch(output)
+            {
+                while let Some(record) = runtime.server.events.next(&mut batch) {
+                    let qa_core::events::FrameEvent::Sound(sound) = record.event else {
+                        continue;
+                    };
+                    if !sound.applies_to_client(ClientId(index as u32))
+                        || sound.sound.0 == 0
+                        || !matches!(
+                            sound.action,
+                            qa_core::primitives::SoundAction::Play
+                                | qa_core::primitives::SoundAction::StartLoop
+                        )
+                    {
+                        continue;
+                    }
                     if !publish_sound(
                         publication,
                         &mut runtime.server.events,
@@ -1822,24 +1857,9 @@ impl FrameHost {
                         target,
                         protocol,
                         bank,
-                        qa_core::primitives::SoundId(sound as u32),
+                        sound.sound,
                     ) {
-                        complete = false;
                         break;
-                    }
-                }
-            }
-            if complete {
-                for row in modules
-                    .rows
-                    .iter()
-                    .flatten()
-                    .filter(|row| row.state == State::Running)
-                {
-                    if let Ok(revision) =
-                        modules.storage.config_revision(row.request.context.module)
-                    {
-                        publication.finish(row.request.context.module, revision);
                     }
                 }
             }

@@ -1325,6 +1325,36 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
     setting(&mut host, "mapname", "ready");
     setting(&mut host, "sv_pure", "1");
     host.bind_client_model_assets([(id, profile, None)]);
+    // A loaded CLIENT media bank is not a SERVER resource declaration. More
+    // than one native reliable window must remain local until an actual event
+    // needs one of these samples on the wire.
+    let rate = std::num::NonZeroU32::new(44100).unwrap();
+    let mut bank = qa_audio::Bank::with_capacity(rate, 512, 65536).unwrap();
+    for index in 0..140 {
+        let path = if index == 139 {
+            "sound/step.wav".to_owned()
+        } else {
+            format!("sound/client/cue{index}.wav")
+        };
+        let sound = bank.attempt(path.as_bytes()).unwrap();
+        bank.admit(
+            sound,
+            qa_core::primitives::Pcm {
+                rate,
+                channels: qa_core::primitives::PcmChannels::Mono,
+                samples: vec![1, -1],
+                loop_start: None,
+                loop_end: None,
+                loop_invalid: false,
+            },
+        )
+        .unwrap();
+    }
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
+    host.bind_sounds().unwrap();
     host.initialize_modules(Phase::Server);
     assert_eq!(host.module_state(game), Some(State::Running));
     host.connect_module_client(game, id, b"\\name\\Local pure")
@@ -1389,6 +1419,10 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
         .get(id, Endpoint::Server)
         .unwrap()
         .channel;
+    assert!(
+        server.command_state().unwrap().queued < 64,
+        "CLIENT media consumed the native reliable command window"
+    );
     let context = server.command_context().unwrap();
     let word = host
         .runtime
@@ -1437,6 +1471,83 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
         value(&mut host, 7) > 0,
         "native ClientThink consumes commands after admission"
     );
+    let queued_before_sound = host
+        .runtime
+        .network
+        .get(id, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued;
+    let step = host
+        .runtime
+        .sound_bank()
+        .unwrap()
+        .find("sound/step.wav")
+        .unwrap();
+    host.runtime
+        .server
+        .events
+        .push_to(
+            qa_core::events::OutputTarget::Client(id),
+            qa_core::events::FrameEvent::Sound(qa_core::primitives::SoundEvent {
+                sound: step,
+                volume: 1.0,
+                attenuation: 1.0,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    for time in [432, 434, 436, 438, 440, 442, 444] {
+        frame(&mut host, &mut source, time);
+    }
+    let channel = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Server)
+        .unwrap()
+        .channel;
+    assert_eq!(
+        channel.command_state().unwrap().queued,
+        queued_before_sound + 1,
+        "a retained sound must publish its filename even without a module config revision"
+    );
+    let command = host
+        .runtime
+        .network
+        .get(id, Endpoint::Client)
+        .unwrap()
+        .channel
+        .server_command(queued_before_sound + 1)
+        .unwrap();
+    assert!(
+        command
+            .windows(b"sound/step.wav".len())
+            .any(|part| part == b"sound/step.wav")
+    );
+    let consume = |host: &mut FrameHost, time: i64| {
+        let channel = &host
+            .runtime
+            .network
+            .get(id, Endpoint::Client)
+            .unwrap()
+            .channel;
+        let received = channel.command_state().unwrap().received;
+        let executed = channel.last_executed_server_command().unwrap();
+        for sequence in executed + 1..=received {
+            host.call_module_export(
+                ModuleId(1),
+                Export {
+                    client: Some(id),
+                    ..Export::words(CallbackId(9), &[u64::from(sequence)])
+                },
+                ThinkTime::Milliseconds(time),
+            )
+            .unwrap();
+        }
+    };
+    consume(&mut host, 444);
     let before = host.runtime.client_resources[id.0 as usize]
         .as_ref()
         .unwrap()
@@ -1454,17 +1565,7 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
     let received = channel.command_state().unwrap().received;
     let executed = channel.last_executed_server_command().unwrap();
     assert!(received > executed, "live systeminfo must reach this cgame");
-    for sequence in executed + 1..=received {
-        host.call_module_export(
-            ModuleId(1),
-            Export {
-                client: Some(id),
-                ..Export::words(CallbackId(9), &[u64::from(sequence)])
-            },
-            ThinkTime::Milliseconds(470),
-        )
-        .unwrap();
-    }
+    consume(&mut host, 470);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     for time in (490..=1100).step_by(20) {
         frame(&mut host, &mut source, time);
