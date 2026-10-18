@@ -308,7 +308,9 @@ fn fixture_extra(
         ..Default::default()
     };
     let mut console = Console::new(context).unwrap();
-    console.append("sv_maxclients 2\n", context).unwrap();
+    console
+        .append("sv_maxclients 2\nsv_pure 0\n", context)
+        .unwrap();
     console.execute_frame(&mut runtime);
     let anchor = runtime
         .server
@@ -997,7 +999,7 @@ fn accepted_userinfo_survives_text_pressure_without_repeating_the_module_callbac
 }
 
 #[test]
-fn download_completion_resends_current_gamestate_through_native_ack_ownership() {
+fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes() {
     use qa_core::events::{OutputSubmission, OutputTarget};
     use qa_core::loopback::Endpoint;
     use qa_network::{
@@ -1099,7 +1101,15 @@ fn download_completion_resends_current_gamestate_through_native_ack_ownership() 
         let codec = Commands::load(Protocol::Quake3_68, Protocol::Quake3_68.message_bytes());
         let mut bytes = vec![0; Protocol::Quake3_68.message_bytes()];
         let length = codec
-            .encode(&UserCmd::default(), |_| 0, client, &mut bytes)
+            .encode(
+                &UserCmd {
+                    server_time_ms: wire.time.milliseconds() as i32,
+                    ..Default::default()
+                },
+                |_| 0,
+                client,
+                &mut bytes,
+            )
             .unwrap();
         let bytes = client
             .prepare_move(&bytes[..length], wire.time, None, None)
@@ -1293,4 +1303,123 @@ fn download_completion_resends_current_gamestate_through_native_ack_ownership() 
             .connection
             .is_some()
     );
+    #[path = "../model_assets/support.rs"]
+    #[allow(dead_code)]
+    mod pure_files;
+    #[path = "../../../formats/tests/support/stored_zip.rs"]
+    mod zip;
+    let files = pure_files::Fixture::new(&[(
+        "pak0.pk3",
+        zip::stored_zip(&[
+            (b"vm/cgame.qvm", b"server expected cgame"),
+            (b"vm/ui.qvm", b"server expected ui"),
+        ]),
+    )]);
+    let path = files
+        .vfs
+        .directory_path(files.vfs.mounts().next().unwrap().id)
+        .unwrap()
+        .join("pak0.pk3");
+    let archive = std::sync::Arc::new(
+        qa_formats::archive::Archive::parse(std::sync::Arc::new(
+            qa_platform::files::ReadFile::open(&path).unwrap(),
+        ))
+        .unwrap(),
+    );
+    let feed = client.command_context().unwrap().checksum_feed;
+    let expected = archive.q3_checksums().unwrap().pure_checksum(feed);
+    host.runtime.vfs.mount_archive(&path, 0, archive).unwrap();
+    let pure = host.console.cvars.bind("sv_pure", context).unwrap();
+    host.console.cvars.force_write(pure, "1").unwrap();
+    wire.time = EventTime::from_milliseconds(200);
+    command(&mut host, &mut wire, peer, &mut client, Some(b"donedl"));
+    host.frame(&mut wire, true);
+    assert_eq!(receive(&mut wire, &mut client, peer).len(), 1);
+    let server_id = client.command_context().unwrap().server_id;
+    let thinks = count(&mut host, 7);
+    wire.time = EventTime::from_milliseconds(210);
+    command(&mut host, &mut wire, peer, &mut client, None);
+    assert_eq!(count(&mut host, 7), thinks, "no move before native cp");
+    wire.time = EventTime::from_milliseconds(220);
+    command(
+        &mut host,
+        &mut wire,
+        peer,
+        &mut client,
+        Some(format!("cp {} malformed", server_id - 1).as_bytes()),
+    );
+    assert_eq!(count(&mut host, 7), thinks);
+    let cp = format!(
+        "cp {server_id} {} {} @ {} {}",
+        expected as i32,
+        expected as i32,
+        expected as i32,
+        (feed ^ expected ^ 1) as i32
+    );
+    wire.time = EventTime::from_milliseconds(230);
+    command(&mut host, &mut wire, peer, &mut client, Some(cp.as_bytes()));
+    assert_eq!(
+        count(&mut host, 7),
+        thinks + 1,
+        "cp authenticates the following move in its packet"
+    );
+    wire.time = EventTime::from_milliseconds(240);
+    command(&mut host, &mut wire, peer, &mut client, Some(b"vdr"));
+    assert_eq!(count(&mut host, 7), thinks + 1);
+    host.frame(&mut wire, true);
+    assert_eq!(receive(&mut wire, &mut client, peer).len(), 1);
+    wire.time = EventTime::from_milliseconds(250);
+    command(&mut host, &mut wire, peer, &mut client, Some(cp.as_bytes()));
+    assert_eq!(count(&mut host, 7), thinks + 2);
+    let game_commands = count(&mut host, 6);
+    let disconnects = count(&mut host, 5);
+    let ticks = count(&mut host, 8);
+    wire.time = EventTime::from_milliseconds(260);
+    command(
+        &mut host,
+        &mut wire,
+        peer,
+        &mut client,
+        Some(format!("cp {server_id} 0 0 @ 0").as_bytes()),
+    );
+    assert_eq!(
+        count(&mut host, 6),
+        game_commands,
+        "cp/vdr do not reach GAME_CLIENT_COMMAND"
+    );
+    assert_eq!(count(&mut host, 5), disconnects + 1);
+    let qa_session::clients::ClientPhase::Closing(closing) =
+        host.runtime.server.clients[client_id.0 as usize].phase
+    else {
+        panic!("invalid pure peer must retain native close output");
+    };
+    let (_, sequence) = closing.final_output.unwrap();
+    assert!(host.runtime.server.events.retained_for(output, sequence));
+    assert!(host.runtime.server.clients[stalled.0 as usize].is_active());
+    wire.time = EventTime::from_milliseconds(300);
+    host.frame(&mut wire, true);
+    receive(&mut wire, &mut client, peer);
+    let state = client.command_state().unwrap();
+    assert!(
+        (1..=state.received).any(
+            |sequence| client.server_command(sequence).is_ok_and(|text| text
+                .starts_with(b"disconnect \"")
+                && text
+                    .windows(qa_network::pure::REJECTION.len())
+                    .any(|part| part == qa_network::pure::REJECTION))
+        )
+    );
+    assert!(count(&mut host, 8) > ticks);
+    assert!(host.runtime.server.clients[stalled.0 as usize].is_active());
+    assert!(!host.runtime.quit);
+    wire.time = EventTime::from_milliseconds(310);
+    command(&mut host, &mut wire, peer, &mut client, None);
+    assert!(
+        host.runtime.server.clients[client_id.0 as usize]
+            .connection
+            .is_none(),
+        "only the native ACK may retire the closing client's output"
+    );
+    assert_eq!(count(&mut host, 5), disconnects + 1);
+    assert!(host.runtime.server.clients[stalled.0 as usize].is_active());
 }

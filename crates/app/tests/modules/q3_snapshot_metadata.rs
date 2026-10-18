@@ -187,7 +187,9 @@ fn fixture_program(vm: qa_compat::qvm::Vm) -> (Box<FrameHost>, ClientId) {
         ..Default::default()
     };
     let mut console = Console::new(context).unwrap();
-    console.append("sv_maxclients 2\n", context).unwrap();
+    console
+        .append("sv_maxclients 2\nsv_pure 0\n", context)
+        .unwrap();
     console.execute_frame(&mut runtime);
     let anchor = runtime
         .server

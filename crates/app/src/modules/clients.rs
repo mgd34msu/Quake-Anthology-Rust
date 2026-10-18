@@ -528,6 +528,15 @@ impl FrameHost {
         observation: Option<SnapshotObservation>,
         driver: &mut crate::modules::Driver<'_>,
     ) {
+        let publication = &mut self.runtime.config_publications[id.0 as usize];
+        match publication.pure.movement() {
+            qa_network::pure::Movement::Allowed => {}
+            qa_network::pure::Movement::Wait => return,
+            qa_network::pure::Movement::ResendGamestate => {
+                publication.restart_game_state();
+                return;
+            }
+        }
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
             .movement_rules;
@@ -917,6 +926,17 @@ impl FrameHost {
                 self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
+            let mut argv = [&[][..]; 1024];
+            for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
+                *to = from;
+            }
+            let command = CommandArgs {
+                argv: &argv[..args.len()],
+                raw: args.raw_bytes(),
+            };
+            if rules == RuleSetId::Quake3 && q3::pure_command(self, id, command, driver)? {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
             if quakec::setinfo(self, id, rules, args, driver)? {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
@@ -939,20 +959,7 @@ impl FrameHost {
             let Some((api, _)) = api else {
                 return Ok(std::ops::ControlFlow::Continue(()));
             };
-            let mut argv = [&[][..]; 1024];
-            for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
-                *to = from;
-            }
-            (api.text)(
-                self,
-                api.info.module,
-                id,
-                CommandArgs {
-                    argv: &argv[..args.len()],
-                    raw: args.raw_bytes(),
-                },
-                driver,
-            )?;
+            (api.text)(self, api.info.module, id, command, driver)?;
             Ok(std::ops::ControlFlow::Continue(()))
         })();
         self.command_tokens = tokens;

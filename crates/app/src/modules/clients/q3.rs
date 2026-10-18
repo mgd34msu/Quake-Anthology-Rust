@@ -289,3 +289,76 @@ pub(super) fn userinfo(
         driver,
     )
 }
+
+/// The existing parser supplies cp/vdr argv; they never reach GAME_CLIENT_COMMAND.
+pub(super) fn pure_command(
+    host: &mut FrameHost,
+    id: ClientId,
+    args: CommandArgs<'_>,
+    driver: &mut crate::modules::Driver<'_>,
+) -> Result<bool, ClientCommandError> {
+    let decision = match args.argv.first().copied().unwrap_or(&[]) {
+        b"vdr" => {
+            host.runtime.config_publications[id.0 as usize].pure.reset();
+            return Ok(true);
+        }
+        b"cp" => host.runtime.config_publications[id.0 as usize]
+            .pure
+            .verify(args),
+        _ => return Ok(false),
+    };
+    if decision == qa_network::pure::Decision::Rejected {
+        reject_pure_client(host, id, driver)?;
+    }
+    Ok(true)
+}
+
+fn drop_services<T>(
+    host: &mut FrameHost,
+    module: ModuleId,
+    call: impl FnOnce(
+        &mut qa_compat::services::EngineServices<'_>,
+    ) -> Result<T, qa_compat::services::CallError>,
+) -> Result<T, ClientCommandError> {
+    let (row, storage, _) = host
+        .modules
+        .as_mut()
+        .and_then(|modules| modules.trace_parts_mut(module, crate::modules::TraceAccess::empty()))
+        .ok_or(ClientCommandError::MissingModule)?;
+    call(
+        &mut host
+            .runtime
+            .engine_services(&mut host.console, storage, &mut row.scratch),
+    )
+    .map_err(ClientCommandError::Usercmd)
+}
+fn reject_pure_client(
+    host: &mut FrameHost,
+    id: ClientId,
+    driver: &mut crate::modules::Driver<'_>,
+) -> Result<(), ClientCommandError> {
+    use qa_compat::services::ENGINE_CALLS;
+    let native = host
+        .runtime
+        .server
+        .module_moves(id)
+        .ok_or(ClientCommandError::InvalidSlot)?;
+    let prepared = host.client_disconnect_call(id);
+    let time = host.time;
+    let target = drop_services(host, native.module, |services| {
+        let target = (ENGINE_CALLS.drop_client_target)(services, native, time)?;
+        if let Some(target) = target {
+            (ENGINE_CALLS.begin_drop_client)(services, target, qa_network::pure::REJECTION, time)?;
+        }
+        Ok(target)
+    })?;
+    let Some(target) = target else {
+        return Ok(());
+    };
+    if let Some((callback, call)) = prepared {
+        let _ = host.call_module_with_driver(callback, call, driver);
+    }
+    drop_services(host, native.module, |services| {
+        (ENGINE_CALLS.finish_drop_client)(services, target, qa_network::pure::REJECTION)
+    })
+}

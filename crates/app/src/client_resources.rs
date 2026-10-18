@@ -1634,6 +1634,8 @@ pub struct ConfigPublication {
     pub pending: Option<(u64, usize)>,
     game_state: Option<(u64, bool)>,
     game_state_required: bool,
+    pub(crate) pure: qa_network::pure::Admission,
+    pub(crate) pure_source: Option<(u32, Option<qa_core::primitives::FileSearchId>, u64)>,
     last_client_limit: Option<u32>,
 }
 #[derive(Clone, Copy, Default)]
@@ -1686,6 +1688,8 @@ impl ConfigPublication {
             pending: None,
             game_state: None,
             game_state_required: false,
+            pure: Default::default(),
+            pure_source: None,
             last_client_limit: None,
         }
     }
@@ -1717,6 +1721,8 @@ impl ConfigPublication {
         self.pending = None;
         self.game_state = None;
         self.game_state_required = false;
+        self.pure = Default::default();
+        self.pure_source = None;
         self.last_client_limit = None;
     }
     pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {
@@ -1777,6 +1783,7 @@ impl ConfigPublication {
     }
     pub(crate) fn restart_game_state(&mut self) {
         self.game_state = None;
+        self.pure.reset();
     }
     pub(crate) fn publish_game_state(&mut self, sequence: u64) {
         self.game_state = Some((sequence, false));

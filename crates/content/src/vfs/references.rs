@@ -177,3 +177,50 @@ impl Vfs {
         Ok(selected)
     }
 }
+
+impl ReadView<'_> {
+    /// FS_LoadedPakPureChecksums in native source order. Only metadata from the
+    /// existing PK3 reader is used, never a second content identity.
+    pub fn q3_loaded_pure_checksums(self, feed: u32) -> Result<Vec<u32>, VfsError> {
+        let mut order = Vec::new();
+        self.vfs.mount_order(self.search, &mut order)?;
+        Ok(order
+            .into_iter()
+            .filter(|&id| self.search.is_none_or(|view| view.allows_archive(id)))
+            .filter_map(|id| {
+                self.vfs
+                    .q3_package_checksums(id)
+                    .map(|pack| pack.pure_checksum(feed))
+            })
+            .collect())
+    }
+    /// FS_FileIsInPAK ignores loose-file candidates. It does not open the file
+    /// or add a CLIENT reference while the SERVER prepares its expectation.
+    pub fn q3_file_pure_checksum(self, name: &[u8], feed: u32) -> Option<u32> {
+        if self
+            .search
+            .is_some_and(|view| !self.vfs.accepts_search(view))
+        {
+            return None;
+        }
+        let candidates = self
+            .vfs
+            .find_candidates(name)?
+            .iter()
+            .copied()
+            .filter(|&slot| {
+                self.vfs.entries[slot as usize]
+                    .as_ref()
+                    .is_some_and(|entry| {
+                        self.vfs
+                            .q3_package_checksums(MountId(entry.mount as u32))
+                            .is_some()
+                    })
+            });
+        let slot = self.vfs.select_candidate(candidates, self.search, true)?;
+        let entry = self.vfs.entries[slot as usize].as_ref()?;
+        self.vfs
+            .q3_package_checksums(MountId(entry.mount as u32))
+            .map(|pack| pack.pure_checksum(feed))
+    }
+}

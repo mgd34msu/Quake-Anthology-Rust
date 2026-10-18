@@ -1930,3 +1930,109 @@ fn retained_names_support_owner_checked_reload_after_source_retirement() {
         Err(VfsError::Handle)
     ));
 }
+
+#[test]
+fn native_pure_server_metadata_uses_admitted_archive_order_without_loose_shadow_or_references() {
+    let files = Fixture::new("server-pure-metadata");
+    let loose = files.0.join("loose");
+    qa_platform::files::create_dir_all(loose.join("vm")).unwrap();
+    qa_platform::files::write(loose.join("vm/ui.qvm"), b"loose ui").unwrap();
+    let mut vfs = Vfs::default();
+    let directory = vfs.mount_directory(&loose, 100).unwrap();
+    let mut packs = Vec::new();
+    let feed = 0x8123_4567;
+    for (name, priority, entries) in [
+        (
+            "first",
+            1,
+            vec![
+                (b"vm/ui.qvm".as_slice(), b"first ui".as_slice()),
+                (b"vm/cgame.qvm", b"first cgame"),
+            ],
+        ),
+        (
+            "second",
+            2,
+            vec![(b"vm/cgame.qvm".as_slice(), b"second cgame".as_slice())],
+        ),
+    ] {
+        let path = files.0.join(format!("{name}.pk3"));
+        qa_platform::files::write(&path, zip::stored_zip(&entries)).unwrap();
+        let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&path).unwrap())).unwrap());
+        let checks = archive.q3_checksums().unwrap();
+        let regular = checks.checksum();
+        let pure = checks.pure_checksum(feed);
+        packs.push((
+            vfs.mount_archive(&path, priority, archive).unwrap(),
+            regular,
+            pure,
+        ));
+    }
+    let selected = vfs
+        .search_view([directory, packs[0].0, packs[1].0])
+        .unwrap();
+    let tracked = vfs
+        .track_q3_references(Some(&selected), feed, qa_core::random::Random::new(1))
+        .unwrap();
+    let view = vfs.read_view(Some(&tracked));
+    assert_eq!(
+        view.q3_loaded_pure_checksums(feed).unwrap(),
+        [packs[0].2, packs[1].2]
+    );
+    assert_eq!(
+        vfs.origin(&view.query(b"vm/ui.qvm").unwrap())
+            .unwrap()
+            .mount,
+        directory
+    );
+    for name in [b"vm/ui.qvm".as_slice(), b"vm/cgame.qvm"] {
+        assert_eq!(view.q3_file_pure_checksum(name, feed), Some(packs[0].2));
+    }
+    let policy = vfs
+        .q3_search_view(Some(&tracked), &[packs[1].1], false)
+        .unwrap();
+    let admitted = vfs.read_view(Some(&policy));
+    assert_eq!(
+        admitted.q3_loaded_pure_checksums(feed).unwrap(),
+        [packs[1].2]
+    );
+    assert_eq!(
+        admitted.q3_file_pure_checksum(b"vm/cgame.qvm", feed),
+        Some(packs[1].2)
+    );
+    assert_eq!(admitted.q3_file_pure_checksum(b"vm/ui.qvm", feed), None);
+    let mut command = qa_core::text::FixedText::<8191>::default();
+    tracked
+        .q3_reference_command(&vfs, 7, false, &mut command)
+        .unwrap();
+    assert_eq!(command.as_str(), format!("cp 7 @ {}", feed as i32));
+    assert!(
+        Vfs::default()
+            .read_view(Some(&tracked))
+            .q3_loaded_pure_checksums(feed)
+            .is_err()
+    );
+    assert!(vfs.unmount(packs[0].0));
+    let view = vfs.read_view(Some(&tracked));
+    assert_eq!(view.q3_loaded_pure_checksums(feed).unwrap(), [packs[1].2]);
+    assert_eq!(view.q3_file_pure_checksum(b"vm/ui.qvm", feed), None);
+}
+
+#[test]
+fn source_revision_changes_on_empty_mount_refresh_and_retirement_without_content_probes() {
+    let root = Fixture::new("source-revision");
+    let mut vfs = Vfs::default();
+    let initial = vfs.revision();
+    let mount = vfs.mount_directory(&root.0, 0).unwrap();
+    let mounted = vfs.revision();
+    assert!(mounted > initial);
+    vfs.refresh_directory_prefix(mount, b"").unwrap();
+    let refreshed = vfs.revision();
+    assert!(refreshed > mounted);
+    assert!(vfs.unmount(mount));
+    assert!(vfs.revision() > refreshed);
+    let retired = vfs.revision();
+    assert!(!vfs.unmount(mount));
+    assert_eq!(vfs.revision(), retired);
+    assert_eq!(vfs.take_lookup_count(), 0);
+}

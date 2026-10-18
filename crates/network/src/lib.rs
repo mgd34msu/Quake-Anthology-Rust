@@ -7,5 +7,6 @@ pub mod ingress;
 pub mod message;
 pub mod outputs;
 pub mod projection;
+pub mod pure;
 pub mod snapshots;
 pub mod states;

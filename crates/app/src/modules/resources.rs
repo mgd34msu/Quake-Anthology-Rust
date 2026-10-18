@@ -1235,6 +1235,44 @@ impl FrameHost {
                 continue;
             }
             context.set_system_info(&info[ConfigLayout::Q3_SYSTEM_INFO][..lengths[1]]);
+            let system_info = &info[ConfigLayout::Q3_SYSTEM_INFO][..lengths[1]];
+            let pure_enabled = qa_core::text::info_value(system_info, b"sv_pure", false)
+                .is_some_and(|range| qa_core::text::atoi_prefix(&system_info[range]) != 0);
+            let source = modules.storage.file_search(client.module);
+            if source.is_some_and(|source| !runtime.vfs.read_view(None).accepts_search(source)) {
+                runtime.server.events.reject_publication();
+                continue;
+            }
+            let key = pure_enabled.then_some((
+                context.checksum_feed,
+                modules.storage.file_source(client.module),
+                runtime.vfs.revision(),
+            ));
+            if publication.pure_source != key {
+                let policy = if pure_enabled {
+                    let view = runtime.vfs.read_view(source);
+                    let feed = context.checksum_feed;
+                    let loaded = match view.q3_loaded_pure_checksums(feed) {
+                        Ok(loaded) => loaded,
+                        Err(_) => {
+                            runtime.server.events.reject_publication();
+                            continue;
+                        }
+                    };
+                    Some(qa_network::pure::Policy::new(
+                        feed,
+                        [b"vm/cgame.qvm".as_slice(), b"vm/ui.qvm"]
+                            .map(|name| view.q3_file_pure_checksum(name, feed)),
+                        loaded,
+                    ))
+                } else {
+                    None
+                };
+                publication
+                    .pure
+                    .configure(policy, context.checksum_feed, context.server_id);
+                publication.pure_source = key;
+            }
             let command_sequence = channel.command_state().map_or(0, |state| state.queued);
             let configs = (0..row.request.configstrings.max(2)).filter_map(|native_index| {
                 if native_index <= ConfigLayout::Q3_SYSTEM_INFO {
@@ -1287,6 +1325,9 @@ impl FrameHost {
                 continue;
             };
             let _ = channel.set_command_context(context);
+            publication
+                .pure
+                .gamestate(context.checksum_feed, context.server_id);
             publication.publish_game_state(sequence);
             for native_index in 0..row.request.configstrings {
                 if let Ok((text, revision)) =

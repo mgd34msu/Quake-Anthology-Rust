@@ -798,7 +798,7 @@ impl Vfs {
             .map(|entry| entry.as_ref().filter(|entry| !remove(entry)).cloned())
             .collect();
         let mut free = 0;
-        let mut generation = self.generation;
+        let mut generation = self.generation.checked_add(1).ok_or(VfsError::Capacity)?;
         for mut entry in added {
             while free < entries.len() && entries[free].is_some() {
                 free += 1;
@@ -901,7 +901,8 @@ impl Vfs {
             return None;
         }
         let candidates = self.find_candidates(path)?;
-        let mut reference = self.reference(self.select_candidate(candidates, view, read)?)?;
+        let mut reference =
+            self.reference(self.select_candidate(candidates.iter().copied(), view, read)?)?;
         if read && let Some(view) = view {
             view.record_open(&reference.entry, path).ok()?;
             reference.references.clone_from(&view.references);
@@ -911,11 +912,11 @@ impl Vfs {
 
     fn select_candidate(
         &self,
-        candidates: &[u32],
+        candidates: impl Iterator<Item = u32>,
         view: Option<&SearchView>,
         read: bool,
     ) -> Option<u32> {
-        let candidates = candidates.iter().copied().filter(|&slot| {
+        let candidates = candidates.filter(|&slot| {
             view.is_none_or(|view| {
                 let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref) else {
                     return false;
@@ -1187,7 +1188,8 @@ impl Vfs {
         };
         // FileIndex owns a freshly sorted NameTable, so span order is lexical.
         spans.iter().filter_map(move |span| {
-            let slot = self.select_candidate(self.listing.get(span.range())?, view, true)?;
+            let slot =
+                self.select_candidate(self.listing.get(span.range())?.iter().copied(), view, true)?;
             let entry = self.entries.get(slot as usize)?.as_ref()?;
             Some((self.reference(slot)?, entry.name.as_ref()))
         })
@@ -1210,7 +1212,16 @@ impl Vfs {
         self.lookups.swap(0, Ordering::Relaxed)
     }
 
+    /// Monotonic index metadata for cold source-cache invalidation. No file
+    /// bytes are read or fingerprinted. Empty mounts and retirement count too.
+    pub fn revision(&self) -> u64 {
+        self.generation
+    }
+
     pub fn unmount(&mut self, id: MountId) -> bool {
+        let Some(generation) = self.generation.checked_add(1) else {
+            return false;
+        };
         let Some(mount) = self
             .mounts
             .get_mut(id.0 as usize)
@@ -1227,6 +1238,7 @@ impl Vfs {
                 *entry = None;
             }
         }
+        self.generation = generation;
         self.reindex();
         true
     }
