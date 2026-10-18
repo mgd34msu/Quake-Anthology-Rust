@@ -4,6 +4,24 @@ use qa_core::{
 };
 
 #[test]
+fn transported_coordinates_keep_offsets_zero_signs_and_unchanged_payload_bits() {
+    assert_eq!(translate_component(3.0, 0.0, 40.0), 43.0);
+    // A coincident point must reach the new origin without cancellation loss.
+    assert_eq!(translate_component(f32::MAX, f32::MAX, 1.0), 1.0);
+    assert_eq!(
+        translate_component(0.0, 0.0, -0.0).to_bits(),
+        (-0.0_f32).to_bits()
+    );
+    let unchanged = Vec3([-0.0, f32::from_bits(0x7fc0_0123), 9.0]);
+    assert_eq!(
+        translate_position(unchanged, Vec3::default(), Vec3::default())
+            .0
+            .map(f32::to_bits),
+        unchanged.0.map(f32::to_bits)
+    );
+}
+
+#[test]
 fn plane_clip_component_keeps_strict_stop_endpoints_and_native_zero_sign() {
     let epsilon = 0.1_f32;
     let inside = f32::from_bits(epsilon.to_bits() - 1);

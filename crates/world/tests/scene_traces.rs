@@ -871,6 +871,222 @@ fn live_native_flags_keep_common_players_and_replace_stale_native_classes() {
 }
 
 #[test]
+fn attachment_queries_keep_transport_and_live_native_shape_and_published_offset() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow, EntityPose, RuleSetId};
+    use qa_world::collision::{
+        NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget,
+    };
+    struct View;
+    impl NativeTraceEntities for View {
+        fn supports(&self, module: ModuleId) -> bool {
+            module == ModuleId(2)
+        }
+        fn owner(&self, _: NativeEntity) -> Option<CollisionOwner> {
+            Some(CollisionOwner::None)
+        }
+        fn fields(&self, _: NativeEntity, _: bool) -> Option<NativeTraceFields> {
+            Some(NativeTraceFields {
+                enabled: true,
+                box_target: true,
+                contents: Contents::BODY,
+                ..Default::default()
+            })
+        }
+        fn bounds(&self, _: NativeEntity, _: Bounds) -> Option<Bounds> {
+            Some(Bounds {
+                mins: Vec3([-6.0; 3]),
+                maxs: Vec3([6.0; 3]),
+            })
+        }
+        fn target(
+            &self,
+            _: NativeEntity,
+            mut cached: NativeTraceTarget,
+            point_contents: bool,
+            _: &CollisionStore,
+            _: Option<&dyn NativeModelNames>,
+        ) -> Option<NativeTraceTarget> {
+            // The module has not run since the anchor moved. Its distinct
+            // public contents origin is three units ahead of its physical one.
+            cached.body.position = if point_contents {
+                Vec3([3.0, 0.0, 0.0])
+            } else {
+                Vec3::default()
+            };
+            cached.body.mins = Vec3([-6.0; 3]);
+            cached.body.maxs = Vec3([6.0; 3]);
+            cached.contents_pose = point_contents.then_some(EntityPose {
+                position: Vec3([3.0, 0.0, 0.0]),
+                angles: Vec3::default(),
+            });
+            Some(cached)
+        }
+    }
+    let world = empty();
+    let (mut table, mut area) = table();
+    let target = body(
+        &mut table,
+        &mut area,
+        Vec3::default(),
+        Vec3([-8.0; 3]),
+        Vec3([8.0; 3]),
+    );
+    let anchor = table
+        .allocate(
+            ThinkTime::Milliseconds(0),
+            ModuleId(3),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    table.columns.position[anchor.slot as usize] = Vec3([40.0, 0.0, 0.0]);
+    table.columns.point_contents_pose[target.slot as usize] = Some(EntityPose {
+        position: Vec3([3.0, 0.0, 0.0]),
+        angles: Vec3::default(),
+    });
+    let mut publication = qa_core::primitives::EntityPresentation::new(
+        qa_core::primitives::ResourceNamespace::Module(ModuleId(2)),
+    );
+    publication.pose.position = Vec3([3.0, 0.0, 0.0]);
+    publication.trajectories.position.base = Vec3([10.0, 0.0, 0.0]);
+    publication.trajectories.position.delta = Vec3([5.0, 6.0, 7.0]);
+    publication.trajectories.position.start = ThinkTime::Milliseconds(1234);
+    publication.secondary_pose.position = Vec3([99.0; 3]);
+    table.columns.appearance[target.slot as usize].presentation = Some(publication);
+    table
+        .attach(
+            target,
+            BodyAttachment {
+                anchor,
+                follow: BodyFollow::Translation,
+                offset: Vec3::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(area.transport_attachments(&mut table).moved, 1);
+    let link = area.bounds(target);
+    for rules in RuleSetId::ALL {
+        for foreign in [false, true] {
+            let mut scratch = world.store.scratch();
+            let mut scene = WorldTrace::new(
+                &world.store,
+                world.geometry,
+                0,
+                &table,
+                &area,
+                &mut scratch,
+                CollisionOwner::None,
+            );
+            scene = if foreign {
+                scene.with_foreign_entities(Some(&View))
+            } else {
+                scene.with_native_entities(Some(&View))
+            };
+            let (clipping, entities) = qa_world::collision::trace_policy(rules);
+            let hit = scene
+                .trace(TraceQuery {
+                    mask: Contents::SOLID | Contents::BODY,
+                    ..TraceQuery::point(
+                        Vec3([20.0, 0.0, 0.0]),
+                        Vec3([60.0, 0.0, 0.0]),
+                        clipping,
+                        entities,
+                    )
+                })
+                .unwrap();
+            assert_eq!(hit.entity, Some(target), "{rules:?}, foreign={foreign}");
+            assert!(hit.end.0[0] > 33.0 && hit.end.0[0] < 34.0);
+            if matches!(
+                rules,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
+            ) {
+                assert_eq!(
+                    scene
+                        .point_contents(Vec3([47.0, 0.0, 0.0]), entities, &[])
+                        .unwrap(),
+                    Contents::BODY
+                );
+                assert_eq!(
+                    scene
+                        .point_contents(Vec3([33.0, 0.0, 0.0]), entities, &[])
+                        .unwrap(),
+                    Contents::EMPTY
+                );
+            }
+        }
+    }
+    assert_eq!(area.bounds(target), link);
+    let transported = table.columns.appearance[target.slot as usize]
+        .presentation
+        .unwrap();
+    assert_eq!(transported.pose.position, Vec3([43.0, 0.0, 0.0]));
+    assert_eq!(
+        transported.trajectories.position.base,
+        Vec3([50.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        transported.trajectories.position.delta,
+        publication.trajectories.position.delta
+    );
+    assert_eq!(
+        transported.trajectories.position.start,
+        publication.trajectories.position.start
+    );
+    assert_eq!(transported.secondary_pose, publication.secondary_pose);
+    assert_eq!(
+        table.columns.point_contents_pose[target.slot as usize]
+            .unwrap()
+            .position,
+        Vec3([43.0, 0.0, 0.0])
+    );
+    let mut scratch = world.store.scratch();
+    assert_eq!(
+        WorldTrace::new(
+            &world.store,
+            world.geometry,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None,
+        )
+        .point_contents(
+            Vec3([47.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(RuleSetId::Quake3).1,
+            &[],
+        )
+        .unwrap(),
+        Contents::BODY,
+    );
+    table.detach(target);
+    let mut scratch = world.store.scratch();
+    let mut scene = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .with_native_entities(Some(&View));
+    let (clipping, entities) = qa_world::collision::trace_policy(RuleSetId::Quake3);
+    let hit = scene
+        .trace(TraceQuery {
+            mask: Contents::SOLID | Contents::BODY,
+            ..TraceQuery::point(
+                Vec3([-20.0, 0.0, 0.0]),
+                Vec3([60.0, 0.0, 0.0]),
+                clipping,
+                entities,
+            )
+        })
+        .unwrap();
+    assert_eq!(hit.entity, Some(target));
+    assert!(hit.end.0[0] < 0.0);
+}
+
+#[test]
 fn owner_views_select_each_namespace_and_never_fall_back_after_a_supported_read() {
     use qa_core::primitives::RuleSetId;
     use qa_world::collision::{

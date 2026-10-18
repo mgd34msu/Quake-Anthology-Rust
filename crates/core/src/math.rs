@@ -75,6 +75,23 @@ pub fn weighted_lerp(start: f32, end: f32, fraction: f32) -> f32 {
     start * (1.0 - fraction) + end * fraction
 }
 
+/// Move an authored coordinate with its physical origin, retaining its offset.
+pub fn translate_component(value: f32, from: f32, to: f32) -> f32 {
+    if from.to_bits() == to.to_bits() {
+        value
+    } else if value == from {
+        to
+    } else {
+        value + (to - from)
+    }
+}
+
+pub fn translate_position(value: Vec3, from: Vec3, to: Vec3) -> Vec3 {
+    Vec3(std::array::from_fn(|axis| {
+        translate_component(value.0[axis], from.0[axis], to.0[axis])
+    }))
+}
+
 /// Native VectorMA commits one scalar before reading the next. The boundary
 /// may refresh aliased inputs; multiplication and addition stay separate.
 pub fn vector_ma<S, E>(

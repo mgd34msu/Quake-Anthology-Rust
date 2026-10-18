@@ -1471,13 +1471,21 @@ impl EntityProjection {
             return Ok(ClipTarget::World);
         }
         let view = self.trace_view(memory, context, services.native_geometry)?;
-        let target = view.target_at(
+        let mut target = view.target_at(
             address,
             false,
             true,
             services.geometry,
             Some(services.storage),
         )?;
+        if let Some(entity) = self.binding(&services.server.entities, identity)?
+            && services.server.entities.attachment(entity).is_some()
+        {
+            target = target.transport_position(
+                target.body.position,
+                services.server.entities.columns.position[entity.slot as usize],
+            );
+        }
         Ok(ClipTarget::Body {
             body: target.body,
             shape: target.shape,

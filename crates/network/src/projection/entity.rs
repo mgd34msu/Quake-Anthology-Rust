@@ -306,11 +306,7 @@ impl EntityProjection {
                 continue;
             }
             let current = f32::from_bits(field.convert.import(words[field.word]));
-            let value = if current == from.0[axis] {
-                to.0[axis]
-            } else {
-                current + (to.0[axis] - from.0[axis])
-            };
+            let value = qa_core::math::translate_component(current, from.0[axis], to.0[axis]);
             words[field.word] = field.convert.export(value.to_bits());
         }
         true

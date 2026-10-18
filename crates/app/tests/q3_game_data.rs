@@ -503,6 +503,75 @@ fn qvm_unlinked_box_contact_requires_no_world_and_ignores_box_angles() {
 }
 
 #[test]
+fn qvm_attached_contact_uses_transport_during_an_active_module_call() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow};
+    let mut f = Fixture::new();
+    f.empty_collision();
+    f.trace_rules = RuleSetId::Quake3;
+    f.register(ENTITIES, 1).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let target = f.binding(0);
+    let anchor = f
+        .runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Milliseconds(0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    f.runtime.server.entities.columns.position[anchor.slot as usize] = Vec3([40.0, 0.0, 0.0]);
+    f.runtime
+        .server
+        .entities
+        .attach(
+            target,
+            BodyAttachment {
+                anchor,
+                follow: BodyFollow::Translation,
+                offset: Vec3::default(),
+            },
+        )
+        .unwrap();
+    f.runtime.server.commit_attachments();
+    let mins = f.vector(640, Vec3([39.5, -0.5, -0.5]));
+    let maxs = f.vector(656, Vec3([40.5, 0.5, 0.5]));
+    let bytes =
+        f.vm.memory
+            .read(ENTITIES, STRIDE as usize)
+            .unwrap()
+            .to_vec();
+    let bounds = f.runtime.server.area.bounds(target);
+    let mut scratch = f.runtime.geometry.scratch();
+    let mut services = f
+        .runtime
+        .engine_services(&mut f.console, &mut f.storage, &mut scratch);
+    let mut calls = QvmCalls {
+        services: &mut services,
+        table: &Q3_SERVER,
+        context: CallContext {
+            trace_rules: RuleSetId::Quake3,
+            ..context()
+        },
+        platform_time: EventTime(0),
+        command: Default::default(),
+        argument_selection: &mut qa_compat::abi::ArgumentSelection::RetainedClient,
+        unknown: &mut f.unknown,
+    };
+    // An import during an already active export has no new begin_call. Its
+    // target view must use the graph even though native bytes still say -2.
+    assert_eq!(
+        calls.call(&mut f.vm, 33, &[0, mins, maxs, ENTITIES as i32]),
+        Ok(1)
+    );
+    assert_eq!(f.vm.memory.read(ENTITIES, STRIDE as usize).unwrap(), bytes);
+    assert_eq!(f.runtime.server.area.bounds(target), bounds);
+}
+
+#[test]
 fn qvm_brush_model_uses_inline_ordinals_and_contact_does_not_link_a_target() {
     let mut f = Fixture::new();
     f.collision_model();

@@ -272,6 +272,25 @@ impl EntityColumns {
         self.published_fields[slot].insert(EntityFields::POSITION);
     }
 
+    /// External transport carries distinct published origins with the body;
+    /// native trajectory clocks, velocities and secondary endpoints stay put.
+    pub fn transport_position(&mut self, slot: usize, position: Vec3) {
+        let from = self.position[slot];
+        if let Some(pose) = &mut self.point_contents_pose[slot] {
+            pose.position = qa_core::math::translate_position(pose.position, from, position);
+        }
+        if let Some(presentation) = &mut self.appearance[slot].presentation {
+            presentation.pose.position =
+                qa_core::math::translate_position(presentation.pose.position, from, position);
+            presentation.trajectories.position.base = qa_core::math::translate_position(
+                presentation.trajectories.position.base,
+                from,
+                position,
+            );
+        }
+        self.set_position(slot, position);
+    }
+
     pub fn set_velocity(&mut self, slot: usize, velocity: Vec3) {
         self.velocity[slot] = velocity;
         self.published_fields[slot].insert(EntityFields::VELOCITY);

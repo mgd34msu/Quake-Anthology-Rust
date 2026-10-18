@@ -115,7 +115,7 @@ impl AttachmentBodies<'_> {
 
     fn set_position(&mut self, id: EntityId, slot: usize, position: Vec3) {
         match self {
-            Self::Authoritative(table) => table.columns.set_position(slot, position),
+            Self::Authoritative(table) => table.columns.transport_position(slot, position),
             Self::Predicted { poses, .. } => {
                 if let Some((_, pose)) =
                     poses.iter_mut().flatten().find(|(entity, _)| *entity == id)

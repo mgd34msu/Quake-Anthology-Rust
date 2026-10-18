@@ -27,6 +27,16 @@ pub struct NativeTraceTarget {
     pub contents_pose: Option<EntityPose>,
 }
 
+impl NativeTraceTarget {
+    pub fn transport_position(mut self, from: Vec3, position: Vec3) -> Self {
+        if let Some(pose) = &mut self.contents_pose {
+            pose.position = qa_core::math::translate_position(pose.position, from, position);
+        }
+        self.body.position = position;
+        self
+    }
+}
+
 /// The existing module configstring storage lends names and revisions. This
 /// interface neither owns resources nor caches geometry.
 pub trait NativeModelNames {
@@ -495,17 +505,29 @@ impl<'a> WorldTrace<'a> {
             rules: columns.model_rules[slot],
             contents_pose: columns.point_contents_pose[slot],
         };
-        if let Some((native, view)) = self.native(id) {
-            view.target(
-                native,
-                cached,
-                point_contents,
-                self.store,
-                self.native_models,
-            )
-        } else {
-            Some(cached)
+        let Some((native, view)) = self.native(id) else {
+            return Some(cached);
+        };
+        let mut target = view.target(
+            native,
+            cached,
+            point_contents,
+            self.store,
+            self.native_models,
+        )?;
+        if self.entities.attachment(id).is_some() {
+            // A contents view can publish a different origin. Read its physical
+            // origin only for attached targets that actually expose that pose.
+            let from = if point_contents && target.contents_pose.is_some() {
+                view.target(native, cached, false, self.store, self.native_models)?
+                    .body
+                    .position
+            } else {
+                target.body.position
+            };
+            target = target.transport_position(from, cached.body.position);
         }
+        Some(target)
     }
 
     fn arena_pass_owner(&self, pass: CollisionOwner, owner: CollisionOwner) -> CollisionOwner {
