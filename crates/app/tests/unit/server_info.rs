@@ -15,6 +15,92 @@ fn set(cvars: &mut Cvars, name: &str, value: &str) {
 }
 
 #[test]
+fn resource_rebinding_preserves_unrelated_publication_cursors_and_native_receipts() {
+    use crate::client_resources::ResourceReadiness;
+    use qa_core::primitives::{GeometryId, RuleSetId};
+    let bank =
+        qa_audio::Bank::with_capacity(std::num::NonZeroU32::new(44100).unwrap(), 1, 32).unwrap();
+    for source_rules in RuleSetId::ALL {
+        let source = ConfigLayout::for_rules(source_rules);
+        for target_rules in RuleSetId::ALL {
+            let target = ConfigLayout::for_rules(target_rules);
+            for affected in [0, 1] {
+                let mut p = ConfigPublication::load();
+                p.configure_sources(2, 32);
+                p.bind_sounds(&bank);
+                p.connection(ModuleId(1), source, target);
+                p.model_world(Some(GeometryId {
+                    slot: 0,
+                    generation: 1,
+                }));
+                let other = |layout: ConfigLayout| {
+                    (0..layout.count)
+                        .find(|&index| layout.resources.iter().all(|range| !range.contains(index)))
+                        .unwrap()
+                };
+                let source_rows = [
+                    other(source),
+                    source.resources[affected].first as usize + 1,
+                    source.resources[1 - affected].first as usize + 1,
+                ];
+                let [unrelated, changed, retained] = [
+                    other(target),
+                    target.resources[affected].first as usize + 1,
+                    target.resources[1 - affected].first as usize + 1,
+                ];
+                for row in source_rows {
+                    p.seen(row, 3);
+                }
+                for row in [unrelated, changed, retained] {
+                    p.published(row, Some(row as u64 + 100));
+                }
+                p.acknowledged(changed, changed as u64 + 100);
+                p.acknowledged(retained, retained as u64 + 100);
+                if let Some(index) = target.max_clients() {
+                    p.published_client_limit(index, 8, 99);
+                }
+                p.finish(ModuleId(1), 7);
+                if affected == 0 {
+                    p.model_world(Some(GeometryId {
+                        slot: 1,
+                        generation: 1,
+                    }));
+                } else {
+                    p.bind_sounds(&bank);
+                }
+                assert!(
+                    p.begin(ModuleId(1), 7),
+                    "affected producer must be revisited"
+                );
+                assert!(
+                    p.needs(source_rows[1], 3),
+                    "{source_rules:?} -> {target_rules:?} resource {affected} kept the affected source cursor"
+                );
+                assert_eq!(p.readiness(changed), ResourceReadiness::Pending);
+                assert!(
+                    !p.needs(source_rows[0], 3),
+                    "{source_rules:?} -> {target_rules:?} resource {affected} cleared an unrelated cursor"
+                );
+                assert!(!p.needs(source_rows[2], 3));
+                assert_eq!(p.readiness(retained), ResourceReadiness::Ready);
+                assert_eq!(p.readiness(unrelated), ResourceReadiness::Pending);
+                p.acknowledged(unrelated, unrelated as u64 + 100);
+                assert_eq!(
+                    p.readiness(unrelated),
+                    ResourceReadiness::Ready,
+                    "unrelated pending receipt must still accept its native ACK"
+                );
+                if let Some(index) = target.max_clients() {
+                    assert!(!p.needs_client_limit(8));
+                    p.acknowledged(index, 99);
+                    assert_eq!(p.readiness(index), ResourceReadiness::Ready);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn server_info_prepares_once_and_publishes_each_client_only_after_success() {
     let mut cvars = Cvars::new().unwrap();
     set(&mut cvars, "hostname", "original");

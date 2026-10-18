@@ -218,7 +218,11 @@ pub(super) fn connect(
                 });
         if native_wire {
             let publication = &mut host.runtime.config_publications[id.0 as usize];
-            publication.connection(module, qa_core::configstrings::ConfigLayout::QUAKE3);
+            publication.connection(
+                module,
+                qa_core::configstrings::ConfigLayout::QUAKE3,
+                qa_core::configstrings::ConfigLayout::QUAKE3,
+            );
             publication.begin_native_connection();
             if host.runtime.server.clients[id.0 as usize].connection
                 == Some(qa_session::clients::Connection::Local)

@@ -1756,6 +1756,7 @@ impl ResourceState {
 /// a SERVER sound. All names still belong to source storage or the PCM bank.
 pub struct ConfigPublication {
     module: Option<ModuleId>,
+    source: Option<ConfigLayout>,
     layout: Option<ConfigLayout>,
     revisions: Box<[Option<u64>]>,
     seen: Box<[u64]>,
@@ -1806,6 +1807,7 @@ impl ConfigPublication {
         let sounds = layout.resources[1].count as usize;
         Self {
             module: None,
+            source: None,
             layout: None,
             revisions: Box::new([]),
             seen: vec![0; count].into_boxed_slice(),
@@ -1838,14 +1840,23 @@ impl ConfigPublication {
     }
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) {
         self.sounds.attach(bank);
-        self.revisions.fill(None);
-        self.seen.fill(0);
-        self.rows.fill(PublishedConfig::default());
+        self.invalidate_resource(startup::ResourceKind::Sound);
         self.primary_claims.fill(false);
-        self.last_client_limit = None;
+    }
+    fn invalidate_resource(&mut self, kind: startup::ResourceKind) {
+        self.revisions.fill(None);
+        // Producer cursors use the module's native indices; receipt rows use
+        // the connection protocol's independently selected namespace.
+        if let Some(source) = self.source {
+            self.seen[kind.range(source).range()].fill(0);
+        }
+        if let Some(layout) = self.layout {
+            self.rows[kind.range(layout).range()].fill(PublishedConfig::default());
+        }
     }
     pub fn reset(&mut self) {
         self.module = None;
+        self.source = None;
         self.layout = None;
         self.revisions.fill(None);
         self.seen.fill(0);
@@ -1863,10 +1874,12 @@ impl ConfigPublication {
         self.server_info = [None; 2];
         self.last_client_limit = None;
     }
-    pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {
-        if self.module != Some(module) || self.layout.map(|old| old.rules) != Some(layout.rules) {
+    pub fn connection(&mut self, module: ModuleId, source: ConfigLayout, layout: ConfigLayout) {
+        if self.module != Some(module) || self.source != Some(source) || self.layout != Some(layout)
+        {
             self.reset();
             self.module = Some(module);
+            self.source = Some(source);
             self.layout = Some(layout);
         }
     }
@@ -2099,11 +2112,7 @@ impl ConfigPublication {
         self.model_world = world;
         self.models.clear();
         self.model_claims.fill(false);
-        self.revisions.fill(None);
-        self.seen.fill(0);
-        if let Some(layout) = self.layout {
-            self.rows[layout.resources[0].range()].fill(PublishedConfig::default());
-        }
+        self.invalidate_resource(startup::ResourceKind::Model);
     }
     pub(crate) fn primary_model_fits(&self, ordinal: u32) -> bool {
         self.layout.is_some_and(|layout| {

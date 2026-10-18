@@ -1203,7 +1203,7 @@ impl FrameHost {
                 continue;
             }
             let publication = &mut runtime.config_publications[index];
-            publication.connection(client.module, ConfigLayout::QUAKE3);
+            publication.connection(client.module, ConfigLayout::QUAKE3, ConfigLayout::QUAKE3);
             let model_world = crate::client_resources::model_world(
                 client.connection,
                 runtime.client_resources[index].as_ref(),
@@ -1490,7 +1490,12 @@ impl FrameHost {
                 continue;
             };
             let publication = &mut runtime.config_publications[index];
-            publication.connection(client.module, target);
+            let source = modules
+                .and_then(|modules| modules.row(client.module))
+                .map_or(target, |row| {
+                    ConfigLayout::for_rules(row.request.context.native_rules)
+                });
+            publication.connection(client.module, source, target);
             let model_world = crate::client_resources::model_world(
                 client.connection,
                 runtime.client_resources[index].as_ref(),
@@ -1576,7 +1581,6 @@ impl FrameHost {
                     .row(client.module)
                     .filter(|row| row.state == State::Running)
                 {
-                    let source = ConfigLayout::for_rules(row.request.context.native_rules);
                     for native_index in 0..row.request.configstrings.min(source.count) {
                         let Ok((text, revision)) =
                             modules.storage.configstring(client.module, native_index)

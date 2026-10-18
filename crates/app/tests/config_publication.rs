@@ -32,7 +32,7 @@ fn publication(bank: &qa_audio::Bank) -> (ConfigPublication, ConfigLayout) {
     let mut publication = ConfigPublication::load();
     publication.configure_sources(4, 64);
     publication.bind_sounds(bank);
-    publication.connection(ModuleId(1), layout);
+    publication.connection(ModuleId(1), layout, layout);
     (publication, layout)
 }
 #[test]
@@ -53,7 +53,7 @@ fn current_destination_sequence_is_the_only_ack_that_readies_a_row() {
     p.published(row, None);
     p.acknowledged(row, 8);
     assert_eq!(p.readiness(row), ResourceReadiness::Unsupported);
-    p.connection(ModuleId(2), layout);
+    p.connection(ModuleId(2), layout, layout);
     p.published(row, Some(9));
     p.acknowledged(row, 8);
     assert_eq!(p.readiness(row), ResourceReadiness::Pending);
@@ -107,7 +107,7 @@ fn full_capacity_is_unsupported_and_connection_reset_rebinds_without_old_ack() {
     assert_eq!(p.reserve_sound(a), None);
     assert_eq!(p.sound(SoundId(bank.len() as u32)), None);
     p.reset();
-    p.connection(ModuleId(1), layout);
+    p.connection(ModuleId(1), layout, layout);
     let ordinal = p.reserve_sound(a).unwrap();
     let row = layout.resources[1].first as usize + ordinal as usize;
     p.published(row, Some(100));
@@ -191,7 +191,7 @@ fn player_loop_uses_the_connections_sound_mapping_and_ack() {
     let mut publication = ConfigPublication::load();
     publication.configure_sources(4, 64);
     publication.bind_sounds(&bank);
-    publication.connection(ModuleId(1), layout);
+    publication.connection(ModuleId(1), layout, layout);
     let primary = bank.find("sound/a.wav").unwrap();
     let foreign = bank.find("sound/b.wav").unwrap();
     publication.primary_sound(1, true, Some(primary));
@@ -243,7 +243,7 @@ fn dedicated_primary_loops_require_a_claim_and_compatible_acknowledged_row() {
     let layout = ConfigLayout::QUAKE3;
     let mut publication = ConfigPublication::load();
     publication.configure_sources(4, 64);
-    publication.connection(ModuleId(1), layout);
+    publication.connection(ModuleId(1), layout, layout);
     let client = ClientId(4);
     let reference = SoundRef::native(ResourceNamespace::Module(ModuleId(1)), 5).unwrap();
     let project = |publication: &ConfigPublication| {
@@ -282,7 +282,7 @@ fn models_use_exact_name_bindings_and_only_the_current_destination_ack() {
     let mut p = ConfigPublication::load();
     p.configure_sources(4, 1024);
     let layout = ConfigLayout::QUAKE2;
-    p.connection(ModuleId(1), layout);
+    p.connection(ModuleId(1), layout, layout);
     let source = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 7).unwrap();
     p.primary_model(7, true, Some(NameId(1)));
     let primary = layout.resources[0].first as usize + 7;
@@ -465,7 +465,7 @@ fn model_exhaustion_is_terminal_only_after_publication_and_rr255_stays_native() 
     let mut p = ConfigPublication::load();
     p.configure_sources(4, 1024);
     let layout = ConfigLayout::QUAKE2_RERELEASE;
-    p.connection(ModuleId(1), layout);
+    p.connection(ModuleId(1), layout, layout);
     for ordinal in 1..layout.resources[0].count {
         if layout.resource_policies[0].permits(ordinal) {
             p.primary_model(ordinal, true, Some(NameId(1)));
@@ -537,7 +537,7 @@ fn model_exhaustion_is_terminal_only_after_publication_and_rr255_stays_native() 
         Unsupported
     );
     p.reset();
-    p.connection(ModuleId(1), layout);
+    p.connection(ModuleId(1), layout, layout);
     assert_eq!(p.reserve_model(NameId(900)), Some(8191));
     for ordinal in (256..8191).rev() {
         p.primary_model(ordinal, true, Some(NameId(1)));
@@ -553,7 +553,7 @@ fn q2_model_cells_preserve_source_tags_and_do_not_treat_viewweapon255_as_player(
     for layout in [ConfigLayout::QUAKE2, ConfigLayout::QUAKE2_RERELEASE] {
         let mut p = ConfigPublication::load();
         p.configure_sources(4, 64);
-        p.connection(ModuleId(1), layout);
+        p.connection(ModuleId(1), layout, layout);
         let reference = ModelRef::native(ResourceNamespace::Module(ModuleId(1)), 255).unwrap();
         let player = |_, _, _| {
             Some(ModelName {
@@ -601,7 +601,7 @@ fn q2_model_cells_preserve_source_tags_and_do_not_treat_viewweapon255_as_player(
     }
     let mut p = ConfigPublication::load();
     p.configure_sources(4, 64);
-    p.connection(ModuleId(1), ConfigLayout::QUAKE2);
+    p.connection(ModuleId(1), ConfigLayout::QUAKE2, ConfigLayout::QUAKE2);
     p.primary_model(2, true, Some(NameId(2)));
     let row = ConfigLayout::QUAKE2.resources[0].first as usize + 2;
     p.published(row, Some(32));
@@ -678,7 +678,7 @@ fn tagged_q2_foreign_alias_never_emits_the_player_sentinel() {
     for primary_same_name in [false, true] {
         let mut p = ConfigPublication::load();
         p.configure_sources(4, 64);
-        p.connection(ModuleId(1), layout);
+        p.connection(ModuleId(1), layout, layout);
         let name = NameId(5);
         let ordinary = |_, _, _| {
             Some(ModelName {
@@ -753,7 +753,7 @@ fn classic_q2_primary_filename255_keeps_ordinary_model_cells() {
     let layout = ConfigLayout::QUAKE2;
     let mut p = ConfigPublication::load();
     p.configure_sources(4, 64);
-    p.connection(ModuleId(1), layout);
+    p.connection(ModuleId(1), layout, layout);
     let name = NameId(17);
     p.primary_model(255, true, Some(name));
     let row = layout.resources[0].first as usize + 255;
