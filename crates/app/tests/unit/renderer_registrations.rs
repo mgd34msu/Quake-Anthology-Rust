@@ -413,13 +413,15 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
         Some(previous)
     );
     assert_eq!(
-        owner.view().world_presentation(world, Some(profile), None),
+        owner
+            .view()
+            .world_presentation(world, Some(profile), None, None),
         Some(selected)
     );
     assert_eq!(
         owner
             .view()
-            .world_presentation(world, Some(profile), Some(previous.id)),
+            .world_presentation(world, Some(profile), Some(previous.id), None),
         Some(previous)
     );
 }

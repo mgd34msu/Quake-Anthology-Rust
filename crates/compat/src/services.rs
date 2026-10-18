@@ -138,7 +138,11 @@ pub trait ModelLookup {
         let _ = (world, index);
         None
     }
-    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding>;
+    fn loaded_world(
+        &self,
+        name: &[u8],
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<LoadedWorldBinding>;
     fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
     fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
     fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
@@ -1242,7 +1246,8 @@ pub struct EngineCallTable {
     ) -> Result<(), CallError>,
     pub overstrike: fn(&EngineServices<'_>) -> Result<bool, CallError>,
     pub set_overstrike: fn(&mut EngineServices<'_>, bool) -> Result<(), CallError>,
-    pub client_collision_load: fn(&mut EngineServices<'_>, &[u8]) -> Result<(), CallError>,
+    pub client_collision_load:
+        fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(), CallError>,
     pub client_collision_count: fn(&EngineServices<'_>) -> Result<u32, CallError>,
     pub client_collision_inline: fn(&EngineServices<'_>, i32) -> Result<i32, CallError>,
     pub client_collision_temp: fn(&mut EngineServices<'_>, Bounds, bool) -> Result<i32, CallError>,
@@ -1266,7 +1271,7 @@ pub struct EngineCallTable {
         Vec3,
         BodyTraceMode,
     ) -> Result<Trace, CallError>,
-    pub renderer_world: fn(&mut EngineServices<'_>, &[u8]) -> Result<u32, CallError>,
+    pub renderer_world: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<u32, CallError>,
     pub mark_fragments: fn(
         &mut EngineServices<'_>,
         &qa_render::marks::MarkProjection,
@@ -1471,7 +1476,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .set_overstrike(active);
         Ok(())
     },
-    client_collision_load: |s, name| s.client_collision_load(name),
+    client_collision_load: |s, module, name| s.client_collision_load(module, name),
     client_collision_count: |s| s.client_collision_count(),
     client_collision_inline: |s, index| s.client_collision_inline(index),
     client_collision_temp: |s, bounds, capsule| {
@@ -1537,16 +1542,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             )
             .map_err(|_| CallError::Geometry)
     },
-    renderer_world: |s, name| {
-        let world = s
-            .model_loader
-            .as_deref()
-            .and_then(|loader| loader.lookup().loaded_world(name))
-            .or_else(|| s.model_lookup.and_then(|lookup| lookup.loaded_world(name)))
-            .ok_or(CallError::Geometry)?;
-
-        Ok(world.render.0)
-    },
+    renderer_world: |s, module, name| Ok(s.loaded_world(module, name)?.render.0),
     mark_fragments: |s, projection, max_points, max_fragments, emit| {
         s.scene.as_deref_mut().map_or(Ok(0), |scene| {
             scene.mark_fragments(projection, max_points, max_fragments, emit)
@@ -1863,11 +1859,20 @@ impl EngineServices<'_> {
     pub fn patch_clip(&self) -> qa_core::primitives::PatchClip {
         self.storage.collision.resolve(self.cvars)
     }
-    fn client_collision_load(&mut self, name: &[u8]) -> Result<(), CallError> {
+    fn loaded_world(&self, module: ModuleId, name: &[u8]) -> Result<LoadedWorldBinding, CallError> {
+        let search = self
+            .vfs
+            .read_view(self.storage.file_search(module))
+            .retain()
+            .map_err(|_| CallError::File)?;
+        self.models()
+            .and_then(|models| models.loaded_world(name, Some(&search)))
+            .ok_or(CallError::Geometry)
+    }
+    fn client_collision_load(&mut self, module: ModuleId, name: &[u8]) -> Result<(), CallError> {
         let geometry = self
-            .models()
-            .and_then(|models| models.loaded_world(name))
-            .and_then(|world| world.collision)
+            .loaded_world(module, name)?
+            .collision
             .ok_or(CallError::Geometry)?;
         let count = self
             .geometry

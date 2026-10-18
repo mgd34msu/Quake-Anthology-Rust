@@ -29,8 +29,12 @@ impl FrameHost {
             {
                 profiles.push(profile);
             }
-            if let Some(world) = resources.and_then(|view| row.scene_role.world_selection(view))
-                && !presentations.contains(&world)
+            if let Some(world) = resources.and_then(|view| {
+                row.scene_role.world_selection(
+                    view,
+                    modules.storage.file_search(row.request.context.module),
+                )
+            }) && !presentations.contains(&world)
             {
                 presentations.push(world);
             }

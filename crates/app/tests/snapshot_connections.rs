@@ -3428,7 +3428,7 @@ fn queued_native_world_metadata_uses_one_cold_owner_for_qw_q2_rr_and_q3() {
         let owner = host.runtime.model_assets.as_ref().unwrap();
         let loaded = owner
             .catalog()
-            .loaded_world(b"maps/subdir/unseen.bsp")
+            .loaded_world(b"maps/subdir/unseen.bsp", None)
             .unwrap();
         assert_eq!(
             host.local_worlds[0].unwrap().0,
@@ -3617,7 +3617,7 @@ fn queued_qw_inline_statics_wait_for_their_exact_received_world_revision() {
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(expected_path)
+            .loaded_world(expected_path, None)
             .unwrap();
         assert_ne!(loaded.render, old_world.0);
         let (counts, entities) = asset_frames::static_scene(&host, client, protocol);
@@ -3630,7 +3630,7 @@ fn queued_qw_inline_statics_wait_for_their_exact_received_world_revision() {
                     .as_ref()
                     .unwrap()
                     .catalog()
-                    .loaded_world(b"maps/a.bsp")
+                    .loaded_world(b"maps/a.bsp", None)
                     .is_none()
             );
         } else {
@@ -3692,7 +3692,7 @@ fn queued_q2_and_q3_world_backend_failure_waits_for_new_accepted_metadata() {
                 .as_ref()
                 .unwrap()
                 .catalog()
-                .loaded_world(b"maps/large.bsp")
+                .loaded_world(b"maps/large.bsp", None)
                 .is_none()
         );
         assert!(host.runtime.network.get(client, Endpoint::Client).is_some());
@@ -3727,7 +3727,7 @@ fn queued_q2_and_q3_world_backend_failure_waits_for_new_accepted_metadata() {
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(b"maps/retry.bsp")
+            .loaded_world(b"maps/retry.bsp", None)
             .unwrap();
         assert_eq!(host.local_worlds[0].unwrap().0, loaded.render);
         assert_eq!(
@@ -4115,7 +4115,10 @@ fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_cha
     let (world, presentation) = host.local_worlds[1].unwrap();
     assert_ne!(Some((world, presentation)), old_local);
     let owner = host.runtime.model_assets.as_ref().unwrap();
-    let loaded = owner.catalog().loaded_world(b"maps/unseen.bsp").unwrap();
+    let loaded = owner
+        .catalog()
+        .loaded_world(b"maps/unseen.bsp", None)
+        .unwrap();
     let geometry = loaded.collision.unwrap();
     assert_eq!(loaded.render, world);
     assert_eq!(owner.assets().counts().worlds, counts.worlds + 1);
@@ -4245,7 +4248,7 @@ fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_cha
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(b"maps/unseen.bsp")
+            .loaded_world(b"maps/unseen.bsp", None)
             .unwrap()
             .collision,
         Some(geometry)
@@ -4291,7 +4294,7 @@ fn queued_unseen_client_world_waits_for_cold_capacity_then_activates_without_cha
     assert_eq!(
         owner
             .catalog()
-            .loaded_world(b"maps/unseen.bsp")
+            .loaded_world(b"maps/unseen.bsp", None)
             .unwrap()
             .collision,
         Some(geometry)
@@ -4441,7 +4444,10 @@ fn frame_admits_received_client_world_before_sending_native_prespawn() {
     assert!(source.backend.attempts > 0);
     let (world, _) = host.local_worlds[1].unwrap();
     let owner = host.runtime.model_assets.as_ref().unwrap();
-    let loaded = owner.catalog().loaded_world(b"maps/unseen.bsp").unwrap();
+    let loaded = owner
+        .catalog()
+        .loaded_world(b"maps/unseen.bsp", None)
+        .unwrap();
     assert_eq!(loaded.render, world);
     assert_eq!(
         host.runtime.client_resources[remote.0 as usize]
@@ -4578,7 +4584,7 @@ fn queued_client_world_parse_or_backend_failure_is_attempted_once_and_keeps_the_
                 .as_ref()
                 .unwrap()
                 .catalog()
-                .loaded_world(path.as_bytes()),
+                .loaded_world(path.as_bytes(), None),
             None
         );
         assert_eq!(

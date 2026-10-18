@@ -569,7 +569,10 @@ fn scenario(native: bool, rejection: Option<(bool, u32, i32, bool)>, inline_last
         b
     );
     assert_eq!(
-        catalog.loaded_world(b"maps/q2.bsp").unwrap().collision,
+        catalog
+            .loaded_world(b"maps/q2.bsp", None)
+            .unwrap()
+            .collision,
         Some(q2)
     );
     assert_eq!(assets.world(a).unwrap().geometry().models.len(), 2);

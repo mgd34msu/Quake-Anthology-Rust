@@ -2226,7 +2226,7 @@ fn renderer_configuration(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
 }
 fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    let world = (ENGINE_CALLS.renderer_world)(c.services, name)?;
+    let world = (ENGINE_CALLS.renderer_world)(c.services, c.context.module, name)?;
     Ok(CallValue::Host(
         HostRequest::SelectRendererWorld(qa_render::world::WorldId(world)),
         ImportContinuation::Return(0),
@@ -2234,7 +2234,7 @@ fn renderer_load_world(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, Call
 }
 fn client_collision_load(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = c.memory.cstring(c.required_pointer(0)?)?;
-    (ENGINE_CALLS.client_collision_load)(c.services, name)?;
+    (ENGINE_CALLS.client_collision_load)(c.services, c.context.module, name)?;
     Ok(0)
 }
 fn client_collision_count(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

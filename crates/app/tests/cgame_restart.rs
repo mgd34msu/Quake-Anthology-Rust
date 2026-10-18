@@ -1579,7 +1579,7 @@ fn verify(module: Vec<u8>) {
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(b"maps/b.bsp")
+            .loaded_world(b"maps/b.bsp", None)
             .is_none()
     );
     assert!(
@@ -1588,7 +1588,7 @@ fn verify(module: Vec<u8>) {
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(b"maps/c.bsp")
+            .loaded_world(b"maps/c.bsp", None)
             .is_none()
     );
 
@@ -1605,8 +1605,8 @@ fn verify(module: Vec<u8>) {
     assert_eq!(marker_count(&host, b"restart init"), 3);
     assert_eq!(marker_count(&host, b"restart shutdown"), 1);
     let owner = host.runtime.model_assets.as_ref().unwrap();
-    assert!(owner.catalog().loaded_world(b"maps/b.bsp").is_none());
-    let loaded = owner.catalog().loaded_world(b"maps/c.bsp").unwrap();
+    assert!(owner.catalog().loaded_world(b"maps/b.bsp", None).is_none());
+    let loaded = owner.catalog().loaded_world(b"maps/c.bsp", None).unwrap();
     let current = host.local_worlds[0].unwrap();
     assert_eq!(current.0, loaded.render);
     assert_ne!(current, old_world);

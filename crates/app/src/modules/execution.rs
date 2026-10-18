@@ -1484,7 +1484,18 @@ fn renderer_scope(
             .profile()
             .ok_or("missing renderer presentation")?,
         world,
-        presentation: world.and_then(|world| row.scene_role.presentation_for(world)),
+        presentation: world.and_then(|world| {
+            host.runtime
+                .model_assets
+                .as_ref()?
+                .renderer_presentation(
+                    world,
+                    row.scene_role.profile()?,
+                    row.scene_role.presentation_for(world),
+                    host.renderer_contexts.search(context),
+                )
+                .map(|entry| entry.id)
+        }),
         synchronize: host
             .renderer_smp
             .and_then(|handle| host.console.cvars.native_integer(handle, RuleSetId::Quake3))
@@ -1740,7 +1751,12 @@ fn remap_lookup(
             .world
             .map(|world| {
                 assets
-                    .renderer_presentation(world, scope.profile, scope.presentation)
+                    .renderer_presentation(
+                        world,
+                        scope.profile,
+                        scope.presentation,
+                        host.renderer_contexts.search(scope.context),
+                    )
                     .map(|presentation| presentation.id)
                     .ok_or("shader registration presentation")
             })
@@ -1895,15 +1911,12 @@ fn operation(
                     .model_assets
                     .as_ref()
                     .ok_or("missing renderer assets")?;
-                if !owner.initial_registration()
-                    && owner
-                        .view()
-                        .world_presentation(*world, Some(profile), selected)
-                        .is_none()
-                {
-                    return Err("world shader membership".to_owned());
-                }
-                let admission = owner.world_admission(*world, profile, selected)?;
+                let admission = owner.world_admission(
+                    *world,
+                    profile,
+                    selected,
+                    host.renderer_contexts.search(context),
+                )?;
                 let modules = host.modules.as_mut().ok_or("missing renderer modules")?;
                 let staged = host.renderer_contexts.stage(context, admission)?;
                 staged.commit();

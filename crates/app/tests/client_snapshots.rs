@@ -388,15 +388,16 @@ fn world_import_data() -> [u8; 512] {
 }
 
 fn host(factory: fn() -> (Program, u64), clients: usize) -> (FrameHost, Vec<ClientId>, u64) {
-    host_with_startup(factory, clients, None)
+    host_with_startup(factory, clients, None, None)
 }
 
 fn host_with_startup(
     factory: fn() -> (Program, u64),
     clients: usize,
     startup: Option<Argument>,
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> (FrameHost, Vec<ClientId>, u64) {
-    host_with_server(factory, clients, startup, false)
+    host_with_server(factory, clients, startup, false, vfs)
 }
 
 fn host_with_server(
@@ -404,8 +405,9 @@ fn host_with_server(
     clients: usize,
     startup: Option<Argument>,
     server: bool,
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> (FrameHost, Vec<ClientId>, u64) {
-    host_with_initializer(factory, clients, startup, server, CallbackId(6))
+    host_with_initializer(factory, clients, startup, server, CallbackId(6), vfs)
 }
 fn host_with_initializer(
     factory: fn() -> (Program, u64),
@@ -413,8 +415,12 @@ fn host_with_initializer(
     startup: Option<Argument>,
     server: bool,
     initializer: CallbackId,
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> (FrameHost, Vec<ClientId>, u64) {
     let mut runtime = Runtime::load(clients, []).unwrap();
+    if let Some(vfs) = vfs {
+        runtime.vfs = vfs;
+    }
     let mut requests = Vec::new();
     let mut ids = Vec::new();
     let mut output = 0;
@@ -1484,7 +1490,7 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
         (Argument::ClientExecutedCommand, 2),
         (Argument::ClientNativeNumber, 57),
     ] {
-        let (mut host, ids, _) = host_with_startup(factory, 1, Some(argument));
+        let (mut host, ids, _) = host_with_startup(factory, 1, Some(argument), None);
         let module = ModuleId(1);
         assert_eq!(host.module_state(module), Some(State::Pending));
         host.initialize_modules(Phase::Client);
@@ -1533,16 +1539,11 @@ fn cgame_startup_waits_for_queued_state_and_resolves_current_arguments(
     }
 }
 
-fn install_cgame_world_assets(
-    host: &mut FrameHost,
-    client: ClientId,
-    files: &mut model_files::Fixture,
-) -> asset_frames::Source {
+fn install_cgame_world_assets(host: &mut FrameHost, client: ClientId) -> asset_frames::Source {
     use qa_app::{
         model_assets::{ModelAssets, ModelRequest},
         renderer::SceneComposer,
     };
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
     let mut assets = qa_render::Assets::load().unwrap();
     let palette = model_files::palette(&mut assets);
     let (scene, _) =
@@ -1575,17 +1576,19 @@ fn queued_uncached_world_is_admitted_before_cgame_map_imports(factory: fn() -> (
     use qa_compat::services::ModelLookup;
     use qa_render::scene::Command;
 
+    let mut files = model_files::Fixture::new(&[("maps/unseen.bsp", model_files::world_map(8.0))]);
     let (mut host, ids, output) = host_with_initializer(
         factory,
         1,
         Some(Argument::ClientNativeNumber),
         false,
         CallbackId(15),
+        Some(std::mem::take(&mut files.vfs)),
     );
     let client = ids[0];
     let module = ModuleId(1);
-    let mut files = model_files::Fixture::new(&[("maps/unseen.bsp", model_files::world_map(8.0))]);
-    let mut source = install_cgame_world_assets(&mut host, client, &mut files);
+
+    let mut source = install_cgame_world_assets(&mut host, client);
     let original = host
         .runtime
         .model_assets
@@ -1615,7 +1618,7 @@ fn queued_uncached_world_is_admitted_before_cgame_map_imports(factory: fn() -> (
             .as_ref()
             .unwrap()
             .catalog()
-            .loaded_world(b"maps/unseen.bsp")
+            .loaded_world(b"maps/unseen.bsp", None)
             .is_none()
     );
     host.initialize_modules(Phase::Client);
@@ -1654,7 +1657,7 @@ fn queued_uncached_world_is_admitted_before_cgame_map_imports(factory: fn() -> (
         .as_ref()
         .unwrap()
         .catalog()
-        .loaded_world(b"maps/unseen.bsp")
+        .loaded_world(b"maps/unseen.bsp", None)
         .unwrap();
     let (world, presentation) = host.local_worlds[0].unwrap();
     assert_eq!(loaded.render, world);
@@ -1778,12 +1781,18 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
         }
         fn present(&mut self) {}
     }
-    let (mut host, ids, output) =
-        host_with_server(factory, 1, Some(Argument::ClientNativeNumber), true);
-    let client = ids[0];
     let mut files =
         model_files::Fixture::new(&[("maps/native_fixture.bsp", model_files::world_map(8.0))]);
-    let backend = install_cgame_world_assets(&mut host, client, &mut files);
+    let (mut host, ids, output) = host_with_server(
+        factory,
+        1,
+        Some(Argument::ClientNativeNumber),
+        true,
+        Some(std::mem::take(&mut files.vfs)),
+    );
+    let client = ids[0];
+
+    let backend = install_cgame_world_assets(&mut host, client);
     let owner = host.runtime.server.clients[client.0 as usize]
         .output
         .unwrap();
@@ -1882,7 +1891,7 @@ fn server_publication_reaches_cgame_through_the_ring_channel_and_queue(
     assert!(
         owner_assets
             .catalog()
-            .loaded_world(b"maps/native_fixture.bsp")
+            .loaded_world(b"maps/native_fixture.bsp", None)
             .is_some()
     );
     assert!(host.local_worlds[0].is_some());
@@ -1980,14 +1989,6 @@ fn queued_startup_prepares_world_and_retains_unready_output(factory: fn() -> (Pr
             true
         }
     }
-    let (mut host, ids, _) = host_with_initializer(
-        factory,
-        1,
-        Some(Argument::ClientNativeNumber),
-        false,
-        CallbackId(11),
-    );
-    let client = ids[0];
     let mut files = model_files::Fixture::new(&[
         ("maps/native_fixture.bsp", model_files::world_map(8.0)),
         (
@@ -1995,7 +1996,17 @@ fn queued_startup_prepares_world_and_retains_unready_output(factory: fn() -> (Pr
             model_files::tga(2, 2, &[[70, 80, 90, 255]; 4]),
         ),
     ]);
-    let mut backend = install_cgame_world_assets(&mut host, client, &mut files);
+    let (mut host, ids, _) = host_with_initializer(
+        factory,
+        1,
+        Some(Argument::ClientNativeNumber),
+        false,
+        CallbackId(11),
+        Some(std::mem::take(&mut files.vfs)),
+    );
+    let client = ids[0];
+
+    let mut backend = install_cgame_world_assets(&mut host, client);
     backend.enabled = false;
     let mut source = Source {
         time: EventTime::default(),
@@ -2069,7 +2080,7 @@ fn queued_startup_prepares_world_and_retains_unready_output(factory: fn() -> (Pr
     assert!(
         owner
             .catalog()
-            .loaded_world(b"maps/native_fixture.bsp")
+            .loaded_world(b"maps/native_fixture.bsp", None)
             .is_some()
     );
     assert_eq!(
@@ -2124,7 +2135,7 @@ fn registration_wait_rejects_unreceived_state_instead_of_freezing_it() {
         }
         fn present(&mut self) {}
     }
-    let (mut host, _, _) = host_with_startup(qvm, 1, Some(Argument::ClientNativeNumber));
+    let (mut host, _, _) = host_with_startup(qvm, 1, Some(Argument::ClientNativeNumber), None);
     assert!(
         host.register_client_modules(&mut Source, Duration::ZERO)
             .is_err()
@@ -2155,8 +2166,8 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
             model_files::tga(2, 2, &[[50, 60, 70, 255]; 4]),
         ),
     ]);
-    let (mut host, _, output) = host(factory, 1);
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let (mut host, _, output) =
+        host_with_startup(factory, 1, None, Some(std::mem::take(&mut files.vfs)));
     let profile = ModelProfile {
         source_rules: RuleSetId::Quake3,
         rules: RuleSetId::Quake3,
@@ -2237,8 +2248,8 @@ fn model_tags_use_shared_services(factory: fn() -> (Program, u64), returns_resul
     let mut files = model_files::Fixture::surfaces();
     let bytes = model_files::md3_surfaces();
     let model = qa_formats::model::Model::parse(&bytes).unwrap();
-    let (mut host, _, output) = host(factory, 1);
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
+    let (mut host, _, output) =
+        host_with_startup(factory, 1, None, Some(std::mem::take(&mut files.vfs)));
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     host.runtime.model_assets = Some(
         ModelAssets::new(

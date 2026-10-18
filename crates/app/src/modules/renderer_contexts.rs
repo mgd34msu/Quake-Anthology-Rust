@@ -275,7 +275,7 @@ impl Contexts {
             .as_ref()
             .filter(|context| context.generation == handle.generation)
     }
-    pub(super) fn search(&self, handle: Handle) -> Option<&SearchView> {
+    pub(crate) fn search(&self, handle: Handle) -> Option<&SearchView> {
         Some(&self.get(handle)?.search)
     }
     pub(super) fn matches_search(&self, handle: Handle, search: Option<&SearchView>) -> bool {

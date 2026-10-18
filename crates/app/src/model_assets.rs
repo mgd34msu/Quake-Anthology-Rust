@@ -1482,7 +1482,7 @@ impl<'a> RendererAdmission<'a> {
                 .ok_or("world shader membership")?
                 .world();
             self.owner
-                .world_admission(world, self.profile, Some(selected))
+                .world_admission(world, self.profile, Some(selected), None)
         } else {
             Ok(self)
         }
@@ -1504,7 +1504,7 @@ impl<'a> ModelView<'a> {
         profile: ModelProfile,
         selected: Option<WorldPresentationId>,
     ) -> Option<&'a [ShaderRegistration]> {
-        let presentation = self.world_presentation(world, Some(profile), selected)?;
+        let presentation = self.world_presentation(world, Some(profile), selected, None)?;
         Some(
             self.assets
                 .world_presentation(presentation.id)?
@@ -1532,14 +1532,35 @@ impl<'a> ModelView<'a> {
         world: WorldId,
         profile: Option<ModelProfile>,
         selected: Option<qa_render::world::WorldPresentationId>,
+        search: Option<&SearchView>,
     ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
-        self.select_world_presentation(world, profile, selected, self.catalog.admitted_assets)
+        self.select_world_presentation(
+            world,
+            profile,
+            selected,
+            search,
+            self.catalog.admitted_assets,
+        )
+    }
+    pub(crate) fn presentation_hint(
+        self,
+        selected: Option<WorldPresentationId>,
+        search: Option<&SearchView>,
+    ) -> Option<WorldPresentationId> {
+        selected.filter(|&id| {
+            search.is_none_or(|search| {
+                self.assets
+                    .world_presentation(id)
+                    .is_some_and(|entry| entry.accepts_source(search))
+            })
+        })
     }
     fn select_world_presentation(
         self,
         world: WorldId,
         profile: Option<ModelProfile>,
         selected: Option<WorldPresentationId>,
+        search: Option<&SearchView>,
         admitted: Option<AssetCounts>,
     ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
         let admitted = admitted?;
@@ -1554,7 +1575,9 @@ impl<'a> ModelView<'a> {
             self.assets.world_presentation_registration(id)
         };
         if let Some(selected) = selected {
-            return if world.presentations().contains(&selected) {
+            return if world.presentations().contains(&selected)
+                && self.presentation_hint(Some(selected), search).is_some()
+            {
                 presentation(selected)
             } else {
                 None
@@ -1568,8 +1591,9 @@ impl<'a> ModelView<'a> {
             .find(|entry| {
                 self.assets
                     .world_presentation(entry.id)
-                    .and_then(|entry| entry.search())
-                    .is_none_or(|search| search.same_selection(&self.catalog.registration_vfs))
+                    .is_some_and(|entry| {
+                        entry.accepts_source(search.unwrap_or(&self.catalog.registration_vfs))
+                    })
                     && entry.profile.rules == profile.rules
                     && entry.profile.indexed_palette == profile.palette
                     && entry.profile.image_settings == profile.image_settings
@@ -3408,7 +3432,7 @@ impl ModelAssets {
             *candidate = match request.kind {
                 RendererRegistration::Model => {
                     if let Some(inline) = self.catalog.renderer_inline(handle) {
-                        self.world_admission(inline.world, profile, None)?
+                        self.world_admission(inline.world, profile, None, search)?
                     } else {
                         let id = self
                             .catalog
@@ -3539,11 +3563,13 @@ impl ModelAssets {
         world: WorldId,
         profile: ModelProfile,
         selected: Option<WorldPresentationId>,
+        search: Option<&SearchView>,
     ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
         self.view().select_world_presentation(
             world,
             Some(profile),
-            selected,
+            self.view().presentation_hint(selected, search),
+            search,
             if self.initial_registration {
                 Some(self.assets.counts())
             } else {
@@ -3556,9 +3582,10 @@ impl ModelAssets {
         world: WorldId,
         profile: ModelProfile,
         selected: Option<WorldPresentationId>,
+        search: Option<&SearchView>,
     ) -> Result<RendererAdmission<'_>, String> {
         let id = self
-            .renderer_presentation(world, profile, selected)
+            .renderer_presentation(world, profile, selected, search)
             .ok_or("world shader membership")?
             .id;
         let presentation = self
@@ -3694,14 +3721,19 @@ impl ModelAssets {
             } = request.kind
             {
                 let world = request.world.ok_or("shader registration world")?;
-                self.renderer_presentation(world, profile, Some(presentation))
-                    .filter(|entry| {
-                        entry.profile.rules == profile.rules
-                            && entry.profile.indexed_palette == profile.palette
-                            && entry.profile.image_settings == profile.image_settings
-                            && entry.profile.finish == profile.finish
-                    })
-                    .ok_or("shader registration presentation")?;
+                self.renderer_presentation(
+                    world,
+                    profile,
+                    Some(presentation),
+                    request.search.as_ref(),
+                )
+                .filter(|entry| {
+                    entry.profile.rules == profile.rules
+                        && entry.profile.indexed_palette == profile.palette
+                        && entry.profile.image_settings == profile.image_settings
+                        && entry.profile.finish == profile.finish
+                })
+                .ok_or("shader registration presentation")?;
             }
         }
         let cached = targets.each_ref().map(|target| match target.file {
@@ -7288,8 +7320,17 @@ impl ModelLookup for ModelCatalog {
     fn model_has_tags(&self, handle: i32) -> bool {
         model_tags(&self.files, &self.sources, handle).is_some()
     }
-    fn loaded_world(&self, name: &[u8]) -> Option<LoadedWorldBinding> {
-        loaded_world(&self.names, &self.files, name, Some(&self.registration_vfs))
+    fn loaded_world(
+        &self,
+        name: &[u8],
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<LoadedWorldBinding> {
+        loaded_world(
+            &self.names,
+            &self.files,
+            name,
+            Some(search.unwrap_or(&self.registration_vfs)),
+        )
     }
     fn lerp_tag(
         &self,

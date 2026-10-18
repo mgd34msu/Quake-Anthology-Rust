@@ -602,7 +602,7 @@ impl FrameHost {
             let selected = resources.state.models.world_binding()?.0;
             let owner = self.runtime.model_assets.as_ref()?;
             let world = request
-                .with_name(|name| owner.catalog().loaded_world(name))
+                .with_name(|name| owner.catalog().loaded_world(name, None))
                 .ok()??;
             if world != selected || world.collision.is_none() {
                 return None;
@@ -612,7 +612,7 @@ impl FrameHost {
             }
             let presentation = owner
                 .view()
-                .world_presentation(world.render, Some(profile), None)
+                .world_presentation(world.render, Some(profile), None, None)
                 .filter(|entry| {
                     entry.compile_policy.collapse_vertex()
                         == profile.finish.compile(false).collapse_vertex()
@@ -740,13 +740,13 @@ impl FrameHost {
                 );
             presentation.image_settings = profile.image_settings;
             presentation.finish = profile.finish;
-            if let Some(world) = owner.catalog().loaded_world(path.as_bytes()) {
+            if let Some(world) = owner.catalog().loaded_world(path.as_bytes(), None) {
                 if world.collision.is_none() {
                     return Err("CLIENT world has no collision model".to_owned());
                 }
                 if let Some(presentation) = owner
                     .view()
-                    .world_presentation(world.render, Some(profile), None)
+                    .world_presentation(world.render, Some(profile), None, None)
                     .filter(|entry| {
                         scene.has_world(world.render)
                             && entry.compile_policy.collapse_vertex()
@@ -928,7 +928,7 @@ impl FrameHost {
                 self.runtime.model_assets.as_ref().and_then(|owner| {
                     owner
                         .view()
-                        .world_presentation(world, Some(selected_profile), None)
+                        .world_presentation(world, Some(selected_profile), None, None)
                         .filter(|entry| {
                             entry.compile_policy.collapse_vertex()
                                 == selected_profile.finish.compile(false).collapse_vertex()

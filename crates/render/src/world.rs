@@ -149,6 +149,10 @@ impl WorldPresentation {
     pub fn search(&self) -> Option<&qa_content::vfs::SearchView> {
         self.search.as_ref()
     }
+    pub fn accepts_source(&self, search: &qa_content::vfs::SearchView) -> bool {
+        self.search()
+            .is_none_or(|selected| selected.same_selection(search))
+    }
     pub fn sun_direction(&self) -> qa_core::primitives::Vec3 {
         self.initial_sun_direction
     }

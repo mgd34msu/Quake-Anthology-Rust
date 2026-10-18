@@ -1569,7 +1569,7 @@ impl FrameHost {
             scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
         }
         if let Some((world, selected)) = world {
-            let admission = assets.world_admission(world, profile, selected)?;
+            let admission = assets.world_admission(world, profile, selected, Some(&search))?;
             self.renderer_contexts.stage(handle, admission)?.commit();
         }
         Ok(())

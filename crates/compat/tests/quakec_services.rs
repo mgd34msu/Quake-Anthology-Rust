@@ -965,7 +965,11 @@ impl ModelLookup for Models {
     fn model_has_tags(&self, _: i32) -> bool {
         false
     }
-    fn loaded_world(&self, _: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
+    fn loaded_world(
+        &self,
+        _: &[u8],
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<qa_compat::services::LoadedWorldBinding> {
         None
     }
     fn lerp_tag(

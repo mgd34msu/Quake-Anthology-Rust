@@ -6,6 +6,7 @@ use qa_compat::{
     renderer::{EntityKind, EntitySubmission, SceneService, SceneView},
     services::CallError,
 };
+use qa_content::vfs::SearchView;
 use qa_core::{
     primitives::{ClientId, ModuleId},
     sys_events::SeatId,
@@ -38,13 +39,18 @@ impl Target {
         &self,
         resources: ModelView<'_>,
         world: WorldId,
+        search: Option<&SearchView>,
     ) -> Option<qa_render::material::world_load::LoadedWorldPresentation> {
         resources.world_presentation(
             world,
             Some(self.profile),
-            self.world
-                .filter(|&(selected, _)| selected == world)
-                .map(|(_, presentation)| presentation),
+            resources.presentation_hint(
+                self.world
+                    .filter(|&(selected, _)| selected == world)
+                    .map(|(_, presentation)| presentation),
+                search,
+            ),
+            search,
         )
     }
 }
@@ -116,9 +122,10 @@ impl SceneRole {
     pub(crate) fn world_selection(
         &self,
         resources: ModelView<'_>,
+        search: Option<&SearchView>,
     ) -> Option<(WorldId, WorldPresentationId)> {
         let world = self.selected_world()?;
-        let presentation = self.target?.world_presentation(resources, world)?;
+        let presentation = self.target?.world_presentation(resources, world, search)?;
         Some((world, presentation.id))
     }
 
@@ -209,6 +216,7 @@ pub(crate) struct SceneBorrow<'a> {
     sun_direction: Option<qa_core::primitives::Vec3>,
     native: &'a Contexts,
     context: Option<ShaderContextId>,
+    search: Option<&'a SearchView>,
 }
 impl<'a> SceneBorrow<'a> {
     pub(crate) fn new(
@@ -229,6 +237,7 @@ impl<'a> SceneBorrow<'a> {
             sun_direction,
             native,
             context,
+            search: context.and_then(|context| native.search(context)),
         }
     }
 }
@@ -304,7 +313,7 @@ impl SceneService for SceneBorrow<'_> {
             catalog: models,
         };
         let Some(presentation) = target
-            .world_presentation(resources, world_id)
+            .world_presentation(resources, world_id, self.search)
             .and_then(|entry| assets.world_presentation(entry.id))
         else {
             return Ok(0);
@@ -379,6 +388,7 @@ impl SceneService for SceneBorrow<'_> {
                         catalog: models,
                     },
                     binding.world,
+                    self.search,
                 )
                 .filter(|_| world_present)
             else {
@@ -609,7 +619,7 @@ impl SceneService for SceneBorrow<'_> {
             .ok_or(CallError::Geometry)?;
         let frame = composer.frame.as_mut().ok_or(CallError::Geometry)?;
         let modulate = selected_world
-            .and_then(|world| target.world_presentation(resources, world))
+            .and_then(|world| target.world_presentation(resources, world, self.search))
             .map_or(1., |entry| entry.profile.q2_modulate);
         let point_view = selected_world.zip(target.seat).and_then(|(world, seat)| {
             composer
@@ -639,7 +649,7 @@ impl SceneService for SceneBorrow<'_> {
             if view.world && !view.refdef.hyperspace {
                 let world_id = selected_world.ok_or(CallError::Geometry)?;
                 let presentation = target
-                    .world_presentation(resources, world_id)
+                    .world_presentation(resources, world_id, self.search)
                     .ok_or(CallError::Geometry)?
                     .id;
                 let seat = target.seat.ok_or(CallError::Geometry)?;

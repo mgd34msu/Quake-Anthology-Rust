@@ -17,7 +17,11 @@ impl ModelLookup for Catalog {
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
         (world == WorldId(9) && index == 1).then_some(77)
     }
-    fn loaded_world(&self, _: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
+    fn loaded_world(
+        &self,
+        _: &[u8],
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<qa_compat::services::LoadedWorldBinding> {
         None
     }
     fn bounds(&self, _: &[u8], _: RuleSetId) -> Option<Bounds> {
@@ -472,10 +476,23 @@ fn cached_headless_failed_and_initial_loader_requests_share_the_parked_operation
 fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
-        struct WorldCatalog;
+        let selected = fixture.vfs.search_view([]).unwrap();
+        fixture
+            .storage
+            .set_file_search(ModuleId(1), Some(selected.clone()), &fixture.vfs)
+            .unwrap();
+        struct WorldCatalog {
+            search: qa_content::vfs::SearchView,
+        }
         impl ModelLookup for WorldCatalog {
-            fn loaded_world(&self, name: &[u8]) -> Option<qa_compat::services::LoadedWorldBinding> {
-                (name.len() == 96).then_some(qa_compat::services::LoadedWorldBinding {
+            fn loaded_world(
+                &self,
+                name: &[u8],
+                search: Option<&qa_content::vfs::SearchView>,
+            ) -> Option<qa_compat::services::LoadedWorldBinding> {
+                (name.len() == 96
+                    && search.is_some_and(|search| search.same_selection(&self.search)))
+                .then_some(qa_compat::services::LoadedWorldBinding {
                     render: WorldId(9),
                     collision: None,
                 })
@@ -499,7 +516,7 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
                 None
             }
         }
-        let catalog = WorldCatalog;
+        let catalog = WorldCatalog { search: selected };
         let base = base(addresses);
         let mut bytes = [0; 256];
         let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
@@ -523,6 +540,21 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
             panic!("world selection requires logical admission")
         };
         assert_eq!(world, WorldId(9));
+        let foreign = qa_content::vfs::Vfs::default();
+        let original_vfs = engine.vfs;
+        engine.vfs = &foreign;
+        assert!(matches!(
+            step(
+                &mut engine,
+                &mut memory,
+                addresses,
+                &Q3_CLIENT,
+                36,
+                &[base + 16]
+            ),
+            Err(CallError::File)
+        ));
+        engine.vfs = original_vfs;
         assert!(matches!(continuation, ImportContinuation::Return(0)));
         memory.write(base + 16, b"changed\0").unwrap();
         assert_eq!(

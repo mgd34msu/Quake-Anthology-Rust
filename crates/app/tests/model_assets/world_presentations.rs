@@ -152,13 +152,15 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         .unwrap();
     owner.end_initial_registration();
     assert_eq!(
-        owner.view().world_presentation(world, Some(profile), None),
+        owner
+            .view()
+            .world_presentation(world, Some(profile), None, None),
         Some(first_presentation)
     );
     assert!(
         owner
             .view()
-            .world_presentation(world, None, Some(other_presentation.id))
+            .world_presentation(world, None, Some(other_presentation.id), None)
             .is_none()
     );
     let original = draw_world(
@@ -247,15 +249,20 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                         Some(loaded.presentations[0])
                     );
                     assert!(
-                        view.world_presentation(world, Some(selected), None)
+                        view.world_presentation(world, Some(selected), None, None)
                             .is_none()
                     );
                     assert!(
-                        view.world_presentation(world, None, Some(loaded.presentations[0].id))
-                            .is_none()
+                        view.world_presentation(
+                            world,
+                            None,
+                            Some(loaded.presentations[0].id),
+                            None
+                        )
+                        .is_none()
                     );
                     assert_eq!(
-                        view.world_presentation(world, None, Some(first_presentation.id)),
+                        view.world_presentation(world, None, Some(first_presentation.id), None),
                         Some(first_presentation)
                     );
                     scene.stage_world(view.assets, loaded)
@@ -274,7 +281,9 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         );
         let published = loaded.presentations[0];
         assert_eq!(
-            owner.view().world_presentation(world, Some(selected), None),
+            owner
+                .view()
+                .world_presentation(world, Some(selected), None, None),
             Some(published)
         );
         assert_eq!(published.id.0 as usize, profile_counts.presentations);
@@ -294,7 +303,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
         assert_eq!(
             owner
                 .catalog()
-                .loaded_world(b"maps/first.bsp")
+                .loaded_world(b"maps/first.bsp", None)
                 .unwrap()
                 .collision,
             Some(collision)

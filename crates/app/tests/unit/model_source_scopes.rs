@@ -1390,11 +1390,13 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
     assert!(
         owner
             .view()
-            .world_presentation(world, Some(profile), None)
+            .world_presentation(world, Some(profile), None, None)
             .is_none()
     );
     assert_eq!(
-        owner.view().world_presentation(world, None, Some(first.id)),
+        owner
+            .view()
+            .world_presentation(world, None, Some(first.id), None),
         Some(first)
     );
     let color = |assets: &Assets, id| {
@@ -1442,6 +1444,28 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
         )
         .unwrap();
     let mut rows = [first, second.presentations[0]];
+    assert_eq!(
+        owner
+            .view()
+            .world_presentation(world, Some(profile), None, Some(&low)),
+        Some(rows[0])
+    );
+    assert_eq!(
+        owner
+            .view()
+            .world_presentation(world, Some(profile), None, Some(&high)),
+        Some(rows[1])
+    );
+    assert!(
+        owner
+            .view()
+            .world_presentation(world, None, Some(rows[0].id), Some(&high))
+            .is_none()
+    );
+    assert_eq!(
+        owner.renderer_presentation(world, profile, Some(rows[1].id), Some(&low)),
+        Some(rows[0])
+    );
     assert_eq!(color(owner.assets(), rows[1].id), [0, 0, 211, 255]);
     for mode in [ImageRefreshMode::Reconfigure, ImageRefreshMode::Reload] {
         let mut settings = [None; 5];
@@ -1468,6 +1492,12 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
         for (index, (row, search)) in rows.iter_mut().zip([&low, &high]).enumerate() {
             *row = refresh.presentation(world, row.id).unwrap();
             assert_eq!(
+                owner
+                    .view()
+                    .world_presentation(world, Some(profile), None, Some(search)),
+                Some(*row)
+            );
+            assert_eq!(
                 color(owner.assets(), row.id),
                 [[211, 0, 0, 255], [0, 0, 211, 255]][index]
             );
@@ -1485,7 +1515,7 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
         assert!(
             owner
                 .view()
-                .world_presentation(world, Some(profile), None)
+                .world_presentation(world, Some(profile), None, None)
                 .is_none()
         );
     }
@@ -1622,6 +1652,12 @@ fn selected_maps_keep_geometry_palette_and_loaded_world_name_ownership() {
         assert_eq!(binding.world, loaded.render.world);
         assert_eq!(*collision, Some(loaded.collision));
         assert_eq!(*native_checksums, Some(checksum));
+        let named = owner
+            .catalog()
+            .loaded_world(loaded.virtual_path.as_bytes(), Some(search))
+            .unwrap();
+        assert_eq!(named.render, loaded.render.world);
+        assert_eq!(named.collision, Some(loaded.collision));
         file_ids.push(file);
         worlds.push(loaded.render.world);
     }
@@ -1631,6 +1667,18 @@ fn selected_maps_keep_geometry_palette_and_loaded_world_name_ownership() {
     let foreign = Vfs::default();
     assert!(crate::map::read(foreign.read_view(Some(&low)), "selected").is_err());
     let foreign_view = foreign.default_view();
+    assert!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/selected.bsp", Some(&foreign_view))
+            .is_none()
+    );
+    assert!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/selected.bsp", None)
+            .is_none()
+    );
     assert!(crate::map::read(files.vfs.read_view(Some(&foreign_view)), "selected").is_err());
     let mut assets = Assets::load().unwrap();
     let prefix = assets.counts();

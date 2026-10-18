@@ -1356,6 +1356,7 @@ impl Renderer {
                     client.world,
                     None,
                     Some(client.world_presentation),
+                    None,
                 ) else {
                     rejected += 1;
                     continue;

@@ -139,7 +139,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         .unwrap();
     let first_binding = owner
         .catalog()
-        .loaded_world(first.virtual_path.as_bytes())
+        .loaded_world(first.virtual_path.as_bytes(), None)
         .unwrap();
     let mut cpu = CpuBackend::load_with_limits(
         64,
@@ -195,12 +195,12 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                 assert!(loaded.spawns.is_empty());
                 assert_eq!(loaded.native_source, RuleSetId::Quake);
                 assert_eq!(
-                    view.catalog.loaded_world(b"maps/first.bsp"),
+                    view.catalog.loaded_world(b"maps/first.bsp", None),
                     Some(first_binding)
                 );
                 assert_eq!(
                     view.catalog
-                        .loaded_world(loaded.virtual_path.as_bytes())
+                        .loaded_world(loaded.virtual_path.as_bytes(), None)
                         .unwrap()
                         .collision,
                     Some(loaded.collision)
@@ -216,7 +216,8 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                     view.world_presentation(
                         loaded.render.world,
                         None,
-                        Some(loaded.render.presentations[0].id)
+                        Some(loaded.render.presentations[0].id),
+                        None
                     )
                     .is_none()
                 );
@@ -241,7 +242,8 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         owner.view().world_presentation(
             second.render.world,
             Some(profile),
-            Some(second.render.presentations[0].id)
+            Some(second.render.presentations[0].id),
+            None
         ),
         Some(second.render.presentations[0])
     );
@@ -255,7 +257,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         Some(first_inline)
     );
     assert_eq!(
-        owner.catalog().loaded_world(b"maps/first.bsp"),
+        owner.catalog().loaded_world(b"maps/first.bsp", None),
         Some(first_binding)
     );
     assert_eq!(geometry.model_count(first.collision), Some(2));
@@ -310,7 +312,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     assert_eq!(geometry.geometries().collect::<Vec<_>>(), old_geometries);
     assert_eq!(owner.assets().counts(), stable);
     assert_eq!(cpu.admitted_assets(), Some(stable));
-    assert_eq!(owner.catalog().loaded_world(b"maps/staged.bsp"), None);
+    assert_eq!(owner.catalog().loaded_world(b"maps/staged.bsp", None), None);
     let error = owner
         .prepare_world(
             &fixture.vfs,
@@ -326,7 +328,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     assert_eq!(owner.assets().counts(), stable);
     assert_eq!(geometry.geometries().collect::<Vec<_>>(), old_geometries);
     assert_eq!(
-        owner.catalog().loaded_world(b"maps/first.bsp"),
+        owner.catalog().loaded_world(b"maps/first.bsp", None),
         Some(first_binding)
     );
     assert_eq!(
@@ -634,7 +636,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
     assert_eq!(
         owner
             .catalog()
-            .loaded_world(b"maps/large.bsp")
+            .loaded_world(b"maps/large.bsp", None)
             .unwrap()
             .collision,
         Some(large.collision)
@@ -5562,22 +5564,30 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
                 .is_err()
         );
     }
-    assert!(owner.catalog().loaded_world(b"maps/foreign.bsp").is_none());
+    assert!(
+        owner
+            .catalog()
+            .loaded_world(b"maps/foreign.bsp", None)
+            .is_none()
+    );
     assert_eq!(
-        owner.catalog().loaded_world(b"maps/start.bsp"),
+        owner.catalog().loaded_world(b"maps/start.bsp", None),
         Some(qa_compat::services::LoadedWorldBinding {
             render: first,
             collision: Some(geometry)
         })
     );
     assert_eq!(
-        owner.catalog().loaded_world(b"MAPS\\ABSENT.BSP"),
+        owner.catalog().loaded_world(b"MAPS\\ABSENT.BSP", None),
         Some(qa_compat::services::LoadedWorldBinding {
             render: second,
             collision: Some(geometry)
         })
     );
-    assert_eq!(owner.catalog().loaded_world(b"maps/unbound.bsp"), None);
+    assert_eq!(
+        owner.catalog().loaded_world(b"maps/unbound.bsp", None),
+        None
+    );
     for path in [b"maps/start.bsp".as_slice(), b"MAPS\\ABSENT.BSP"] {
         assert_eq!(
             owner
@@ -5614,20 +5624,20 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
         Some(expected)
     );
     assert_eq!(
-        catalog.loaded_world(b"MAPS\\START.BSP"),
+        catalog.loaded_world(b"MAPS\\START.BSP", None),
         Some(qa_compat::services::LoadedWorldBinding {
             render: first,
             collision: Some(geometry)
         })
     );
     assert_eq!(
-        catalog.loaded_world(b"maps/absent.bsp"),
+        catalog.loaded_world(b"maps/absent.bsp", None),
         Some(qa_compat::services::LoadedWorldBinding {
             render: second,
             collision: Some(geometry)
         })
     );
-    assert_eq!(catalog.loaded_world(b"maps/unbound.bsp"), None);
+    assert_eq!(catalog.loaded_world(b"maps/unbound.bsp", None), None);
     assert_eq!(catalog.collision_world(first), Some(geometry));
     assert_eq!(catalog.collision_world(second), Some(geometry));
     // CLIENT bindings retain numeric collision identity independently of render

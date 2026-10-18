@@ -3553,7 +3553,7 @@ impl FrameHost {
                                 let _ = info.for_each_config(|config| {
                                     if config.index == 1
                                         && let Some(owner) = owner
-                                        && let Some(binding) = qa_compat::services::ModelLookup::loaded_world(owner.catalog(), config.text)
+                                        && let Some(binding) = qa_compat::services::ModelLookup::loaded_world(owner.catalog(), config.text, None)
                                         && binding.collision.is_some()
                                         && let Some((render, presentation)) = old_world
                                         && render == binding.render

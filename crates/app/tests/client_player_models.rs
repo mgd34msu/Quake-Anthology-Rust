@@ -193,7 +193,7 @@ fn bind(host: &mut FrameHost, profile: ModelProfile) {
     let owner = host.runtime.model_assets.as_ref().unwrap();
     let world = owner
         .catalog()
-        .loaded_world(b"maps/player.bsp")
+        .loaded_world(b"maps/player.bsp", None)
         .unwrap()
         .render;
     let presentation = owner.assets().world(world).unwrap().presentations()[0];
@@ -1010,7 +1010,7 @@ fn image_restart_remaps_captured_players_and_statics_without_following_rewritten
         }
         let world = owner
             .catalog()
-            .loaded_world(b"maps/player.bsp")
+            .loaded_world(b"maps/player.bsp", None)
             .unwrap()
             .render;
         let presentations = owner
