@@ -285,8 +285,13 @@ pub(crate) fn dispatch_frame(
                                 }
                                 _ => (None, None),
                             };
-                            counts.unhandled_music +=
-                                u64::from(!source.music(&runtime.vfs, control, paths.0, paths.1));
+                            counts.unhandled_music += u64::from(!source.music(
+                                &runtime.vfs,
+                                control,
+                                paths.0,
+                                paths.1,
+                                None,
+                            ));
                             true
                         }
                         FrameEvent::Sound(event) => {

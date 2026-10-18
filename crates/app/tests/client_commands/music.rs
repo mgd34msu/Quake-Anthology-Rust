@@ -42,12 +42,13 @@ impl qa_app::host::FrameSource for Source {
         control: MusicControl,
         intro: Option<&[u8]>,
         loop_track: Option<&[u8]>,
+        search: Option<&qa_content::vfs::SearchView>,
     ) -> bool {
         if let MusicControl::Start { owner, .. } | MusicControl::Track { owner, .. } = control {
             self.owner = Some(owner);
         }
         self.music
-            .control(vfs, &mut self.mixer, control, intro, loop_track)
+            .control(vfs, &mut self.mixer, control, intro, loop_track, search)
     }
     fn update_music(&mut self, vfs: &qa_content::vfs::Vfs, volume: f32) {
         self.updates += 1;

@@ -1,6 +1,6 @@
 //! One presentation-owned soundtrack streams into the existing raw paint lane.
 use qa_audio::Mixer;
-use qa_content::vfs::{FileRef, Vfs};
+use qa_content::vfs::{FileRef, ReadView, SearchView, Vfs};
 use qa_core::primitives::{
     ClientId, EntityId, MUSIC_REMAP_TRACKS, MusicControl, MusicOwner, MusicPlayback, MusicQuery,
     MusicRemap, PcmFormat, SoundAction, SoundEvent,
@@ -225,6 +225,7 @@ fn read(
 }
 
 pub struct Music {
+    registration_vfs: SearchView,
     enabled: bool,
     remap: [u32; MUSIC_REMAP_TRACKS],
     number: Option<(u32, u32)>,
@@ -253,6 +254,7 @@ impl Music {
         tracks.sort_unstable_by(|a, b| a.file.cmp(&b.file));
         reader.close_stream();
         Self {
+            registration_vfs: vfs.default_view(),
             enabled: true,
             remap: std::array::from_fn(|index| index as u32),
             number: None,
@@ -283,22 +285,25 @@ impl Music {
         self.tracks[track].reset();
         Source::new(track)
     }
-    fn numbered_track(&self, vfs: &Vfs, number: u32) -> Option<usize> {
+    fn numbered_track(&self, view: ReadView<'_>, number: u32) -> Option<usize> {
         for extension in ["ogg", "wav"] {
             for prefix in ["", "track"] {
                 let mut path = qa_core::text::FixedText::<40>::default();
                 write!(path, "music/{prefix}{number:02}.{extension}").ok()?;
-                if let Some(track) = vfs.open(path.as_bytes()).and_then(|file| self.track(&file)) {
+                if let Some(track) = view
+                    .open(path.as_bytes())
+                    .and_then(|file| self.track(&file))
+                {
                     return Some(track);
                 }
             }
         }
         None
     }
-    fn named_file(&self, vfs: &Vfs, name: &[u8], wave_first: bool) -> Option<FileRef> {
+    fn named_file(&self, view: ReadView<'_>, name: &[u8], wave_first: bool) -> Option<FileRef> {
         // Explicit names keep their native meaning, including mounted files
         // outside music/ and extensions unrelated to their PCM encoding.
-        if let Some(file) = vfs.open(name) {
+        if let Some(file) = view.open(name) {
             return Some(file);
         }
         let extensions: [&[u8]; 2] = if wave_first {
@@ -311,7 +316,7 @@ impl Music {
             let mut path = qa_core::text::FixedText::<8192>::default();
             path.append_bytes(name).ok()?;
             qa_core::names::default_extension(&mut path, extension, true).ok()?;
-            if let Some(file) = vfs.open(path.as_bytes()) {
+            if let Some(file) = view.open(path.as_bytes()) {
                 if self.track(&file).is_some() {
                     return Some(file);
                 }
@@ -362,7 +367,13 @@ impl Music {
         control: MusicControl,
         intro: Option<&[u8]>,
         loop_track: Option<&[u8]>,
+        search: Option<&SearchView>,
     ) -> bool {
+        let view = vfs.read_view(search);
+        if !view.accepts_search(&self.registration_vfs) || view.retain().is_err() {
+            self.counts.invalid += 1;
+            return false;
+        }
         match control {
             MusicControl::Enabled(enabled) => {
                 if !enabled {
@@ -403,7 +414,7 @@ impl Music {
                     self.stop(mixer);
                     return true;
                 }
-                let intro = self.numbered_track(vfs, mapped);
+                let intro = self.numbered_track(view, mapped);
                 let loop_track = intro
                     .filter(|_| looping)
                     .map(|track| self.tracks[track].file.clone());
@@ -449,11 +460,11 @@ impl Music {
                     return true;
                 }
                 let opened = intro
-                    .and_then(|name| self.named_file(vfs, name, playback.wave_first))
+                    .and_then(|name| self.named_file(view, name, playback.wave_first))
                     .and_then(|file| self.track(&file));
                 let loop_track = loop_track
                     .filter(|name| !name.is_empty())
-                    .and_then(|name| self.named_file(vfs, name, playback.wave_first));
+                    .and_then(|name| self.named_file(view, name, playback.wave_first));
                 self.start(mixer, owner, playback, opened, loop_track)
             }
         }

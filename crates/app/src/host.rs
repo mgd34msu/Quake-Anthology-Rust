@@ -111,6 +111,7 @@ pub trait FrameSource {
         _control: qa_core::primitives::MusicControl,
         _intro: Option<&[u8]>,
         _loop_track: Option<&[u8]>,
+        _search: Option<&qa_content::vfs::SearchView>,
     ) -> bool {
         false
     }
@@ -241,11 +242,12 @@ impl FrameSource for LiveFrame<'_> {
         control: qa_core::primitives::MusicControl,
         intro: Option<&[u8]>,
         loop_track: Option<&[u8]>,
+        search: Option<&qa_content::vfs::SearchView>,
     ) -> bool {
         self.audio.as_deref_mut().is_some_and(|audio| {
             audio
                 .music
-                .control(vfs, &mut audio.mixer, control, intro, loop_track)
+                .control(vfs, &mut audio.mixer, control, intro, loop_track, search)
         })
     }
     fn update_music(&mut self, vfs: &qa_content::vfs::Vfs, volume: f32) {

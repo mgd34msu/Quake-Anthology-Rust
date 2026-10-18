@@ -165,6 +165,7 @@ impl FrameSource for Source {
         control: MusicControl,
         _: Option<&[u8]>,
         _: Option<&[u8]>,
+        _: Option<&qa_content::vfs::SearchView>,
     ) -> bool {
         self.music.push(control);
         true

@@ -120,7 +120,7 @@ fn named_track_extension_order_is_source_data_with_fallback_to_valid_prepared_au
             {
                 *actual = playback;
             }
-            assert!(music.control(&fixture.vfs, &mut mix, control, Some(name), None));
+            assert!(music.control(&fixture.vfs, &mut mix, control, Some(name), None, None));
             music.update(&fixture.vfs, &mut mix, 1.);
             let mut actual = [0; 8];
             mix.paint(&bank, &mut actual);
@@ -205,25 +205,25 @@ fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requ
         number,
         looping,
     };
-    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
+    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut pcm = [0; 16];
     mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
     let queued = mix.raw_remaining();
-    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None));
+    assert!(music.control(&fixture.vfs, &mut mix, control(2, true), None, None, None));
     assert_eq!(mix.raw_remaining(), queued);
     assert_eq!(music.counts.started, 1);
-    assert!(music.control(&fixture.vfs, &mut mix, control(0, true), None, None));
+    assert!(music.control(&fixture.vfs, &mut mix, control(0, true), None, None, None));
     assert!(!music.playing());
     mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, [0; 16]);
     // A malformed first candidate is skipped in favor of the valid next file.
-    assert!(music.control(&fixture.vfs, &mut mix, control(4, false), None, None));
+    assert!(music.control(&fixture.vfs, &mut mix, control(4, false), None, None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
     mix.paint(&bank, &mut pcm);
     assert_eq!(pcm, std::array::from_fn(|i| expected.samples[i / 2]));
-    assert!(music.control(&fixture.vfs, &mut mix, control(3, false), None, None));
+    assert!(music.control(&fixture.vfs, &mut mix, control(3, false), None, None, None));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut wave = [0; 8];
     mix.paint(&bank, &mut wave);
@@ -243,7 +243,8 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
         &mut mix,
         start(owner(1), false, false),
         Some(b"music/intro.wav"),
-        Some(b"music/repeat.wav")
+        Some(b"music/repeat.wav"),
+        None
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut out = [0; 12];
@@ -263,6 +264,7 @@ fn dynamic_tracks_bypass_effect_registration_and_switch_intro_to_loop() {
         MusicControl::Stop { only_active: false },
         None,
         None,
+        None,
     );
     mix.paint(&bank, &mut out);
     assert_eq!(out, [0; 12]);
@@ -279,6 +281,7 @@ fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
         &mut mix,
         start(owner(1), true, true),
         Some(b"music/intro.wav"),
+        None,
         None
     ));
     music.update(&fixture.vfs, &mut mix, 0.5);
@@ -288,12 +291,14 @@ fn native_volume_updates_once_and_raw_queue_survives_failed_replacement() {
         &mut mix,
         start(owner(2), true, true),
         Some(b"music/missing.wav"),
+        None,
         None
     ));
     music.control(
         &fixture.vfs,
         &mut mix,
         MusicControl::Stop { only_active: true },
+        None,
         None,
         None,
     );
@@ -315,6 +320,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
         &mut mix,
         start(owner(1), false, false),
         Some(b"music/mono.ogg"),
+        None,
         None
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
@@ -327,6 +333,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
         MusicControl::Pause(true),
         None,
         None,
+        None,
     );
     mix.paint(&bank, &mut pair);
     assert_eq!(pair, [0; 2]);
@@ -334,6 +341,7 @@ fn loose_vorbis_streams_exact_authored_samples_and_keeps_pause_position() {
         &fixture.vfs,
         &mut mix,
         MusicControl::Pause(false),
+        None,
         None,
         None,
     );
@@ -363,6 +371,7 @@ fn deflated_vorbis_with_arbitrary_name_uses_the_same_pcm_blocks_as_wave() {
         &mut actual_mix,
         start(owner(1), false, false),
         Some(b"scores/theme.data"),
+        None,
         None
     ));
     music.update(&fixture.vfs, &mut actual_mix, 1.);
@@ -400,7 +409,8 @@ fn vorbis_intro_to_wave_loop_preserves_the_boundary_and_voice_bank() {
         &mut mix,
         start(owner(1), false, false),
         Some(b"music/mono.ogg"),
-        Some(b"music/repeat.wav")
+        Some(b"music/repeat.wav"),
+        None
     ));
     music.update(&fixture.vfs, &mut mix, 1.);
     let mut actual = vec![0; expected.samples.len() * 2 + 8];
@@ -428,6 +438,7 @@ fn multi_page_vorbis_keeps_partial_packets_across_presentation_refills() {
         &mut mix,
         start(owner(1), false, false),
         Some(b"music/pages.ogg"),
+        None,
         None
     ));
     let mut buffer = [0; 8192];
@@ -514,7 +525,8 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         &mut mix,
         start(owner(1), false, false),
         Some(b"scores/theme.data"),
-        Some(b"music/repeat.wav")
+        Some(b"music/repeat.wav"),
+        None
     ));
     for _ in 0..20 {
         music.update(&fixture.vfs, &mut mix, 1.);
@@ -526,6 +538,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         MusicControl::Pause(true),
         None,
         None,
+        None,
     );
     music.update(&fixture.vfs, &mut mix, 1.);
     mix.paint(&bank, &mut output);
@@ -535,6 +548,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         MusicControl::Pause(false),
         None,
         None,
+        None,
     );
     music.update(&fixture.vfs, &mut mix, 1.);
     mix.paint(&bank, &mut output);
@@ -542,6 +556,7 @@ fn prepared_archive_tracks_start_refill_pause_loop_and_stop_without_heap_growth(
         &fixture.vfs,
         &mut mix,
         MusicControl::Stop { only_active: false },
+        None,
         None,
         None,
     );
@@ -563,11 +578,13 @@ fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
         start(owner(2), false, false),
         Some(b"music/repeat.wav"),
         Some(b"music/repeat.wav"),
+        None,
     );
     music.control(
         &fixture.vfs,
         &mut mix,
         MusicControl::Retire(owner(1)),
+        None,
         None,
         None,
     );
@@ -587,6 +604,7 @@ fn retirement_does_not_stop_a_reused_client_or_a_new_module_owner() {
         &fixture.vfs,
         &mut mix,
         MusicControl::Retire(owner(2)),
+        None,
         None,
         None,
     );
@@ -633,7 +651,7 @@ fn console_control(
                     MusicControl::Remap { entries } => (texts.get(entries), None),
                     _ => (None, None),
                 };
-                assert!(music.control(&runtime.vfs, mix, control, paths.0, paths.1));
+                assert!(music.control(&runtime.vfs, mix, control, paths.0, paths.1, None));
                 last = Some(control);
             }
             OutputSubmission::BestEffort
@@ -851,6 +869,7 @@ fn console_music_paths_pause_resume_and_once_use_the_shared_ring() {
         }),
         None,
         None,
+        None,
     );
     assert!(music.playing());
     assert!(matches!(
@@ -942,6 +961,7 @@ fn presentation_reset_keeps_peer_music_and_requires_the_exact_client_lifetime() 
         start(owner(2), false, false),
         Some(b"music/repeat.wav"),
         Some(b"music/repeat.wav"),
+        None,
     );
     let (client, lifetime) = owner(2).client.unwrap();
     music.update(&fixture.vfs, &mut mix, 1.0);
@@ -963,6 +983,7 @@ fn presentation_reset_keeps_peer_music_and_requires_the_exact_client_lifetime() 
         start(owner(3), false, false),
         Some(b"music/repeat.wav"),
         Some(b"music/repeat.wav"),
+        None,
     );
     music.reset_client(&mut mix, client, lifetime);
     assert!(music.playing());
@@ -979,4 +1000,79 @@ fn presentation_reset_keeps_peer_music_and_requires_the_exact_client_lifetime() 
     music.sound_control(&mut mix, release);
     assert!(!music.playing());
     assert_eq!(music.counts.stopped, 2);
+}
+
+#[test]
+fn selected_tracks_use_prepared_physical_files_without_a_second_music_reader() {
+    let bank = bank();
+    let mut low = Fixture::new();
+    let high = Fixture::new();
+    let mut high_wave = qa_platform::files::read(high.root.join("music/intro.wav")).unwrap();
+    high_wave[44..46].copy_from_slice(&7000i16.to_le_bytes());
+    qa_platform::files::write(high.root.join("music/intro.wav"), high_wave).unwrap();
+    let low_mount = low.vfs.mounts().next().unwrap().id;
+    let high_mount = low.vfs.mount_directory(&high.root, 20).unwrap();
+    let low_view = low.vfs.search_view([low_mount]).unwrap();
+    let high_view = low.vfs.search_view([high_mount]).unwrap();
+    let mut music = Music::load(&low.vfs);
+    for (selection, first) in [
+        (Some(&low_view), 1000),
+        (Some(&high_view), 7000),
+        (None, 7000),
+    ] {
+        let mut mix = mixer();
+        assert!(music.control(
+            &low.vfs,
+            &mut mix,
+            start(owner(1), false, false),
+            Some(b"music/intro.wav"),
+            None,
+            selection
+        ));
+        music.update(&low.vfs, &mut mix, 1.);
+        let mut samples = [0; 4];
+        assert!(mix.paint(&bank, &mut samples));
+        assert_eq!(samples, [first, -1000, 2000, -2000]);
+    }
+    let mut mix = mixer();
+    assert!(music.control(
+        &low.vfs,
+        &mut mix,
+        start(owner(2), false, false),
+        Some(b"music/intro.wav"),
+        Some(b"music/intro.wav"),
+        Some(&low_view)
+    ));
+    let invalid = music.counts.invalid;
+    let foreign = Vfs::default();
+    let foreign_view = foreign.default_view();
+    assert!(!music.control(
+        &low.vfs,
+        &mut mix,
+        start(owner(3), false, false),
+        Some(b"music/intro.wav"),
+        None,
+        Some(&foreign_view)
+    ));
+    assert!(!music.control(
+        &foreign,
+        &mut mix,
+        start(owner(3), false, false),
+        Some(b"music/intro.wav"),
+        None,
+        Some(&low_view)
+    ));
+    assert!(!music.control(
+        &foreign,
+        &mut mix,
+        MusicControl::Stop { only_active: false },
+        None,
+        None,
+        None
+    ));
+    assert_eq!(music.counts.invalid, invalid + 3);
+    music.update(&low.vfs, &mut mix, 1.);
+    let mut samples = [0; 4];
+    mix.paint(&bank, &mut samples);
+    assert_eq!(samples, [1000, -1000, 2000, -2000]);
 }
