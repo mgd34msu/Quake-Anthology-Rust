@@ -1,3 +1,5 @@
+#[path = "support/client_asset_frames.rs"]
+mod asset_frames;
 #[path = "support/frame_source.rs"]
 mod frame_source;
 
@@ -44,14 +46,27 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..19 {
+    for command in 0..20 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if matches!(command, 17 | 18) {
+        if command == 19 {
+            operations.extend([
+                (Local, 76),
+                (Load4, 0),
+                (Arg, 8),
+                (Const, 128),
+                (Arg, 12),
+                (Local, 80),
+                (Load4, 0),
+                (Arg, 16),
+                (Const, -46),
+                (Call, 0),
+            ]);
+        } else if matches!(command, 17 | 18) {
             operations.extend([(Const, if command == 17 { -59 } else { -53 }), (Call, 0)]);
         } else if command == 15 {
             operations.extend([
@@ -173,7 +188,7 @@ fn native() -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..19)
+        &(0..20)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -188,7 +203,7 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..19u8 {
+    for command in 0..20u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
@@ -214,11 +229,15 @@ fn native() -> Program {
                 16 => 69,
                 17 => 58,
                 18 => 52,
+                19 => 45,
                 12 | 14 => 43,
                 13 => 85,
                 _ => 9,
             };
-            if command == 15 {
+            if command == 19 {
+                code.extend([0x4d, 0x89, 0xc1, 0x49, 0xb8]);
+                code.extend(buffer.to_le_bytes());
+            } else if command == 15 {
                 code.extend([0x48, 0xba]);
                 code.extend((base + 0x1d20).to_le_bytes());
                 code.extend([0x49, 0xb8]);
@@ -567,6 +586,66 @@ fn memory_query_uses_platform_service_for_both_client_roles(program: impl Fn() -
         }
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
     }
+}
+
+fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Program) {
+    let (mut runtime, ids) = runtime(2);
+    let requests = ids
+        .iter()
+        .enumerate()
+        .map(|(seat, &client)| {
+            let mut module = program();
+            match &mut module {
+                Program::Qvm { imports, .. } | Program::Native { imports, .. } => {
+                    *imports = &qa_compat::abi::Q3_UI
+                }
+                _ => unreachable!(),
+            }
+            let mut request = request(&mut runtime, ModuleId(seat as u16 + 1), client, module);
+            request.frame = Export::words(CallbackId(9), &[0]);
+            request.entries = (0..20).collect();
+            request
+        })
+        .collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&[Some(ids[0]), Some(ids[1])]);
+    assert_eq!(
+        probe_args(&mut host, 0, 19, &[20, 16]),
+        0,
+        "before gamestate, UI sees an empty row"
+    );
+    asset_frames::gamestate(&mut host, ids[0], 0, [(20, b"alpha".as_slice())]);
+    asset_frames::gamestate(&mut host, ids[1], 13, [(20, b"beta".as_slice())]);
+    assert_eq!(probe_args(&mut host, 0, 19, &[20, 4]), 1);
+    assert_eq!(probe(&mut host, 0, 9, 0), u32::from_le_bytes(*b"alp\0"));
+    assert_eq!(probe_args(&mut host, 1, 19, &[20, 16]), 1);
+    assert_eq!(probe(&mut host, 1, 9, 0), u32::from_le_bytes(*b"beta"));
+    assert_eq!(probe_args(&mut host, 0, 19, &[2048, 16]), 0);
+    assert_eq!(
+        probe(&mut host, 0, 9, 0),
+        u32::from_le_bytes(*b"alp\0"),
+        "invalid indices leave the caller buffer unchanged"
+    );
+    assert_eq!(probe_args(&mut host, 0, 19, &[20, 0]), 1);
+    assert_eq!(probe(&mut host, 0, 9, 0), u32::from_le_bytes(*b"alp\0"));
+    assert_eq!(probe_args(&mut host, 0, 19, &[21, 16]), 0);
+    assert_eq!(probe(&mut host, 0, 9, 0) & 255, 0);
+    wire(&mut host, ids[0], &[b"cs 20 \"changed\""]);
+    host.client_modules(); // The ordinary CLIENT consumer applies native config commands.
+    assert_eq!(probe_args(&mut host, 0, 19, &[20, 16]), 1);
+    assert_eq!(probe(&mut host, 0, 9, 0), u32::from_le_bytes(*b"chan"));
+    assert_eq!(probe(&mut host, 1, 9, 0), u32::from_le_bytes(*b"beta"));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    println!(
+        "native UI config queries: received gamestate, separate seats, truncation, empty/out-of-range rows and live updates passed"
+    );
 }
 
 fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
@@ -1409,6 +1488,7 @@ fn main() {
     music::native_music_reaches_shared_paint(qvm, false);
     music::native_music_reaches_shared_paint(qvm, true);
     memory_query_uses_platform_service_for_both_client_roles(qvm);
+    ui_reads_only_its_selected_clients_received_configs(qvm);
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
     native_scene_calls_use_the_session_frame(qvm);
@@ -1436,6 +1516,7 @@ fn main() {
         music::native_music_reaches_shared_paint(native, false);
         music::native_music_reaches_shared_paint(native, true);
         memory_query_uses_platform_service_for_both_client_roles(native);
+        ui_reads_only_its_selected_clients_received_configs(native);
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
         native_scene_calls_use_the_session_frame(native);

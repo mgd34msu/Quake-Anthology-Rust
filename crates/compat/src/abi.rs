@@ -762,6 +762,7 @@ const fn ui() -> CallTable {
     t.entries[40] = scalar!(input::catchers);
     t.entries[41] = scalar!(input::set_catchers);
     t.entries[43] = scalar!(renderer_configuration);
+    t.entries[45] = scalar!(ui_configstring);
     t.entries[80] = value!(remap_shader);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
@@ -2525,6 +2526,26 @@ fn renderer_picture(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         [values[4], values[5], values[6], values[7]],
     );
     Ok(0)
+}
+
+fn ui_configstring(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let index = c.arg(0)? as u32 as i32;
+    if !(0..crate::configstrings::Q3_GAME_STATE_ROWS as i32).contains(&index) {
+        return Ok(0);
+    }
+    let length = c.length(2)?;
+    let target = c.pointer(1)?;
+    let text = match (ENGINE_CALLS.client_configstrings)(c.services) {
+        Ok(configs) => configs
+            .config(index as usize)
+            .map_or(&b""[..], |row| row.text),
+        Err(CallError::Entity | CallError::Unsupported) => b"",
+        Err(error) => return Err(error),
+    };
+    if length != 0 {
+        c.memory.write_string(target, length, text)?;
+    }
+    Ok(u64::from(!text.is_empty()))
 }
 
 fn client_game_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

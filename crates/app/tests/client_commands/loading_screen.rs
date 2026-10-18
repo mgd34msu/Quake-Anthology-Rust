@@ -186,16 +186,20 @@ pub(crate) fn loading_screen(native: bool, ui: bool) {
                 "callback uses the actual CPU backend"
             );
             if !ui {
-                assert_eq!(
-                    probe(&mut host, 1, 33, 1456),
-                    4,
-                    "both refresh and connect overlay reach the associated UI"
-                );
-                assert_eq!(
-                    probe(&mut host, 1, 33, 1464),
-                    1,
-                    "connect overlay uses native true argument"
-                );
+                for (address, value) in [(1456, 4), (1464, 1)] {
+                    host.call_module_export(
+                        ModuleId(2),
+                        Export::words(CallbackId(33), &[address]),
+                        ThinkTime::Milliseconds(123),
+                    )
+                    .unwrap();
+                    assert!(
+                        matches!(host.module_counts(ModuleId(2)).unwrap().last_result,
+                        Some(ModuleResult::Qvm(actual)) if actual as u32 == value)
+                            || matches!(host.module_counts(ModuleId(2)).unwrap().last_result,
+                            Some(ModuleResult::Native(actual)) if actual as u32 == value)
+                    );
+                }
                 assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
             }
         }

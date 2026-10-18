@@ -117,6 +117,51 @@ pub fn queue(host: &mut FrameHost, payloads: impl IntoIterator<Item = Vec<u8>>) 
     );
 }
 
+pub fn gamestate<'a, C>(host: &mut FrameHost, client: ClientId, native: u32, configs: C)
+where
+    C: IntoIterator<Item = (usize, &'a [u8])>,
+    C::IntoIter: Clone,
+{
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let command = channel.command_state().unwrap().queued;
+    let mut bytes = [0; 32768];
+    let length = channel
+        .encode_server_output(&mut bytes, |writer, _| {
+            qa_network::channel::commands::write_gamestate(
+                writer,
+                command,
+                native,
+                0,
+                configs,
+                std::iter::empty(),
+            )
+        })
+        .unwrap();
+    let time = EventTime::from_milliseconds(100);
+    channel
+        .prepare_server_message(&bytes[..length], time)
+        .unwrap()
+        .unwrap();
+    loop {
+        let packet = channel.pending_packet().unwrap();
+        host.runtime
+            .loopback
+            .send(Endpoint::Server, client, packet.bytes)
+            .unwrap();
+        channel.submitted(time).unwrap();
+        if !channel.pending_fragments() {
+            break;
+        }
+        channel.prepare_output(time).unwrap().unwrap();
+    }
+    host.drain(&mut Default::default());
+}
+
 pub fn static_scene(
     host: &FrameHost,
     client: ClientId,

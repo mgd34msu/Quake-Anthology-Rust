@@ -617,7 +617,7 @@ pub(super) fn start_scoped(
             context(row.request.context, time)
         },
         platform_time: host.runtime.input_time,
-        connection: row.client_connection,
+        connection: super::module_connection(host, module),
         model_access: ModelAccess::Register,
     };
     if valid(host, start, true) {
@@ -635,7 +635,7 @@ fn valid(host: &FrameHost, start: GuestStart, live_self: bool) -> bool {
         || matches!(start.scope, EntryScope::Ordinary)
             && !host.module_generation_current(start.module)
         || row.request.anchor != start.anchor
-        || row.client_connection != start.connection
+        || super::module_connection(host, start.module) != start.connection
     {
         return false;
     }
@@ -975,7 +975,7 @@ fn guest_step(
                         entry: 0,
                         context: row.request.context,
                         platform_time: host.runtime.input_time,
-                        connection: row.client_connection,
+                        connection: super::module_connection(host, module),
                         model_access: ModelAccess::Register,
                     };
                     let mut cleanup = Activation::new(start, true);
@@ -2475,11 +2475,8 @@ fn advance(
         composer,
         models,
         &mut row.scene_role,
-        row.renderer_generation
-            .and_then(super::RendererGeneration::stamp)
-            .and_then(|stamp| stamp.client)
-            .map(|client| client.connection())
-            .or(start.connection)
+        start
+            .connection
             .map(|(client, lifetime)| qa_render::effects::EffectClient { client, lifetime }),
         sun_direction,
         &host.renderer_contexts,

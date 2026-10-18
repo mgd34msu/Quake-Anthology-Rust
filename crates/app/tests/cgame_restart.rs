@@ -37,7 +37,7 @@ use qa_core::{
     sys_events::{EventKind, EventTime, Peer, SeatId, SysEvent, SysEventQueue},
 };
 use qa_formats::program::qvm::Opcode;
-use qa_network::{channel::commands::write_gamestate, commands::packet::Protocol};
+use qa_network::commands::packet::Protocol;
 use qa_render::{Assets, Limits, scene::Command};
 use qa_session::timing::TickRate;
 use std::{sync::Arc, time::Duration};
@@ -1308,44 +1308,12 @@ fn setup_renderers_with_images(
 fn queue_gamestate(host: &mut FrameHost, client: ClientId, map: &str, native: u32) {
     let info = format!("\\mapname\\{map}");
     let world = format!("maps/{map}.bsp");
-    let channel = &mut host
-        .runtime
-        .network
-        .get_mut(client, Endpoint::Server)
-        .unwrap()
-        .channel;
-    let command = channel.command_state().unwrap().queued;
-    let mut bytes = [0; 32768];
-    let length = channel
-        .encode_server_output(&mut bytes, |writer, _| {
-            write_gamestate(
-                writer,
-                command,
-                native,
-                0,
-                [(0, info.as_bytes()), (33, world.as_bytes())],
-                std::iter::empty(),
-            )
-        })
-        .unwrap();
-    let time = EventTime::from_milliseconds(100);
-    channel
-        .prepare_server_message(&bytes[..length], time)
-        .unwrap()
-        .unwrap();
-    loop {
-        let packet = channel.pending_packet().unwrap();
-        host.runtime
-            .loopback
-            .send(Endpoint::Server, client, packet.bytes)
-            .unwrap();
-        channel.submitted(time).unwrap();
-        if !channel.pending_fragments() {
-            break;
-        }
-        channel.prepare_output(time).unwrap().unwrap();
-    }
-    host.drain(&mut FrameResult::default());
+    asset_frames::gamestate(
+        host,
+        client,
+        native,
+        [(0, info.as_bytes()), (33, world.as_bytes())],
+    );
 }
 fn query(
     host: &mut FrameHost,

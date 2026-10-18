@@ -379,6 +379,15 @@ fn renderer_client(
     })
 }
 
+/// UI reads its presentation seat's CLIENT without becoming its cgame owner.
+fn module_connection(host: &FrameHost, module: ModuleId) -> Option<(ClientId, EntityId)> {
+    let row = host.module_row(module)?;
+    row.client_connection.or_else(|| {
+        renderer_client(&host.runtime, &host.local_clients, &row.request, None)
+            .map(RendererClient::connection)
+    })
+}
+
 pub(super) struct ClientRendererShutdown {
     module: ModuleId,
     next: usize,
