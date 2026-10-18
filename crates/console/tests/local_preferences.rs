@@ -204,11 +204,11 @@ fn human_seat_selection_survives_retirement_without_weakening_native_lifetimes()
     )
     .unwrap();
     let native = vars.bind("cg_fov", first).unwrap();
-    let human = Context {
+    let human = vars.local_context(Context {
         client_lifetime: None,
-        cvar_seat: Some(first.seat),
+        cvar_seat: None,
         ..first
-    };
+    });
     let seat_view = vars.bind("cg_fov", human).unwrap();
     vars.write(seat_view, "111").unwrap();
     assert_eq!(vars.numeric(native).unwrap(), 111.0);
@@ -220,16 +220,7 @@ fn human_seat_selection_survives_retirement_without_weakening_native_lifetimes()
     )
     .unwrap();
     assert!(!vars.has_client_values(first.client_lifetime.unwrap()));
-    assert!(
-        vars.bind(
-            "cg_fov",
-            Context {
-                cvar_seat: Some(first.seat),
-                ..first
-            }
-        )
-        .is_none()
-    );
+    assert!(vars.bind("cg_fov", vars.local_context(first)).is_none());
     assert!(vars.read(native).is_err());
     vars.write(seat_view, "117").unwrap();
     assert_eq!(vars.numeric(seat_view).unwrap(), 117.0);

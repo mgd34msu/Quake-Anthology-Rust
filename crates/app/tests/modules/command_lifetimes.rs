@@ -631,6 +631,7 @@ fn queued_disconnect_runs_client_callback_on_the_active_arena_and_retires_after_
         None,
         qvm_console(b"set lifetime_disconnect_callback 1\n", Some(5), 0, 5),
     );
+    first.context.console.side = qa_console::catalog::Scope::Server;
     first.entries = (0..=7).collect();
     first.initialize = vec![Export::words(CallbackId(0), &[])];
     let Program::Qvm { vm, .. } = &mut first.program else {

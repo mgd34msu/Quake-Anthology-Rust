@@ -623,6 +623,7 @@ pub(super) fn start_scoped(
     };
     if start.context.console.side != qa_console::catalog::Scope::Server {
         start.context.console.client_lifetime = start.connection;
+        start.context.console = host.console.cvars.local_context(start.context.console);
     }
     if valid(host, start, true) {
         ModuleDispatch::Guest(start)

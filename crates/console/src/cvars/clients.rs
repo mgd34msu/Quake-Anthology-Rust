@@ -85,6 +85,18 @@ impl Cvars {
     pub fn has_seat_values(&self, seat: SeatId) -> bool {
         self.seat_column(seat).is_some()
     }
+    /// Unconnected local clients keep their seat's settings. An explicit
+    /// connection lifetime still takes precedence, including when it is stale.
+    pub fn local_context(&self, mut context: Context) -> Context {
+        if context.side != Scope::Server
+            && context.client_lifetime.is_none()
+            && context.cvar_seat.is_none()
+            && self.has_seat_values(context.seat)
+        {
+            context.cvar_seat = Some(context.seat);
+        }
+        context
+    }
     pub(super) fn context_column(&self, context: Context) -> Option<usize> {
         if context.side == Scope::Server {
             return Some(0);

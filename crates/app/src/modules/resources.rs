@@ -1135,6 +1135,7 @@ impl FrameHost {
                 let id = self.local_clients[seat?.index()]?;
                 Some((id, self.runtime.server.clients[id.0 as usize].entity))
             });
+            let context = self.console.cvars.local_context(context);
             let rails = ["r_railCoreWidth", "r_railWidth", "r_railSegmentLength"]
                 .map(|name| self.console.cvars.bind(name, context));
             let [Some(core), Some(ring), Some(length)] = rails else {

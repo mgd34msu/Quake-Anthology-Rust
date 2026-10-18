@@ -679,6 +679,14 @@ impl FrameHost {
     ) -> Result<Self, String> {
         let mut requests = requests;
         for request in &mut requests {
+            if request.phase == Phase::Client
+                && request.context.console.side != qa_console::catalog::Scope::Server
+            {
+                console
+                    .cvars
+                    .load_seat_values(request.context.console.seat, request.context.native_rules)
+                    .map_err(|error| format!("local module cvars: {error:?}"))?;
+            }
             if std::iter::once(request.frame)
                 .chain(request.prepare.iter().copied())
                 .chain(request.initialize.iter().copied())

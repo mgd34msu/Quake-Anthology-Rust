@@ -1855,25 +1855,56 @@ fn verify_standalone_ui(ui: Vec<u8>) {
             .iter()
             .all(|request| request.q3_image.is_some() && request.frame.client.is_none())
     );
-    let mut host = FrameHost::load_modules(
-        Console::new(Context::default()).unwrap(),
-        runtime,
-        TickRate::FrameDriven,
-        requests,
-    )
-    .unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    for (seat, value) in [(SeatId::FIRST, "71"), (SeatId::ALL[1], "82")] {
+        console
+            .cvars
+            .load_seat_values(seat, RuleSetId::Quake3)
+            .unwrap();
+        console
+            .cvars
+            .set_user(
+                "_qa_ui_client_value",
+                value,
+                Context {
+                    seat,
+                    cvar_seat: Some(seat),
+                    ..Default::default()
+                },
+                None,
+                0,
+            )
+            .unwrap();
+    }
+    let mut host =
+        FrameHost::load_modules(console, runtime, TickRate::FrameDriven, requests).unwrap();
     assert!(host.runtime.scene.is_none());
     host.initialize_modules(qa_app::modules::Phase::Client);
-    for module in [ModuleId(1), ModuleId(2)] {
+    for (module, value) in [(ModuleId(1), 71), (ModuleId(2), 82)] {
         assert_eq!(host.module_state(module), Some(State::Running));
         assert_eq!(ui_query(&mut host, module, 7), Ok(7));
+        assert_eq!(ui_query(&mut host, module, 4), Ok(value));
     }
+    assert!(
+        host.runtime
+            .server
+            .clients
+            .iter()
+            .all(|client| client.connection.is_none())
+    );
     host.client_modules();
     for module in [ModuleId(1), ModuleId(2)] {
         assert_eq!(ui_query(&mut host, module, 7), Ok(99));
         assert_eq!(ui_query(&mut host, module, 10), Ok(1));
         assert_eq!(host.module_counts(module).unwrap().traps, 0);
     }
+    let context = host.console.cvars.local_context(Context::default());
+    host.console
+        .cvars
+        .set_user("_qa_ui_client_value", "117", context, None, 0)
+        .unwrap();
+    assert_eq!(ui_query(&mut host, ModuleId(1), 4), Ok(117));
+    assert_eq!(ui_query(&mut host, ModuleId(2), 4), Ok(82));
     let protocol = Protocol::NetQuake15;
     let client = host
         .runtime

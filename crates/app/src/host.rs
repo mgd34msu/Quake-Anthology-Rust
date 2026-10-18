@@ -4071,13 +4071,13 @@ impl FrameHost {
 
     fn client_command_contexts(&self) -> [qa_console::views::Context; SeatId::COUNT] {
         std::array::from_fn(|seat| {
-            let mut context = qa_console::views::Context {
-                seat: SeatId::new(seat as u8).unwrap_or(SeatId::FIRST),
-                ..self.console.cvars.context()
-            };
-            if self.console.cvars.has_seat_values(context.seat) {
-                context.cvar_seat = Some(context.seat);
-            }
+            let mut context = self
+                .console
+                .cvars
+                .local_context(qa_console::views::Context {
+                    seat: SeatId::new(seat as u8).unwrap_or(SeatId::FIRST),
+                    ..self.console.cvars.context()
+                });
             if let Some((id, _, _)) = self.local_seat(seat) {
                 context.file_search = self.runtime.client_resources[id.0 as usize]
                     .as_ref()
