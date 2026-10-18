@@ -1411,6 +1411,7 @@ impl FrameHost {
         &self,
         client: ClientId,
         seat: qa_core::sys_events::SeatId,
+        include_ui: bool,
     ) -> Result<bool, &'static str> {
         let Some(lifetime) = self
             .runtime
@@ -1424,16 +1425,32 @@ impl FrameHost {
         let Some(modules) = self.modules.as_ref() else {
             return Ok(true);
         };
-        for row in modules
-            .rows
-            .iter()
-            .flatten()
-            .filter(|row| row.produces_client_view && row.request.context.console.seat == seat)
-        {
+        for row in modules.rows.iter().flatten().filter(|row| {
+            row.request.context.console.seat == seat
+                && (row.produces_client_view
+                    || include_ui
+                        && row
+                            .request
+                            .program
+                            .imports()
+                            .and_then(CallTable::command_export)
+                            .is_some_and(|entry| entry.role == qa_compat::abi::CommandRole::Ui))
+        }) {
             if row.state == State::Failed || row.state == State::Stopped {
                 return Err("selected CLIENT view module failed");
             }
-            if row.client_connection != Some((client, lifetime))
+            let connection = if row.produces_client_view {
+                row.client_connection
+            } else {
+                renderer_client(
+                    &self.runtime,
+                    &self.local_clients,
+                    &row.request,
+                    row.client_connection,
+                )
+                .map(RendererClient::connection)
+            };
+            if connection != Some((client, lifetime))
                 || row.state != State::Running
                 || !self.module_generation_ready(row.request.context.module)
             {

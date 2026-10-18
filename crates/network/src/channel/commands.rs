@@ -40,6 +40,7 @@ struct Window {
     slots: Box<[Slot]>,
     sequence: u32,
     acknowledged: u32,
+    acknowledged_text: qa_core::text::FixedText<{ STRING_BYTES - 1 }>,
     sent: u32,
     encoded_bits: usize,
     budget_bits: usize,
@@ -59,12 +60,18 @@ impl Window {
                 .collect(),
             sequence: 0,
             acknowledged: 0,
+            acknowledged_text: Default::default(),
             sent: 0,
             encoded_bits: 0,
             budget_bits,
         }
     }
     fn text(&self, sequence: u32) -> &[u8] {
+        // A full window may reuse the acknowledged slot before a reply using
+        // that sequence arrives. The Q3 XOR key still names the accepted text.
+        if sequence == self.acknowledged {
+            return self.acknowledged_text.as_bytes();
+        }
         let slot = &self.slots[slot(sequence)];
         &slot.text[..slot.length]
     }
@@ -136,6 +143,10 @@ impl Window {
                 return Err(packet::Error::Context);
             }
         }
+        let accepted = &self.slots[slot(sequence)];
+        self.acknowledged_text
+            .set_bytes(&accepted.text[..accepted.length])
+            .map_err(|_| packet::Error::Count)?;
         let mut count = 0;
         for n in self.acknowledged + 1..=sequence {
             self.encoded_bits -= self.slots[slot(n)].encoded_bits;

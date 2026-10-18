@@ -1092,13 +1092,15 @@ impl ResourceState {
         if qa_core::text::info_value(map, b"mapname", false).is_none_or(|range| range.is_empty()) {
             return Some("Q3 gamestate has no world map");
         }
-        let info = self.configs.config(ConfigLayout::Q3_SYSTEM_INFO)?.text;
-        let value = |key| qa_core::text::info_value(info, key, false).map(|range| &info[range]);
-        if value(b"sv_pure").is_some_and(|text| qa_core::text::atoi_prefix(text) != 0) {
-            Some("pure server package verification is not available")
-        } else {
-            None
-        }
+        None
+    }
+    pub(crate) fn q3_pure(&self) -> bool {
+        let info = self
+            .configs
+            .config(ConfigLayout::Q3_SYSTEM_INFO)
+            .map_or(&b""[..], |row| row.text);
+        qa_core::text::info_value(info, b"sv_pure", false)
+            .is_some_and(|range| qa_core::text::atoi_prefix(&info[range]) != 0)
     }
     pub(crate) fn world_ready(&self) -> bool {
         matches!(

@@ -132,6 +132,21 @@ impl<'a> Arguments<'a> {
     pub fn iter_bytes(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
         (0..self.len()).map(|i| self.get_bytes(i))
     }
+    /// Borrow the common ABI argv only for synchronous dispatch. Parsed spans
+    /// keep their source bytes; already-projected arguments need no scratch.
+    pub fn with_command_args<R>(&self, call: impl FnOnce(CommandArgs<'_>) -> R) -> R {
+        if let ArgumentStorage::Borrowed(args) = self.storage {
+            return call(args);
+        }
+        let mut argv = [&[][..]; 1024];
+        for (to, from) in argv.iter_mut().zip(self.iter_bytes()) {
+            *to = from;
+        }
+        call(CommandArgs {
+            argv: &argv[..self.len()],
+            raw: self.raw_bytes(),
+        })
+    }
     pub fn raw_bytes(&self) -> &'a [u8] {
         self.raw_bytes
     }

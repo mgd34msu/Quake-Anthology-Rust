@@ -2423,10 +2423,27 @@ impl FrameHost {
             else {
                 continue;
             };
-            match self.client_view_ready(client, seat) {
+            match self.client_view_ready(client, seat, resources.state.q3_pure()) {
                 Ok(true) => {
-                    if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
-                        resources.startup.q3_primed();
+                    let queued = (|| {
+                        let resources = self.runtime.client_resources[slot]
+                            .as_ref()
+                            .ok_or("missing Q3 client resources")?;
+                        let connection = self
+                            .runtime
+                            .network
+                            .get_mut(client, qa_core::loopback::Endpoint::Client)
+                            .ok_or("missing Q3 client channel")?;
+                        resources.queue_q3_references(&self.runtime.vfs, &mut connection.channel)
+                    })();
+                    match queued {
+                        Ok(true) => {
+                            if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
+                                resources.startup.q3_primed();
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(reason) => self.reject_client_startup(client, format_args!("{reason}")),
                     }
                 }
                 Ok(false) => {}

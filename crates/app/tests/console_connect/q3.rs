@@ -304,6 +304,7 @@ fn cgame(multiplier: i32) -> Vec<u8> {
 
 fn media_runtime(
     vfs: qa_content::vfs::Vfs,
+    pure: bool,
 ) -> (Box<Runtime>, Vec<qa_app::modules::ModuleRequest>, ClientId) {
     let mut runtime = Box::new(Runtime::load(3, []).unwrap());
     runtime.vfs = vfs;
@@ -329,7 +330,14 @@ fn media_runtime(
     let mut requests = vec![];
     load_q3(
         &mut runtime,
-        &[Q3Spec::parse("cgame:0:vm/udp.qvm").unwrap()],
+        &if pure {
+            vec![
+                Q3Spec::parse("cgame:0:vm/cgame.qvm").unwrap(),
+                Q3Spec::parse("ui:0:vm/ui.qvm").unwrap(),
+            ]
+        } else {
+            vec![Q3Spec::parse("cgame:0:vm/udp.qvm").unwrap()]
+        },
         &mut requests,
         TickRate::FrameDriven,
         None,
@@ -388,13 +396,17 @@ fn requested_host(
     )
 }
 
-fn media_host() -> (
+type MediaHost = (
     support::Fixture,
     Box<FrameHost>,
     Source,
     qa_app::model_assets::ModelProfile,
-) {
-    let mut fixture = support::Fixture::new(&[
+);
+fn media_host() -> MediaHost {
+    media_host_files(false)
+}
+fn media_host_files(pure: bool) -> MediaHost {
+    let mut entries = vec![
         ("maps/ready.bsp", support::world_map(16.0)),
         ("gfx/palette.lmp", (0u8..=255).flat_map(|value| [value, 255 - value, value / 2]).collect()),
         ("gfx/colormap.lmp", (0..64u8).flat_map(|shade| (0..=255u8).map(move |index| index.wrapping_add(shade))).chain([32]).collect()),
@@ -404,8 +416,38 @@ fn media_host() -> (
         ("sound/step.wav", samples::wav()),
         ("vm/udp.qvm", cgame(100)),
         ("scripts/udp.shader", b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\n".to_vec()),
-    ]);
-    let (mut runtime, requests, old) = media_runtime(std::mem::take(&mut fixture.vfs));
+    ];
+    if pure {
+        entries.push(("vm/cgame.qvm", cgame(100)));
+        entries.push((
+            "vm/ui.qvm",
+            program::bytes(
+                &[(Opcode::Enter, 64), (Opcode::Const, 4), (Opcode::Leave, 64)],
+                &[],
+            ),
+        ));
+    }
+    let mut fixture = support::Fixture::new(&entries);
+    if pure {
+        let root = fixture
+            .vfs
+            .directory_path(fixture.vfs.mounts().next().unwrap().id)
+            .unwrap();
+        let path = root.join("pure.pk3");
+        let sources = entries
+            .iter()
+            .map(|(name, data)| (name.as_bytes(), data.as_slice()))
+            .collect::<Vec<_>>();
+        qa_platform::files::write(&path, downloads::zip::stored_zip(&sources)).unwrap();
+        let archive = std::sync::Arc::new(
+            qa_formats::archive::Archive::parse(std::sync::Arc::new(
+                qa_platform::files::ReadFile::open(&path).unwrap(),
+            ))
+            .unwrap(),
+        );
+        fixture.vfs.mount_archive(&path, 100, archive).unwrap();
+    }
+    let (mut runtime, requests, old) = media_runtime(std::mem::take(&mut fixture.vfs), pure);
     let (source, profile) = media_assets(&mut runtime);
     let mut host = requested_host(runtime, requests);
     host.local_clients[0] = Some(old);
@@ -467,7 +509,7 @@ fn send(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GamestateContent {
     Ordinary,
-    Pure,
+    Pure(u32),
     InvalidTail,
 }
 
@@ -493,7 +535,7 @@ fn gamestate(
             1,
             format!(
                 "\\sv_serverid\\{SERVER_ID}\\sv_pure\\{}",
-                u8::from(content == GamestateContent::Pure)
+                u8::from(matches!(content, GamestateContent::Pure(_)))
             )
             .into_bytes(),
         ),
@@ -503,6 +545,11 @@ fn gamestate(
         (289, b"sound/step.wav".to_vec()),
         (290, b"sound/optional/absent.wav".to_vec()),
     ];
+    if let GamestateContent::Pure(checksum) = content {
+        rows[1]
+            .1
+            .extend(format!("\\sv_paks\\{}", checksum as i32).as_bytes());
+    }
     for row in 700..712 {
         rows.push((
             row,
@@ -1087,14 +1134,13 @@ fn q3_invalid_service_after_gamestate_drops_only_its_client_before_init() {
 }
 
 #[test]
-fn q3_pure_gamestate_is_rejected_before_media_or_priming() {
+fn q3_pure_client_waits_for_module_references_and_reliable_room_then_sends_native_cp() {
+    let (_fixture, mut host, mut source, profile) = media_host_files(true);
     let mut server = EventPump::new();
     let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
-    let mut source = source();
-    let mut host = host(1);
     let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
-    let packets = datagrams(&mut server);
-    let local = peer(&packets[0]);
+    host.bind_client_model_assets([(client, profile, None)]);
+    let local = peer(&datagrams(&mut server)[0]);
     let mut native = accept(
         &mut host,
         &mut source,
@@ -1104,6 +1150,28 @@ fn q3_pure_gamestate_is_rejected_before_media_or_priming() {
         local,
         0,
     );
+    let checksums = host
+        .runtime
+        .vfs
+        .mounts()
+        .find_map(|mount| host.runtime.vfs.q3_package_checksums(mount.id))
+        .unwrap();
+    let regular = checksums.checksum();
+    let pure = checksums.pure_checksum(FEED);
+    let channel = &mut host
+        .runtime
+        .network
+        .get_mut(client, Endpoint::Client)
+        .unwrap()
+        .channel;
+    let mut held = 0;
+    while channel
+        .queue_client_command(Q3, format!("echo held{held}").as_bytes())
+        .is_ok()
+    {
+        held += 1;
+    }
+    assert!(held >= 32);
     assert!(
         gamestate(
             &mut server,
@@ -1111,14 +1179,100 @@ fn q3_pure_gamestate_is_rejected_before_media_or_priming() {
             local,
             &mut native,
             30,
-            GamestateContent::Pure
+            GamestateContent::Pure(regular)
         ) > 1
     );
-    frame(&mut host, &mut source, 30);
-    assert!(host.runtime.network.get(client, Endpoint::Client).is_none());
-    assert_eq!(host.local_clients[0], None);
-    assert!(host.local_worlds[0].is_none());
-    assert!(host.runtime.model_assets.is_none());
+    for time in (30..=100).step_by(10) {
+        frame(&mut host, &mut source, time);
+        collect(&mut server, &mut native, time);
+        if host.module_state(ModuleId(1)) == Some(State::Running)
+            && host.module_state(ModuleId(2)) == Some(State::Running)
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(State::Running),
+        "ui={:?}, world={:?}, logs={}",
+        host.module_state(ModuleId(2)),
+        host.local_worlds[0],
+        String::from_utf8_lossy(
+            &host
+                .console
+                .scrollback
+                .chunks(&host.runtime.server.events.texts)
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>()
+        )
+    );
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(104))
+    );
+    assert!(host.local_worlds[0].is_some());
+    assert!(
+        native.q3_moves.is_empty(),
+        "a full reliable window must postpone priming"
+    );
+    assert!(!native.strings.iter().any(|text| text.starts_with(b"cp ")));
+    // Native acknowledgment frees the same command window. No separate queue
+    // owns a report, and neither cgame nor UI must initialize again to retry it.
+    send(&mut server, socket, local, &mut native, 110, |_, _| Ok(()));
+    for time in [110, 120, 130] {
+        frame(&mut host, &mut source, time);
+        collect(&mut server, &mut native, time);
+    }
+    let expected = format!(
+        "cp {SERVER_ID} {} {} @ {} {}",
+        pure as i32,
+        pure as i32,
+        pure as i32,
+        (FEED ^ pure ^ 1) as i32
+    );
+    assert_eq!(native.count(expected.as_bytes()), 1);
+    assert_eq!(
+        native
+            .strings
+            .iter()
+            .filter(|text| text.starts_with(b"cp "))
+            .count(),
+        1
+    );
+    assert!(!native.q3_moves.is_empty());
+    let mut parsed = qa_console::command_text::ParsedCommand::default();
+    parsed
+        .parse(expected.as_bytes(), RuleSetId::Quake3)
+        .unwrap();
+    let arguments = parsed.arguments();
+    let argv = arguments.iter_bytes().collect::<Vec<_>>();
+    let mut admission = qa_network::pure::Admission::default();
+    admission.configure(
+        Some(qa_network::pure::Policy::new(FEED, [Some(pure); 2], [pure])),
+        FEED,
+        SERVER_ID,
+    );
+    assert_eq!(
+        admission.verify(qa_core::primitives::CommandArgs {
+            argv: &argv,
+            raw: expected.as_bytes()
+        }),
+        qa_network::pure::Decision::Authentic
+    );
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(104))
+    );
+    snapshot(&mut server, socket, local, &mut native, 140, 0);
+    frame(&mut host, &mut source, 140);
+    collect(&mut server, &mut native, 140);
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .connection
+            .is_some()
+    );
     assert!(!host.runtime.quit);
 }
 

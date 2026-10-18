@@ -591,3 +591,33 @@ fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
     assert!(outputs(&mut server, &mut client).is_empty());
     assert_eq!(client.reliable_receipts(), &[NativeReceipt(3)]);
 }
+
+#[test]
+fn full_client_window_retains_the_acknowledged_text_used_by_server_xor() {
+    let (mut client, mut server) = pair();
+    client.queue_reliable(b"native acknowledged key").unwrap();
+    let mut codec = Commands::load(Protocol::Quake3_68, packet::Q3_MESSAGE_BYTES);
+    move_message(&mut client, &mut server, &mut codec, 16);
+    server.queue_reliable(b"first reply").unwrap();
+    assert_eq!(outputs(&mut server, &mut client), [b"first reply".to_vec()]);
+    assert_eq!(client.command_state().unwrap().acknowledged, 1);
+    for index in 0..64 {
+        client
+            .queue_reliable(format!("held {index}").as_bytes())
+            .unwrap();
+    }
+    assert_eq!(client.command_state().unwrap().queued, 65);
+    assert_eq!(client.queue_reliable(b"full"), Err(TransmitError::Full));
+    server
+        .queue_reliable(b"reply while all client slots are pending")
+        .unwrap();
+    assert_eq!(
+        outputs(&mut server, &mut client),
+        [b"reply while all client slots are pending".to_vec()]
+    );
+    assert_eq!(client.command_state().unwrap().acknowledged, 1);
+    assert_eq!(
+        client.queue_reliable(b"still full"),
+        Err(TransmitError::Full)
+    );
+}

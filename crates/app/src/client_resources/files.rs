@@ -2,6 +2,30 @@
 use super::*;
 
 impl ClientResources {
+    /// The channel owns reliable bytes and retries; startup stays Loading while
+    /// that same window is full, without retaining a second pending command.
+    pub(crate) fn queue_q3_references(
+        &self,
+        vfs: &qa_content::vfs::Vfs,
+        channel: &mut qa_network::channel::Channel,
+    ) -> Result<bool, String> {
+        let context = channel
+            .command_context()
+            .map_err(|error| format!("Q3 package report context: {error:?}"))?;
+        let mut command = qa_core::text::FixedText::<
+            { qa_network::message::COMMAND_STRING_BYTES - 2 },
+        >::default();
+        self.state
+            .file_search()
+            .q3_reference_command(vfs, context.server_id, self.state.q3_pure(), &mut command)
+            .map_err(|error| format!("Q3 package report: {error}"))?;
+        match channel.queue_client_command(Protocol::Quake3_68, command.as_bytes()) {
+            Ok(_) => Ok(true),
+            Err(qa_network::channel::TransmitError::Full) => Ok(false),
+            Err(error) => Err(format!("Q3 package report submission: {error:?}")),
+        }
+    }
+
     /// Derive every replacement from the requested namespace, never from the
     /// previous server's restricted view. Downloads finish before this freezes
     /// mount membership and starts a fresh native package-reference account.

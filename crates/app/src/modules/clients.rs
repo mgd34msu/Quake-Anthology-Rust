@@ -926,15 +926,7 @@ impl FrameHost {
                 self.disconnect_client_with_driver(id, driver);
                 return Ok(std::ops::ControlFlow::Break(()));
             }
-            let mut argv = [&[][..]; 1024];
-            for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
-                *to = from;
-            }
-            let command = CommandArgs {
-                argv: &argv[..args.len()],
-                raw: args.raw_bytes(),
-            };
-            if rules == RuleSetId::Quake3 && q3::pure_command(self, id, command, driver)? {
+            if rules == RuleSetId::Quake3 && q3::pure_command(self, id, args, driver)? {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
             if quakec::setinfo(self, id, rules, args, driver)? {
@@ -959,7 +951,9 @@ impl FrameHost {
             let Some((api, _)) = api else {
                 return Ok(std::ops::ControlFlow::Continue(()));
             };
-            (api.text)(self, api.info.module, id, command, driver)?;
+            args.with_command_args(|command| {
+                (api.text)(self, api.info.module, id, command, driver)
+            })?;
             Ok(std::ops::ControlFlow::Continue(()))
         })();
         self.command_tokens = tokens;

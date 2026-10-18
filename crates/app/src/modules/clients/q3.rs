@@ -294,17 +294,19 @@ pub(super) fn userinfo(
 pub(super) fn pure_command(
     host: &mut FrameHost,
     id: ClientId,
-    args: CommandArgs<'_>,
+    args: qa_console::command_text::Arguments<'_>,
     driver: &mut crate::modules::Driver<'_>,
 ) -> Result<bool, ClientCommandError> {
-    let decision = match args.argv.first().copied().unwrap_or(&[]) {
+    let decision = match args.get_bytes(0) {
         b"vdr" => {
             host.runtime.config_publications[id.0 as usize].pure.reset();
             return Ok(true);
         }
-        b"cp" => host.runtime.config_publications[id.0 as usize]
-            .pure
-            .verify(args),
+        b"cp" => args.with_command_args(|command| {
+            host.runtime.config_publications[id.0 as usize]
+                .pure
+                .verify(command)
+        }),
         _ => return Ok(false),
     };
     if decision == qa_network::pure::Decision::Rejected {

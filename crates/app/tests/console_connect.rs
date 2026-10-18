@@ -568,7 +568,12 @@ impl NativePeer {
             let length = self.commands.stage(payload).unwrap();
             if let Some(mut inspected) = inspected {
                 let ack = qa_network::commands::packet::acknowledgements(&inspected).unwrap();
-                let key = self.channel.command_key(Some(ack)).unwrap();
+                let key = self.channel.command_key(Some(ack)).unwrap_or_else(|error| {
+                    panic!(
+                        "native peer key {error:?}: ack={ack:?}, context={:?}",
+                        self.channel.command_context()
+                    )
+                });
                 qa_network::commands::packet::read_with_commands(
                     Protocol::Quake3_68,
                     &mut inspected,
