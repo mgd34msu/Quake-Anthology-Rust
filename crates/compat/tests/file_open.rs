@@ -752,3 +752,58 @@ fn default_module_search_keeps_its_vfs_owner_until_explicit_rebinding() {
         Ok(3)
     );
 }
+
+#[test]
+fn q3_existence_probe_sees_denied_loose_file_without_granting_a_read_handle() {
+    let mut f = Fixture::new("restricted-probe");
+    qa_platform::files::write(f.root.join("music.ogg"), b"private").unwrap();
+    let mount = f.vfs.mounts().next().unwrap().id;
+    f.vfs.refresh_directory_prefix(mount, b"").unwrap();
+    let selected = f.vfs.q3_search_view(None, &[123], false).unwrap();
+    f.storage
+        .set_file_search(ModuleId(1), Some(selected), &f.vfs)
+        .unwrap();
+    assert_eq!(f.engine().file_length(ModuleId(1), b"music.ogg"), Ok(7));
+    assert_eq!(
+        f.engine().file_open(ModuleId(1), b"music.ogg"),
+        Err(CallError::File)
+    );
+    for (mode, base) in modes() {
+        for (table, ordinal) in [(&Q3_SERVER, 10), (&Q3_CLIENT, 10), (&Q3_UI, 13)] {
+            let mut bytes = [0xa5; 512];
+            let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+            memory.write(base + 160, b"music.ogg\0").unwrap();
+            assert_eq!(
+                f.call(table, mode, &mut memory, ordinal, &[base + 160, 0, 0]),
+                Ok(1)
+            );
+            assert_eq!(
+                f.call(
+                    table,
+                    mode,
+                    &mut memory,
+                    ordinal,
+                    &[base + 160, base + 256, 0]
+                ),
+                Ok(u64::from(u32::MAX))
+            );
+            assert_eq!(memory.read_word(base + 256), Ok(0));
+            assert_eq!(
+                f.call(table, mode, &mut memory, ordinal, &[base + 160, 0, 0]),
+                Ok(1)
+            );
+        }
+    }
+    assert_eq!(
+        f.engine().file_length(ModuleId(999), b"music.ogg"),
+        Err(CallError::File)
+    );
+    // A scoped module's restriction cannot affect its unbound peer.
+    f.storage
+        .set_file_search(ModuleId(1), None, &f.vfs)
+        .unwrap();
+    assert_eq!(
+        f.engine().file_open(ModuleId(1), b"music.ogg").unwrap().1,
+        7
+    );
+}

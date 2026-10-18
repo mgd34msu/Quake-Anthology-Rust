@@ -899,3 +899,63 @@ fn full_bank_rejects_a_new_source_without_publishing_a_default_alias() {
     );
     assert_eq!(loader.reads, 1);
 }
+
+#[test]
+fn pure_read_policy_cannot_reuse_a_warmed_unrestricted_sound_alias() {
+    let files = Files::ready();
+    let order = files
+        .vfs
+        .search_view(files.vfs.mounts().map(|mount| mount.id))
+        .unwrap();
+    let restricted = files
+        .vfs
+        .q3_search_view(Some(&order), &[123], false)
+        .unwrap();
+    let mut loader = SoundAssets::load(&files.vfs, 12, 1024).unwrap();
+    let handle = loader
+        .register(
+            &files.vfs,
+            b"sound/test.wav",
+            RuleSetId::Quake3,
+            Some(&order),
+        )
+        .unwrap();
+    let source = loader
+        .source(files.vfs.read_view(Some(&order)))
+        .unwrap()
+        .unwrap();
+    let pcm = loader.bank().registered_sound_in(source, handle).unwrap();
+    let decoded = loader.decodes;
+    assert!(
+        files
+            .vfs
+            .query_with(b"sound/test.wav", Some(&restricted))
+            .is_some()
+    );
+    assert_eq!(
+        loader.register(
+            &files.vfs,
+            b"sound/test.wav",
+            RuleSetId::Quake3,
+            Some(&restricted)
+        ),
+        Err(CallError::File)
+    );
+    assert_eq!(loader.decodes, decoded);
+    let denied = loader
+        .source(files.vfs.read_view(Some(&restricted)))
+        .unwrap()
+        .unwrap();
+    assert_ne!(source, denied);
+    assert_eq!(loader.bank().find_in(denied, b"sound/test.wav"), None);
+    assert_eq!(loader.bank().registered_sound_in(source, handle), Some(pcm));
+    assert_eq!(
+        loader.register(
+            &files.vfs,
+            b"sound/test.wav",
+            RuleSetId::Quake3,
+            Some(&order)
+        ),
+        Ok(handle)
+    );
+}

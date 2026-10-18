@@ -3,6 +3,7 @@ use qa_core::{
     primitives::{FileSearchId, IndexSpan},
 };
 mod list;
+mod policy;
 mod selections;
 pub use list::{FileListName, FileListQuery, FileListRequest, FileListing};
 pub use selections::{SelectionId, Selections};
@@ -26,11 +27,13 @@ pub struct MountId(pub u32);
 pub struct SearchView {
     owner: Arc<()>,
     ranks: Option<Arc<[u32]>>,
+    read_policy: Option<Arc<policy::ReadPolicy>>,
 }
 impl SearchView {
     /// Selection identity uses only VFS ownership and ordered mount metadata.
     pub fn same_selection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner)
+            && self.read_policy == other.read_policy
             && match (&self.ranks, &other.ranks) {
                 (None, None) => true,
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
@@ -86,6 +89,11 @@ impl ReadView<'_> {
     }
     pub fn open(self, path: &[u8]) -> Option<FileRef> {
         self.vfs.open_with(path, self.search)
+    }
+    /// Native existence probes inspect the caller's selected namespace before
+    /// read restrictions, without opening a stream or registering a reference.
+    pub fn query(self, path: &[u8]) -> Option<FileRef> {
+        self.vfs.query_with(path, self.search)
     }
     pub fn read_to_vec(
         self,
@@ -424,6 +432,7 @@ impl Vfs {
         SearchView {
             owner: Arc::clone(&self.owner),
             ranks: None,
+            read_policy: None,
         }
     }
     pub fn read_view<'a>(&'a self, search: Option<&'a SearchView>) -> ReadView<'a> {
@@ -801,6 +810,7 @@ impl Vfs {
         Ok(SearchView {
             owner: Arc::clone(&self.owner),
             ranks: Some(ranks.into()),
+            read_policy: None,
         })
     }
     pub fn accepts_search(&self, view: &SearchView) -> bool {
@@ -809,25 +819,45 @@ impl Vfs {
     /// Name conversion and candidate traversal are shared by default and scoped
     /// reads. Selection does not mutate another caller's mount order or handles.
     pub fn open_with(&self, path: &[u8], view: Option<&SearchView>) -> Option<FileRef> {
+        self.resolve(path, view, true)
+    }
+    pub fn query_with(&self, path: &[u8], view: Option<&SearchView>) -> Option<FileRef> {
+        self.resolve(path, view, false)
+    }
+    fn resolve(&self, path: &[u8], view: Option<&SearchView>, read: bool) -> Option<FileRef> {
         if view.is_some_and(|view| !self.accepts_search(view)) {
             return None;
         }
         let candidates = self.find_candidates(path)?;
-        self.reference(self.select_candidate(candidates, view)?)
+        self.reference(self.select_candidate(candidates, view, read)?)
     }
 
-    fn select_candidate(&self, candidates: &[u32], view: Option<&SearchView>) -> Option<u32> {
+    fn select_candidate(
+        &self,
+        candidates: &[u32],
+        view: Option<&SearchView>,
+        read: bool,
+    ) -> Option<u32> {
+        let candidates = candidates.iter().copied().filter(|&slot| {
+            !read
+                || view.is_none_or(|view| {
+                    let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref)
+                    else {
+                        return false;
+                    };
+                    view.allows_read(&self.mounts[entry.mount], &entry.name)
+                })
+        });
         if let Some(view) = view.and_then(SearchView::fixed) {
             candidates
-                .iter()
-                .filter_map(|&slot| {
+                .filter_map(|slot| {
                     let entry = self.entries.get(slot as usize)?.as_ref()?;
                     Some((slot, view.rank(MountId(entry.mount as u32))?))
                 })
                 .min_by_key(|(_, rank)| *rank)
                 .map(|(slot, _)| slot)
         } else {
-            candidates.first().copied()
+            candidates.into_iter().next()
         }
     }
 
@@ -1079,7 +1109,7 @@ impl Vfs {
         };
         // FileIndex owns a freshly sorted NameTable, so span order is lexical.
         spans.iter().filter_map(move |span| {
-            let slot = self.select_candidate(self.listing.get(span.range())?, view)?;
+            let slot = self.select_candidate(self.listing.get(span.range())?, view, true)?;
             let entry = self.entries.get(slot as usize)?.as_ref()?;
             Some((self.reference(slot)?, entry.name.as_ref()))
         })

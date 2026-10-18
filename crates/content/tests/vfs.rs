@@ -1367,3 +1367,223 @@ fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners
     assert!(vfs.file_search(foreign_bound.id()).is_err());
     assert_eq!(vfs.bind_search(Some(default.view())).unwrap().id(), None);
 }
+
+#[test]
+fn q3_pure_reads_keep_native_order_loose_exceptions_and_unfiltered_probes() {
+    let root = Fixture::new("q3-pure-read-policy");
+    let loose = root.0.join("loose");
+    qa_platform::files::create_dir_all(&loose).unwrap();
+    for name in [
+        "config.CFG",
+        "menu.menu",
+        "rules.game",
+        "record.dm_68",
+        "journal.dat",
+        "song.ogg",
+        "effect.wav",
+        "old.dm_67",
+        "config.cfg.exe",
+    ] {
+        qa_platform::files::write(loose.join(name), name.as_bytes()).unwrap();
+    }
+    let mut vfs = Vfs::default();
+    let loose_mount = vfs.mount_directory(&loose, 1000).unwrap();
+    let mut mounts = Vec::new();
+    for (name, priority, entries) in [
+        (
+            "first",
+            10,
+            vec![
+                (b"models/shared.md3".as_slice(), b"first".as_slice()),
+                (b"models/first.md3", b"first"),
+            ],
+        ),
+        (
+            "second",
+            20,
+            vec![
+                (b"models/shared.md3".as_slice(), b"second".as_slice()),
+                (b"models/second.md3", b"second"),
+            ],
+        ),
+        (
+            "denied",
+            100,
+            vec![
+                (b"models/shared.md3".as_slice(), b"denied".as_slice()),
+                (b"models/denied.md3", b"denied"),
+            ],
+        ),
+    ] {
+        let path = root.0.join(format!("{name}.pk3"));
+        qa_platform::files::write(&path, zip::stored_zip(&entries)).unwrap();
+        let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&path).unwrap())).unwrap());
+        let sum = archive.q3_checksums().unwrap().checksum();
+        let mount = vfs.mount_archive(&path, priority, archive).unwrap();
+        mounts.push((mount, sum));
+    }
+    let pure = vfs
+        .q3_search_view(None, &[mounts[0].1, mounts[1].1], false)
+        .unwrap();
+    let view = vfs.read_view(Some(&pure));
+    let file = view.open(b"models/shared.md3").unwrap();
+    assert_eq!(vfs.origin(&file).unwrap().mount, mounts[0].0);
+    assert_eq!(
+        view.read_to_vec(&file, 32, &mut Default::default())
+            .unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        vfs.origin(&vfs.open(b"models/shared.md3").unwrap())
+            .unwrap()
+            .mount,
+        mounts[2].0
+    );
+    for name in [
+        b"config.cfg".as_slice(),
+        b"menu.menu",
+        b"rules.game",
+        b"record.dm_68",
+        b"journal.dat",
+    ] {
+        assert_eq!(
+            vfs.origin(&view.open(name).unwrap()).unwrap().mount,
+            loose_mount
+        );
+    }
+    for name in [
+        b"models/denied.md3".as_slice(),
+        b"song.ogg",
+        b"effect.wav",
+        b"old.dm_67",
+        b"config.cfg.exe",
+    ] {
+        assert!(view.open(name).is_none(), "{name:?}");
+        assert!(view.query(name).is_some(), "{name:?}");
+        assert!(!vfs.files_with(Some(&pure)).any(|(_, path)| path == name));
+    }
+    let mut listing = FileListing::default();
+    listing.prepare(&vfs).unwrap();
+    let mut names = Vec::new();
+    listing
+        .visit(
+            &vfs,
+            Some(&pure),
+            FileListQuery {
+                path: b"models",
+                extension: b".md3",
+                maximum: 4095,
+            },
+            |name| {
+                names.push(name.bytes.to_vec());
+                true
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        names,
+        [b"shared.md3".as_slice(), b"first.md3", b"second.md3"]
+    );
+    names.clear();
+    // Original Q3 listings restrict archives, but enumerate loose filenames
+    // even when an actual read of the listed extension would be denied.
+    listing
+        .visit(
+            &vfs,
+            Some(&pure),
+            FileListQuery {
+                path: b"",
+                extension: b".ogg",
+                maximum: 4095,
+            },
+            |name| {
+                names.push(name.bytes.to_vec());
+                true
+            },
+        )
+        .unwrap();
+    assert_eq!(names, [b"song.ogg"]);
+    let reversed = vfs
+        .q3_search_view(None, &[mounts[1].1, mounts[0].1], false)
+        .unwrap();
+    assert_eq!(
+        vfs.origin(
+            &vfs.open_with(b"models/shared.md3", Some(&reversed))
+                .unwrap()
+        )
+        .unwrap()
+        .mount,
+        mounts[1].0
+    );
+    assert!(!reversed.same_selection(&pure));
+    let only_first = vfs.search_view([mounts[0].0, loose_mount]).unwrap();
+    let narrowed = vfs
+        .q3_search_view(Some(&only_first), &[mounts[1].1], false)
+        .unwrap();
+    assert!(
+        vfs.open_with(b"models/shared.md3", Some(&narrowed))
+            .is_none()
+    );
+    assert!(
+        vfs.query_with(b"models/shared.md3", Some(&narrowed))
+            .is_some()
+    );
+    assert!(
+        vfs.query_with(b"models/second.md3", Some(&narrowed))
+            .is_none()
+    );
+    let ordinary = vfs.q3_search_view(None, &[], false).unwrap();
+    assert!(ordinary.same_selection(&vfs.default_view()));
+    assert!(vfs.open_with(b"song.ogg", Some(&ordinary)).is_some());
+    let demo = vfs.q3_search_view(None, &[], true).unwrap();
+    assert!(vfs.open_with(b"models/denied.md3", Some(&demo)).is_some());
+    assert!(vfs.open_with(b"song.ogg", Some(&demo)).is_none());
+    assert!(vfs.open_with(b"config.cfg", Some(&demo)).is_some());
+    let unrestricted_order = vfs
+        .search_view([mounts[0].0, mounts[1].0, mounts[2].0, loose_mount])
+        .unwrap();
+    assert!(!unrestricted_order.same_selection(&pure));
+    assert_ne!(
+        vfs.bind_search(Some(&unrestricted_order)).unwrap().id(),
+        vfs.bind_search(Some(&pure)).unwrap().id()
+    );
+    let foreign = Vfs::default();
+    assert!(matches!(
+        foreign.q3_search_view(Some(&pure), &[], true),
+        Err(VfsError::Handle)
+    ));
+    assert!(foreign.query_with(b"config.cfg", Some(&pure)).is_none());
+    assert!(vfs.unmount(mounts[0].0));
+    assert_eq!(
+        vfs.origin(&vfs.open_with(b"models/shared.md3", Some(&pure)).unwrap())
+            .unwrap()
+            .mount,
+        mounts[1].0
+    );
+}
+
+#[test]
+fn repeated_pure_checksums_admit_each_mount_without_merging_source_identity() {
+    let root = Fixture::new("q3-pure-duplicate-metadata");
+    let path = root.0.join("same.pk3");
+    qa_platform::files::write(&path, zip::stored_zip(&[(b"model.md3", b"same")])).unwrap();
+    let mut vfs = Vfs::default();
+    let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&path).unwrap())).unwrap());
+    let sum = archive.q3_checksums().unwrap().checksum();
+    let low = vfs.mount_archive(&path, 1, Arc::clone(&archive)).unwrap();
+    let high = vfs.mount_archive(&path, 2, archive).unwrap();
+    let pure = vfs.q3_search_view(None, &[sum, sum, sum], false).unwrap();
+    assert_eq!(
+        vfs.origin(&vfs.open_with(b"model.md3", Some(&pure)).unwrap())
+            .unwrap()
+            .mount,
+        high
+    );
+    assert!(vfs.unmount(high));
+    assert_eq!(
+        vfs.origin(&vfs.open_with(b"model.md3", Some(&pure)).unwrap())
+            .unwrap()
+            .mount,
+        low
+    );
+}

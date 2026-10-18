@@ -62,22 +62,11 @@ impl FileListing {
         {
             return Err(VfsError::Capacity);
         }
-        let view = view.and_then(SearchView::fixed);
         self.seen.begin();
-        self.mounts.clear();
-        self.mounts.extend(
-            vfs.mounts()
-                .filter(|mount| view.is_none_or(|view| view.rank(mount.id).is_some()))
-                .map(|mount| mount.id),
-        );
-        self.mounts.sort_unstable_by(|a, b| {
-            if let Some(view) = view {
-                view.rank(*a).cmp(&view.rank(*b))
-            } else {
-                vfs.mounts[b.0 as usize]
-                    .precedence()
-                    .cmp(&vfs.mounts[a.0 as usize].precedence())
-            }
+        vfs.mount_order(view, &mut self.mounts)?;
+        self.mounts.retain(|&id| {
+            vfs.mounts[id.0 as usize].kind == MountKind::Directory
+                || view.is_none_or(|view| view.allows_archive(id))
         });
         Ok(())
     }

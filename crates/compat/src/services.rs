@@ -2564,7 +2564,12 @@ impl EngineServices<'_> {
         self.vfs.open_with(path, view).ok_or(CallError::File)
     }
     pub fn file_length(&self, owner: ModuleId, path: &[u8]) -> Result<u64, CallError> {
-        let reference = self.file_reference(owner, path)?;
+        self.storage.range(owner).ok_or(CallError::File)?;
+        let reference = self
+            .vfs
+            .read_view(self.storage.file_search(owner))
+            .query(path)
+            .ok_or(CallError::File)?;
         self.vfs.length(&reference).map_err(|_| CallError::File)
     }
     pub fn file_list(

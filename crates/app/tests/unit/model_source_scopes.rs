@@ -1813,3 +1813,58 @@ fn native_precache_and_bounds_lookup_keep_selected_models_and_reject_foreign_war
         high_bounds
     );
 }
+
+#[test]
+fn warmed_model_dependencies_do_not_escape_a_restricted_read_selection() {
+    let files =
+        support::Fixture::new(&[("models/player.md2", support::md2_skin(b"skins/body.pcx"))]);
+    let order = files
+        .vfs
+        .search_view(files.vfs.mounts().map(|mount| mount.id))
+        .unwrap();
+    let restricted = files
+        .vfs
+        .q3_search_view(Some(&order), &[123], false)
+        .unwrap();
+    let mut assets = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        assets
+            .source_image(files.vfs.read_view(Some(&order)), b"models/player.md2", 0)
+            .unwrap(),
+        Some(b"skins/body.pcx".as_slice())
+    );
+    let original = assets
+        .cached_model_source(&order, b"models/player.md2")
+        .unwrap();
+    assert!(
+        files
+            .vfs
+            .query_with(b"models/player.md2", Some(&restricted))
+            .is_some()
+    );
+    assert_eq!(
+        assets
+            .source_image(
+                files.vfs.read_view(Some(&restricted)),
+                b"models/player.md2",
+                0
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        assets.cached_model_source(&restricted, b"models/player.md2"),
+        None
+    );
+    assert_eq!(
+        assets.cached_model_source(&order, b"models/player.md2"),
+        Some(original)
+    );
+}
