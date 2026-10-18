@@ -657,6 +657,7 @@ impl<'a> ClientConnectionView<'a> {
         server: &mut qa_session::clients::Server,
         team_chats_only: bool,
         bank: Option<&qa_audio::Bank>,
+        cvars: &mut qa_console::cvars::Cvars,
     ) -> Result<(), qa_compat::services::CallError> {
         use qa_compat::services::{CallError, ClientConnection};
         let received = self
@@ -669,7 +670,7 @@ impl<'a> ClientConnectionView<'a> {
             .last_executed_server_command()
             .map_err(|_| CallError::Text)?;
         for number in executed + 1..=received {
-            if !self.select(number as i32, server, bank)? {
+            if !self.select(number as i32, server, bank, cvars)? {
                 continue;
             }
             let arguments = self.resources.selected.arguments();
@@ -878,6 +879,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
         number: i32,
         server: &mut qa_session::clients::Server,
         bank: Option<&qa_audio::Bank>,
+        cvars: &mut qa_console::cvars::Cvars,
     ) -> Result<bool, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         use qa_network::outputs::ConfigCommandStep;
@@ -946,6 +948,12 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                     }
                     if index == ConfigLayout::Q3_SYSTEM_INFO {
                         let info = self.resources.joined.as_bytes();
+                        cvars
+                            .load_client_values((self.client, self.lifetime))
+                            .map_err(|_| CallError::Cvar)?;
+                        cvars
+                            .apply_client_system_info((self.client, self.lifetime), info)
+                            .map_err(|_| CallError::Cvar)?;
                         let mut context = self
                             .channel
                             .command_context()

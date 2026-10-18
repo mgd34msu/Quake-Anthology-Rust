@@ -1105,7 +1105,11 @@ impl FrameHost {
                     Default::default(),
                 )
             };
-            let context = row.request.context.console;
+            let mut context = row.request.context.console;
+            context.client_lifetime = row.client_connection.or_else(|| {
+                let id = self.local_clients[seat?.index()]?;
+                Some((id, self.runtime.server.clients[id.0 as usize].entity))
+            });
             let rails = ["r_railCoreWidth", "r_railWidth", "r_railSegmentLength"]
                 .map(|name| self.console.cvars.bind(name, context));
             let [Some(core), Some(ring), Some(length)] = rails else {
@@ -1125,6 +1129,24 @@ impl FrameHost {
             let model_lod = crate::render_settings::model_lod_views(&self.console.cvars)?;
             let view_policy =
                 crate::renderer::ViewPolicyViews::bind(&self.console.cvars, profile.rules)?;
+            let (curve_error, model_lod, model_controls, view_policy) =
+                if let Some(owner) = context.client_lifetime {
+                    let vars = &self.console.cvars;
+                    (
+                        vars.client_view(curve_error, owner)
+                            .ok_or("missing CLIENT curve settings")?,
+                        vars.client_views(model_lod, owner)
+                            .ok_or("missing CLIENT LOD settings")?,
+                        self.model_controls
+                            .for_client(vars, owner)
+                            .ok_or("missing CLIENT model settings")?,
+                        view_policy
+                            .for_client(vars, owner)
+                            .ok_or("missing CLIENT view settings")?,
+                    )
+                } else {
+                    (curve_error, model_lod, self.model_controls, view_policy)
+                };
             row.scene_role.configure(
                 profile,
                 viewport,
@@ -1136,7 +1158,7 @@ impl FrameHost {
                 software_waterwarp,
                 curve_error,
                 model_lod,
-                self.model_controls,
+                model_controls,
                 view_policy,
             );
         }

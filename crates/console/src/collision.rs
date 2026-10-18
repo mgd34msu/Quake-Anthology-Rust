@@ -8,6 +8,19 @@ pub struct CollisionHandles {
     point_curves: CvarHandle,
 }
 impl CollisionHandles {
+    pub fn for_client(
+        self,
+        vars: &Cvars,
+        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Option<Self> {
+        let [no_curves, point_curves] =
+            vars.client_handles([self.no_curves, self.point_curves], owner)?;
+        Some(Self {
+            no_curves,
+            point_curves,
+        })
+    }
+
     pub fn bind(vars: &Cvars) -> Result<Self, &'static str> {
         let bind = |name| vars.find(name).ok_or(name);
         Ok(Self {

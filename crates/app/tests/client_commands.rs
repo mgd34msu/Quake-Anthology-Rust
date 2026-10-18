@@ -900,9 +900,15 @@ fn bcs_rescans_and_failed_cs_preserve_rows() {
     );
     assert!(host.runtime.server.clients[0].connection.is_none());
 }
-fn selected_systeminfo_updates_only_the_native_server_id() {
+fn selected_systeminfo_updates_native_cvars_without_changing_server_or_peer() {
     use qa_network::channel::commands::CommandContext;
-    let (mut host, ids) = host(qvm, 1);
+    let (mut host, ids) = host(qvm, 2);
+    let root = host
+        .console
+        .cvars
+        .bind("pmove_msec", Context::default())
+        .unwrap();
+    host.console.cvars.force_write(root, "8").unwrap();
     let context = CommandContext {
         server_id: 7,
         challenge: 0x91f8_2345,
@@ -920,7 +926,7 @@ fn selected_systeminfo_updates_only_the_native_server_id() {
     wire(
         &mut host,
         ids[0],
-        &[b"cs 1 \"\\SV_SERVERID\\42tail\\sv_cheats\\0\""],
+        &[b"cs 1 \"\\SV_SERVERID\\42tail\\sv_cheats\\0\\pmove_msec\\16\""],
     );
     assert_eq!(
         host.runtime
@@ -950,6 +956,15 @@ fn selected_systeminfo_updates_only_the_native_server_id() {
     assert_eq!(key.acknowledgements.server_id, 42);
     assert_eq!(key.challenge, context.challenge);
     assert_eq!(key.checksum_feed, context.checksum_feed);
+    for (id, expected) in [(ids[0], 16), (ids[1], 8)] {
+        let context = Context {
+            client_lifetime: Some((id, host.runtime.server.clients[id.0 as usize].entity)),
+            ..Context::default()
+        };
+        let view = host.console.cvars.bind("pmove_msec", context).unwrap();
+        assert_eq!(host.console.cvars.integer_view(view).unwrap(), expected);
+    }
+    assert_eq!(host.console.cvars.integer_view(root).unwrap(), 8);
 }
 
 fn map_restart_clears_selected_notify_and_preserves_pending_server_command() {
@@ -1619,7 +1634,7 @@ fn main() {
         server::owned_native_import_uses_the_same_service_and_integer_width();
     }
     bcs_rescans_and_failed_cs_preserve_rows();
-    selected_systeminfo_updates_only_the_native_server_id();
+    selected_systeminfo_updates_native_cvars_without_changing_server_or_peer();
     map_restart_clears_selected_notify_and_preserves_pending_server_command();
     disconnect_and_slot_reuse_do_not_lend_a_new_connection();
     fallback_commands_publish_once_to_the_selected_local_display_and_hud();

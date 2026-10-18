@@ -20,6 +20,60 @@ pub struct MovementHandles {
 }
 
 impl MovementHandles {
+    pub fn for_client(
+        self,
+        vars: &Cvars,
+        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Option<Self> {
+        let [
+            speed,
+            gravity,
+            friction,
+            edge_friction,
+            no_step,
+            stop_speed,
+            accelerate,
+            air_accelerate,
+            water_accelerate,
+            water_friction,
+            spectator_speed,
+            fixed,
+            fixed_msec,
+        ] = vars.client_handles(
+            [
+                self.speed,
+                self.gravity,
+                self.friction,
+                self.edge_friction,
+                self.no_step,
+                self.stop_speed,
+                self.accelerate,
+                self.air_accelerate,
+                self.water_accelerate,
+                self.water_friction,
+                self.spectator_speed,
+                self.fixed,
+                self.fixed_msec,
+            ],
+            owner,
+        )?;
+        Some(Self {
+            speed,
+            gravity,
+            friction,
+            edge_friction,
+            no_step,
+            stop_speed,
+            accelerate,
+            air_accelerate,
+            water_accelerate,
+            water_friction,
+            spectator_speed,
+            fixed,
+            fixed_msec,
+        })
+    }
+
     pub fn bind(vars: &Cvars) -> Result<Self, &'static str> {
         let bind = |name| vars.find(name).ok_or(name);
         Ok(Self {

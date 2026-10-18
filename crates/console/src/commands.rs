@@ -715,6 +715,21 @@ impl<H: Host> Console<H> {
             }
             run.context
         };
+        // Human console input remains usable after disconnect. Its optional
+        // value namespace is a hint, unlike a native command's lifetime guard.
+        let context = if context.client_lifetime.is_none()
+            && context
+                .cvar_client
+                .is_some_and(|(client, lifetime)| !host.client_command_live(client, lifetime))
+        {
+            Context {
+                cvar_client: None,
+                ..context
+            }
+        } else {
+            context
+        };
+        run.context = context;
         if matches!(
             context.source,
             RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
@@ -1164,14 +1179,14 @@ impl<H: Host> Console<H> {
         &mut self,
         host: &mut H,
         _: &Arguments<'_>,
-        _: Context,
+        context: Context,
     ) -> Result<(), CommandError> {
         for definition in crate::cvars_generated::DEFINITIONS {
             if definition.family_count > 1 {
                 host.print(format_args!("{} [seats]\n", definition.name));
             }
         }
-        for (_, name, value, definition, seat) in self.cvars.entries() {
+        for (_, name, value, definition, seat) in self.cvars.entries_in(context) {
             let indent = if seat == 0 { "" } else { "  " };
             if definition.is_none_or(|d| d.stored) {
                 host.print(format_args!(

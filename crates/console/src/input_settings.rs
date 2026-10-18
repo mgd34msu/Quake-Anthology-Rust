@@ -39,6 +39,13 @@ impl InputHandles {
         }
         Ok(Self(handles))
     }
+    pub fn for_client(
+        self,
+        vars: &Cvars,
+        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Option<Self> {
+        vars.client_handles(self.0, owner).map(Self)
+    }
     pub fn policy(&self, vars: &Cvars, rules: RuleSetId) -> InputPolicy {
         let semantics = settings_rules(rules);
         let value = |index: usize| vars.finite_value_in(self.0[index], rules);

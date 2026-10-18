@@ -894,6 +894,7 @@ impl qa_compat::services::ClientConnection for CommandWindow {
         number: i32,
         _: &mut qa_session::clients::Server,
         _: Option<&qa_audio::Bank>,
+        _: &mut qa_console::cvars::Cvars,
     ) -> Result<bool, CallError> {
         if number != 7 {
             return Ok(false);

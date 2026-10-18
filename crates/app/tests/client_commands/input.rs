@@ -827,8 +827,19 @@ fn binding_capture_releases_and_atomic_catchers(native: bool) {
     assert_eq!(read(&mut host, 0, true, HELD_KEY), 0);
     assert_eq!(invoke(&mut host, 0, true, 27, &[]), 0);
     assert_eq!(released.commands[0].movement[0], 0.0);
-    let order = host.console.cvars.find("input_release_order").unwrap();
-    assert_eq!(host.console.cvars.text(order), "callback");
+    let id = host.local_clients[0].unwrap();
+    let order = host
+        .console
+        .cvars
+        .bind(
+            "input_release_order",
+            qa_console::views::Context {
+                client_lifetime: Some((id, host.runtime.server.clients[id.0 as usize].entity)),
+                ..host.console.cvars.context()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.read(order).unwrap().as_str(), "callback");
     assert_eq!(
         frame(&mut host, &mut source, vec![], vec![]).commands[0].movement[0],
         0.0

@@ -997,7 +997,18 @@ pub(super) fn submissions(native: bool, ui: bool) {
             .recycle(same_callback)
             .is_ok()
     );
+    // The callback's settings belong to its CLIENT. Drop those overrides
+    // before checking inherited profile values under several presentations.
+    assert_eq!(host.console.cvars.numeric(curve_error).unwrap(), -1.0);
     for name in ["r_novis", "r_nocull", "r_drawworld", "r_drawentities"] {
+        for id in host.local_clients.into_iter().flatten() {
+            let context = Context {
+                client_lifetime: Some((id, host.runtime.server.clients[id.0 as usize].entity)),
+                ..Default::default()
+            };
+            let view = host.console.cvars.bind(name, context).unwrap();
+            host.console.cvars.reset(view.canonical());
+        }
         let view = host
             .console
             .cvars

@@ -224,6 +224,7 @@ struct ShaderRemap {
 }
 #[derive(Clone, Copy)]
 struct RendererScope {
+    client: Option<(ClientId, EntityId)>,
     context: ShaderContextId,
     profile: ModelProfile,
     world: Option<WorldId>,
@@ -601,7 +602,7 @@ pub(super) fn start_scoped(
         ),
         _ => return ModuleDispatch::Completed(Err(())),
     };
-    let start = GuestStart {
+    let mut start = GuestStart {
         scope,
         module,
         call,
@@ -620,6 +621,9 @@ pub(super) fn start_scoped(
         connection: super::module_connection(host, module),
         model_access: ModelAccess::Register,
     };
+    if start.context.console.side != qa_console::catalog::Scope::Server {
+        start.context.console.client_lifetime = start.connection;
+    }
     if valid(host, start, true) {
         ModuleDispatch::Guest(start)
     } else {
@@ -1560,6 +1564,7 @@ fn renderer_scope(
     let ui_fullscreen = host.renderer_fullscreen_ui();
     let row = host.module_row(module).ok_or("missing renderer module")?;
     Ok(RendererScope {
+        client: super::module_connection(host, module),
         context,
         ui_fullscreen,
         profile: row
@@ -1707,10 +1712,23 @@ fn register_renderer(
     } else {
         crate::model_assets::RegistrationVariant::Guard(scope.ui_fullscreen)
     };
+    let (image_view, model_controls) = if let Some(client) = scope.client {
+        (
+            host.console
+                .cvars
+                .client_view(host.image_search, client)
+                .ok_or("missing CLIENT image settings")?,
+            host.model_controls
+                .for_client(&host.console.cvars, client)
+                .ok_or("missing CLIENT model settings")?,
+        )
+    } else {
+        (host.image_search, host.model_controls)
+    };
     let image_search = match variant {
         crate::model_assets::RegistrationVariant::Retained => None,
         crate::model_assets::RegistrationVariant::Guard(_) => Some(
-            crate::render_settings::image_search(&host.console.cvars, host.image_search)?,
+            crate::render_settings::image_search(&host.console.cvars, image_view)?,
         ),
     };
     let result = (|| {
@@ -1722,8 +1740,7 @@ fn register_renderer(
             .ok_or("missing model assets")?;
         if let Some(order) = image_search {
             owner.set_image_search_order(order);
-            let (q1, q2) = host
-                .model_controls
+            let (q1, q2) = model_controls
                 .replacement_load(&host.console.cvars)
                 .map_err(|_| "model load setting conversion")?;
             owner.set_model_replacement_load(q1, q2);

@@ -1414,6 +1414,14 @@ impl FrameHost {
             ) {
                 continue;
             }
+            if let Err(error) = self.console.cvars.load_client_values(connection) {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("CLIENT cvars: {error:?}\n"));
+                continue;
+            }
             let Some(row) = self.module_row_mut(module) else {
                 continue;
             };
@@ -2656,7 +2664,12 @@ impl FrameHost {
             let disconnected = if let Some((mut view, server, bank)) =
                 self.runtime.client_connection_parts(id, lifetime)
             {
-                let _ = view.consume_configuration(server, team_chats_only, bank);
+                let _ = view.consume_configuration(
+                    server,
+                    team_chats_only,
+                    bank,
+                    &mut self.console.cvars,
+                );
                 view.termination
             } else {
                 None

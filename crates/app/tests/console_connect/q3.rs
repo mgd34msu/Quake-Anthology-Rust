@@ -667,6 +667,7 @@ fn snapshot(
 #[test]
 fn q3_fragmented_gamestate_waits_for_real_media_backend_and_current_cgame_before_priming() {
     let (_fixture, mut host, mut source, profile) = media_host();
+    setting(&mut host, "sv_serverid", "-7");
     let mut server = EventPump::new();
     let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
     setting(&mut host, "net_qport", "17");
@@ -724,6 +725,25 @@ fn q3_fragmented_gamestate_waits_for_real_media_backend_and_current_cgame_before
         Some((4, FEED)),
         "the complete encrypted fragmented gamestate must precede media preparation"
     );
+    let received_context = qa_console::views::Context {
+        client_lifetime: Some((failed_client, failed_lifetime)),
+        ..Default::default()
+    };
+    let received = host
+        .console
+        .cvars
+        .bind("sv_serverid", received_context)
+        .unwrap();
+    assert_eq!(
+        host.console.cvars.integer_view(received).unwrap(),
+        SERVER_ID
+    );
+    let server_value = host
+        .console
+        .cvars
+        .bind("sv_serverid", qa_console::views::Context::default())
+        .unwrap();
+    assert_eq!(host.console.cvars.integer_view(server_value).unwrap(), -7);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
     frame(&mut host, &mut source, 31);
     collect(&mut server, &mut native, 31);

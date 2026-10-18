@@ -12,6 +12,17 @@ pub(crate) struct ViewPolicyViews {
     views: [View; 5],
 }
 impl ViewPolicyViews {
+    pub(crate) fn for_client(
+        self,
+        vars: &Cvars,
+        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Option<Self> {
+        Some(Self {
+            views: vars.client_views(self.views, owner)?,
+            ..self
+        })
+    }
+
     pub(crate) fn bind(vars: &Cvars, source: RuleSetId) -> Result<Self, &'static str> {
         let context = Context {
             source,

@@ -411,6 +411,11 @@ impl Change {
                 connection,
                 Some(lease),
             )?;
+            let owner = (id, host.runtime.server.clients[id.0 as usize].entity);
+            if let Err(error) = host.console.cvars.load_client_values(owner) {
+                host.runtime.disconnect_client(id);
+                return Err(format!("CLIENT cvars: {error:?}"));
+            }
             host.local_clients[self.seat.index()] = Some(id);
             host.local_worlds[self.seat.index()] = None;
             Ok::<(), String>(())

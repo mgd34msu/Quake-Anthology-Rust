@@ -20,6 +20,8 @@ pub struct Context {
     pub event_time: Option<qa_core::sys_events::EventTime>,
     pub key_source: Option<qa_core::sys_events::KeySource>,
     pub producer: Option<CommandProducer>,
+    /// Human console value selection; it does not bind the command lifetime.
+    pub cvar_client: Option<(qa_core::primitives::ClientId, qa_core::primitives::EntityId)>,
     /// Captured CLIENT owner for deferred engine commands from a connection.
     pub client_lifetime: Option<(qa_core::primitives::ClientId, qa_core::primitives::EntityId)>,
     /// Captured role choices for one deferred connection command.
@@ -37,6 +39,7 @@ impl Default for Context {
             event_time: None,
             key_source: None,
             producer: None,
+            cvar_client: None,
             client_lifetime: None,
             client_policy: None,
         }

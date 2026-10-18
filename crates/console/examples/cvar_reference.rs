@@ -93,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 key_source: None,
                 producer: None,
+                cvar_client: None,
                 client_lifetime: None,
                 client_policy: None,
             };

@@ -355,11 +355,13 @@ impl ClientUserinfo {
         protocol: qa_network::commands::packet::Protocol,
         seat: SeatId,
         peer: qa_core::sys_events::Peer,
+        owner: Option<(ClientId, qa_core::primitives::EntityId)>,
         output: &mut [u8],
     ) -> Result<usize, qa_console::cvars::WriteError> {
         let context = qa_console::views::Context {
             source: protocol.rule_set(),
             seat,
+            client_lifetime: owner.filter(|&owner| cvars.has_client_values(owner)),
             ..Default::default()
         };
         let rules = protocol
@@ -1283,6 +1285,15 @@ impl FrameHost {
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
+        for (index, resources) in runtime.client_resources.iter().enumerate() {
+            if resources.is_some() {
+                let client = &runtime.server.clients[index];
+                console
+                    .cvars
+                    .load_client_values((ClientId(index as u32), client.entity))
+                    .map_err(|error| format!("CLIENT cvars: {error:?}"))?;
+            }
+        }
         let history_view = console
             .cvars
             .bind("cl_commandHistory", console.cvars.context())
@@ -1523,6 +1534,22 @@ impl FrameHost {
             .cvars
             .find("cl_packetdup")
             .ok_or("missing cl_packetdup")?;
+        for handle in [
+            Some(history),
+            Some(maxfps),
+            Some(volume),
+            Some(music_volume),
+            Some(mouse_enabled),
+            Some(developer),
+            renderer_smp,
+            renderer_ui_fullscreen,
+            Some(cpu_band_view.canonical()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            console.cvars.share_with_clients(handle);
+        }
         let timeline = Timeline::load(world_rate, providers.iter().map(|p| (p.module, p.rate)))
             .map_err(|e| format!("provider clocks: {e:?}"))?;
         providers.sort_unstable_by_key(|p| p.module.0);
@@ -1856,15 +1883,18 @@ impl FrameHost {
         reason = "Preserve the explicit disconnected-client filter before constructing each seat view"
     )]
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
-        let curve_error =
-            crate::render_settings::curve_error(&self.console.cvars, self.curve_error);
-        let model_lod = crate::render_settings::model_lod(&self.console.cvars, self.model_lod);
-        let model_replacements =
-            crate::render_settings::model_replacements(&self.console.cvars, self.model_controls)
-                .ok();
         std::array::from_fn(|seat| {
             let (client, row, player) = self.local_seat(seat)?;
             let (world, world_presentation) = self.local_worlds[seat]?;
+            let owner = (client, row.entity);
+            let vars = &self.console.cvars;
+            let curve = vars.client_view(self.curve_error, owner)?;
+            let lod = vars.client_views(self.model_lod, owner)?;
+            let controls = self.model_controls.for_client(vars, owner)?;
+            let curve_error = crate::render_settings::curve_error(vars, curve);
+            let model_lod = crate::render_settings::model_lod(vars, lod);
+            let model_replacements =
+                crate::render_settings::model_replacements(vars, controls).ok()?;
             let rules = self
                 .runtime
                 .model_assets
@@ -1886,6 +1916,7 @@ impl FrameHost {
                 })
                 .unwrap_or(row.client_rules);
             let (policy, near) = self.view_policy[rules as usize]
+                .for_client(vars, owner)?
                 .read(&self.console.cvars)
                 .ok()?;
             let camera = self.client_camera(client, player);
@@ -1893,7 +1924,7 @@ impl FrameHost {
             presentation.software_waterwarp &= self
                 .console
                 .cvars
-                .numeric(self.software_waterwarp)
+                .numeric(vars.client_view(self.software_waterwarp, owner)?)
                 .unwrap_or(0.0)
                 != 0.0;
             Some(ClientView {
@@ -1903,10 +1934,9 @@ impl FrameHost {
                 presentation_rules: rules,
                 origin: camera.origin,
                 angles: self.client_angles(client, row, player),
-                fov_x: camera
-                    .view
-                    .fov_x
-                    .unwrap_or_else(|| self.console.cvars.value(self.fov)),
+                fov_x: camera.view.fov_x.unwrap_or_else(|| {
+                    vars.value(vars.client_handle(self.fov, owner).unwrap_or(self.fov))
+                }),
                 screen_blend: camera.view.screen_blend,
                 damage_blend: camera.view.damage_blend,
                 flags: camera.view.flags,
@@ -1920,10 +1950,10 @@ impl FrameHost {
                     .map(|interpolation| interpolation.time),
                 lighting_scales: self
                     .lighting_scales
-                    .map(|handle| self.console.cvars.value(handle)),
+                    .map(|handle| vars.value(vars.client_handle(handle, owner).unwrap_or(handle))),
                 curve_error,
                 model_lod,
-                model_replacements: model_replacements?,
+                model_replacements,
                 policy,
                 near,
             })
@@ -2225,33 +2255,42 @@ impl FrameHost {
     }
 
     fn advance_client_presentation(&mut self, driver: &mut crate::modules::Driver<'_>) {
-        let mut push_latency_ms = self.console.cvars.numeric(self.push_latency).unwrap_or(0.0);
-        if push_latency_ms > 0.0
-            && self
-                .runtime
-                .snapshots
-                .iter()
-                .flatten()
-                .any(crate::snapshots::SnapshotBinding::uses_realtime_prediction)
-        {
-            if let Err(error) = self.console.cvars.force_write(self.push_latency, "0") {
-                let _ = self
-                    .runtime
-                    .server
-                    .events
-                    .console_formatted(format_args!("CLIENT pushlatency: {error:?}\n"));
-            }
-            push_latency_ms = 0.0;
-        }
-        let options = crate::snapshots::ClockOptions {
-            time_nudge_ms: self.console.cvars.integer(self.time_nudge),
-            timescale: self.console.cvars.value(self.timescale),
-            // Native local-server pause and modified frame duration remain a
-            // separate capability; queued time is not silently rescaled here.
-            paused: false,
-            push_latency_ms,
-        };
         for slot in 0..self.runtime.snapshots.len() {
+            let Some(snapshot) = self.runtime.snapshots[slot].as_ref() else {
+                continue;
+            };
+            if snapshot.presentation_closed() {
+                continue;
+            }
+            let owner = (
+                snapshot.client,
+                self.runtime.server.clients[snapshot.client.0 as usize].entity,
+            );
+            let vars = &mut self.console.cvars;
+            let push = vars
+                .client_view(self.push_latency, owner)
+                .unwrap_or(self.push_latency);
+            let mut push_latency_ms = vars.numeric(push).unwrap_or(0.0);
+            if push_latency_ms > 0.0 && snapshot.uses_realtime_prediction() {
+                if let Err(error) = vars.force_write(push, "0") {
+                    let _ = self
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("CLIENT pushlatency: {error:?}\n"));
+                }
+                push_latency_ms = 0.0;
+            }
+            let [time_nudge, timescale] = vars
+                .client_handles([self.time_nudge, self.timescale], owner)
+                .unwrap_or([self.time_nudge, self.timescale]);
+            let options = crate::snapshots::ClockOptions {
+                time_nudge_ms: vars.integer(time_nudge),
+                timescale: vars.value(timescale),
+                // Queue time stays physical; native server pause is independent.
+                paused: false,
+                push_latency_ms,
+            };
             let failed = self.runtime.snapshots[slot].as_mut().and_then(|snapshot| {
                 if snapshot.presentation_closed() {
                     return None;
@@ -2546,7 +2585,15 @@ impl FrameHost {
             |id, protocol, route, output| {
                 let seat = runtime.snapshots.get(id.0 as usize)?.as_ref()?.seat()?;
                 let mut parameters = qa_network::ingress::ConnectParameters::new(
-                    ClientUserinfo::serialize(cvars, protocol, seat, route.peer, output).ok()?,
+                    ClientUserinfo::serialize(
+                        cvars,
+                        protocol,
+                        seat,
+                        route.peer,
+                        Some((id, runtime.server.clients[id.0 as usize].entity)),
+                        output,
+                    )
+                    .ok()?,
                 );
                 if protocol == qa_network::commands::packet::Protocol::Quake2Repro1038 {
                     parameters.packet_length = cvars.integer_view(packet_length).ok()?;
@@ -2847,7 +2894,13 @@ impl FrameHost {
             else {
                 continue;
             };
-            let revision = self.console.cvars.info_generation(protocol.rule_set(), 2);
+            let context = qa_console::views::Context {
+                source: protocol.rule_set(),
+                seat,
+                client_lifetime: Some((id, row.entity)),
+                ..Default::default()
+            };
+            let revision = self.console.cvars.info_generation_in(context, 2);
             if cache.revision == Some(revision) {
                 continue;
             }
@@ -2856,6 +2909,7 @@ impl FrameHost {
                 protocol,
                 seat,
                 connection.route.peer,
+                Some((id, row.entity)),
                 &mut bytes,
             ) else {
                 continue;
@@ -3694,6 +3748,19 @@ impl FrameHost {
                                 {
                                     binding.receive_gamestate(&gamestate);
                                 }
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_ref()
+                                    && resources.state.layout.rules == RuleSetId::Quake3
+                                {
+                                    let owner = (id, self.runtime.server.clients[id.0 as usize].entity);
+                                    let info = resources.state.configs.config(qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO)
+                                        .map_or(&b""[..], |row| row.text);
+                                    let result = self.console.cvars.load_client_values(owner)
+                                        .and_then(|()| self.console.cvars.apply_client_system_info(owner, info));
+                                    if let Err(error) = result {
+                                        self.reject_client_startup(id, format_args!("CLIENT systeminfo: {error:?}"));
+                                        return std::ops::ControlFlow::Break(());
+                                    }
+                                }
                                 if let Some(reason) = self.runtime.client_resources[id.0 as usize].as_ref().filter(|resources| resources.startup.q3().is_some()).and_then(|resources| resources.state.q3_requirement()) {
                                     self.reject_client_startup(id, format_args!("{reason}"));
                                     return std::ops::ControlFlow::Break(());
@@ -3930,7 +3997,7 @@ impl FrameHost {
                     EventKind::ConsoleLine(text) => {
                         let seat = self.console.cvars.context().seat;
                         let mut target = ConsoleInput {
-                            files: self.client_file_sources(),
+                            contexts: self.client_command_contexts(),
                             console: &mut self.console,
                             events: &mut self.runtime.server.events,
                             time: event.time,
@@ -3958,13 +4025,19 @@ impl FrameHost {
         self.queue = queue;
     }
 
-    fn client_file_sources(&self) -> [Option<qa_core::primitives::FileSearchId>; SeatId::COUNT] {
+    fn client_command_contexts(&self) -> [qa_console::views::Context; SeatId::COUNT] {
         std::array::from_fn(|seat| {
-            let (client, _, _) = self.local_seat(seat)?;
-            self.runtime.client_resources[client.0 as usize]
-                .as_ref()?
-                .state
-                .file_source()
+            let mut context = qa_console::views::Context {
+                seat: SeatId::new(seat as u8).unwrap_or(SeatId::FIRST),
+                ..self.console.cvars.context()
+            };
+            if let Some((id, client, _)) = self.local_seat(seat) {
+                context.cvar_client = Some((id, client.entity));
+                context.file_search = self.runtime.client_resources[id.0 as usize]
+                    .as_ref()
+                    .and_then(|resources| resources.state.file_source());
+            }
+            context
         })
     }
 
@@ -3974,13 +4047,13 @@ impl FrameHost {
         driver: &mut crate::modules::Driver<'_>,
     ) {
         use qa_input::{DispatchCursor, DispatchStep, InputAtom, InputCapture};
-        let files = self.client_file_sources();
+        let contexts = self.client_command_contexts();
         let mut cursor = DispatchCursor::new(event);
         loop {
             let step = self.runtime.input.advance(
                 cursor,
                 &mut ConsoleInput {
-                    files,
+                    contexts,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time: event.time,
@@ -3997,7 +4070,7 @@ impl FrameHost {
                     repeat,
                     time,
                 } => ConsoleInput {
-                    files,
+                    contexts,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time,
@@ -4008,7 +4081,7 @@ impl FrameHost {
                 } => {
                     let caught = self.console.editor.seat() == Some(seat);
                     ConsoleInput {
-                        files,
+                        contexts,
                         console: &mut self.console,
                         events: &mut self.runtime.server.events,
                         time,
@@ -4032,7 +4105,7 @@ impl FrameHost {
                 resume,
                 capture,
                 &mut ConsoleInput {
-                    files,
+                    contexts,
                     console: &mut self.console,
                     events: &mut self.runtime.server.events,
                     time: event.time,
@@ -4057,7 +4130,15 @@ impl FrameHost {
                     .map_or(qa_core::primitives::RuleSetId::default(), |id| {
                         self.runtime.server.clients[id.0 as usize].input_rules
                     });
-                let mut policy = self.input_handles.policy(&self.console.cvars, input_rules);
+                let handles = self.local_clients[seat]
+                    .and_then(|id| {
+                        self.input_handles.for_client(
+                            &self.console.cvars,
+                            (id, self.runtime.server.clients[id.0 as usize].entity),
+                        )
+                    })
+                    .unwrap_or(self.input_handles);
+                let mut policy = handles.policy(&self.console.cvars, input_rules);
                 if self.local_clients[seat].is_some() {
                     policy.delta_pitch =
                         self.runtime.prediction[seat].player.movement.delta_angles.0[0].degrees();
@@ -4164,13 +4245,22 @@ impl FrameHost {
                     view.invalidate();
                 }
                 if let Some(view) = self.runtime.client_collision[id.0 as usize].as_mut() {
+                    let owner = (*id, self.runtime.server.clients[id.0 as usize].entity);
+                    let movement = self
+                        .movement_handles
+                        .for_client(&self.console.cvars, owner)
+                        .unwrap_or(self.movement_handles);
+                    let collision = self
+                        .collision_handles
+                        .for_client(&self.console.cvars, owner)
+                        .unwrap_or(self.collision_handles);
                     let prediction = &mut self.runtime.prediction[seat];
                     let result = if let Ok(mut trace) = view.trace(
                         &self.runtime.geometry,
-                        self.collision_handles.resolve(&self.console.cvars),
+                        collision.resolve(&self.console.cvars),
                     ) {
                         let base = prediction.player.movement.tuning;
-                        prediction.player.movement.tuning = self.movement_handles.resolve(
+                        prediction.player.movement.tuning = movement.resolve(
                             &self.console.cvars,
                             prediction.player.movement_rules,
                             base,
@@ -4246,7 +4336,7 @@ impl FrameHost {
 }
 
 struct ConsoleInput<'a> {
-    files: [Option<qa_core::primitives::FileSearchId>; SeatId::COUNT],
+    contexts: [qa_console::views::Context; SeatId::COUNT],
     console: &'a mut Console<Runtime>,
     events: &'a mut qa_core::events::EventRing,
     time: EventTime,
@@ -4264,8 +4354,7 @@ impl ConsoleInput<'_> {
             event_time: Some(time),
             key_source,
             producer,
-            file_search: self.files[seat.index()],
-            ..self.console.cvars.context()
+            ..self.contexts[seat.index()]
         }
     }
 }

@@ -325,6 +325,7 @@ pub trait ClientConnection {
         number: i32,
         server: &mut Server,
         bank: Option<&qa_audio::Bank>,
+        cvars: &mut Cvars,
     ) -> Result<bool, CallError>;
     fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
     fn disconnected(&self) -> Option<ClientTermination>;
@@ -1724,6 +1725,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                     .as_deref()
                     .map(SoundRegistrar::bank)
                     .or(s.sound_bank),
+                s.cvars,
             )
     },
     client_configstrings: |s| {
@@ -1833,7 +1835,10 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
     sound: |s, delivery, e| s.sound(delivery, e),
     client_sound: |s, event, entity| {
-        let doppler = s.cvars.integer_in(s.storage.doppler, RuleSetId::Quake3) != 0;
+        let doppler = s
+            .cvars
+            .integer_in(s.cvar_handle(s.storage.doppler), RuleSetId::Quake3)
+            != 0;
         s.client_audio
             .as_deref_mut()
             .ok_or(CallError::Entity)?
@@ -1946,16 +1951,24 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map(|(ordinal, _)| ordinal))
     },
     model_precache: |s, module, path, rules| {
-        let text = s
-            .cvars
-            .read(s.storage.image_search)
-            .map_err(|_| CallError::File)?;
+        let (image, model) = if let Some(owner) = s.cvar_client() {
+            (
+                s.cvars
+                    .client_view(s.storage.image_search, owner)
+                    .ok_or(CallError::Cvar)?,
+                s.storage
+                    .model
+                    .for_client(s.cvars, owner)
+                    .ok_or(CallError::Cvar)?,
+            )
+        } else {
+            (s.storage.image_search, s.storage.model)
+        };
+        let text = s.cvars.read(image).map_err(|_| CallError::File)?;
         let order =
             qa_render::material::resources::ImageSearchOrder::parse(text.as_str().as_bytes())
                 .map_err(|_| CallError::File)?;
-        let (enhanced, skeletal) = s
-            .storage
-            .model
+        let (enhanced, skeletal) = model
             .replacement_load(s.cvars)
             .map_err(|_| CallError::Cvar)?;
         let loader = s.model_loader.as_mut().ok_or(CallError::File)?;
@@ -1985,8 +1998,22 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    fn cvar_client(&self) -> Option<(ClientId, EntityId)> {
+        self.client_connection
+            .as_deref()?
+            .identity(self.server)
+            .ok()
+    }
+    fn cvar_handle(&self, handle: CvarHandle) -> CvarHandle {
+        self.cvar_client()
+            .and_then(|owner| self.cvars.client_handle(handle, owner))
+            .unwrap_or(handle)
+    }
     pub fn patch_clip(&self) -> qa_core::primitives::PatchClip {
-        self.storage.collision.resolve(self.cvars)
+        self.cvar_client()
+            .and_then(|owner| self.storage.collision.for_client(self.cvars, owner))
+            .unwrap_or(self.storage.collision)
+            .resolve(self.cvars)
     }
     fn loaded_world(&self, module: ModuleId, name: &[u8]) -> Result<LoadedWorldBinding, CallError> {
         let search = self
@@ -2154,9 +2181,13 @@ impl EngineServices<'_> {
     }
     pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
         if integer {
-            self.cvars.integer_in(self.storage.no_areas, source) != 0
+            self.cvars
+                .integer_in(self.cvar_handle(self.storage.no_areas), source)
+                != 0
         } else {
-            self.cvars.value_in(self.storage.no_areas, source) != 0.0
+            self.cvars
+                .value_in(self.cvar_handle(self.storage.no_areas), source)
+                != 0.0
         }
     }
     pub fn print(

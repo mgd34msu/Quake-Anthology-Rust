@@ -13,6 +13,8 @@ use qa_core::text::FixedText;
 use std::{borrow::Cow, fmt::Write};
 
 pub use crate::catalog::Definition;
+mod clients;
+use clients::{ClientColumn, native_context};
 const EMPTY: u16 = u16::MAX;
 const MODULE_CVARS: usize = 1024;
 pub(crate) const USER_CREATED: u32 = 128;
@@ -72,6 +74,7 @@ impl From<conversion::Error> for WriteError {
         Self::Conversion(e)
     }
 }
+#[derive(Clone)]
 struct Value {
     module_defaults: [Option<NameId>; 5],
     row: usize,
@@ -184,8 +187,9 @@ impl PendingWrite {
             .details
             .iter()
             .position(|slot| {
-                slot.as_ref()
-                    .is_some_and(|old| old.view.binding == view.binding)
+                slot.as_ref().is_some_and(|old| {
+                    old.view.binding == view.binding && old.view.handle == view.handle
+                })
             })
             .or_else(|| self.details.iter().position(Option::is_none))
             .ok_or(WriteError::Capacity)?;
@@ -224,8 +228,12 @@ type Projections = [[Result<(f32, i32), conversion::Error>; 3]; 5];
 
 pub struct Cvars {
     catalog_values: usize,
+    registered_values: usize,
+    stride: usize,
+    clients: Vec<ClientColumn>,
+    shared_values: StampSet,
     values: Vec<Value>,
-    texts: qa_core::text::TextSlots,
+    texts: Vec<qa_core::text::TextSlots>,
     offsets: Vec<usize>,
     defaults: Vec<[Option<Cow<'static, str>>; 5]>,
     pub(crate) names: NameTable,
@@ -243,11 +251,11 @@ pub struct Cvars {
     dependents: Vec<Vec<u16>>,
     dirty_handles: Vec<CvarHandle>,
     dirty_values: StampSet,
-    dirty_bindings: Vec<u16>,
+    dirty_bindings: Vec<usize>,
     dirty_projections: StampSet,
     context: Context,
     revision_clock: u64,
-    info_revisions: [[u64; INFO_FLAGS.len()]; 5],
+    info_revisions: Vec<[[u64; INFO_FLAGS.len()]; 5]>,
     native_views: Vec<NativeView>,
     native_heads: Box<[Option<u32>]>,
     runtime_policy: RuntimePolicy,
@@ -384,8 +392,12 @@ impl Cvars {
             .collect();
         let mut registry = Self {
             catalog_values,
+            registered_values: catalog_values,
+            stride: pending_capacity,
+            clients: Vec::new(),
+            shared_values: StampSet::new(pending_capacity),
             values,
-            texts,
+            texts: vec![texts],
             offsets,
             names,
             name_bindings,
@@ -397,7 +409,7 @@ impl Cvars {
             lookups: std::cell::Cell::new(0),
             context,
             revision_clock: 0,
-            info_revisions: [[0; INFO_FLAGS.len()]; 5],
+            info_revisions: vec![[[0; INFO_FLAGS.len()]; 5]],
             native_views: Vec::with_capacity(BINDINGS.len() + MODULE_CVARS * ROLES.len()),
             native_heads: vec![None; BINDINGS.len() + MODULE_CVARS].into_boxed_slice(),
             defaults: (0..DEFINITIONS.len())
@@ -461,6 +473,7 @@ impl Cvars {
                 }
             }
         }
+        registry.pad_values();
         registry.resolve_defaults();
         registry.refresh_numbers();
         registry.refresh_projections();
@@ -484,12 +497,14 @@ impl Cvars {
             .values
             .iter()
             .enumerate()
+            .filter(|(index, _)| self.defined(*index))
             .map(|(index, value)| {
                 (
                     self.effective(CvarHandle(index as u32), self.context.source)
                         .to_owned(),
                     value.numbers[self.context.source as usize].to_bits(),
                     value.integers[self.context.source as usize],
+                    index,
                 )
             })
             .collect();
@@ -500,7 +515,7 @@ impl Cvars {
         } else {
             self.context = context;
         }
-        for (index, (text, bits, integer)) in previous.into_iter().enumerate() {
+        for (text, bits, integer, index) in previous {
             let handle = CvarHandle(index as u32);
             if text != self.text(handle)
                 || bits != self.value(handle).to_bits()
@@ -514,7 +529,7 @@ impl Cvars {
         // in sources other than the newly selected console context.
         self.revision_clock = self.revision_clock.wrapping_add(1);
         self.info_revisions
-            .fill([self.revision_clock; INFO_FLAGS.len()]);
+            .fill([[self.revision_clock; INFO_FLAGS.len()]; 5]);
     }
     fn slot(&self, row: usize, seat: u8) -> CvarHandle {
         CvarHandle(
@@ -546,7 +561,7 @@ impl Cvars {
         } else {
             0
         };
-        Some(span.first as usize + offset)
+        Some(self.column(view.handle) * self.projection_count() + span.first as usize + offset)
     }
     fn projected_number(&self, view: View) -> Result<(f32, i32), conversion::Error> {
         let index = self
@@ -590,6 +605,7 @@ impl Cvars {
             },
             |b| self.binding_slot(b, context),
         )?;
+        let handle = self.context_handle(handle, context)?;
         Some(View {
             handle,
             binding,
@@ -648,6 +664,7 @@ impl Cvars {
         flags: u32,
         context: Context,
     ) -> Result<View, WriteError> {
+        self.context_column(context).ok_or(WriteError::Capacity)?;
         let name = registration_name(name, context.source);
         if name.is_empty()
             || (flags & 6 != 0
@@ -716,7 +733,7 @@ impl Cvars {
             return Ok(view);
         }
         let default = default.ok_or(WriteError::MissingDefault)?;
-        let module_index = self.values.len() - self.catalog_values;
+        let module_index = self.registered_values - self.catalog_values;
         if module_index >= MODULE_CVARS {
             return Err(WriteError::Capacity);
         }
@@ -731,8 +748,8 @@ impl Cvars {
             .intern(default.as_bytes())
             .map_err(|_| WriteError::Capacity)?;
         let folded = self.names.folded(name_id).ok_or(WriteError::Capacity)?;
-        let handle = CvarHandle(self.values.len() as u32);
-        self.values.push(Value {
+        let handle = CvarHandle(self.registered_values as u32);
+        self.values[handle.0 as usize] = Value {
             module_defaults: [Some(default_id); 5],
             row: DEFINITIONS.len(),
             seat: 0,
@@ -745,9 +762,21 @@ impl Cvars {
             pending_revision: 0,
             command_flags: [Some(flags); 5],
             latch_active: false,
-        });
+        };
+        self.registered_values += 1;
+        self.add_client_definition(handle);
         self.name_bindings[folded.0 as usize].first = binding;
         self.binding_names[binding as usize] = folded;
+        let handle = self
+            .context_handle(handle, context)
+            .ok_or(WriteError::Capacity)?;
+        if self.column(handle) != 0 {
+            self.values[handle.0 as usize].module_defaults = [Some(default_id); 5];
+            self.values[handle.0 as usize].command_flags = [Some(flags); 5];
+            let root = self.root(handle).0 as usize;
+            self.values[root].module_defaults = [None; 5];
+            self.values[root].command_flags = [None; 5];
+        }
         self.refresh_number_at(handle.0 as usize);
         self.mark_change(handle);
         self.refresh_changes();
@@ -769,7 +798,11 @@ impl Cvars {
     fn effective(&self, handle: CvarHandle, source: RuleSetId) -> &str {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
-            self.texts.text(handle.0 as usize).unwrap_or_default()
+            self.texts[self.column(handle)]
+                .text(self.root(handle).0 as usize)
+                .unwrap_or_default()
+        } else if self.column(handle) != 0 && self.values[self.root(handle).0 as usize].explicit {
+            self.effective(self.root(handle), source)
         } else {
             self.default_text(handle, source)
         }
@@ -778,9 +811,12 @@ impl Cvars {
         let value = &self.values[handle.0 as usize];
         if let Some(default) = value.module_defaults[source as usize] {
             self.name_text(default)
+        } else if self.column(handle) != 0 {
+            self.default_text(self.root(handle), source)
         } else {
-            self.defaults[value.row][source as usize]
-                .as_deref()
+            self.defaults
+                .get(value.row)
+                .and_then(|row| row[source as usize].as_deref())
                 .unwrap_or("")
         }
     }
@@ -810,7 +846,12 @@ impl Cvars {
         self.values[handle.0 as usize].integers[source as usize]
     }
     pub fn generation(&self, handle: CvarHandle) -> u64 {
-        self.values[handle.0 as usize].revision
+        let revision = self.values[handle.0 as usize].revision;
+        if self.column(handle) == 0 {
+            revision
+        } else {
+            revision.max(self.values[self.root(handle).0 as usize].revision)
+        }
     }
     pub fn revision(&self) -> u64 {
         self.revision_clock
@@ -820,17 +861,26 @@ impl Cvars {
     /// latches do not invalidate info strings. This is registry state, not a
     /// fingerprint of their contents.
     pub fn info_generation(&self, source: RuleSetId, flags: u32) -> u64 {
+        self.info_generation_at(0, source, flags)
+    }
+    pub fn info_generation_in(&self, context: Context, flags: u32) -> u64 {
+        let global = self.info_generation(context.source, flags);
+        self.context_column(context).map_or(global, |column| {
+            global.max(self.info_generation_at(column, context.source, flags))
+        })
+    }
+    fn info_generation_at(&self, column: usize, source: RuleSetId, flags: u32) -> u64 {
         INFO_FLAGS
             .into_iter()
-            .zip(self.info_revisions[source as usize])
+            .zip(self.info_revisions[column][source as usize])
             .filter_map(|(flag, generation)| (flags & flag != 0).then_some(generation))
             .max()
             .unwrap_or(0)
     }
-    fn mark_info(&mut self, source: RuleSetId, flags: u32, generation: u64) {
+    fn mark_info(&mut self, column: usize, source: RuleSetId, flags: u32, generation: u64) {
         for (flag, revision) in INFO_FLAGS
             .into_iter()
-            .zip(&mut self.info_revisions[source as usize])
+            .zip(&mut self.info_revisions[column][source as usize])
         {
             if flags & flag != 0 {
                 *revision = (*revision).max(generation);
@@ -840,6 +890,7 @@ impl Cvars {
     /// Native handles refer to cached views of this registry, never another
     /// name/value table. Registration uses capacity reserved at registry load.
     pub fn native_view(&mut self, mut view: View) -> Result<u32, WriteError> {
+        self.validate_view(view)?;
         view.context = cvar_context(view.context);
         view.context.event_time = None;
         view.context.key_source = None;
@@ -848,7 +899,11 @@ impl Cvars {
         let mut cursor = self.native_heads[binding];
         while let Some(index) = cursor {
             let row = &self.native_views[index as usize];
-            if row.view.context == view.context {
+            if row.view.handle == view.handle
+                && native_context(row.view.context) == native_context(view.context)
+            {
+                self.native_views[index as usize].view = view;
+                self.refresh_native(binding);
                 return Ok(index);
             }
             cursor = row.next;
@@ -942,6 +997,15 @@ impl Cvars {
                     }
                 }
             }
+        }
+        for &row in policy
+            .rows
+            .iter()
+            .chain(&policy.position)
+            .chain([&policy.geometry, &policy.aspect])
+        {
+            self.shared_values
+                .mark(self.slot(row as usize, 0).0 as usize);
         }
         self.video_policy = Some(policy);
         self.resolve_defaults();
@@ -1134,6 +1198,10 @@ impl Cvars {
             .iter()
             .flat_map(PendingWrite::values)
             .find_map(|(h, text)| (h == handle).then_some(text))
+            .or_else(|| {
+                self.inherits(handle)
+                    .then(|| self.pending_text(self.root(handle), source))
+            })
             .unwrap_or_else(|| self.effective(handle, source))
     }
     fn pending_detail(&self, view: View) -> Option<&str> {
@@ -1142,16 +1210,17 @@ impl Cvars {
             .flat_map(|pending| pending.details.iter().flatten())
             .find(|detail| {
                 detail.view.binding == view.binding
+                    && detail.view.handle == view.handle
                     && detail.view.context.source == view.context.source
             })
             .map(|detail| detail.text.as_str())
             .or_else(|| {
                 let replaced = self.pending.iter().any(|pending| {
                     pending.handles().any(|handle| {
-                        handle == view.handle
-                            || self
-                                .dependency_rows(view)
-                                .any(|row| self.slot(row as usize, 0) == handle)
+                        self.pending_affects(handle, view.handle)
+                            || self.dependency_rows(view).any(|row| {
+                                self.pending_affects(handle, self.slot_in(row as usize, view))
+                            })
                     })
                 });
                 (!replaced).then(|| self.detail(view)).flatten()
@@ -1161,7 +1230,7 @@ impl Cvars {
     pub fn view_generation(&self, view: View) -> u64 {
         self.dependency_rows(view)
             .fold(self.generation(view.handle), |generation, row| {
-                generation.max(self.generation(self.slot(row as usize, 0)))
+                generation.max(self.generation(self.slot_in(row as usize, view)))
             })
     }
     /// Native cvar layouts also expose a pending latch, without marking the
@@ -1169,11 +1238,18 @@ impl Cvars {
     pub fn view_update_generation(&self, view: View) -> u64 {
         let generation = |handle: CvarHandle| {
             let value = &self.values[handle.0 as usize];
-            value.revision.max(value.pending_revision)
+            let pending = if self.inherits(handle) {
+                self.values[self.root(handle).0 as usize].pending_revision
+            } else {
+                0
+            };
+            self.generation(handle)
+                .max(value.pending_revision)
+                .max(pending)
         };
         self.dependency_rows(view)
             .fold(generation(view.handle), |revision, row| {
-                revision.max(generation(self.slot(row as usize, 0)))
+                revision.max(generation(self.slot_in(row as usize, view)))
             })
     }
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -1189,6 +1265,7 @@ impl Cvars {
     }
     pub fn is_explicit(&self, handle: CvarHandle) -> bool {
         self.values[handle.0 as usize].explicit
+            || self.column(handle) != 0 && self.values[self.root(handle).0 as usize].explicit
     }
     /// Cached native-role value only when explicitly set or registered by that engine.
     pub fn native_number(&self, handle: CvarHandle, source: RuleSetId) -> Option<f32> {
@@ -1210,7 +1287,12 @@ impl Cvars {
         if self.values[handle.0 as usize].module_defaults[source as usize].is_some() {
             return true;
         }
-        self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
+        if self.column(handle) != 0 {
+            return self.default_available(self.root(handle), source);
+        }
+        self.defaults
+            .get(self.values[handle.0 as usize].row)
+            .is_some_and(|row| row[source as usize].is_some())
     }
     /// Load-time consumers may retain native behavior for settings that the
     /// unified catalog accepts but the selected engine never registered.
@@ -1218,7 +1300,13 @@ impl Cvars {
         if self.values[handle.0 as usize].module_defaults[source as usize].is_some() {
             return true;
         }
+        if self.column(handle) != 0 {
+            return self.native_default_available(self.root(handle), source);
+        }
         let row = self.values[handle.0 as usize].row;
+        if row >= DEFINITIONS.len() {
+            return false;
+        }
         let context = Context {
             source,
             role: self.stock_roles[row][source as usize],
@@ -1234,9 +1322,10 @@ impl Cvars {
                 })
     }
     pub fn read(&self, view: View) -> Result<Text<'_>, conversion::Error> {
+        self.validate_view(view)?;
         let text = self.effective(view.handle, view.context.source);
         let detail = self.detail(view);
-        let operands = |row| self.effective(self.slot(row as usize, 0), view.context.source);
+        let operands = |row| self.effective(self.slot_in(row as usize, view), view.context.source);
         self.project(view, text, detail, &operands)
     }
     fn project<'a>(
@@ -1262,12 +1351,13 @@ impl Cvars {
         })
     }
     pub fn latched(&self, view: View) -> Result<Option<Text<'_>>, conversion::Error> {
+        self.validate_view(view)?;
         if !self.pending.iter().any(|pending| {
             pending.handles().any(|handle| {
-                handle == view.handle
+                self.pending_affects(handle, view.handle)
                     || self
                         .dependency_rows(view)
-                        .any(|row| self.slot(row as usize, 0) == handle)
+                        .any(|row| self.pending_affects(handle, self.slot_in(row as usize, view)))
             })
         }) {
             return Ok(None);
@@ -1275,11 +1365,12 @@ impl Cvars {
         let text_for = |handle| self.pending_text(handle, view.context.source);
         let detail = self.pending_detail(view);
         self.project(view, text_for(view.handle), detail, &|row| {
-            text_for(self.slot(row as usize, 0))
+            text_for(self.slot_in(row as usize, view))
         })
         .map(Some)
     }
     pub fn numeric(&self, view: View) -> Result<f32, conversion::Error> {
+        self.validate_view(view)?;
         if self.reads_stored(view).unwrap_or(true) {
             Ok(self.value_in(view.handle, view.context.source))
         } else {
@@ -1287,6 +1378,7 @@ impl Cvars {
         }
     }
     pub fn integer_view(&self, view: View) -> Result<i32, conversion::Error> {
+        self.validate_view(view)?;
         if self.reads_stored(view).unwrap_or(true) {
             Ok(self.integer_in(view.handle, view.context.source))
         } else {
@@ -1314,12 +1406,16 @@ impl Cvars {
         } as usize]
     }
     pub fn flags(&self, view: View) -> u32 {
-        if let Some(flags) =
-            self.values[view.handle.0 as usize].command_flags[view.context.source as usize]
+        if let Some(flags) = self.values[view.handle.0 as usize].command_flags
+            [view.context.source as usize]
+            .or(self.values[self.root(view.handle).0 as usize].command_flags
+                [view.context.source as usize])
         {
             return flags;
         }
-        let b = &BINDINGS[view.binding as usize];
+        let Some(b) = BINDINGS.get(view.binding as usize) else {
+            return 0;
+        };
         let row = &DEFINITIONS[b.row as usize];
         let native = b.native_sources & (1 << view.context.source as u8) != 0;
         let source = if native {
@@ -1371,7 +1467,10 @@ impl Cvars {
             && flags & 32 != 0;
         if flags & 512 != 0
             && !native_latch
-            && self.integer_in(self.cheats_handle, view.context.source) == 0
+            && self.integer_in(
+                self.in_column(self.cheats_handle, self.column(view.handle)),
+                view.context.source,
+            ) == 0
         {
             return Err(WriteError::Cheats);
         }
@@ -1396,7 +1495,12 @@ impl Cvars {
         // A new flag override also replaces other aliases' catalog flags.
         // Invalidate all native info categories when that membership changes.
         if previous != Some(flags) {
-            self.mark_info(view.context.source, 2 | 4 | 8, self.revision_clock);
+            self.mark_info(
+                self.column(view.handle),
+                view.context.source,
+                2 | 4 | 8,
+                self.revision_clock,
+            );
         }
         self.refresh_changes();
         Ok(())
@@ -1412,7 +1516,7 @@ impl Cvars {
         let mut text = FixedText::<MAX_TEXT>::default();
         let source = view.context.source;
         let default = self.project(view, self.default_text(view.handle, source), None, &|row| {
-            self.default_text(self.slot(row as usize, 0), source)
+            self.default_text(self.slot_in(row as usize, view), source)
         })?;
         text.set(default.as_str())
             .map_err(|_| conversion::Error::TextTooLong)?;
@@ -1515,7 +1619,7 @@ impl Cvars {
             operand_override
                 .filter(|(overridden, _)| *overridden == row)
                 .map_or_else(
-                    || self.effective(self.slot(row as usize, 0), view.context.source),
+                    || self.effective(self.slot_in(row as usize, view), view.context.source),
                     |(_, value)| value,
                 )
         };
@@ -1555,7 +1659,7 @@ impl Cvars {
             changes.value(view.handle, value.as_str())?;
         }
         for change in out.changes.into_iter().take(out.change_count).flatten() {
-            let handle = self.slot(change.row as usize, 0);
+            let handle = self.slot_in(change.row as usize, view);
             let target = self.values[handle.0 as usize].name_id;
             if let Some(target_view) = self.bind_id(target, view.context) {
                 if enforce {
@@ -1572,6 +1676,7 @@ impl Cvars {
         Ok(pending)
     }
     fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
+        self.validate_view(view)?;
         let native_q3 = self.runtime_policy.initialized && view.context.source == RuleSetId::Quake3;
         // Even a forced equal write leaves Q3's outstanding latch untouched.
         if native_q3
@@ -1613,7 +1718,7 @@ impl Cvars {
                 d.present
                     && d.revisions[..d.count]
                         .iter()
-                        .all(|(h, revision)| self.values[h.0 as usize].revision == *revision)
+                        .all(|(h, revision)| self.generation(*h) == *revision)
             })
             .map(|d| d.text.as_str())
     }
@@ -1622,11 +1727,11 @@ impl Cvars {
             self.mark_change(view.handle);
         }
         let mut revisions = [(CvarHandle(0), 0); 33];
-        revisions[0] = (view.handle, self.values[view.handle.0 as usize].revision);
+        revisions[0] = (view.handle, self.generation(view.handle));
         let mut count = 1;
         for row in self.dependency_rows(view) {
-            let handle = self.slot(row as usize, 0);
-            revisions[count] = (handle, self.values[handle.0 as usize].revision);
+            let handle = self.slot_in(row as usize, view);
+            revisions[count] = (handle, self.generation(handle));
             count += 1;
         }
         let index = self
@@ -1646,8 +1751,10 @@ impl Cvars {
     }
     fn clear_details(&mut self, handle: CvarHandle) {
         let mut modified = false;
-        for &binding in &self.dependents[handle.0 as usize] {
-            for index in self.projection_rows[binding as usize].range() {
+        let column = self.column(handle);
+        for &binding in &self.dependents[self.root(handle).0 as usize] {
+            for relative in self.projection_rows[binding as usize].range() {
+                let index = column * self.projection_count() + relative;
                 for detail in self.details[index].iter_mut().flatten() {
                     if detail.present
                         && detail.revisions[..detail.count]
@@ -1686,9 +1793,10 @@ impl Cvars {
         }
     }
     fn publish(&mut self, handle: CvarHandle, text: &str) -> Result<(), WriteError> {
-        let changed = self
-            .texts
-            .set(handle.0 as usize, text.as_bytes())
+        let column = self.column(handle);
+        let root = self.root(handle).0 as usize;
+        let changed = self.texts[column]
+            .set(root, text.as_bytes())
             .map_err(|_| WriteError::Capacity)?;
         let value = &mut self.values[handle.0 as usize];
         if !value.explicit || changed {
@@ -1714,8 +1822,18 @@ impl Cvars {
         self.mark_dirty(handle);
     }
     fn mark_dirty(&mut self, handle: CvarHandle) {
-        if !self.dirty_values.test_and_set(handle.0 as usize) {
-            self.dirty_handles.push(handle);
+        let root = self.root(handle);
+        let first = self.column(handle);
+        let end = if first == 0 {
+            self.texts.len()
+        } else {
+            first + 1
+        };
+        for column in first..end {
+            let handle = self.in_column(root, column);
+            if !self.dirty_values.test_and_set(handle.0 as usize) {
+                self.dirty_handles.push(handle);
+            }
         }
     }
     /// Engine-owned updates bypass command policy (ROM values and telemetry).
@@ -1762,6 +1880,7 @@ impl Cvars {
     }
     /// Native Cvar_Get activates only the requested variable's pending group.
     pub fn apply_latch(&mut self, view: View) -> Result<(), WriteError> {
+        self.validate_view(view)?;
         while let Some(index) = self
             .pending
             .iter()
@@ -1780,16 +1899,25 @@ impl Cvars {
     pub fn entries(
         &self,
     ) -> impl Iterator<Item = (CvarHandle, &str, &str, Option<&'static Definition>, u8)> {
-        self.values.iter().enumerate().map(|(index, v)| {
-            let handle = CvarHandle(index as u32);
-            (
-                handle,
-                self.name_text(v.name_id),
-                self.text(handle),
-                DEFINITIONS.get(v.row),
-                v.seat,
-            )
-        })
+        self.entries_in(self.context)
+    }
+    pub fn entries_in(
+        &self,
+        context: Context,
+    ) -> impl Iterator<Item = (CvarHandle, &str, &str, Option<&'static Definition>, u8)> {
+        self.values[..self.registered_values]
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, value)| {
+                let handle = self.context_handle(CvarHandle(index as u32), context)?;
+                Some((
+                    handle,
+                    self.name_text(value.name_id),
+                    self.effective(handle, context.source),
+                    DEFINITIONS.get(value.row),
+                    value.seat,
+                ))
+            })
     }
     /// Native info keys use their source names and converted values. Build at
     /// connect or info-change boundaries, never while reading module cvars.
@@ -1831,7 +1959,7 @@ impl Cvars {
                 append(view)?;
             }
         }
-        for value in &self.values[self.catalog_values..] {
+        for value in &self.values[self.catalog_values..self.registered_values] {
             if let Some(view) = self.bind_id(value.name_id, context) {
                 append(view)?;
             }
@@ -1860,10 +1988,12 @@ impl Cvars {
     }
     fn refresh_numbers(&mut self) {
         for index in 0..self.values.len() {
-            self.refresh_number_at(index);
+            if self.defined(index) {
+                self.refresh_number_at(index);
+            }
         }
     }
-    fn refresh_projection_at(&mut self, index: usize) {
+    fn refresh_projection_at(&mut self, index: usize, column: usize) {
         let binding = &BINDINGS[index];
         let span = self.projection_rows[index];
         for projection in span.range() {
@@ -1878,11 +2008,20 @@ impl Cvars {
                     event_time: None,
                     key_source: None,
                     producer: None,
-                    client_lifetime: None,
+                    side: if column == 0 {
+                        self.context.side
+                    } else {
+                        Scope::Client
+                    },
+                    cvar_client: None,
+                    client_lifetime: self.column_owner(column),
                     client_policy: None,
                     ..self.context
                 };
-                let Some(handle) = self.binding_slot(binding, context) else {
+                let Some(handle) = self
+                    .binding_slot(binding, context)
+                    .and_then(|handle| self.context_handle(handle, context))
+                else {
                     return [Err(conversion::Error::PolicyRequired); ROLES.len()];
                 };
                 let view = View {
@@ -1893,7 +2032,7 @@ impl Cvars {
                 if binding.native_sources & (1 << source as u8) != 0 {
                     let flags = self.flags(view);
                     if flags & (2 | 4 | 8) != 0 {
-                        self.mark_info(context.source, flags, self.view_generation(view));
+                        self.mark_info(column, context.source, flags, self.view_generation(view));
                     }
                 }
                 std::array::from_fn(|role| {
@@ -1912,12 +2051,15 @@ impl Cvars {
                     })
                 })
             });
-            self.projections[projection] = projections;
+            let index = column * self.projection_count() + projection;
+            self.projections[index] = projections;
         }
     }
     fn refresh_projections(&mut self) {
-        for index in 0..BINDINGS.len() {
-            self.refresh_projection_at(index);
+        for column in 0..self.texts.len() {
+            for index in 0..BINDINGS.len() {
+                self.refresh_projection_at(index, column);
+            }
         }
         for index in 0..self.native_heads.len() {
             self.refresh_native(index);
@@ -1934,25 +2076,33 @@ impl Cvars {
         for i in 0..self.dirty_handles.len() {
             let index = self.dirty_handles[i].0 as usize;
             self.refresh_number_at(index);
-            for &binding in &self.dependents[index] {
-                if !self.dirty_projections.test_and_set(binding as usize) {
-                    self.dirty_bindings.push(binding);
+            let root = index % self.stride;
+            let column = index / self.stride;
+            for &binding in &self.dependents[root] {
+                let projection = column * BINDINGS.len() + binding as usize;
+                if !self.dirty_projections.test_and_set(projection) {
+                    self.dirty_bindings.push(projection);
                 }
             }
-            if index >= self.catalog_values {
-                self.refresh_native(BINDINGS.len() + index - self.catalog_values);
+            if root >= self.catalog_values {
+                self.refresh_native(BINDINGS.len() + root - self.catalog_values);
                 let value = &self.values[index];
                 let flags = value.command_flags;
                 let generation = value.revision;
                 for source in RuleSetId::ALL {
-                    self.mark_info(source, flags[source as usize].unwrap_or(0), generation);
+                    self.mark_info(
+                        column,
+                        source,
+                        flags[source as usize].unwrap_or(0),
+                        generation,
+                    );
                 }
             }
         }
         for i in 0..self.dirty_bindings.len() {
             let index = self.dirty_bindings[i] as usize;
-            self.refresh_projection_at(index);
-            self.refresh_native(index);
+            self.refresh_projection_at(index % BINDINGS.len(), index / BINDINGS.len());
+            self.refresh_native(index % BINDINGS.len());
         }
         self.dirty_values.begin();
         self.dirty_projections.begin();

@@ -15,6 +15,30 @@ pub struct ModelHandles {
     pub limit: View,
 }
 impl ModelHandles {
+    pub fn for_client(
+        self,
+        vars: &Cvars,
+        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Option<Self> {
+        let [enhanced, load, usage, distance, limit] = vars.client_views(
+            [
+                self.enhanced,
+                self.load,
+                self.usage,
+                self.distance,
+                self.limit,
+            ],
+            owner,
+        )?;
+        Some(Self {
+            enhanced,
+            load,
+            usage,
+            distance,
+            limit,
+        })
+    }
+
     pub fn bind(cvars: &Cvars) -> Result<Self, &'static str> {
         let bind = |name, source| {
             cvars
