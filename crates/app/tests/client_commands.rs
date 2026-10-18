@@ -44,14 +44,16 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..17 {
+    for command in 0..19 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 15 {
+        if matches!(command, 17 | 18) {
+            operations.extend([(Const, if command == 17 { -59 } else { -53 }), (Call, 0)]);
+        } else if command == 15 {
             operations.extend([
                 (Const, 240),
                 (Arg, 8),
@@ -171,7 +173,7 @@ fn native() -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..17)
+        &(0..19)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -186,7 +188,7 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..17u8 {
+    for command in 0..19u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
@@ -210,6 +212,8 @@ fn native() -> Program {
                 11 => 40,
                 15 => 35,
                 16 => 69,
+                17 => 58,
+                18 => 52,
                 12 | 14 => 43,
                 13 => 85,
                 _ => 9,
@@ -350,7 +354,7 @@ fn request(
         rate: TickRate::FrameDriven,
         anchor,
         program,
-        entries: (0..17).collect(),
+        entries: (0..19).collect(),
         frame: Export {
             client: Some(client),
             ..Export::words(CallbackId(4), &[])
@@ -533,6 +537,36 @@ fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
     );
     assert!(host.runtime.server.clients[0].connection.is_none());
     assert!(host.runtime.server.clients[1].connection.is_some());
+}
+
+fn memory_query_uses_platform_service_for_both_client_roles(program: impl Fn() -> Program) {
+    for ui in [false, true] {
+        let make = || {
+            let mut module = program();
+            if ui {
+                match &mut module {
+                    Program::Qvm { imports, .. } | Program::Native { imports, .. } => {
+                        *imports = &qa_compat::abi::Q3_UI
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            module
+        };
+        let (mut host, _) = host(make, 1);
+        let before = qa_platform::available_memory();
+        let value = probe(&mut host, 0, if ui { 18 } else { 17 }, 0);
+        let after = qa_platform::available_memory();
+        assert!(value <= i32::MAX as u32);
+        if cfg!(target_os = "linux") {
+            assert!(value > 0);
+        }
+        if before.is_some_and(|n| n > i32::MAX as u64) && after.is_some_and(|n| n > i32::MAX as u64)
+        {
+            assert_eq!(value, i32::MAX as u32);
+        }
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    }
 }
 
 fn native_scene_calls_use_the_session_frame(program: impl Fn() -> Program) {
@@ -1368,6 +1402,7 @@ fn main() {
     music::console_cd_reaches_music_and_ordered_console_responses();
     music::native_music_reaches_shared_paint(qvm, false);
     music::native_music_reaches_shared_paint(qvm, true);
+    memory_query_uses_platform_service_for_both_client_roles(qvm);
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
     native_scene_calls_use_the_session_frame(qvm);
@@ -1394,6 +1429,7 @@ fn main() {
     {
         music::native_music_reaches_shared_paint(native, false);
         music::native_music_reaches_shared_paint(native, true);
+        memory_query_uses_platform_service_for_both_client_roles(native);
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
         native_scene_calls_use_the_session_frame(native);

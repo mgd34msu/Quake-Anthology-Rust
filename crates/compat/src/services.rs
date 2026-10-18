@@ -1287,6 +1287,7 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub available_memory: fn(&EngineServices<'_>) -> Option<u64>,
     pub key_down: fn(&EngineServices<'_>, qa_core::sys_events::SeatId, i32) -> bool,
     pub key_catchers: fn(&EngineServices<'_>, qa_core::sys_events::SeatId) -> u32,
     pub set_key_catchers: fn(
@@ -1536,6 +1537,7 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    available_memory: |_| qa_platform::available_memory(),
     key_down: |s, seat, key| s.key_down(seat, key),
     key_catchers: |s, seat| s.input.key_catchers(seat),
     set_key_catchers: |s, seat, mask, module, time| s.set_key_catchers(seat, mask, module, time),

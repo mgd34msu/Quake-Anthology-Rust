@@ -679,6 +679,7 @@ const fn client() -> CallTable {
     t.entries[55] = scalar!(client_usercmd);
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[57] = value!(register_shader::<false>);
+    t.entries[58] = scalar!(available_memory);
     t.entries[60] = scalar!(input::key_down);
     t.entries[61] = scalar!(input::catchers);
     t.entries[62] = scalar!(input::set_catchers);
@@ -757,6 +758,7 @@ const fn ui() -> CallTable {
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);
+    t.entries[52] = scalar!(available_memory);
     t.entries[56] = scalar!(renderer_model_bounds);
     t
 }
@@ -1896,6 +1898,11 @@ fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn milliseconds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.platform_time.milliseconds() as u32 as u64)
+}
+fn available_memory(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok((ENGINE_CALLS.available_memory)(c.services)
+        .unwrap_or(0)
+        .min(i32::MAX as u64))
 }
 fn native_server_frame(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(u64::from(c.context.server_frame as u32))
