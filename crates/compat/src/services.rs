@@ -2002,6 +2002,40 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    /// Publish the one attachment graph's transported positions to a module's
+    /// existing ABI view. Transport does not execute guest code.
+    pub fn sync_attachment_positions(
+        &mut self,
+        module: ModuleId,
+        mut publish: impl FnMut(
+            &mut Self,
+            EntityId,
+            qa_core::primitives::NativeEntity,
+            Vec3,
+        ) -> Result<(), CallError>,
+    ) -> Result<(), CallError> {
+        self.server.commit_attachments();
+        let mut index = 0;
+        while let Some(entity) = self.server.entities.attachment_ids().get(index).copied() {
+            let Some(slot) = self.server.entities.resolve(entity) else {
+                index += 1;
+                continue;
+            };
+            let Some(native) = self.server.entities.columns.native_entity[slot]
+                .filter(|native| native.module == module)
+            else {
+                index += 1;
+                continue;
+            };
+            let position = self.server.entities.columns.position[slot];
+            publish(self, entity, native, position)?;
+            if self.server.entities.attachment_ids().get(index) == Some(&entity) {
+                index += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn cvar_client(&self) -> Option<(ClientId, EntityId)> {
         self.client_connection
             .as_deref()?

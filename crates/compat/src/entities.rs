@@ -514,6 +514,25 @@ pub struct EntityProjection {
     observed_count: usize,
     leaves: [u32; 128],
 }
+struct EntityPublication {
+    body: Body,
+    angles: Vec3,
+    appearance: EntityAppearance,
+    contents_pose: Option<qa_core::primitives::EntityPose>,
+    flags: u32,
+}
+impl EntityPublication {
+    fn apply(self, entities: &mut EntityTable, entity: EntityId) {
+        let slot = entity.slot as usize;
+        let columns = &mut entities.columns;
+        columns.set_position(slot, self.body.position);
+        columns.set_bounds(slot, self.body.mins, self.body.maxs);
+        columns.set_angles(slot, self.angles);
+        columns.flags[slot] = self.flags;
+        columns.point_contents_pose[slot] = self.contents_pose;
+        columns.appearance[slot] = self.appearance;
+    }
+}
 impl EntityProjection {
     pub(crate) fn load(
         table_offset: usize,
@@ -829,23 +848,7 @@ impl EntityProjection {
             {
                 continue;
             }
-            let (body, angles) = self.body(memory, address)?;
-            let mut appearance = if layout.in_use.is_none()
-                && layout
-                    .linked
-                    .is_some_and(|at| field(memory, address, at).is_ok_and(|linked| linked == 0))
-            {
-                EntityAppearance::default()
-            } else {
-                self.appearance(memory, address, context.module)?
-            };
-            let contents_pose = layout.point_contents_pose(
-                memory,
-                address,
-                appearance.presentation.map(|value| value.pose),
-            )?;
-            let flags = memory.read_word(address + self.native_layout()?.flags as u64)? as u32;
-            appearance.snapshot_excluded = flags & layout.snapshot_exclusion_mask != 0;
+            let publication = self.publication(memory, address, context.module)?;
             let bound = self.binding(
                 &services.server.entities,
                 NativeEntity {
@@ -854,16 +857,41 @@ impl EntityProjection {
                 },
             )?;
             let entity = self.bind(services, context, slot, bound)?;
-            let slot = entity.slot as usize;
-            let columns = &mut services.server.entities.columns;
-            columns.set_position(slot, body.position);
-            columns.set_bounds(slot, body.mins, body.maxs);
-            columns.set_angles(slot, angles);
-            columns.flags[slot] = flags;
-            columns.point_contents_pose[slot] = contents_pose;
-            columns.appearance[slot] = appearance;
+            publication.apply(&mut services.server.entities, entity);
         }
         Ok(native)
+    }
+    fn publication(
+        &self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        module: ModuleId,
+    ) -> Result<EntityPublication, CallError> {
+        let layout = self.native_layout()?;
+        let (body, angles) = self.body(memory, address)?;
+        let mut appearance = if layout.in_use.is_none()
+            && layout
+                .linked
+                .is_some_and(|at| field(memory, address, at).is_ok_and(|linked| linked == 0))
+        {
+            EntityAppearance::default()
+        } else {
+            self.appearance(memory, address, module)?
+        };
+        let contents_pose = layout.point_contents_pose(
+            memory,
+            address,
+            appearance.presentation.map(|value| value.pose),
+        )?;
+        let flags = memory.read_word(address + self.native_layout()?.flags as u64)? as u32;
+        appearance.snapshot_excluded = flags & layout.snapshot_exclusion_mask != 0;
+        Ok(EntityPublication {
+            body,
+            angles,
+            appearance,
+            contents_pose,
+            flags,
+        })
     }
     fn appearance(
         &self,
@@ -1339,6 +1367,48 @@ impl EntityProjection {
         address: u64,
     ) -> Result<(Body, Vec3), CallError> {
         self.native_layout()?.body(memory, address)
+    }
+
+    /// Common transport writes public poses only. A distinct published pose
+    /// keeps its existing offset from the physical origin. Area order has
+    /// already been committed by the common attachment graph.
+    pub(crate) fn write_position(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        server: &mut qa_session::clients::Server,
+        context: CallContext,
+        entity: EntityId,
+        position: Vec3,
+    ) -> Result<(), CallError> {
+        let table = self.boundary(memory, context)?;
+        let slot = server.entities.resolve(entity).ok_or(CallError::Entity)?;
+        if server.entities.columns.owner[slot] != context.module {
+            return Err(CallError::Entity);
+        }
+        let native = server.entities.columns.native_entity[slot].ok_or(CallError::Entity)?;
+        if self.binding(&server.entities, native)? != Some(entity) {
+            return Err(CallError::Entity);
+        }
+        let address = native_address(table, context.module, &server.entities, entity)
+            .ok_or(CallError::Entity)?;
+        let layout = self.native_layout()?;
+        let previous = memory.read_vec3(address + layout.origin as u64)?;
+        if let AppearanceImport::Projected(projection) = layout.appearance {
+            let mut words = crate::players::read_q3_entity_state(memory, address)?;
+            if !projection.translate_position_words(previous, position, &mut words) {
+                return Err(CallError::Capacity);
+            }
+            let number = memory.read_word(address)? as u32;
+            crate::players::write_q3_entity_state(memory, address, number, &words)?;
+        }
+        memory.write_vec3(address + layout.origin as u64, position)?;
+        if let Some(bounds) = server.area.bounds(entity) {
+            memory.write_vec3(address + layout.abs_min as u64, bounds.mins)?;
+            memory.write_vec3(address + layout.abs_max as u64, bounds.maxs)?;
+        }
+        self.publication(memory, address, context.module)?
+            .apply(&mut server.entities, entity);
+        Ok(())
     }
     fn point_contents_pose(
         &self,

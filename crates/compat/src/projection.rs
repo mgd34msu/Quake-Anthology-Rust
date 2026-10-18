@@ -68,6 +68,34 @@ impl Projection {
         }
         self.entities.bind_client(table, native, entity)
     }
+
+    pub fn prepare(
+        &mut self,
+        memory: &mut ModuleMemory<'_>,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        mut pmove: Option<&mut crate::pmove::Pmove>,
+    ) -> Result<(), CallError> {
+        self.seed(&services.server.entities, context.module)?;
+        if !self.entities.ready() || services.server.entities.attachment_ids().is_empty() {
+            return Ok(());
+        }
+        let table = self.entities.boundary(memory, context)?;
+        services.sync_attachment_positions(context.module, |services, entity, native, position| {
+            self.entities
+                .write_position(memory, services.server, context, entity, position)?;
+            self.values.write_position(
+                memory,
+                table,
+                &self.entities,
+                context,
+                services.server,
+                native,
+                pmove.as_deref_mut(),
+                position,
+            )
+        })
+    }
     /// The caller lends native bytes only after parking its owned child.
     /// Failed exports do not enter this successful-return publication phase.
     pub fn publish(
@@ -75,7 +103,7 @@ impl Projection {
         memory: &mut ModuleMemory<'_>,
         services: &mut EngineServices<'_>,
         context: CallContext,
-        pmove: Option<&mut crate::pmove::Pmove>,
+        mut pmove: Option<&mut crate::pmove::Pmove>,
         time: EventTime,
         completed_export: Option<u32>,
     ) -> Result<(), CallError> {
@@ -100,13 +128,14 @@ impl Projection {
                 context.module,
                 services.registry,
                 services.server,
-                pmove,
+                pmove.as_deref_mut(),
                 time,
                 clock,
             )?;
             if let Some(frame) = &mut self.frame_observation {
                 frame.last = Some(clock);
             }
+            self.prepare(memory, services, context, pmove)?;
         }
         Ok(())
     }

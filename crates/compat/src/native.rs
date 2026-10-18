@@ -561,9 +561,12 @@ impl Vm {
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let outer = !self.is_active();
         if outer {
+            let sync_poses = self.projection.is_some()
+                && !calls.services.server.entities.attachment_ids().is_empty();
             if self.cvars.is_some()
                 || self.native_command.is_some()
                 || self.native_configs.is_some()
+                || sync_poses
             {
                 let mut memory = process_memory(&mut self.process)?;
                 if let Some(cvars) = &mut self.cvars {
@@ -581,8 +584,18 @@ impl Vm {
                         .refresh(calls.services.storage, calls.context.module, &mut memory)
                         .map_err(Error::Service)?;
                 }
+                if sync_poses && let Some(projection) = &mut self.projection {
+                    projection
+                        .prepare(
+                            &mut memory,
+                            calls.services,
+                            calls.context,
+                            self.pmove.as_mut(),
+                        )
+                        .map_err(Error::Service)?;
+                }
             }
-            if let Some(projection) = &mut self.projection {
+            if !sync_poses && let Some(projection) = &mut self.projection {
                 projection
                     .seed(&calls.services.server.entities, calls.context.module)
                     .map_err(Error::Service)?;

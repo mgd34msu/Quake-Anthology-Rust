@@ -899,10 +899,11 @@ impl Server {
     /// attached clients' hot state before snapshots and prediction are copied.
     pub fn commit_attachments(&mut self) -> AttachmentTransport {
         let result = self.area.transport_attachments(&mut self.entities);
-        if result.moved != 0 {
+        if !self.entities.attachment_ids().is_empty() {
             for client in self.clients.iter_mut() {
                 if client.is_active() && self.entities.attachment(client.entity).is_some() {
-                    client.player.body = self.entities.columns.body(client.entity.slot as usize);
+                    client.player.body.position =
+                        self.entities.columns.position[client.entity.slot as usize];
                 }
             }
         }

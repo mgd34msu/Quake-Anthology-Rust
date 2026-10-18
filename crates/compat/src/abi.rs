@@ -1542,7 +1542,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
     fn begin_call(&mut self, vm: &mut qvm::Vm) -> Result<(), qvm::Trap> {
         if let Some(projection) = &mut vm.projection {
             projection
-                .seed(&self.services.server.entities, self.context.module)
+                .prepare(&mut vm.memory, self.services, self.context, None)
                 .map_err(|_| qvm::Trap::Syscall)?;
         }
         Ok(())

@@ -5,14 +5,15 @@ use crate::{
     services::CallError,
 };
 use qa_core::primitives::{
-    ClientId, ClockObservation, ModuleId, NativeEntity, PlayerValueBindings, Q3StatLayout,
-    ResourceNamespace, ThinkTime, ValueBinding,
+    ClientId, ClockObservation, EntityId, ModuleId, NativeEntity, PlayerValueBindings,
+    Q3StatLayout, ResourceNamespace, ThinkTime, ValueBinding, Vec3,
 };
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
 };
 use qa_session::clients::Server;
+use qa_world::entities::EntityTable;
 
 #[derive(Clone, Copy)]
 pub(crate) struct StatsLayout {
@@ -338,6 +339,89 @@ impl PlayerValues {
     pub fn stat_layout(&self) -> Q3StatLayout {
         self.stat_layout
     }
+
+    fn pointer(
+        &self,
+        memory: &ModuleMemory<'_>,
+        table: Entities,
+        entities: &EntityProjection,
+        module: ModuleId,
+        common: &EntityTable,
+        entity: EntityId,
+    ) -> Result<Option<(u64, Option<u64>)>, CallError> {
+        match self.address {
+            PlayerAddress::EntityClient(layout) => {
+                let Some(edict) = native_address(table, module, common, entity) else {
+                    return Ok(None);
+                };
+                let pointer = memory.read_u64(edict + layout.stats.client as u64)?;
+                Ok((pointer != 0).then_some((pointer, Some(edict))))
+            }
+            PlayerAddress::Registered => {
+                let Some(players) = entities.registered_players() else {
+                    return Ok(None);
+                };
+                let Some(slot) = common.resolve(entity) else {
+                    return Ok(None);
+                };
+                let Some(native) =
+                    common.columns.native_entity[slot].filter(|native| native.module == module)
+                else {
+                    return Ok(None);
+                };
+                if entities.binding(common, native)? != Some(entity) {
+                    return Ok(None);
+                }
+                Ok(native_address(players, module, common, entity).map(|pointer| (pointer, None)))
+            }
+        }
+    }
+
+    pub fn write_position(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        table: Entities,
+        entities: &EntityProjection,
+        context: crate::services::CallContext,
+        server: &Server,
+        native: NativeEntity,
+        mut pmove: Option<&mut crate::pmove::Pmove>,
+        position: Vec3,
+    ) -> Result<(), CallError> {
+        let Some(client) = server.client_for_native(native) else {
+            return Ok(());
+        };
+        let entity = server.clients[client.0 as usize].entity;
+        let Some((pointer, _)) = self.pointer(
+            memory,
+            table,
+            entities,
+            context.module,
+            &server.entities,
+            entity,
+        )?
+        else {
+            return Ok(());
+        };
+        match self.address {
+            PlayerAddress::EntityClient(_) => pmove
+                .as_deref_mut()
+                .ok_or(CallError::Memory)?
+                .write_position(memory, pointer, position),
+            PlayerAddress::Registered => {
+                let projection = self.projection.as_ref().ok_or(CallError::Memory)?;
+                for (word, value) in projection.position_words(position) {
+                    let field = self
+                        .fields
+                        .iter()
+                        .find(|field| field.word == word)
+                        .ok_or(CallError::Memory)?;
+                    memory.write_field(pointer + field.offset, field.width, value)?;
+                }
+                Ok(())
+            }
+        }
+    }
     pub fn observe_clock(&self, clock: ClockObservation) -> Result<ClockObservation, CallError> {
         if !clock.is_valid() {
             return Err(CallError::Capacity);
@@ -428,38 +512,16 @@ impl PlayerValues {
             if server.entities.columns.owner[slot] != module {
                 continue;
             }
-            let (pointer, edict) = match self.address {
-                PlayerAddress::EntityClient(layout) => {
-                    let Some(edict) =
-                        native_address(table, module, &server.entities, client.entity)
-                    else {
-                        continue;
-                    };
-                    let pointer = memory.read_u64(edict + layout.stats.client as u64)?;
-                    if pointer == 0 {
-                        continue;
-                    }
-                    (pointer, Some(edict))
-                }
-                PlayerAddress::Registered => {
-                    let Some(players) = entities.registered_players() else {
-                        continue;
-                    };
-                    let Some(native) = server.entities.columns.native_entity[slot]
-                        .filter(|native| native.module == module)
-                    else {
-                        continue;
-                    };
-                    if entities.binding(&server.entities, native)? != Some(client.entity) {
-                        continue;
-                    }
-                    let Some(pointer) =
-                        native_address(players, module, &server.entities, client.entity)
-                    else {
-                        continue;
-                    };
-                    (pointer, None)
-                }
+            let Some((pointer, edict)) = self.pointer(
+                memory,
+                table,
+                entities,
+                module,
+                &server.entities,
+                client.entity,
+            )?
+            else {
+                continue;
             };
             if let Some(projection) = &self.projection {
                 if self.inventory.as_ref().is_some_and(|inventory| {

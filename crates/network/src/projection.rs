@@ -794,6 +794,19 @@ impl PlayerProjection {
         self.flag_mask
     }
 
+    /// A native body edit changes only position cells. Preserve every other
+    /// raw player field and use the same conversions as full native reduction.
+    pub fn position_words(&self, position: Vec3) -> impl Iterator<Item = (usize, u32)> + '_ {
+        self.fields
+            .iter()
+            .filter_map(move |field| match field.source {
+                Position(axis) => {
+                    Some((field.word, field.convert.export(position.0[axis].to_bits())))
+                }
+                _ => None,
+            })
+    }
+
     /// Read the load-selected view/signal fields from a retained native frame.
     /// Native and wire conversion share the same descriptors as full import.
     pub fn feedback_sample(&self, words: &[u32]) -> Option<PlayerFeedbackSample> {

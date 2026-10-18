@@ -33,23 +33,12 @@ pub(super) fn sync_attachments(
     services: &mut EngineServices<'_>,
     context: CallContext,
 ) -> Result<(), CallError> {
-    services.server.commit_attachments();
-    for index in 0..services.server.entities.attachment_ids().len() {
-        let entity = services.server.entities.attachment_ids()[index];
-        let Some(slot) = services.server.entities.resolve(entity) else {
-            continue;
-        };
-        let Some(native) = services.server.entities.columns.native_entity[slot]
-            .filter(|native| native.module == context.module)
-        else {
-            continue;
-        };
+    services.sync_attachment_positions(context.module, |services, entity, native, position| {
         let reference = NativeEntityRef::entity(
-            qa_core::primitives::ResourceNamespace::Module(native.module),
+            ResourceNamespace::Module(native.module),
             u32::try_from(native.slot).map_err(|_| CallError::Entity)?,
         );
         let offset = vm.weak_entity_offset(context.module, reference)?;
-        let position = services.server.entities.columns.position[slot];
         for axis in 0..3 {
             let slot = services
                 .server
@@ -64,9 +53,8 @@ pub(super) fn sync_attachments(
                 MotionWrite::Origin(axis),
             )?;
         }
-        vm.publish_link_bounds(services, context, offset)?;
-    }
-    Ok(())
+        vm.publish_link_bounds(services, context, offset)
+    })
 }
 
 pub(super) fn noclip(

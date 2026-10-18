@@ -6,7 +6,7 @@ use qa_core::primitives::{
     EntityAppearance, EntityClientData, EntityLight, EntityModelData, EntityParameter,
     EntityPresentation, EntityRecord, ModelRef, ModelUse, NativeClientRef, NativeEntityRef,
     NativeReference, ResourceNamespace, RuleSetId, SoundRef, ThinkTime,
-    Trajectory as PublishedTrajectory, TrajectoryCurve,
+    Trajectory as PublishedTrajectory, TrajectoryCurve, Vec3,
 };
 use qa_core::solids::{PackedSolid, SolidCodec};
 use qa_gameplay::rules::entities::{
@@ -288,6 +288,32 @@ impl EntityProjection {
     }
     pub fn words(&self) -> usize {
         self.words
+    }
+    /// Translate public position cells without re-encoding unrelated entity
+    /// fields, trajectory timing, velocities or negotiated native payloads.
+    pub fn translate_position_words(&self, from: Vec3, to: Vec3, words: &mut [u32]) -> bool {
+        let Some(words) = words.get_mut(..self.words) else {
+            return false;
+        };
+        for field in self.fields {
+            let axis = match field.source {
+                Position(axis)
+                | PublishedPosition(axis)
+                | Trajectory(false, TrajectoryField::Base(axis)) => axis,
+                _ => continue,
+            };
+            if from.0[axis].to_bits() == to.0[axis].to_bits() {
+                continue;
+            }
+            let current = f32::from_bits(field.convert.import(words[field.word]));
+            let value = if current == from.0[axis] {
+                to.0[axis]
+            } else {
+                current + (to.0[axis] - from.0[axis])
+            };
+            words[field.word] = field.convert.export(value.to_bits());
+        }
+        true
     }
     pub fn trajectory_rules(&self) -> Option<TrajectoryRules> {
         self.trajectory

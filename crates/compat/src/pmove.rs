@@ -9,6 +9,9 @@ use qa_network::projection::{
 };
 
 use Width::*;
+#[cfg(test)]
+#[path = "../tests/unit/pmove_positions.rs"]
+mod tests;
 /// Original x86-64 game.h offsets, checked with sizeof/offsetof on qsrc.
 pub(crate) struct Outputs {
     pub jump_sound: usize,
@@ -222,5 +225,18 @@ impl Pmove {
         self.read_state(memory, pointer, module, player)?;
         self.client
             .import_presentation(memory, pointer, module, player)
+    }
+
+    pub(crate) fn write_position(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        pointer: u64,
+        position: qa_core::primitives::Vec3,
+    ) -> Result<(), CallError> {
+        for (word, value) in self.projection.position_words(position) {
+            let (offset, width) = self.layout.state[word];
+            memory.write_field(pointer + offset as u64, width, value)?;
+        }
+        Ok(())
     }
 }

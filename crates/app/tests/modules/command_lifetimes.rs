@@ -672,7 +672,19 @@ fn queued_disconnect_runs_client_callback_on_the_active_arena_and_retires_after_
     assert_eq!(host.module_counts(A).unwrap().calls, before + 1);
     assert_eq!(host.module_counts(A).unwrap().traps, traps + 1);
     assert_eq!(host.module_state(A), Some(State::Running));
-    assert_eq!(text(&host, "lifetime_disconnect_human"), Some("1"));
+    let human_view = host
+        .console
+        .cvars
+        .bind(
+            "lifetime_disconnect_human",
+            Context {
+                cvar_seat: Some(SeatId::FIRST),
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.read(human_view).unwrap().as_str(), "1");
+    assert_eq!(text(&host, "lifetime_disconnect_human"), Some(""));
     assert!(host.local_clients[0].is_none());
     assert!(
         host.runtime.server.clients[clients[0].0 as usize]

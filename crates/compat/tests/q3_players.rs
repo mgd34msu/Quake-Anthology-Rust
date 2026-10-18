@@ -315,6 +315,135 @@ fn entity(memory: &mut ModuleMemory<'_>, address: u64) {
         .unwrap();
 }
 
+fn attached_native_player_pose_reaches_public_memory_before_the_next_export() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow};
+    let mut f = Fixture::new();
+    let mut vm = qvm(
+        &[(Opcode::Enter, 0), (Opcode::Const, 0), (Opcode::Leave, 0)],
+        &f.registry,
+    );
+    entity(&mut vm.memory, ENTITIES);
+    let old = Vec3([1.0, 2.0, 3.0]);
+    vm.memory.write_vec3(ENTITIES + 488, old).unwrap();
+    vm.memory
+        .write_vec3(ENTITIES + 24, Vec3([10.0, 20.0, 30.0]))
+        .unwrap();
+    vm.memory
+        .write_vec3(ENTITIES + 92, Vec3([10.0, 20.0, 30.0]))
+        .unwrap();
+    vm.memory.write_vec3(PLAYERS + 20, old).unwrap();
+    vm.memory
+        .write_vec3(PLAYERS + 32, Vec3([8.0, 9.0, 10.0]))
+        .unwrap();
+    f.register(&mut vm, ENTITIES, PLAYERS, PLAYER_STRIDE);
+    f.publish(&mut vm).unwrap();
+    let anchor = f
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Milliseconds(0),
+            ModuleId(2),
+            AllocationPolicy::q3(0),
+        )
+        .unwrap()
+        .id;
+    f.server
+        .entities
+        .columns
+        .set_position(anchor.slot as usize, Vec3([20.0, 30.0, 40.0]));
+    let player = f.server.clients[1].entity;
+    f.server
+        .entities
+        .attach(
+            player,
+            BodyAttachment {
+                anchor,
+                follow: BodyFollow::Translation,
+                offset: old,
+            },
+        )
+        .unwrap();
+    f.server.commit_attachments();
+    assert_eq!(
+        f.server.clients[1].player.body.position,
+        Vec3([21.0, 32.0, 43.0])
+    );
+    let entity_before = vm
+        .memory
+        .read(ENTITIES, ENTITY_STRIDE as usize)
+        .unwrap()
+        .to_vec();
+    let player_before = vm
+        .memory
+        .read(PLAYERS, PLAYER_STRIDE as usize)
+        .unwrap()
+        .to_vec();
+    f.call(&mut vm, 2, &[2]).unwrap();
+    assert_eq!(
+        vm.memory.read_vec3(ENTITIES + 488).unwrap(),
+        Vec3([21.0, 32.0, 43.0])
+    );
+    assert_eq!(
+        vm.memory.read_vec3(ENTITIES + 24).unwrap(),
+        Vec3([30.0, 50.0, 70.0])
+    );
+    assert_eq!(
+        vm.memory.read_vec3(ENTITIES + 92).unwrap(),
+        Vec3([30.0, 50.0, 70.0])
+    );
+    assert_eq!(
+        vm.memory.read_vec3(PLAYERS + 20).unwrap(),
+        Vec3([21.0, 32.0, 43.0])
+    );
+    assert_eq!(
+        vm.memory.read_vec3(PLAYERS + 32).unwrap(),
+        Vec3([8.0, 9.0, 10.0])
+    );
+    for (index, &before) in entity_before.iter().enumerate() {
+        if ![24..36, 92..104, 488..500]
+            .iter()
+            .any(|range| range.contains(&index))
+        {
+            assert_eq!(
+                vm.memory.read(ENTITIES + index as u64, 1).unwrap()[0],
+                before
+            );
+        }
+    }
+    for (index, &before) in player_before.iter().enumerate() {
+        if !(20..32).contains(&index) {
+            assert_eq!(
+                vm.memory.read(PLAYERS + index as u64, 1).unwrap()[0],
+                before
+            );
+        }
+    }
+    vm.memory
+        .write_word(ENTITIES + 96, (-0.0f32).to_bits() as i32)
+        .unwrap();
+    f.call(&mut vm, 2, &[2]).unwrap();
+    assert_eq!(
+        vm.memory.read_word(ENTITIES + 96).unwrap() as u32,
+        (-0.0f32).to_bits()
+    );
+    vm.memory
+        .write_vec3(PLAYERS + 20, Vec3([999.0, 998.0, 997.0]))
+        .unwrap();
+    f.publish(&mut vm).unwrap();
+    assert_eq!(
+        f.server.clients[1].player.body.position,
+        Vec3([21.0, 32.0, 43.0])
+    );
+    assert_eq!(
+        f.server.clients[1].player.body.velocity,
+        Vec3([8.0, 9.0, 10.0])
+    );
+    assert_eq!(
+        vm.memory.read_vec3(PLAYERS + 20).unwrap(),
+        Vec3([21.0, 32.0, 43.0])
+    );
+}
+
 // Original q_shared.h declaration order, independent of the wire/ABI mapper.
 fn public_entity_cells() -> [u32; 52] {
     [
@@ -1986,6 +2115,127 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
         0
     );
     assert_eq!(f.server.clients[1].player.loop_sound, accepted_loop);
+    {
+        use qa_core::primitives::{BodyAttachment, BodyFollow};
+        let (saved_entity, saved_player) = {
+            let memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+            (
+                memory
+                    .read(native_entities, ENTITY_STRIDE as usize)
+                    .unwrap()
+                    .to_vec(),
+                memory
+                    .read(native_players, PLAYER_STRIDE as usize)
+                    .unwrap()
+                    .to_vec(),
+            )
+        };
+        let anchor = f
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Milliseconds(0),
+                ModuleId(2),
+                AllocationPolicy::q3(0),
+            )
+            .unwrap()
+            .id;
+        f.server
+            .entities
+            .columns
+            .set_position(anchor.slot as usize, Vec3([20.0, 30.0, 40.0]));
+        let subject = f.server.clients[1].entity;
+        f.server
+            .entities
+            .attach(
+                subject,
+                BodyAttachment {
+                    anchor,
+                    follow: BodyFollow::Translation,
+                    offset: Vec3([1.0, 2.0, 3.0]),
+                },
+            )
+            .unwrap();
+        let mut read_origin = vec![0x48, 0xb8];
+        read_origin.extend((native_players + 20).to_le_bytes());
+        read_origin.extend([0x8b, 0x00, 0x48, 0xba]);
+        read_origin.extend((native_players + 20).to_le_bytes());
+        read_origin.extend([0xc7, 0x02]);
+        read_origin.extend(999.0f32.to_bits().to_le_bytes());
+        read_origin.push(0xc3);
+        qa_compat::memory::process_memory(&mut vm.process)
+            .unwrap()
+            .write(base + 0x1200, &read_origin)
+            .unwrap();
+        assert_eq!(
+            invoke(
+                &mut vm,
+                &mut f,
+                &mut unknown,
+                ThinkTime::Milliseconds(9_000_000),
+                EventTime::from_milliseconds(100_000)
+            )
+            .unwrap(),
+            21.0f32.to_bits() as u64
+        );
+        {
+            let memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+            assert_eq!(
+                memory.read_vec3(native_entities + 488).unwrap(),
+                Vec3([21.0, 32.0, 43.0])
+            );
+            assert_eq!(
+                memory.read_vec3(native_players + 20).unwrap(),
+                Vec3([21.0, 32.0, 43.0])
+            );
+            for (index, &before) in saved_entity.iter().enumerate() {
+                if ![24..36, 92..104, 488..500]
+                    .iter()
+                    .any(|range| range.contains(&index))
+                {
+                    assert_eq!(
+                        memory.read(native_entities + index as u64, 1).unwrap()[0],
+                        before
+                    );
+                }
+            }
+            for (index, &before) in saved_player.iter().enumerate() {
+                if !(20..32).contains(&index) {
+                    assert_eq!(
+                        memory.read(native_players + index as u64, 1).unwrap()[0],
+                        before
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            f.server.clients[1].player.body.position,
+            Vec3([21.0, 32.0, 43.0])
+        );
+        assert!(f.server.entities.detach(subject));
+        assert!(
+            f.server
+                .entities
+                .release(anchor, ThinkTime::Milliseconds(0))
+        );
+        {
+            let mut memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+            memory.write(native_entities, &saved_entity).unwrap();
+            memory.write(native_players, &saved_player).unwrap();
+            memory.write(base + 0x1200, &moved).unwrap();
+        }
+        assert_eq!(
+            invoke(
+                &mut vm,
+                &mut f,
+                &mut unknown,
+                ThinkTime::Milliseconds(9_000_000),
+                EventTime::from_milliseconds(100_000)
+            )
+            .unwrap(),
+            0
+        );
+    }
     f.server.clients[1].module_movement = false;
     let p = &f.server.clients[1].player;
     let before = (
@@ -2267,6 +2517,7 @@ fn main() {
     native_continuation::run();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     native_random::run();
+    attached_native_player_pose_reaches_public_memory_before_the_next_export();
     qvm_native_memory_preserves_full_widths_roles_and_unlinked_player_origin();
     qvm_metadata_preserves_raw_native_words_and_zero_multiplier_tuning();
     qvm_export_relocation_zero_address_and_stale_bindings();
