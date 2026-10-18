@@ -817,3 +817,34 @@ fn classic_q2_primary_filename255_keeps_ordinary_model_cells() {
         );
     }
 }
+
+#[test]
+fn unchanged_bank_attachment_preserves_sound_claims_cursors_and_native_receipts() {
+    let bank = bank();
+    let (mut p, layout) = publication(&bank);
+    let sound = bank.find("sound/a.wav").unwrap();
+    p.primary_sound(1, true, Some(sound));
+    let row = layout.resources[1].first as usize + 1;
+    p.seen(row, 3);
+    p.published(row, Some(7));
+    p.finish(ModuleId(1), 5);
+    p.bind_sounds(&bank);
+    assert!(!p.begin(ModuleId(1), 5));
+    assert!(!p.needs(row, 3));
+    assert_eq!(p.sound(sound), Some((1, ResourceReadiness::Pending)));
+    p.acknowledged(row, 7);
+    assert_eq!(p.sound(sound), Some((1, ResourceReadiness::Ready)));
+    let reference = SoundRef::native(ResourceNamespace::Module(ModuleId(1)), 1).unwrap();
+    assert_eq!(
+        p.project_sound_ref(reference, ClientId(0), |_, _| None),
+        Some(1)
+    );
+    p.bind_sounds(&bank);
+    assert_eq!(p.sound(sound), Some((1, ResourceReadiness::Ready)));
+    p.connection(ModuleId(2), layout, layout);
+    assert_eq!(
+        p.sound(sound),
+        None,
+        "a real connection change still clears its namespace"
+    );
+}

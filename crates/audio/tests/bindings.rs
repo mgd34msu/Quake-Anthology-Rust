@@ -379,3 +379,46 @@ fn forward_and_inverse_filename_codecs_preserve_literal_and_escaped_paths() {
             .is_none()
     );
 }
+
+#[test]
+fn repeated_bank_attachment_preserves_bindings_but_a_different_bank_resets_them() {
+    let rate = NonZeroU32::new(44100).unwrap();
+    let mut first = Bank::with_capacity(rate, 4, 128).unwrap();
+    let a = first.attempt(b"sound/a.wav").unwrap();
+    let mut bindings = SoundBindings::load_with_zero(8);
+    bindings.attach(&first);
+    bindings.set(3, Some(a)).unwrap();
+    let name = qa_core::primitives::NameId(1);
+    let named = bindings.register_named(name, a).unwrap();
+    bindings.prefer(3);
+    let late = first.attempt(b"sound/late.wav").unwrap();
+    let moved = Box::new(first);
+    bindings.attach(&moved);
+    assert_eq!(bindings.sound(3), Some(a));
+    assert_eq!(bindings.ordinal(a), Some(3));
+    assert_eq!(bindings.named(name), Some(named));
+    bindings.set(4, Some(late)).unwrap();
+    bindings.clear();
+    bindings.attach(&moved);
+    assert_eq!(
+        bindings.sound(3),
+        None,
+        "attachment cannot restore cleared rows"
+    );
+    bindings.set(3, Some(a)).unwrap();
+    let mut second = Bank::with_capacity(rate, 4, 128).unwrap();
+    let other = second.attempt(b"sound/different.wav").unwrap();
+    assert_eq!(second.capacity(), moved.capacity());
+    assert_eq!(
+        other, a,
+        "equal numeric handles do not make banks interchangeable"
+    );
+    bindings.attach(&second);
+    assert_eq!(bindings.sound(3), None);
+    assert_eq!(bindings.ordinal(a), None);
+    assert_eq!(bindings.named(name), None);
+    bindings.set(2, Some(other)).unwrap();
+    drop(moved);
+    bindings.attach(&second);
+    assert_eq!(bindings.sound(2), Some(other));
+}

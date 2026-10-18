@@ -151,7 +151,6 @@ pub struct ResourceState {
     sounds: qa_audio::SoundBindings,
     sound_source: Option<qa_audio::SoundSource>,
     sound_dirty: qa_core::bits::BitSet,
-    sound_attached: bool,
     cues_prepared: bool,
     muzzle_sounds: qa_audio::SoundBindings,
     player_sounds: [Option<(qa_core::primitives::SoundId, u32)>;
@@ -211,7 +210,6 @@ impl ClientResources {
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_source,
                 sound_dirty: qa_core::bits::BitSet::empty(layout.resources[1].count as usize),
-                sound_attached: false,
                 cues_prepared: false,
                 muzzle_sounds: qa_audio::SoundBindings::load(
                     qa_gameplay::rules::q2::sounds::PATHS.len() + 1,
@@ -375,7 +373,6 @@ impl ClientResources {
             self.state.models = models;
             self.state.sounds = sounds;
             self.state.sound_dirty = dirty;
-            self.state.sound_attached = false;
             self.state.cues_prepared = false;
         }
         self.startup.begin_q2(data)?;
@@ -557,9 +554,7 @@ impl ClientResources {
                 Some(self.state.files.view()),
             ));
         }
-        for ordinal in 1..self.state.layout.resources[1].count as usize {
-            self.state.sound_dirty.insert(ordinal);
-        }
+        self.state.invalidate_sounds();
         if self.startup.allow_sounds() {
             self.state.rejected += u64::from(!self.state.refresh_sounds(bank));
         }
@@ -1549,10 +1544,7 @@ impl ResourceState {
     }
     /// Cold bank attachment reserves numeric inverse rows before packet intake.
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) -> bool {
-        if !self.sound_attached {
-            self.sounds.attach(bank);
-            self.sound_attached = true;
-        }
+        self.attach_sounds(bank);
         for (binding, path) in self
             .player_sounds
             .iter_mut()
@@ -1582,6 +1574,16 @@ impl ResourceState {
             }
         }
         self.refresh_sounds(Some(bank))
+    }
+    fn invalidate_sounds(&mut self) {
+        for ordinal in 1..self.layout.resources[1].count as usize {
+            self.sound_dirty.insert(ordinal);
+        }
+    }
+    fn attach_sounds(&mut self, bank: &qa_audio::Bank) {
+        if self.sounds.attach(bank) {
+            self.invalidate_sounds();
+        }
     }
     pub(crate) fn muzzle_sound(
         &self,
@@ -1628,10 +1630,7 @@ impl ResourceState {
                 Err(_) => self.rejected += 1,
             }
         }
-        if !self.sound_attached {
-            self.sounds.attach(assets.bank());
-            self.sound_attached = true;
-        }
+        self.attach_sounds(assets.bank());
         while let Some(ordinal) = self.sound_dirty.next_set(1) {
             self.sound_dirty.remove(ordinal);
             let index = self.layout.resources[1].first as usize + ordinal;
@@ -1839,9 +1838,10 @@ impl ConfigPublication {
         self.reset();
     }
     pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) {
-        self.sounds.attach(bank);
-        self.invalidate_resource(startup::ResourceKind::Sound);
-        self.primary_claims.fill(false);
+        if self.sounds.attach(bank) {
+            self.invalidate_resource(startup::ResourceKind::Sound);
+            self.primary_claims.fill(false);
+        }
     }
     fn invalidate_resource(&mut self, kind: startup::ResourceKind) {
         self.revisions.fill(None);

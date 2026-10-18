@@ -410,7 +410,6 @@ struct ConfigRange {
     sounds: Option<IndexSpan>,
     sound_bindings: Option<qa_audio::SoundBindings>,
     sound_revisions: Box<[Option<u64>]>,
-    sound_attached: bool,
     music_owner: Option<qa_core::primitives::MusicOwner>,
     signon: signon::SignonRegistry,
 }
@@ -426,12 +425,13 @@ impl ConfigRange {
             .filter(|&ordinal| ordinal < sounds.count as usize)
     }
     fn attach_sounds(&mut self, bank: &qa_audio::Bank) -> Result<(), CallError> {
-        if !self.sound_attached {
-            self.sound_bindings
-                .as_mut()
-                .ok_or(CallError::ConfigString)?
-                .attach(bank);
-            self.sound_attached = true;
+        if self
+            .sound_bindings
+            .as_mut()
+            .ok_or(CallError::ConfigString)?
+            .attach(bank)
+        {
+            self.sound_revisions.fill(None);
         }
         Ok(())
     }
@@ -652,7 +652,6 @@ impl ServiceStorage {
                     .map(|ranges| qa_audio::SoundBindings::load(ranges[1].count as usize)),
                 sound_revisions: vec![None; resources.map_or(0, |ranges| ranges[1].count as usize)]
                     .into_boxed_slice(),
-                sound_attached: false,
                 signon: signon::SignonRegistry::load(if resources.is_some() {
                     SIGNON_BYTES / 10
                 } else {
@@ -1043,7 +1042,11 @@ impl ServiceStorage {
             .find(|row| row.module == module)
             .ok_or(CallError::ConfigString)?;
         if row.sounds != Some(sounds) {
-            if row.sound_attached {
+            if row
+                .sound_bindings
+                .as_ref()
+                .is_some_and(qa_audio::SoundBindings::is_attached)
+            {
                 return Err(CallError::ConfigString);
             }
             row.sound_bindings = Some(qa_audio::SoundBindings::load(sounds.count as usize));
@@ -2232,6 +2235,14 @@ impl EngineServices<'_> {
         let Some(ordinal) = row.sound_ordinal(index) else {
             return Ok(());
         };
+        if let Some(bank) = self
+            .sound_loader
+            .as_deref()
+            .map(|loader| loader.bank())
+            .or(self.sound_bank)
+        {
+            row.attach_sounds(bank)?;
+        }
         let config = self
             .storage
             .configs
@@ -2241,7 +2252,6 @@ impl EngineServices<'_> {
             return Ok(());
         }
         let sound = if let Some(loader) = self.sound_loader.as_deref_mut() {
-            row.attach_sounds(loader.bank())?;
             if ordinal == 0 || config.text.is_empty() {
                 None
             } else {
@@ -2262,7 +2272,6 @@ impl EngineServices<'_> {
                 }
             }
         } else if let Some(bank) = self.sound_bank {
-            row.attach_sounds(bank)?;
             let bindings = row.sound_bindings.as_mut().ok_or(CallError::ConfigString)?;
             bindings
                 .bind_name_in(

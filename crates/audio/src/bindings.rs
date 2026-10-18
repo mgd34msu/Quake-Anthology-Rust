@@ -98,6 +98,7 @@ pub fn native_sound_name(rules: RuleSetId, bank: &Bank, sound: SoundId) -> Optio
 /// Registration resolves names; emission only reads numeric forward/inverse rows.
 pub struct SoundBindings {
     bindings: OrdinalBindings<SoundId>,
+    owner: Option<std::sync::Arc<()>>,
 }
 impl SoundBindings {
     pub fn load(ordinals: usize) -> Self {
@@ -115,9 +116,24 @@ impl SoundBindings {
                 if valid_zero { sounds } else { 0 },
                 valid_zero,
             ),
+            owner: None,
         }
     }
-    pub fn attach(&mut self, bank: &Bank) {
+    pub fn is_attached(&self) -> bool {
+        self.owner.is_some()
+    }
+    pub fn attached_to(&self, bank: &Bank) -> bool {
+        self.owner
+            .as_ref()
+            .is_some_and(|owner| std::sync::Arc::ptr_eq(owner, &bank.owner))
+    }
+    /// A bank's owned lifetime, rather than its paths or capacity, determines
+    /// whether numeric sound handles remain valid. Reattachment is a no-op.
+    /// Returns true only when replacing the binding's PCM owner.
+    pub fn attach(&mut self, bank: &Bank) -> bool {
+        if self.attached_to(bank) {
+            return false;
+        }
         self.bindings.configure(
             bank.capacity(),
             if self.bindings.valid_zero() {
@@ -126,6 +142,8 @@ impl SoundBindings {
                 0
             },
         );
+        self.owner = Some(bank.owner.clone());
+        true
     }
     pub fn clear(&mut self) {
         self.bindings.clear();

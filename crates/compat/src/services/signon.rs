@@ -180,8 +180,8 @@ impl ServiceStorage {
             .find(|row| row.module == context.module)
             .ok_or(CallError::ConfigString)?;
         let sounds = bank
-            .filter(|_| row.sound_attached)
-            .zip(row.sound_bindings.as_ref());
+            .zip(row.sound_bindings.as_ref())
+            .filter(|(bank, bindings)| bindings.attached_to(bank));
         let lifetime = row.lifetime.ok_or(CallError::Entity)?;
         if server.entities.resolve(lifetime).is_none() {
             return Err(CallError::Entity);

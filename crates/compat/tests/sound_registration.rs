@@ -1843,3 +1843,63 @@ fn background_track_ordinals_publish_leased_paths_in_all_address_modes() {
 
 #[path = "support/renderer_requests.rs"]
 mod renderer_requests;
+
+#[test]
+fn a_replaced_bank_rebinds_unchanged_native_rows_while_repeat_preparation_keeps_the_cache() {
+    for rules in RuleSetId::ALL {
+        let mut fixture = Fixture::native(rules);
+        let module = ModuleId(1);
+        let sounds = qa_core::configstrings::ConfigLayout::for_rules(rules).resources[1];
+        let native_a = if rules == RuleSetId::Quake3 {
+            b"sound/a.wav".as_slice()
+        } else {
+            b"a.wav"
+        };
+        let native_b = if rules == RuleSetId::Quake3 {
+            b"sound/b.wav".as_slice()
+        } else {
+            b"b.wav"
+        };
+        let before = fixture.registrar.bank.find_bytes(b"sound/a.wav").unwrap();
+        {
+            let mut services = fixture.engine(true);
+            assert_eq!(
+                (ENGINE_CALLS.resource_index)(&mut services, module, sounds, native_a),
+                Ok(1)
+            );
+            assert_eq!(
+                (ENGINE_CALLS.resource_index)(&mut services, module, sounds, native_b),
+                Ok(2)
+            );
+            services.prepare_sound_bindings(module).unwrap();
+            assert_eq!(services.sound_id(module, sounds, 1), Ok(Some(before)));
+        }
+        let calls = fixture.registrar.calls.len();
+        fixture.engine(true).prepare_sound_bindings(module).unwrap();
+        assert_eq!(fixture.registrar.calls.len(), calls);
+        let rate = fixture.registrar.bank.rate;
+        let mut replacement = qa_audio::Bank::with_capacity(rate, 8, 512).unwrap();
+        for path in [
+            b"sound/feedback/hit.wav".as_slice(),
+            b"sound/b.wav",
+            b"sound/a.wav",
+        ] {
+            let id = replacement.attempt(path).unwrap();
+            replacement.admit(id, pcm(rate)).unwrap();
+        }
+        let after = replacement.find_bytes(b"sound/a.wav").unwrap();
+        let second = replacement.find_bytes(b"sound/b.wav").unwrap();
+        assert_ne!(before, after);
+        assert_eq!(fixture.registrar.bank.capacity(), replacement.capacity());
+        fixture.registrar.bank = replacement;
+        {
+            let mut services = fixture.engine(true);
+            services.prepare_sound_bindings(module).unwrap();
+            assert_eq!(services.sound_id(module, sounds, 1), Ok(Some(after)));
+            assert_eq!(services.sound_id(module, sounds, 2), Ok(Some(second)));
+        }
+        assert_eq!(fixture.registrar.calls.len(), calls + 2);
+        fixture.engine(true).prepare_sound_bindings(module).unwrap();
+        assert_eq!(fixture.registrar.calls.len(), calls + 2);
+    }
+}

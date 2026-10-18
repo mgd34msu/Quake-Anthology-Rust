@@ -20,6 +20,8 @@ fn resource_rebinding_preserves_unrelated_publication_cursors_and_native_receipt
     use qa_core::primitives::{GeometryId, RuleSetId};
     let bank =
         qa_audio::Bank::with_capacity(std::num::NonZeroU32::new(44100).unwrap(), 1, 32).unwrap();
+    let replacement =
+        qa_audio::Bank::with_capacity(std::num::NonZeroU32::new(44100).unwrap(), 1, 32).unwrap();
     for source_rules in RuleSetId::ALL {
         let source = ConfigLayout::for_rules(source_rules);
         for target_rules in RuleSetId::ALL {
@@ -66,7 +68,7 @@ fn resource_rebinding_preserves_unrelated_publication_cursors_and_native_receipt
                         generation: 1,
                     }));
                 } else {
-                    p.bind_sounds(&bank);
+                    p.bind_sounds(&replacement);
                 }
                 assert!(
                     p.begin(ModuleId(1), 7),

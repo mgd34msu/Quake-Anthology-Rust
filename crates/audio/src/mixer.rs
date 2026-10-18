@@ -30,6 +30,7 @@ impl SourceBindings {
     }
 }
 pub struct Bank {
+    pub(crate) owner: std::sync::Arc<()>,
     names: NameTable,
     paths: Box<[Option<NameId>]>,
     samples: Box<[Option<Pcm>]>,
@@ -79,6 +80,7 @@ impl Bank {
         let mut paths = vec![None; capacity].into_boxed_slice();
         paths[0] = Some(NameId(0));
         let mut bank = Self {
+            owner: std::sync::Arc::new(()),
             names,
             paths,
             samples: std::iter::repeat_with(|| None).take(capacity).collect(),
