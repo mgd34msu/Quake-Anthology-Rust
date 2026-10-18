@@ -888,13 +888,12 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("native userinfo: {e:?}"))?;
         let native_client = host.connect_module_client(module, id, &info[..length])?;
         println!(
-            "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{native_client},\"native_signon\":false,\"gameplay_accepted\":false}}",
+            "{{\"event\":\"module_client_connected\",\"seat\":{seat},\"module\":{},\"native_client\":{native_client},\"native_signon\":false,\"gameplay_accepted\":false}}",
             module.0
         );
     }
-    // Model filenames are resolved and assets registered once, after native
-    // ClientBegin has finished its startup precache. CLIENT uses received
-    // configstrings to bind those immutable assets at numeric native indices.
+    // Resolve initial SERVER model precaches at registration. CLIENT uses
+    // received configstrings to bind assets at numeric native indices.
     let precaches: Vec<_> = host
         .model_precaches()
         .into_iter()

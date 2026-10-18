@@ -10,6 +10,9 @@ use qa_network::{
     states,
 };
 
+#[path = "../support/q3_game_program.rs"]
+#[allow(dead_code)]
+mod game_program;
 #[path = "../support/service_program.rs"]
 #[allow(dead_code)]
 mod program;
@@ -406,6 +409,9 @@ fn media_host() -> MediaHost {
     media_host_files(false)
 }
 fn media_host_files(pure: bool) -> MediaHost {
+    media_host_kind(pure, false)
+}
+fn media_host_kind(pure: bool, local_game: bool) -> MediaHost {
     let mut entries = vec![
         ("maps/ready.bsp", support::world_map(16.0)),
         ("gfx/palette.lmp", (0u8..=255).flat_map(|value| [value, 255 - value, value / 2]).collect()),
@@ -427,6 +433,10 @@ fn media_host_files(pure: bool) -> MediaHost {
             ),
         ));
     }
+    if local_game {
+        let (code, data) = game_program::code(0, false, 0);
+        entries.push(("vm/qagame.qvm", program::bytes(&code, &data)));
+    }
     let mut fixture = support::Fixture::new(&entries);
     if pure {
         let root = fixture
@@ -447,7 +457,17 @@ fn media_host_files(pure: bool) -> MediaHost {
         );
         fixture.vfs.mount_archive(&path, 100, archive).unwrap();
     }
-    let (mut runtime, requests, old) = media_runtime(std::mem::take(&mut fixture.vfs), pure);
+    let (mut runtime, mut requests, old) = media_runtime(std::mem::take(&mut fixture.vfs), pure);
+    if local_game {
+        load_q3(
+            &mut runtime,
+            &[Q3Spec::parse("game:vm/qagame.qvm").unwrap()],
+            &mut requests,
+            TickRate::fixed(50).unwrap(),
+            None,
+        )
+        .unwrap();
+    }
     let (source, profile) = media_assets(&mut runtime);
     let mut host = requested_host(runtime, requests);
     host.local_clients[0] = Some(old);
@@ -1278,3 +1298,127 @@ fn q3_pure_client_waits_for_module_references_and_reliable_room_then_sends_nativ
 
 #[path = "q3_downloads.rs"]
 mod downloads;
+
+#[test]
+fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
+    use qa_app::modules::{Export, Phase};
+    use qa_core::primitives::CallbackId;
+    let (_fixture, mut host, mut source, profile) = media_host_kind(true, true);
+    let id = host.local_clients[0].unwrap();
+    let game = ModuleId(3);
+    setting(&mut host, "mapname", "ready");
+    setting(&mut host, "sv_pure", "1");
+    host.bind_client_model_assets([(id, profile, None)]);
+    host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_state(game), Some(State::Running));
+    host.connect_module_client(game, id, b"\\name\\Local pure")
+        .unwrap();
+    let value = |host: &mut FrameHost, export: i32| {
+        host.call_module_export(
+            game,
+            Export::words(
+                CallbackId(9),
+                &[(game_program::COUNTERS + export * 4) as u64],
+            ),
+            ThinkTime::Milliseconds(0),
+        )
+        .unwrap();
+        let Some(ModuleResult::Qvm(value)) = host.module_counts(game).unwrap().last_result else {
+            panic!("expected QVM count")
+        };
+        value
+    };
+    assert_eq!(value(&mut host, 3), 0);
+    for time in (10..=400).step_by(10) {
+        frame(&mut host, &mut source, time);
+        if value(&mut host, 3) == 1 {
+            break;
+        }
+    }
+    let logs = || {
+        String::from_utf8_lossy(
+            &host
+                .console
+                .scrollback
+                .chunks(&host.runtime.server.events.texts)
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+        )
+        .into_owned()
+    };
+    assert!(
+        host.runtime.server.clients[id.0 as usize].is_active(),
+        "{}",
+        logs()
+    );
+    assert!(host.local_worlds[0].is_some(), "{}", logs());
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(State::Running),
+        "{}",
+        logs()
+    );
+    assert_eq!(
+        host.module_state(ModuleId(2)),
+        Some(State::Running),
+        "{}",
+        logs()
+    );
+    assert_eq!(value(&mut host, 3), 1);
+    assert_eq!(host.module_counts(game).unwrap().traps, 0);
+    let server = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let context = server.command_context().unwrap();
+    let word = host
+        .runtime
+        .vfs
+        .mounts()
+        .find_map(|mount| host.runtime.vfs.q3_package_checksums(mount.id))
+        .unwrap()
+        .pure_checksum(context.checksum_feed);
+    assert_eq!(
+        server.received_command().unwrap().1,
+        format!(
+            "cp {} {} {} @ {} {}",
+            context.server_id,
+            word as i32,
+            word as i32,
+            word as i32,
+            (context.checksum_feed ^ word ^ 1) as i32
+        )
+        .as_bytes()
+    );
+    let info = host.runtime.client_resources[id.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .configs
+        .config(qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO)
+        .unwrap()
+        .text;
+    assert_eq!(qa_core::text::info_integer(info, b"sv_pure"), 1);
+    let client = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Client)
+        .unwrap()
+        .channel;
+    assert!(client.command_state().unwrap().queued > 0);
+    for time in [410, 420, 430] {
+        frame(&mut host, &mut source, time);
+    }
+    assert_eq!(
+        value(&mut host, 3),
+        1,
+        "later usercmds cannot call ClientBegin twice"
+    );
+    assert!(
+        value(&mut host, 7) > 0,
+        "native ClientThink consumes commands after admission"
+    );
+}

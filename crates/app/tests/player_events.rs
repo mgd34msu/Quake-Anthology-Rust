@@ -325,7 +325,6 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
     let mut host = Box::new(
         FrameHost::load_modules(console, runtime, TickRate::fixed(50).unwrap(), requests).unwrap(),
     );
-    host.local_clients[0] = Some(client);
     host.initialize_modules(Phase::Server);
     assert_eq!(
         host.module_state(MODULE),
@@ -334,6 +333,10 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
     host.initialize_modules(Phase::Client);
     host.connect_module_client(MODULE, client, b"\\name\\events")
         .unwrap();
+    // This event fixture preconfigures code and media directly. Attach the
+    // local view after SERVER connection; managed map startup is covered by
+    // console_connect's local Game/cgame/UI fixture.
+    host.local_clients[0] = Some(client);
     host.bind_sounds().unwrap();
     let mut source = Source {
         mixer: Mixer::load(host.runtime.sound_bank().unwrap().rate, 16, SeatId::COUNT),

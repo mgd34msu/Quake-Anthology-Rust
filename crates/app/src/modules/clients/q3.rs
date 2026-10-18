@@ -220,6 +220,13 @@ pub(super) fn connect(
             let publication = &mut host.runtime.config_publications[id.0 as usize];
             publication.connection(module, qa_core::configstrings::ConfigLayout::QUAKE3);
             publication.begin_native_connection();
+            if host.runtime.server.clients[id.0 as usize].connection
+                == Some(qa_session::clients::Connection::Local)
+                && host.local_clients.contains(&Some(id))
+                && let Some(resources) = host.runtime.client_resources[id.0 as usize].as_mut()
+            {
+                resources.begin_startup(qa_network::commands::packet::Protocol::Quake3_68);
+            }
         } else {
             begin(host, module, id, driver).map_err(|e| format!("ClientBegin: {e:?}"))?;
         }
