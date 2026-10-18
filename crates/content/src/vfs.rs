@@ -84,9 +84,17 @@ pub struct ReadView<'a> {
     vfs: &'a Vfs,
     search: Option<&'a SearchView>,
 }
-impl ReadView<'_> {
+impl<'vfs> ReadView<'vfs> {
     pub fn accepts_search(self, view: &SearchView) -> bool {
         self.vfs.accepts_search(view)
+    }
+    /// Mounted-source availability follows this namespace, like existence
+    /// probes. Read admission and reference accounting still happen on opens.
+    pub fn mounts(self) -> impl Iterator<Item = &'vfs MountInfo> {
+        self.vfs.mounts().filter(move |mount| {
+            self.search
+                .is_none_or(|view| self.vfs.accepts_search(view) && view.admits(mount, &[], false))
+        })
     }
     /// Retain the same selection after checking its VFS owner at this boundary.
     pub fn retain(self) -> Result<SearchView, VfsError> {

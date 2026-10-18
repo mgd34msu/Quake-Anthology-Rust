@@ -1358,6 +1358,14 @@ fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners
             .unwrap(),
         b"low"
     );
+    assert_eq!(
+        vfs.read_view(Some(restored.view()))
+            .mounts()
+            .map(|mount| mount.id)
+            .collect::<Vec<_>>(),
+        [mounts[0]]
+    );
+    assert_eq!(vfs.read_view(None).mounts().count(), 2);
     let foreign = Vfs::default();
     assert!(foreign.file_search(Some(low_id)).is_err());
     assert!(foreign.bind_search(Some(restored.view())).is_err());
@@ -1365,6 +1373,13 @@ fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners
         .bind_search(Some(&foreign.search_view([]).unwrap()))
         .unwrap();
     assert!(vfs.file_search(foreign_bound.id()).is_err());
+    assert_eq!(
+        vfs.read_view(Some(foreign_bound.view())).mounts().count(),
+        0
+    );
+    vfs.unmount(mounts[0]);
+    assert_eq!(vfs.read_view(Some(restored.view())).mounts().count(), 0);
+
     assert_eq!(vfs.bind_search(Some(default.view())).unwrap().id(), None);
 }
 

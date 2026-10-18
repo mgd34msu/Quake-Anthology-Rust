@@ -605,7 +605,10 @@ impl ClientModelBindings {
             });
             return true;
         }
-        if let Some((binding, collision)) = assets.catalog().loaded_collision_model(row.text) {
+        if let Some((binding, collision)) = assets
+            .catalog()
+            .loaded_collision_model(row.text, assets.search())
+        {
             let presentation = self
                 .world
                 .filter(|(world, _)| world.render == binding.world)
@@ -1068,7 +1071,10 @@ impl ClientModelBindings {
                 presentation: Some(presentation),
                 collision: assets.catalog().collision_world(world),
             }
-        } else if let Some((binding, collision)) = assets.catalog().loaded_collision_model(name) {
+        } else if let Some((binding, collision)) = assets
+            .catalog()
+            .loaded_collision_model(name, assets.search())
+        {
             ClientModel::Inline {
                 binding,
                 presentation: world

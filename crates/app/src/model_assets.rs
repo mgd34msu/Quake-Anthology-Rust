@@ -7433,8 +7433,14 @@ impl ModelCatalog {
     pub fn world_native_checksums(
         &self,
         path: &[u8],
+        search: Option<&SearchView>,
     ) -> Option<qa_formats::bsp::NativeMapChecksums> {
-        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
+        match file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            Some(search.unwrap_or(&self.registration_vfs)),
+        )? {
             ModelFile::LoadedWorld {
                 native_checksums, ..
             } => *native_checksums,
@@ -8277,8 +8283,14 @@ impl ModelCatalog {
     pub fn loaded_collision_model(
         &self,
         path: &[u8],
+        search: Option<&SearchView>,
     ) -> Option<(InlineBinding, Option<qa_core::primitives::GeometryId>)> {
-        match file_lookup(&self.names, &self.files, path, Some(&self.registration_vfs))? {
+        match file_lookup(
+            &self.names,
+            &self.files,
+            path,
+            Some(search.unwrap_or(&self.registration_vfs)),
+        )? {
             ModelFile::LoadedWorld {
                 binding, collision, ..
             } => Some((*binding, *collision)),

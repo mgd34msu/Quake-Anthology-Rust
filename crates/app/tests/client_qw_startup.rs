@@ -348,7 +348,7 @@ fn prespawn(host: &FrameHost, server: i32) -> Vec<u8> {
         .as_ref()
         .unwrap()
         .catalog()
-        .world_native_checksums(b"maps/ready.bsp")
+        .world_native_checksums(b"maps/ready.bsp", None)
         .and_then(|checksums| checksums.quakeworld_lumps)
         .unwrap();
     format!("prespawn {server} 0 {}", checksum as i32).into_bytes()

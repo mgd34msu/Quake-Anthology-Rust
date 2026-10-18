@@ -479,7 +479,7 @@ fn assert_admitted(
     assert_eq!(
         owner
             .catalog()
-            .world_native_checksums(world.0)
+            .world_native_checksums(world.0, Some(resources.file_search()))
             .map(|checksums| checksums.whole_file),
         Some(qa_core::checksum::block_checksum(world.1))
     );
@@ -1335,12 +1335,45 @@ fn published_pcx_refresh_retries_backend_admission_without_downloading_again() {
 #[test]
 fn missing_wal_download_cancel_retry_holds_startup_while_the_other_client_begins() {
     let mut files = ordinary_files();
+    files.push(("pics/colormap.pcx", support::pcx_dimensions(256, 320, 0)));
     files.retain(|(name, _)| *name != "textures/wall.wal");
     let healthy_world = q2_files::world(b"healthy");
     files.push(("maps/healthy.bsp", healthy_world.clone()));
     files.push(("textures/healthy.wal", q2_files::wal(33)));
     let (_fixture, mut host, mut source) = setup(&files, &[CLASSIC, RERELEASE]);
     let mount = host.runtime.vfs.mounts().next().unwrap().id;
+    let selected = host.runtime.vfs.search_view([mount]).unwrap();
+    let conflicting = support::Fixture::new(&[("textures/wall.wal", q2_files::wal(77))]);
+    let high_root = conflicting.vfs.mounts().next().unwrap().path.clone();
+    host.runtime.vfs.mount_directory(&high_root, 100).unwrap();
+    let profile = host
+        .runtime
+        .model_assets
+        .as_ref()
+        .unwrap()
+        .catalog()
+        .profiles()
+        .find(|profile| profile.rules == RuleSetId::Quake2)
+        .unwrap();
+    let mut resources = qa_app::client_resources::ClientResources::load(
+        ClientId(0),
+        CLASSIC,
+        RuleSetId::Quake2,
+        &host.runtime.vfs,
+        Some(&selected),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        resources.state.bind_models(
+            host.runtime.model_assets.as_ref().unwrap().catalog(),
+            profile,
+            None
+        ),
+        0
+    );
+    host.runtime.client_resources[0] = Some(resources);
+    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_some());
     host.configure_client_downloads(ClientId(0), mount, mount, 8192, 64)
         .unwrap();
     for name in ["cl_allowDownload", "allow_download_maps"] {
@@ -1377,11 +1410,23 @@ fn missing_wal_download_cancel_retry_holds_startup_while_the_other_client_begins
     chunk(&mut host, &mut source, 0, 50, &wal[..100]);
     settle(&mut host, &mut source);
     assert_eq!(source.servers[0].count(b"nextdl"), 1);
-    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_none());
+    assert!(
+        host.runtime
+            .vfs
+            .read_view(Some(&selected))
+            .open(b"textures/wall.wal")
+            .is_none()
+    );
     command(&mut host, &mut source, 0, "stopdownload\n");
     chunk(&mut host, &mut source, 0, 100, &wal[100..]);
     settle(&mut host, &mut source);
-    assert!(host.runtime.vfs.open(b"textures/wall.wal").is_none());
+    assert!(
+        host.runtime
+            .vfs
+            .read_view(Some(&selected))
+            .open(b"textures/wall.wal")
+            .is_none()
+    );
     assert!(source.servers[0].prefixed(b"begin ").is_empty());
 
     send(
@@ -1413,7 +1458,12 @@ fn missing_wal_download_cancel_retry_holds_startup_while_the_other_client_begins
     assert_eq!(source.servers[0].count(b"download textures/wall.wal"), 2);
     chunk(&mut host, &mut source, 0, 100, &wal);
     settle(&mut host, &mut source);
-    let reference = host.runtime.vfs.open(b"textures/wall.wal").unwrap();
+    let reference = host
+        .runtime
+        .vfs
+        .read_view(Some(&selected))
+        .open(b"textures/wall.wal")
+        .unwrap();
     let actual = host
         .runtime
         .vfs
@@ -1513,7 +1563,7 @@ fn q2_wire_checksum_selects_the_whole_file_for_q1_geometry_and_rejects_qw_lump_s
         .as_ref()
         .unwrap()
         .catalog()
-        .world_native_checksums(b"maps/foreign.bsp")
+        .world_native_checksums(b"maps/foreign.bsp", None)
         .unwrap();
     assert_eq!(
         (checksums.whole_file, checksums.quakeworld_lumps),

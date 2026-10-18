@@ -2571,7 +2571,7 @@ impl FrameHost {
                         .model_assets
                         .as_ref()?
                         .catalog()
-                        .world_native_checksums(row.text)
+                        .world_native_checksums(row.text, Some(resources.state.file_search()))
                 });
             let checksum = checksums.and_then(|checksums| match protocol {
                 Protocol::QuakeWorld28 => checksums.quakeworld_lumps,

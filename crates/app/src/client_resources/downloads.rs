@@ -1,5 +1,5 @@
 use super::*;
-use qa_content::vfs::{MountId, PreparedArchive, Vfs};
+use qa_content::vfs::{MountId, PreparedArchive, ReadView, SearchView, Vfs};
 use qa_core::{sys_events::SeatId, text::FixedText};
 use qa_network::{channel::TransmitError, downloads::Chunk};
 use qa_platform::files::StagedFile;
@@ -298,6 +298,7 @@ impl ClientResources {
         mut models: Option<&mut crate::model_assets::ModelAssets>,
     ) -> Result<Option<FixedText<{ qa_network::downloads::REQUEST_NAME_BYTES }>>, String> {
         use super::startup::{Q2FileCursor, ResourceKind};
+        let view = vfs.read_view(Some(self.state.file_search()));
         loop {
             let mut name = FixedText::<64>::default();
             if let Some((kind, ordinal, end)) = self.startup.file_cursor() {
@@ -349,11 +350,7 @@ impl ClientResources {
                                         let Some(owner) = models.as_deref_mut() else {
                                             return Ok(None);
                                         };
-                                        match owner.source_image(
-                                            vfs.read_view(None),
-                                            path,
-                                            image,
-                                        )? {
+                                        match owner.source_image(view, path, image)? {
                                             Some(path) if !path.is_empty() => {
                                                 name.set_bytes(path)
                                                     .map_err(|_| "Q2 model image path capacity")?;
@@ -460,8 +457,8 @@ impl ClientResources {
                                 let mut pcx = stem.clone();
                                 pcx.append_bytes(b".pcx")
                                     .map_err(|_| "Q2 sky path capacity")?;
-                                if vfs.open(tga.as_bytes()).is_none()
-                                    && vfs.open(pcx.as_bytes()).is_none()
+                                if view.open(tga.as_bytes()).is_none()
+                                    && view.open(pcx.as_bytes()).is_none()
                                 {
                                     name = if index % 2 == 0 { tga } else { pcx };
                                 }
@@ -476,8 +473,7 @@ impl ClientResources {
                         path.set_bytes(raw).map_err(|_| "Q2 world path capacity")?;
                         let state = self.startup.q2_mut().ok_or("Q2 startup owner changed")?;
                         if state.world_input.is_none() {
-                            state.world_input =
-                                Some(crate::map::read(vfs.read_view(None), path.as_str())?);
+                            state.world_input = Some(crate::map::read(view, path.as_str())?);
                         }
                         let input = state.world_input.as_ref().ok_or("Q2 world input missing")?;
                         if let Some(texture) = input.texture_names()?.nth(index as usize) {
@@ -582,9 +578,11 @@ impl ClientDownload {
         &mut self,
         info: &[u8],
         vfs: &Vfs,
+        search: &SearchView,
         cvars: &qa_console::cvars::Cvars,
     ) -> Result<bool, String> {
         let loaded: Vec<_> = vfs
+            .read_view(Some(search))
             .mounts()
             .filter_map(|mount| vfs.q3_package_checksums(mount.id))
             .map(|checksums| checksums.checksum())
@@ -636,7 +634,7 @@ impl ClientDownload {
                 .strip_prefix(&prefix)
                 .unwrap_or(remote.as_str());
             let mut destination = FixedText::<{ qa_core::names::MAX_PATH_BYTES + 1 }>::default();
-            if vfs.open(local.as_bytes()).is_some() {
+            if vfs.read_view(Some(search)).open(local.as_bytes()).is_some() {
                 // FS_ComparePaks' native wire-checksum suffix protects an
                 // existing package. It is never a content/cache identity.
                 write!(
@@ -654,7 +652,7 @@ impl ClientDownload {
             requests.push(self.request(
                 remote.as_bytes(),
                 Some(destination.as_bytes()),
-                vfs,
+                vfs.read_view(Some(search)),
                 Purpose::Package(reference.checksum),
             )?);
         }
@@ -770,6 +768,7 @@ impl ClientDownload {
         remote: &[u8],
         local: Option<&[u8]>,
         vfs: &Vfs,
+        search: &SearchView,
         cvars: &qa_console::cvars::Cvars,
         purpose: Purpose,
     ) -> Result<(), String> {
@@ -792,7 +791,7 @@ impl ClientDownload {
         if self.pending().is_some() {
             return Err("download acknowledgement is still pending".into());
         }
-        let request = self.request(remote, local, vfs, purpose)?;
+        let request = self.request(remote, local, vfs.read_view(Some(search)), purpose)?;
         if !self.allowed_request(&request, cvars) {
             return Err("download disabled by local CLIENT policy".into());
         }
@@ -803,7 +802,7 @@ impl ClientDownload {
         &self,
         remote: &[u8],
         local: Option<&[u8]>,
-        vfs: &Vfs,
+        view: ReadView<'_>,
         purpose: Purpose,
     ) -> Result<Request, String> {
         let remote = Request::name::<{ qa_network::downloads::REQUEST_NAME_BYTES }>(
@@ -814,7 +813,7 @@ impl ClientDownload {
             local.unwrap_or_else(|| remote.as_bytes()),
             qa_network::downloads::PathRole::Destination,
         )?);
-        if vfs.open(local.as_bytes()).is_some() {
+        if view.open(local.as_bytes()).is_some() {
             return Err("download file is already available in mounted content".into());
         }
         let config = self
@@ -919,7 +918,12 @@ impl ClientDownload {
         };
     }
 
-    fn retry(&mut self, vfs: &Vfs, cvars: &qa_console::cvars::Cvars) -> Result<(), String> {
+    fn retry(
+        &mut self,
+        vfs: &Vfs,
+        search: &SearchView,
+        cvars: &qa_console::cvars::Cvars,
+    ) -> Result<(), String> {
         if let Some(pass) = &mut self.packages {
             pass.paused = false;
         }
@@ -950,6 +954,7 @@ impl ClientDownload {
                     request.remote.as_bytes(),
                     Some(request.local.as_bytes()),
                     vfs,
+                    search,
                     cvars,
                     request.purpose,
                 ) {
@@ -985,6 +990,7 @@ impl ClientDownload {
         count: usize,
         enabled: bool,
         vfs: &Vfs,
+        search: &SearchView,
         cvars: &qa_console::cvars::Cvars,
         mut paths: impl FnMut(
             usize,
@@ -1048,7 +1054,11 @@ impl ClientDownload {
             let name = if cursor % 2 == 0 {
                 selected
             } else {
-                if vfs.open(selected.as_bytes()).is_some() {
+                if vfs
+                    .read_view(Some(search))
+                    .open(selected.as_bytes())
+                    .is_some()
+                {
                     continue;
                 }
                 let Some(fallback) = fallback else {
@@ -1069,11 +1079,11 @@ impl ClientDownload {
                     };
                     previous.is_some_and(|previous| previous.as_bytes() == name.as_bytes())
                 });
-            if duplicate || vfs.open(name.as_bytes()).is_some() {
+            if duplicate || vfs.read_view(Some(search)).open(name.as_bytes()).is_some() {
                 continue;
             }
             pass.attempted.insert(cursor);
-            match self.start(name.as_bytes(), None, vfs, cvars, Purpose::Skin) {
+            match self.start(name.as_bytes(), None, vfs, search, cvars, Purpose::Skin) {
                 Ok(()) => return rejected.map_or(Ok(()), Err),
                 Err(error) => rejected = Some(error),
             }
@@ -1536,6 +1546,7 @@ impl crate::host::FrameHost {
         let resources = self.runtime.client_resources[client.0 as usize]
             .as_mut()
             .ok_or("missing CLIENT resources")?;
+        let search = resources.state.file_search();
         let downloads = resources
             .downloads
             .as_mut()
@@ -1549,6 +1560,7 @@ impl crate::host::FrameHost {
                     args.get_bytes(1),
                     (args.len() == 3).then(|| args.get_bytes(2)),
                     &self.runtime.vfs,
+                    search,
                     &self.console.cvars,
                     Purpose::Manual,
                 )?;
@@ -1567,7 +1579,7 @@ impl crate::host::FrameHost {
                 );
             }
             2 => downloads.stop(),
-            3 => downloads.retry(&self.runtime.vfs, &self.console.cvars)?,
+            3 => downloads.retry(&self.runtime.vfs, search, &self.console.cvars)?,
             _ => return Err("unknown download operation".into()),
         }
         self.flush_client_downloads();
@@ -1702,7 +1714,12 @@ impl crate::host::FrameHost {
                     .configs
                     .config(qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO)
                     .map_or(&b""[..], |config| config.text);
-                match downloads.begin_packages(info, &self.runtime.vfs, &self.console.cvars) {
+                match downloads.begin_packages(
+                    info,
+                    &self.runtime.vfs,
+                    resources.state.file_search(),
+                    &self.console.cvars,
+                ) {
                     Ok(false) => {
                         resources.startup.q3_packages_ready();
                         if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
@@ -1769,7 +1786,17 @@ impl crate::host::FrameHost {
                     }
                     None => break,
                 };
-                if name.as_bytes().is_empty() || self.runtime.vfs.open(name.as_bytes()).is_some() {
+                if name.as_bytes().is_empty()
+                    || self.runtime.client_resources[index]
+                        .as_ref()
+                        .is_some_and(|resources| {
+                            self.runtime
+                                .vfs
+                                .read_view(Some(resources.state.file_search()))
+                                .open(name.as_bytes())
+                                .is_some()
+                        })
+                {
                     continue;
                 }
                 if self.runtime.client_resources[index]
@@ -1801,8 +1828,14 @@ impl crate::host::FrameHost {
                 }
                 let result = self.runtime.client_resources[index]
                     .as_mut()
-                    .and_then(|resources| resources.downloads.as_mut())
-                    .map(|downloads| {
+                    .and_then(|resources| {
+                        let search = resources.state.file_search();
+                        resources
+                            .downloads
+                            .as_mut()
+                            .map(|downloads| (downloads, search))
+                    })
+                    .map(|(downloads, search)| {
                         let name = std::str::from_utf8(name.as_bytes())
                             .map_err(|_| "native resource path encoding".to_owned())?;
                         let name = qa_core::names::canonical_path(name);
@@ -1810,6 +1843,7 @@ impl crate::host::FrameHost {
                             name.as_bytes(),
                             None,
                             &self.runtime.vfs,
+                            search,
                             &self.console.cvars,
                             Purpose::Startup,
                         )
@@ -1887,6 +1921,7 @@ impl crate::host::FrameHost {
                 count,
                 enabled,
                 &self.runtime.vfs,
+                resources.state.file_search(),
                 &self.console.cvars,
                 |slot| {
                     self.player_skin_views.download_paths(
