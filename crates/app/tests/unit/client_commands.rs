@@ -48,6 +48,7 @@ fn import(runtime: &mut Runtime, client: ClientId, lifetime: EntityId, text: &[u
         &mut storage,
         &mut scratch,
         Some((client, lifetime)),
+        crate::ModelAccess::Register,
     );
     services.client_connection = connection
         .as_mut()

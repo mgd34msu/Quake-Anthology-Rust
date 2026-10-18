@@ -7,6 +7,49 @@ use qa_render::{
 };
 
 #[test]
+fn loading_packet_without_clear_preserves_pixels_outside_its_draw() {
+    let mut assets = Assets::load().unwrap();
+    let color = [240, 120, 60, 255];
+    let image = assets.register_image(1, 1, &color).unwrap();
+    let material = assets
+        .register_material(
+            "loading picture",
+            &[Stage {
+                texture: StageTexture::Image(image),
+                ..Default::default()
+            }],
+            MaterialSettings::default(),
+        )
+        .unwrap();
+    let shader = assets
+        .register_shader_binding(qa_render::ShaderBinding::material(
+            material,
+            qa_render::world::geometry::LightSource::TwoDimensional,
+        ))
+        .unwrap();
+    let mut front = FrontEnd::load(Limits::default()).unwrap();
+    let mut cpu = CpuBackend::load_with_assets(4, 4, &assets).unwrap();
+    let background = [1, 2, 3, 255];
+    let packet = front.begin_frame(background).unwrap().finish();
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(front.recycle(packet).is_ok());
+    let mut frame = front.begin_frame(None).unwrap();
+    assert!(frame.draw_2d(Draw2d {
+        shader: shader.into(),
+        rect: [0., 0., 2., 4.],
+        ..Default::default()
+    }));
+    let packet = frame.finish();
+    assert!(matches!(packet.commands(), [Command::Draw2d(_)]));
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    for row in cpu.pixels().chunks_exact(4) {
+        assert_eq!(&row[..2], &[u32::from_le_bytes(color); 2]);
+        assert_eq!(&row[2..], &[u32::from_le_bytes(background); 2]);
+    }
+    assert!(front.recycle(packet).is_ok());
+}
+
+#[test]
 fn portal_plane_clips_polygons_and_rotated_models_to_the_same_half_screen() {
     use qa_core::primitives::Plane;
     let mut assets = Assets::load().unwrap();

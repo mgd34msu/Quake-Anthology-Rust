@@ -1301,10 +1301,15 @@ impl FrontEnd {
     }
     /// A packet leaves the pool until its consumer returns ownership. Two
     /// outstanding packets exhaust the pool rather than allocating or waiting.
-    pub fn begin_frame(&mut self, clear: [u8; 4]) -> Option<Frame> {
-        let index = self.next;
+    /// No clear preserves existing framebuffer colors for loading overlays.
+    pub fn begin_frame(&mut self, clear: impl Into<Option<[u8; 4]>>) -> Option<Frame> {
+        let index = if self.lists[self.next].is_some() {
+            self.next
+        } else {
+            self.next ^ 1
+        };
         let mut list = self.lists[index].take()?;
-        self.next ^= 1;
+        self.next = index ^ 1;
         self.frame = self.frame.wrapping_add(1);
         list.reset(self.frame);
         let mut frame = Frame {
@@ -1312,7 +1317,9 @@ impl FrontEnd {
             first: SceneRanges::default(),
             particle_client: None,
         };
-        frame.command(Command::Clear(clear));
+        if let Some(clear) = clear.into() {
+            frame.command(Command::Clear(clear));
+        }
         Some(frame)
     }
     #[expect(

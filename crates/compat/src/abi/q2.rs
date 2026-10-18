@@ -677,6 +677,7 @@ const fn call_table(imports: &[Import]) -> CallTable {
         client_view: false,
         input_exports: None,
         command_export: None,
+        connect_screen_export: None,
         entries: [None; 256],
     };
     let mut ordinal = 0;

@@ -1,11 +1,14 @@
 #[path = "live_formats.rs"]
 mod live_formats;
+#[path = "loading_screen.rs"]
+mod loading_screen;
 #[path = "../../../render/tests/support/world_surfaces.rs"]
 mod mark_world;
 #[path = "skin_download.rs"]
 mod skin_download;
 use super::*;
 pub(super) use live_formats::live_formats;
+pub(super) use loading_screen::loading_screen;
 use qa_app::model_assets::{ModelAssets, ModelRequest};
 use qa_compat::services::ModelLookup;
 use qa_render::material::world_load::{
@@ -204,14 +207,75 @@ fn qvm_scene_data(ui: bool, initial: &[u8; 1536]) -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 96)];
     let mut branches = vec![];
-    for command in 0..31 {
+    for command in 0..34 {
         operations.extend([(Local, 104), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, 0), (Leave, 96)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 30 {
+        if command == 31 {
+            for value in 1..=2 {
+                operations.extend([
+                    (Const, 1460),
+                    (Const, value),
+                    (Store4, 0),
+                    (Const, if ui { -29 } else { -18 }),
+                    (Call, 0),
+                    (Pop, 0),
+                ]);
+            }
+            operations.extend([(Const, 1460), (Const, 3), (Store4, 0), (Const, 73)]);
+        } else if command == 32 || ui && command == 9 && initial[1472] != 0 {
+            operations.extend([
+                (Const, 1456),
+                (Const, 1456),
+                (Load4, 0),
+                (Const, 1),
+                (Add, 0),
+                (Store4, 0),
+                (Const, 1464),
+                (Local, 108),
+                (Load4, 0),
+                (Store4, 0),
+                (Const, if ui { -29 } else { -18 }),
+                (Call, 0),
+                (Pop, 0),
+                (Const, SHADER_HANDLE as i32),
+                (Const, 16),
+                (Arg, 8),
+                (Const, -i32::from(ordinal(ui, 39)) - 1),
+                (Call, 0),
+                (Store4, 0),
+            ]);
+            let (number, words) = CALLS[4];
+            for (index, &word) in words.iter().enumerate() {
+                if index == 8 {
+                    operations.extend([(Const, SHADER_HANDLE as i32), (Load4, 0)]);
+                } else {
+                    operations.push((Const, word as i32));
+                }
+                operations.push((Arg, 8 + index as i32 * 4));
+            }
+            operations.extend([
+                (Const, -i32::from(ordinal(ui, number)) - 1),
+                (Call, 0),
+                (Pop, 0),
+            ]);
+            operations.extend([(Const, 1468), (Load4, 0), (Const, 0), (Eq, 0)]);
+            let good = operations.len() - 1;
+            operations.extend([
+                (Const, 16),
+                (Arg, 8),
+                (Const, if ui { -1 } else { -2 }),
+                (Call, 0),
+                (Pop, 0),
+            ]);
+            operations[good].1 = operations.len() as i32;
+            operations.push((Const, 0));
+        } else if command == 33 {
+            operations.extend([(Local, 108), (Load4, 0), (Load4, 0)]);
+        } else if command == 30 {
             operations.extend([
                 (Const, 208),
                 (Arg, 8),
@@ -374,7 +438,7 @@ fn native_scene_data(ui: bool, initial: &[u8; 1536]) -> Program {
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..31)
+        &(0..34)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -389,12 +453,68 @@ fn native_scene_data(ui: bool, initial: &[u8; 1536]) -> Program {
     let callback = vm.import_callback();
     let source = base + 0x2800;
     let mut code = vec![];
-    for command in 0..31usize {
+    for command in 0..34usize {
         code.extend([0x83, 0xf9, command as u8, 0x0f, 0x85]);
         let branch = code.len();
         code.extend([0; 4]);
         code.extend([0x48, 0x83, 0xec, 0x58]);
-        if command == 30 {
+        if command == 31 {
+            for value in 1..=2u32 {
+                code.extend([0x48, 0xb8]);
+                code.extend((source + 1460).to_le_bytes());
+                code.extend([0xc7, 0x00]);
+                code.extend(value.to_le_bytes());
+                code.extend([0xb9, if ui { 28 } else { 17 }, 0, 0, 0, 0x48, 0xb8]);
+                code.extend(callback.to_le_bytes());
+                code.extend([0xff, 0xd0]);
+            }
+            code.extend([0x48, 0xb8]);
+            code.extend((source + 1460).to_le_bytes());
+            code.extend([0xc7, 0x00, 3, 0, 0, 0, 0xb8, 73, 0, 0, 0]);
+        } else if command == 32 || ui && command == 9 && initial[1472] != 0 {
+            code.extend([0x48, 0xb8]);
+            code.extend((source + 1456).to_le_bytes());
+            code.extend([0xff, 0x00, 0x89, 0x50, 8]); // count++; time = edx
+            code.extend([0xb9, if ui { 28 } else { 17 }, 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x48, 0xba]);
+            code.extend((source + 16).to_le_bytes());
+            code.extend([0xb9, ordinal(ui, 39), 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x48, 0xb9]);
+            code.extend((source + u64::from(SHADER_HANDLE)).to_le_bytes());
+            code.extend([0x89, 0x01]);
+            let (number, words) = CALLS[4];
+            for (index, &word) in words.iter().enumerate() {
+                code.extend(if index < 3 {
+                    [[0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]][index]
+                } else {
+                    [0x48, 0xb8]
+                });
+                code.extend(u64::from(word).to_le_bytes());
+                if index >= 3 {
+                    if index == 8 {
+                        code.extend([0x48, 0xb8]);
+                        code.extend((source + u64::from(SHADER_HANDLE)).to_le_bytes());
+                        code.extend([0x8b, 0x00]);
+                    }
+                    code.extend([0x48, 0x89, 0x44, 0x24, (0x20 + (index - 3) * 8) as u8]);
+                }
+            }
+            code.extend([0xb9, ordinal(ui, number), 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x48, 0xb8]);
+            code.extend((source + 1468).to_le_bytes());
+            code.extend([0x83, 0x38, 0, 0x74, 27, 0x48, 0xba]);
+            code.extend((source + 16).to_le_bytes());
+            code.extend([0xb9, if ui { 0 } else { 1 }, 0, 0, 0, 0x48, 0xb8]);
+            code.extend(callback.to_le_bytes());
+            code.extend([0xff, 0xd0, 0x31, 0xc0]);
+        } else if command == 33 {
+            code.extend([0x48, 0xb8]);
+            code.extend(source.to_le_bytes());
+            code.extend([0x8b, 0x04, 0x10]);
+        } else if command == 30 {
             // Preserve the shader offset across Cvar_Set, then register it
             // without leaving this owned-child callback.
             code.extend([0x4c, 0x89, 0x44, 0x24, 0x40, 0x49, 0x89, 0xd0, 0x48, 0xb8]);

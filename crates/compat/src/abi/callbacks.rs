@@ -10,6 +10,7 @@ pub struct CallbackRequest {
 
 #[derive(Clone, Debug)]
 pub enum HostRequest {
+    UpdateScreen,
     RemapShader {
         original: u64,
         replacement: u64,

@@ -1386,8 +1386,14 @@ fn main() {
         std::process::exit(status);
     }
     scene::downloaded_skins(false);
+    scene::loading_screen(false, false);
+    scene::loading_screen(false, true);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    scene::downloaded_skins(true);
+    {
+        scene::downloaded_skins(true);
+        scene::loading_screen(true, false);
+        scene::loading_screen(true, true);
+    }
     input::queued_native_input(false);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     input::queued_native_input(true);

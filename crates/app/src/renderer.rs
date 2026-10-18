@@ -487,6 +487,7 @@ pub struct SceneComposer {
     frontend: FrontEnd,
     scenes: Vec<Option<WorldScene>>,
     frame: Option<qa_render::scene::Frame>,
+    paused: Option<PausedScene>,
     publisher: Option<qa_core::primitives::ModuleId>,
     native_owned: [bool; SeatId::COUNT],
     graphics_owners: [Option<ShaderOwner>; SeatId::COUNT],
@@ -497,6 +498,29 @@ pub struct SceneComposer {
     console: Option<console::ConsoleAssets>,
     hud: HudTable,
     ui_commands: usize,
+}
+
+struct PausedScene {
+    frame: Option<qa_render::scene::Frame>,
+    publisher: Option<qa_core::primitives::ModuleId>,
+    native_owned: [bool; SeatId::COUNT],
+    graphics_owners: [Option<ShaderOwner>; SeatId::COUNT],
+    native_axes: [Option<[qa_core::primitives::Vec3; 3]>; SeatId::COUNT],
+}
+
+fn stage_scene_capacity<'a>(
+    frontend: &'a mut FrontEnd,
+    frame: &'a mut Option<qa_render::scene::Frame>,
+    paused: &'a mut Option<PausedScene>,
+    limits: Limits,
+) -> Result<qa_render::scene::FrontEndCapacity<'a>, &'static str> {
+    frontend.stage_capacity(
+        limits,
+        [
+            frame.as_mut(),
+            paused.as_mut().and_then(|scene| scene.frame.as_mut()),
+        ],
+    )
 }
 
 /// Cold staging retains the existing scene owner until backend preparation
@@ -679,9 +703,13 @@ impl SceneComposer {
             .unwrap_or(self.frontend.limits())
             .for_assets(assets)?
             .for_model_choices(choices)?;
-        self.frontend
-            .stage_capacity(limits, [self.frame.as_mut(), None])
-            .map_err(str::to_owned)
+        stage_scene_capacity(
+            &mut self.frontend,
+            &mut self.frame,
+            &mut self.paused,
+            limits,
+        )
+        .map_err(str::to_owned)
     }
     pub fn limits(&self) -> Limits {
         self.frontend.limits()
@@ -861,7 +889,12 @@ impl SceneComposer {
             self.ui_commands,
             ui_command_capacity(self.console.as_ref(), true)?,
         )?;
-        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
+        let frontend = stage_scene_capacity(
+            &mut self.frontend,
+            &mut self.frame,
+            &mut self.paused,
+            limits,
+        )?;
         Ok(SceneHudAppend {
             frontend,
             target: &mut self.hud,
@@ -910,9 +943,12 @@ impl SceneComposer {
             .limits()
             .for_assets(owner.assets())?
             .for_model_choices(owner.catalog().max_choice_nodes())?;
-        let frontend = self
-            .frontend
-            .stage_capacity(limits, [self.frame.as_mut(), None])?;
+        let frontend = stage_scene_capacity(
+            &mut self.frontend,
+            &mut self.frame,
+            &mut self.paused,
+            limits,
+        )?;
         let reserved_ui_commands = self.ui_commands;
         Ok(Some(SceneHudAppend {
             frontend,
@@ -1036,7 +1072,12 @@ impl SceneComposer {
         limits = limits
             .for_assets(assets)?
             .for_model_choices(model_choices)?;
-        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
+        let frontend = stage_scene_capacity(
+            &mut self.frontend,
+            &mut self.frame,
+            &mut self.paused,
+            limits,
+        )?;
         Ok(SceneVideoAppend {
             frontend,
             kind: &mut self.kind,
@@ -1101,6 +1142,7 @@ impl SceneComposer {
                 frontend,
                 scenes,
                 frame: None,
+                paused: None,
                 publisher: None,
                 native_owned: [false; SeatId::COUNT],
                 native_axes: [None; SeatId::COUNT],
@@ -1147,7 +1189,12 @@ impl SceneComposer {
         let limits =
             scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?
                 .for_assets(assets)?;
-        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
+        let frontend = stage_scene_capacity(
+            &mut self.frontend,
+            &mut self.frame,
+            &mut self.paused,
+            limits,
+        )?;
         let append = if append_world {
             self.scenes
                 .try_reserve(1)
@@ -1177,6 +1224,40 @@ impl SceneComposer {
         packet: qa_render::scene::CommandList,
     ) -> Result<(), qa_render::scene::CommandList> {
         self.frontend.recycle(packet)
+    }
+
+    pub(crate) fn screen_active(&self) -> bool {
+        self.paused.is_some()
+    }
+
+    pub(crate) fn begin_screen(&mut self) -> bool {
+        if self.screen_active() {
+            return false;
+        }
+        let Some(frame) = self.frontend.begin_frame(None) else {
+            return false;
+        };
+        self.paused = Some(PausedScene {
+            frame: self.frame.replace(frame),
+            publisher: self.publisher.take(),
+            native_owned: self.native_owned,
+            graphics_owners: self.graphics_owners,
+            native_axes: self.native_axes,
+        });
+        self.native_axes.fill(None);
+        true
+    }
+
+    pub(crate) fn end_screen(&mut self) {
+        let Some(paused) = self.paused.take() else {
+            return;
+        };
+        self.discard_frame();
+        self.frame = paused.frame;
+        self.publisher = paused.publisher;
+        self.native_owned = paused.native_owned;
+        self.graphics_owners = paused.graphics_owners;
+        self.native_axes = paused.native_axes;
     }
 
     pub fn begin_frame(&mut self) -> bool {
@@ -1563,6 +1644,37 @@ impl Renderer {
         );
         rejected += self.sample.console.rejected;
         rejected += self.sample.hud.rejected;
+        self.submit_scene(composition, resources, native, frame, &timer, rejected);
+        self.effect_phase(qa_render::effects::Effects::finish_frame);
+    }
+
+    pub(crate) fn refresh_scene(
+        &mut self,
+        composition: &mut SceneComposer,
+        resources: crate::model_assets::ModelView<'_>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
+    ) -> bool {
+        self.sample = Sample::default();
+        self.draw_failed = false;
+        let timer = Stopwatch::start();
+        if let Some(frame) = composition.frame.take() {
+            self.submit_scene(composition, resources, native, frame, &timer, 0);
+        } else {
+            self.sample.stats.rejected += 1;
+            self.draw_failed = true;
+        }
+        !self.draw_failed
+    }
+
+    fn submit_scene(
+        &mut self,
+        composition: &mut SceneComposer,
+        resources: crate::model_assets::ModelView<'_>,
+        native: &dyn qa_render::shader::reference::NativeShaders,
+        frame: qa_render::scene::Frame,
+        timer: &Stopwatch,
+        rejected: u32,
+    ) {
         let mut packet = frame.finish();
         packet.resolve_shaders(resources.assets, native);
         self.sample.frontend_ns = timer.elapsed().as_nanos() as u64;
@@ -1590,7 +1702,6 @@ impl Renderer {
         if composition.recycle(packet).is_err() {
             self.sample.stats.rejected += 1;
         }
-        self.effect_phase(qa_render::effects::Effects::finish_frame);
     }
     pub fn present(&mut self, window: &mut Window) {
         if self.draw_failed {

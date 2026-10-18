@@ -415,6 +415,7 @@ pub struct CallTable {
     client_view: bool,
     input_exports: Option<ClientInputExports>,
     command_export: Option<CommandExport>,
+    connect_screen_export: Option<u32>,
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -458,6 +459,9 @@ impl UnknownCalls {
     }
 }
 impl CallTable {
+    pub const fn connect_screen_export(&self) -> Option<u32> {
+        self.connect_screen_export
+    }
     pub const fn command_export(&self) -> Option<CommandExport> {
         self.command_export
     }
@@ -523,6 +527,7 @@ const fn common() -> CallTable {
         client_view: false,
         input_exports: None,
         command_export: None,
+        connect_screen_export: None,
     };
     table.entries[100] = scalar!(memset);
     table.entries[101] = scalar!(memcpy);
@@ -628,6 +633,7 @@ const fn client() -> CallTable {
     t.entries[14] = scalar!(command_append);
     t.entries[15] = value!(client_command_registration::<false>);
     t.entries[16] = scalar!(send_client_command);
+    t.entries[17] = value!(update_screen);
     t.entries[72] = value!(client_command_registration::<true>);
     t.entries[18] = scalar!(client_collision_load);
     t.entries[19] = scalar!(client_collision_count);
@@ -694,6 +700,7 @@ const fn client() -> CallTable {
 }
 const fn ui() -> CallTable {
     let mut t = common();
+    t.connect_screen_export = Some(9);
     t.command_export = Some(CommandExport {
         role: CommandRole::Ui,
         entry: 8,
@@ -735,6 +742,7 @@ const fn ui() -> CallTable {
     t.entries[25] = scalar!(renderer_view);
     t.entries[26] = scalar!(renderer_color);
     t.entries[27] = scalar!(renderer_picture);
+    t.entries[28] = value!(update_screen);
     t.entries[24] = scalar!(renderer_add_light::<false>);
     t.entries[29] = scalar!(renderer_lerp_tag::<false>);
     t.entries[31] = scalar!(register_sound);
@@ -779,6 +787,7 @@ const fn quakec() -> CallTable {
         client_view: false,
         input_exports: None,
         command_export: None,
+        connect_screen_export: None,
     };
     let vector = QcSignature::new(QcArgc::Fixed(1), QcArgs::Vector, true);
     let scalar = QcSignature::new(QcArgc::Fixed(1), QcArgs::Scalars, true);
@@ -1579,6 +1588,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
                             | HostRequest::ExecuteNow { .. }
                             | HostRequest::CommandRegistration { .. }
                             | HostRequest::RemapShader { .. }
+                            | HostRequest::UpdateScreen
                             | HostRequest::RegisterRenderer(_)
                             | HostRequest::SelectRendererWorld(_) => {
                                 return Err(qvm::Trap::Syscall);
@@ -1898,6 +1908,12 @@ fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn milliseconds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.platform_time.milliseconds() as u32 as u64)
+}
+fn update_screen(_: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    Ok(CallValue::Host(
+        HostRequest::UpdateScreen,
+        ImportContinuation::Return(0),
+    ))
 }
 fn available_memory(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok((ENGINE_CALLS.available_memory)(c.services)

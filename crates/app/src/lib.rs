@@ -33,6 +33,12 @@ use qa_core::primitives::{
 use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
+#[derive(Clone, Copy)]
+pub(crate) enum ModelAccess {
+    Register,
+    Present,
+}
+
 pub struct Runtime {
     /// One PCM and registration owner retained through play.
     pub sound_assets: Option<Box<audio::SoundAssets>>,
@@ -210,7 +216,8 @@ impl Runtime {
         storage: &'a mut qa_compat::services::ServiceStorage,
         scratch: &'a mut qa_world::collision::TraceScratch,
     ) -> qa_compat::services::EngineServices<'a> {
-        self.engine_service_parts(console, storage, scratch, None).0
+        self.engine_service_parts(console, storage, scratch, None, ModelAccess::Register)
+            .0
     }
     pub(crate) fn client_connection_parts(
         &mut self,
@@ -243,6 +250,7 @@ impl Runtime {
         storage: &'a mut qa_compat::services::ServiceStorage,
         scratch: &'a mut qa_world::collision::TraceScratch,
         client: Option<(ClientId, qa_core::primitives::EntityId)>,
+        model_access: ModelAccess,
     ) -> (
         qa_compat::services::EngineServices<'a>,
         Option<client_resources::ClientConnectionView<'a>>,
@@ -250,10 +258,15 @@ impl Runtime {
         Option<model_assets::ModelView<'a>>,
     ) {
         let (model_loader, model_view) = match self.model_assets.as_mut() {
-            Some(owner) if owner.initial_registration() => (
-                Some(owner as &mut dyn qa_compat::services::ModelLoader),
-                None,
-            ),
+            Some(owner)
+                if owner.initial_registration()
+                    && matches!(model_access, ModelAccess::Register) =>
+            {
+                (
+                    Some(owner as &mut dyn qa_compat::services::ModelLoader),
+                    None,
+                )
+            }
             Some(owner) => (None, Some(owner.view())),
             None => (None, None),
         };

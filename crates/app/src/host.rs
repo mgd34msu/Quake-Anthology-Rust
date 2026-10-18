@@ -185,11 +185,12 @@ impl FrameSource for LiveFrame<'_> {
         crate::renderer::discard_live_video(self, candidate)
     }
     fn driver(&mut self) -> crate::modules::Driver<'_> {
-        let preparer = self
-            .renderer
-            .as_deref_mut()
-            .map(|renderer| renderer as &mut dyn crate::renderer::AssetPreparer);
-        crate::modules::Driver::with_connector(preparer, self.pump)
+        match self.renderer.as_deref_mut() {
+            Some(renderer) => {
+                crate::modules::Driver::with_renderer(renderer, Some(self.window), Some(self.pump))
+            }
+            None => crate::modules::Driver::with_connector(None, self.pump),
+        }
     }
     fn asset_preparer(&mut self) -> Option<&mut (dyn crate::renderer::AssetPreparer + '_)> {
         match self.renderer.as_deref_mut() {

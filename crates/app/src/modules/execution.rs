@@ -1,7 +1,7 @@
 //! Synchronous module calls use one load-reserved, iterative activation stack.
 use super::{Module, ModuleResult, Program, State, contacts, context, motion, native_self};
-use crate::host::FrameHost;
 use crate::model_assets::ModelProfile;
+use crate::{ModelAccess, host::FrameHost};
 use qa_compat::services::{RendererRegistration, RendererRequest, ShaderLighting};
 use qa_compat::{
     abi::{
@@ -40,13 +40,20 @@ pub(super) enum ModuleDispatch {
 /// A backend borrow belongs to this synchronous execution scope, including
 /// every nested guest and console activation entered through the same driver.
 pub struct Driver<'a> {
-    preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>,
+    render: Option<RenderDriver<'a>>,
     connector: Option<&'a mut qa_platform::EventPump>,
+}
+enum RenderDriver<'a> {
+    Assets(&'a mut dyn crate::renderer::AssetPreparer),
+    Live {
+        renderer: &'a mut crate::renderer::Renderer,
+        window: Option<&'a mut qa_platform::Window>,
+    },
 }
 impl<'a> Driver<'a> {
     pub fn new(preparer: Option<&'a mut dyn crate::renderer::AssetPreparer>) -> Self {
         Self {
-            preparer,
+            render: preparer.map(RenderDriver::Assets),
             connector: None,
         }
     }
@@ -58,6 +65,41 @@ impl<'a> Driver<'a> {
             connector: Some(connector),
             ..Self::new(preparer)
         }
+    }
+    pub fn with_renderer(
+        renderer: &'a mut crate::renderer::Renderer,
+        window: Option<&'a mut qa_platform::Window>,
+        connector: Option<&'a mut qa_platform::EventPump>,
+    ) -> Self {
+        Self {
+            render: Some(RenderDriver::Live { renderer, window }),
+            connector,
+        }
+    }
+    fn preparer(&mut self) -> Option<&mut (dyn crate::renderer::AssetPreparer + '_)> {
+        match self.render.as_mut()? {
+            RenderDriver::Assets(preparer) => Some(&mut **preparer),
+            RenderDriver::Live { renderer, .. } => Some(&mut **renderer),
+        }
+    }
+    fn can_refresh_screen(&self) -> bool {
+        matches!(self.render, Some(RenderDriver::Live { .. }))
+    }
+    fn refresh_screen(&mut self, host: &mut FrameHost) -> bool {
+        let Some(RenderDriver::Live { renderer, window }) = self.render.as_mut() else {
+            return false;
+        };
+        let (Some(scene), Some(assets)) = (
+            host.runtime.scene.as_mut(),
+            host.runtime.model_assets.as_ref(),
+        ) else {
+            return false;
+        };
+        let rendered = renderer.refresh_scene(scene, assets.view(), &host.renderer_contexts);
+        if let Some(window) = window.as_mut() {
+            renderer.present(window);
+        }
+        rendered
     }
     pub fn cache_only() -> Self {
         Self::new(None)
@@ -112,6 +154,7 @@ pub(super) struct GuestStart {
     context: CallContext,
     platform_time: EventTime,
     connection: Option<(ClientId, EntityId)>,
+    model_access: ModelAccess,
 }
 
 impl GuestStart {
@@ -192,7 +235,18 @@ struct RegisteredRenderer {
     handle: i32,
     shader: Option<(NameId, ShaderNodeId)>,
 }
+enum ScreenPhase {
+    World,
+    Refresh,
+    Connect,
+    Present,
+}
 enum Operation {
+    Screen {
+        waiting: bool,
+        phase: ScreenPhase,
+        ui: Option<ModuleId>,
+    },
     RegisterRenderer(Option<qa_compat::services::RendererRequest>),
     RemapShader {
         request: ShaderRemap,
@@ -564,6 +618,7 @@ pub(super) fn start_scoped(
         },
         platform_time: host.runtime.input_time,
         connection: row.client_connection,
+        model_access: ModelAccess::Register,
     };
     if valid(host, start, true) {
         ModuleDispatch::Guest(start)
@@ -921,6 +976,7 @@ fn guest_step(
                         context: row.request.context,
                         platform_time: host.runtime.input_time,
                         connection: row.client_connection,
+                        model_access: ModelAccess::Register,
                     };
                     let mut cleanup = Activation::new(start, true);
                     cleanup.arguments = frame.arguments;
@@ -941,6 +997,11 @@ fn guest_step(
     match advance(host, frame, command, access) {
         Ok(GuestStep::Host(request, point)) => {
             let operation = match request {
+                HostRequest::UpdateScreen => Ok(Operation::Screen {
+                    waiting: false,
+                    phase: ScreenPhase::World,
+                    ui: None,
+                }),
                 HostRequest::RegisterRenderer(request) => {
                     Ok(Operation::RegisterRenderer(Some(request)))
                 }
@@ -1475,13 +1536,19 @@ fn dispatch_child(
     if functions.is_missing(target) {
         return functions.dispatch_resolved(host, target, call);
     }
-    Ok(start_scoped(
+    let mut dispatched = start_scoped(
         host,
         target.module(),
         target.entry(),
         call,
         parent.child_scope(target.module()),
-    ))
+    );
+    if target.module() == parent.module
+        && let ModuleDispatch::Guest(child) = &mut dispatched
+    {
+        child.model_access = parent.model_access;
+    }
+    Ok(dispatched)
 }
 
 fn renderer_scope(
@@ -1670,8 +1737,7 @@ fn register_renderer(
             |candidate| stage_renderer(contexts, scene, scope, candidate),
             |assets, staged| {
                 driver
-                    .preparer
-                    .as_mut()
+                    .preparer()
                     .ok_or("renderer registration has no backend")?
                     .prepare_assets(
                         assets,
@@ -1851,6 +1917,37 @@ fn remap_renderer(
     Ok(())
 }
 
+fn screen_call(
+    host: &mut FrameHost,
+    start: GuestStart,
+    module: ModuleId,
+    export: super::Export,
+) -> Result<ModuleDispatch, ()> {
+    use qa_session::dispatch::CallbackResolver;
+    let time = if module == start.module {
+        start.context.clock
+    } else {
+        host.module_row(module).ok_or(())?.time(host.time)
+    };
+    let call = host
+        .module_export_call(module, export, time, CommandArgs::default())
+        .map_err(|_| ())?;
+    let functions = &host.modules.as_ref().ok_or(())?.functions;
+    let target = functions
+        .resolve_callback(
+            &host.runtime.server.entities,
+            module,
+            export.callback,
+            call.entity(),
+        )
+        .map_err(|_| ())?;
+    let mut dispatched = dispatch_child(host, start, target, call).map_err(|_| ())?;
+    if let ModuleDispatch::Guest(child) = &mut dispatched {
+        child.model_access = ModelAccess::Present;
+    }
+    Ok(dispatched)
+}
+
 fn operation(
     host: &mut FrameHost,
     frame: &mut Activation,
@@ -1968,6 +2065,96 @@ fn operation(
                 OperationStep::Reply(0)
             } else {
                 OperationStep::Abort
+            }
+        }
+        Operation::Screen { waiting, phase, ui } => {
+            if !*waiting {
+                if !driver.can_refresh_screen()
+                    || host
+                        .runtime
+                        .scene
+                        .as_ref()
+                        .is_none_or(|scene| scene.screen_active())
+                {
+                    return OperationStep::Reply(0);
+                }
+                if !host
+                    .runtime
+                    .scene
+                    .as_mut()
+                    .is_some_and(|scene| scene.begin_screen())
+                {
+                    return OperationStep::Reply(0);
+                }
+                *waiting = true;
+                *ui = host.modules.as_ref().and_then(|modules| {
+                    modules
+                        .rows
+                        .iter()
+                        .flatten()
+                        .find(|row| {
+                            row.request.context.console.seat == start.context.console.seat
+                                && (row.request.context.module == start.module
+                                    || row.state == State::Running
+                                        && host.module_generation_ready(row.request.context.module))
+                                && row
+                                    .request
+                                    .program
+                                    .imports()
+                                    .is_some_and(|table| table.connect_screen_export().is_some())
+                        })
+                        .map(|row| row.request.context.module)
+                });
+                if *ui == Some(start.module) {
+                    *phase = ScreenPhase::Connect;
+                }
+            } else if !matches!(child.take(), Some(Ok(_))) {
+                return OperationStep::Abort;
+            }
+            loop {
+                let next = match phase {
+                    ScreenPhase::World => {
+                        *phase = ScreenPhase::Refresh;
+                        host.module_row(start.module)
+                            .map(|row| (start.module, row.request.frame))
+                    }
+                    ScreenPhase::Refresh => {
+                        *phase = ScreenPhase::Connect;
+                        ui.and_then(|module| {
+                            host.module_row(module)
+                                .map(|row| (module, row.request.frame))
+                        })
+                    }
+                    ScreenPhase::Connect => {
+                        *phase = ScreenPhase::Present;
+                        ui.and_then(|module| {
+                            let entry = host
+                                .module_row(module)?
+                                .request
+                                .program
+                                .imports()?
+                                .connect_screen_export()?;
+                            Some((module, super::Export::words(CallbackId(entry), &[1])))
+                        })
+                    }
+                    ScreenPhase::Present => {
+                        if !driver.refresh_screen(host)
+                            && let Some(row) = host.module_row_mut(start.module)
+                        {
+                            row.counts.rejected += 1;
+                        }
+                        if let Some(scene) = &mut host.runtime.scene {
+                            scene.end_screen();
+                        }
+                        return OperationStep::Reply(0);
+                    }
+                };
+                if let Some((module, export)) = next {
+                    return match screen_call(host, *start, module, export) {
+                        Ok(dispatched) => OperationStep::Call(dispatched),
+                        Err(()) => OperationStep::Abort,
+                    };
+                }
             }
         }
         Operation::Callback(request) => {
@@ -2279,6 +2466,7 @@ fn advance(
         storage,
         &mut row.scratch,
         start.connection,
+        start.model_access,
     );
     services.native_geometry = row.geometry;
     services.foreign_trace = Some(traces.borrow());
@@ -2627,6 +2815,15 @@ fn cancel(
     // dropping the traversal so native saved globals cannot be lost on abort.
     let point = point.or(reply);
     let pending = match frame.pending.take() {
+        Some(Pending {
+            operation: Operation::Screen { waiting: true, .. },
+            ..
+        }) => {
+            if let Some(scene) = &mut host.runtime.scene {
+                scene.end_screen();
+            }
+            None
+        }
         Some(Pending {
             operation: Operation::Triggers {
                 touch: Some(touch), ..

@@ -952,6 +952,7 @@ impl Vm {
                         | HostRequest::ExecuteNow { .. }
                         | HostRequest::CommandRegistration { .. }
                         | HostRequest::RemapShader { .. }
+                        | HostRequest::UpdateScreen
                         | HostRequest::RegisterRenderer(_)
                         | HostRequest::SelectRendererWorld(_) => {
                             return Err(Error::Service(CallError::Unsupported));
