@@ -179,14 +179,101 @@ impl Vfs {
 }
 
 impl ReadView<'_> {
+    fn q3_package_mounts(self) -> Result<Vec<MountId>, VfsError> {
+        let mut order = Vec::new();
+        self.vfs.mount_order(self.search, &mut order)?;
+        order.retain(|&id| {
+            self.search.is_none_or(|view| view.allows_archive(id))
+                && self.vfs.q3_package_checksums(id).is_some()
+        });
+        Ok(order)
+    }
+
+    /// FS_LoadedPak{Checksums,Names} and FS_ReferencedPak{Checksums,Names}.
+    /// Values project the selected mounted metadata into native systeminfo;
+    /// neither a probe nor this report adds a package reference.
+    pub fn q3_package_info(
+        self,
+        pure: bool,
+        info: &mut [u8],
+        length: &mut usize,
+        rules: qa_core::text::InfoRules,
+    ) -> Result<(), VfsError> {
+        let mut lists: [FixedText<{ qa_core::configstrings::MAX_TEXT - 1 }>; 4] =
+            std::array::from_fn(|_| FixedText::default());
+        let references = self.search.and_then(|view| view.references.as_ref());
+        let state = references
+            .map(|references| references.state.lock().map_err(|_| VfsError::Handle))
+            .transpose()?;
+        for id in self.q3_package_mounts()? {
+            let mount = &self.vfs.mounts[id.0 as usize];
+            let checks = self.vfs.q3_package_checksums(id).ok_or(VfsError::Handle)?;
+            let stem = mount
+                .path
+                .file_stem()
+                .ok_or(VfsError::Path)?
+                .as_encoded_bytes();
+            let game = mount
+                .product
+                .and_then(|product| self.vfs.mounts.get(product.0 as usize))
+                .map(|product| product.path.as_path())
+                .or_else(|| mount.path.parent())
+                .and_then(Path::file_name)
+                .ok_or(VfsError::Path)?
+                .as_encoded_bytes();
+            let flags = state
+                .as_ref()
+                .and_then(|state| state.flags.get(id.0 as usize))
+                .copied()
+                .unwrap_or(0);
+            let referenced = flags != 0
+                || !game.get(..6).is_some_and(|prefix| {
+                    qa_core::names::compare_folded(prefix, b"baseq3").is_eq()
+                });
+            let result = (|| {
+                if pure {
+                    write!(&mut lists[0], "{} ", checks.checksum() as i32)?;
+                    if !lists[1].as_bytes().is_empty() {
+                        lists[1].append_bytes(b" ")?;
+                    }
+                    lists[1].append_bytes(stem)?;
+                }
+                // Original FS_ReferencedPakNames adds its separator even
+                // for an unreferenced baseq3 package following a kept row.
+                if !lists[3].as_bytes().is_empty() {
+                    lists[3].append_bytes(b" ")?;
+                }
+                if referenced {
+                    write!(&mut lists[2], "{} ", checks.checksum() as i32)?;
+                    lists[3].append_bytes(game)?;
+                    lists[3].append_bytes(b"/")?;
+                    lists[3].append_bytes(stem)?;
+                }
+                Ok::<_, std::fmt::Error>(())
+            })();
+            result.map_err(|_| VfsError::Limit)?;
+        }
+        for (name, value) in [
+            b"sv_paks".as_slice(),
+            b"sv_pakNames",
+            b"sv_referencedPaks",
+            b"sv_referencedPakNames",
+        ]
+        .into_iter()
+        .zip(&lists)
+        {
+            qa_core::text::info_set(info, length, name, value.as_bytes(), rules)
+                .map_err(|_| VfsError::Limit)?;
+        }
+        Ok(())
+    }
+
     /// FS_LoadedPakPureChecksums in native source order. Only metadata from the
     /// existing PK3 reader is used, never a second content identity.
     pub fn q3_loaded_pure_checksums(self, feed: u32) -> Result<Vec<u32>, VfsError> {
-        let mut order = Vec::new();
-        self.vfs.mount_order(self.search, &mut order)?;
-        Ok(order
+        Ok(self
+            .q3_package_mounts()?
             .into_iter()
-            .filter(|&id| self.search.is_none_or(|view| view.allows_archive(id)))
             .filter_map(|id| {
                 self.vfs
                     .q3_package_checksums(id)

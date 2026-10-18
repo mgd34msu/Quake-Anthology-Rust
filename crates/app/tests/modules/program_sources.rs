@@ -288,3 +288,98 @@ fn actual_qvm_load_and_lifecycle_reads_publish_their_native_package_references()
     );
     host.shutdown_modules();
 }
+
+#[test]
+fn q3_server_program_load_accounts_native_packages_per_module() {
+    use qa_core::text::FixedText;
+    use qa_formats::{archive::Archive, program::qvm::Opcode};
+    use std::sync::Arc;
+    #[path = "../../../formats/tests/support/stored_zip.rs"]
+    mod zip;
+    let files = Files::new("server-package-references");
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let image = service_program::bytes(
+        &[(Opcode::Enter, 64), (Opcode::Const, 0), (Opcode::Leave, 64)],
+        &[],
+    );
+    let mut mounts = Vec::new();
+    let mut checks = Vec::new();
+    for (name, entries) in [
+        (
+            "game",
+            vec![(b"vm/qagame.qvm".as_slice(), image.as_slice())],
+        ),
+        (
+            "model",
+            vec![(b"models/native.bin".as_slice(), b"native model".as_slice())],
+        ),
+    ] {
+        let path = files.0.join(format!("{name}.pk3"));
+        qa_platform::files::write(&path, zip::stored_zip(&entries)).unwrap();
+        let archive = Arc::new(
+            Archive::parse(Arc::new(qa_platform::files::ReadFile::open(&path).unwrap())).unwrap(),
+        );
+        checks.push(archive.q3_checksums().unwrap().pure_checksum(0));
+        mounts.push(runtime.vfs.mount_archive(&path, 0, archive).unwrap());
+    }
+    let selected = runtime.vfs.search_view(mounts).unwrap();
+    let mut specs = [
+        Q3Spec::parse("game:vm/qagame.qvm").unwrap(),
+        Q3Spec::parse("game:vm/qagame.qvm").unwrap(),
+    ];
+    for spec in &mut specs {
+        spec.search = Some(selected.clone());
+    }
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &specs,
+        &mut requests,
+        TickRate::fixed(50).unwrap(),
+        None,
+    )
+    .unwrap();
+    let mut report = FixedText::<8191>::default();
+    for request in &requests {
+        request
+            .search
+            .as_ref()
+            .unwrap()
+            .q3_reference_command(&runtime.vfs, 7, false, &mut report)
+            .unwrap();
+        assert_eq!(
+            report.as_str(),
+            format!("cp 7 @ {} {}", checks[0] as i32, (checks[0] ^ 1) as i32)
+        );
+    }
+    let source = requests[0].search.as_ref().unwrap();
+    assert!(
+        runtime
+            .vfs
+            .read_view(Some(source))
+            .open(b"models/native.bin")
+            .is_some()
+    );
+    source
+        .q3_reference_command(&runtime.vfs, 7, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_str(),
+        format!(
+            "cp 7 @ {} {} {}",
+            checks[0] as i32,
+            checks[1] as i32,
+            (checks[0] ^ checks[1] ^ 2) as i32
+        )
+    );
+    requests[1]
+        .search
+        .as_ref()
+        .unwrap()
+        .q3_reference_command(&runtime.vfs, 7, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_str(),
+        format!("cp 7 @ {} {}", checks[0] as i32, (checks[0] ^ 1) as i32)
+    );
+}

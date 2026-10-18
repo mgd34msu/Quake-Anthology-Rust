@@ -330,12 +330,28 @@ pub fn load_q3(
             return Err("invalid Q3 player stat layout".into());
         }
         let module = module_id(requests)?;
+        // SERVER and each CLIENT own independent native package-reference
+        // accounts, while all file access still uses the same VFS selection.
+        let server_search = (spec.role == Q3Role::Game)
+            .then(|| {
+                runtime
+                    .vfs
+                    .track_q3_references(
+                        spec.search.as_ref(),
+                        0,
+                        qa_core::random::Random::new(5489),
+                    )
+                    .map_err(|error| format!("Q3 server package references: {error}"))
+            })
+            .transpose()?;
         let ModuleBytes {
             search,
             source,
             bytes,
         } = module_bytes(
-            runtime.vfs.read_view(spec.search.as_ref()),
+            runtime
+                .vfs
+                .read_view(server_search.as_ref().or(spec.search.as_ref())),
             &spec.path,
             &mut reader,
         )?;

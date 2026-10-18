@@ -1353,13 +1353,55 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
     );
     let feed = client.command_context().unwrap().checksum_feed;
     let expected = archive.q3_checksums().unwrap().pure_checksum(feed);
+    let regular = archive.q3_checksums().unwrap().checksum();
     host.runtime.vfs.mount_archive(&path, 0, archive).unwrap();
+    for name in [
+        "sv_paks",
+        "sv_pakNames",
+        "sv_referencedPaks",
+        "sv_referencedPakNames",
+    ] {
+        let view = host.console.cvars.bind(name, context).unwrap();
+        host.console
+            .cvars
+            .force_write(view, "stale-advertisement")
+            .unwrap();
+    }
     let pure = host.console.cvars.bind("sv_pure", context).unwrap();
     host.console.cvars.force_write(pure, "1").unwrap();
     wire.time = EventTime::from_milliseconds(200);
     command(&mut host, &mut wire, peer, &mut client, Some(b"donedl"));
     host.frame(&mut wire, true);
-    assert_eq!(receive(&mut wire, &mut client, peer).len(), 1);
+    let states = receive(&mut wire, &mut client, peer);
+    assert_eq!(states.len(), 1);
+    let info = &states[0]
+        .iter()
+        .find(|(index, _)| *index == qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO as u32)
+        .unwrap()
+        .1;
+    let value = |name: &[u8]| {
+        let range = qa_core::text::info_value(info, name, true).unwrap();
+        &info[range]
+    };
+    assert_eq!(value(b"sv_paks"), format!("{} ", regular as i32).as_bytes());
+    assert_eq!(value(b"sv_pakNames"), b"pak0");
+    assert_eq!(
+        value(b"sv_referencedPaks"),
+        format!("{} ", regular as i32).as_bytes()
+    );
+    assert_eq!(
+        value(b"sv_referencedPakNames"),
+        format!(
+            "{}/pak0",
+            path.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        )
+        .as_bytes()
+    );
     let server_id = client.command_context().unwrap().server_id;
     let thinks = count(&mut host, 7);
     wire.time = EventTime::from_milliseconds(210);

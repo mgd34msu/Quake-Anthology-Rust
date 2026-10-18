@@ -2036,3 +2036,142 @@ fn source_revision_changes_on_empty_mount_refresh_and_retirement_without_content
     assert_eq!(vfs.revision(), retired);
     assert_eq!(vfs.take_lookup_count(), 0);
 }
+
+#[test]
+fn q3_server_package_info_uses_selected_native_order_and_actual_open_references() {
+    use qa_core::{
+        random::Random,
+        text::{InfoBytes, InfoRules, info_value},
+    };
+    let files = Fixture::new("server-package-info");
+    for game in ["baseq3", "missionpack"] {
+        qa_platform::files::create_dir_all(files.0.join(game)).unwrap();
+    }
+    for (game, pak, name, data) in [
+        (
+            "baseq3",
+            "pak0",
+            b"maps/native.bsp".as_slice(),
+            b"map".as_slice(),
+        ),
+        ("baseq3", "pak1", b"scripts/native.shader", b"shader"),
+        ("baseq3", "pak2", b"vm/qagame.qvm", b"game"),
+        ("missionpack", "pak0", b"sound/extra.wav", b"sound"),
+    ] {
+        qa_platform::files::write(
+            files.0.join(game).join(format!("{pak}.pk3")),
+            zip::stored_zip(&[(name, data)]),
+        )
+        .unwrap();
+    }
+    let mut vfs = Vfs::default();
+    let base = vfs.mount_product(&files.0.join("baseq3"), 0).unwrap();
+    let expansion = vfs.mount_product(&files.0.join("missionpack"), 1).unwrap();
+    let order = [expansion[1], base[3], base[2], base[1]];
+    let selected = vfs.search_view(order).unwrap();
+    let tracked = vfs
+        .track_q3_references(Some(&selected), 17, Random::new(1))
+        .unwrap();
+    let peer = vfs
+        .track_q3_references(Some(&selected), 17, Random::new(2))
+        .unwrap();
+    let rules = InfoRules {
+        bytes: 8192,
+        key_bytes: 8192,
+        value_bytes: 8192,
+        filter: InfoBytes::Exact,
+    };
+    let mut info = [0; 8192];
+    let stale = b"\\sv_serverid\\9\\sv_paks\\stale\\sv_pakNames\\stale";
+    info[..stale.len()].copy_from_slice(stale);
+    let mut length = stale.len();
+    let value =
+        |info: &[u8], key: &[u8]| info_value(info, key, true).map(|range| info[range].to_vec());
+    let signed = |ids: &[MountId]| {
+        ids.iter()
+            .map(|&id| {
+                format!(
+                    "{} ",
+                    vfs.q3_package_checksums(id).unwrap().checksum() as i32
+                )
+            })
+            .collect::<String>()
+    };
+    let checksums = signed(&order);
+    let view = vfs.read_view(Some(&tracked));
+    view.q3_package_info(true, &mut info, &mut length, rules)
+        .unwrap();
+    assert_eq!(
+        value(&info[..length], b"sv_paks").unwrap(),
+        checksums.as_bytes()
+    );
+    assert_eq!(
+        value(&info[..length], b"sv_pakNames").unwrap(),
+        b"pak0 pak2 pak1 pak0"
+    );
+    assert_eq!(
+        value(&info[..length], b"sv_referencedPaks").unwrap(),
+        signed(&[expansion[1]]).as_bytes()
+    );
+    assert_eq!(
+        value(&info[..length], b"sv_referencedPakNames").unwrap(),
+        b"missionpack/pak0   "
+    );
+    assert_eq!(value(&info[..length], b"sv_serverid").unwrap(), b"9");
+    // Reports, enumeration, and probes must not turn an unused base pack into
+    // a required download. Opens use the same per-account reference primitive.
+    assert!(view.query(b"vm/qagame.qvm").is_some());
+    assert!(view.open(b"scripts/native.shader").is_some());
+    assert!(view.open(b"maps/native.bsp").is_some());
+    assert!(view.open(b"vm/qagame.qvm").is_some());
+    view.q3_package_info(false, &mut info, &mut length, rules)
+        .unwrap();
+    assert!(value(&info[..length], b"sv_paks").is_none());
+    assert!(value(&info[..length], b"sv_pakNames").is_none());
+    assert_eq!(
+        value(&info[..length], b"sv_referencedPaks").unwrap(),
+        signed(&[expansion[1], base[3], base[1]]).as_bytes()
+    );
+    assert_eq!(
+        value(&info[..length], b"sv_referencedPakNames").unwrap(),
+        b"missionpack/pak0 baseq3/pak2  baseq3/pak0"
+    );
+    vfs.read_view(Some(&peer))
+        .q3_package_info(true, &mut info, &mut length, rules)
+        .unwrap();
+    assert_eq!(
+        value(&info[..length], b"sv_referencedPaks").unwrap(),
+        signed(&[expansion[1]]).as_bytes()
+    );
+    let base_checksum = vfs.q3_package_checksums(base[1]).unwrap().checksum();
+    let restricted = vfs
+        .q3_search_view(Some(&tracked), &[base_checksum], false)
+        .unwrap();
+    vfs.read_view(Some(&restricted))
+        .q3_package_info(true, &mut info, &mut length, rules)
+        .unwrap();
+    assert_eq!(
+        value(&info[..length], b"sv_paks").unwrap(),
+        signed(&[base[1]]).as_bytes()
+    );
+    assert_eq!(value(&info[..length], b"sv_pakNames").unwrap(), b"pak0");
+    assert!(
+        Vfs::default()
+            .read_view(Some(&tracked))
+            .q3_package_info(true, &mut info, &mut length, rules)
+            .is_err()
+    );
+    let mut tiny = [0; 32];
+    assert!(matches!(
+        view.q3_package_info(true, &mut tiny, &mut 0, InfoRules { bytes: 32, ..rules }),
+        Err(VfsError::Limit)
+    ));
+    assert!(vfs.unmount(base[3]));
+    vfs.read_view(Some(&tracked))
+        .q3_package_info(true, &mut info, &mut length, rules)
+        .unwrap();
+    assert_eq!(
+        value(&info[..length], b"sv_pakNames").unwrap(),
+        b"pak0 pak1 pak0"
+    );
+}

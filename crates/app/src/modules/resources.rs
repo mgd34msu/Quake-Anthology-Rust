@@ -1207,23 +1207,31 @@ impl FrameHost {
                 continue;
             };
             let mut info = [[0; qa_core::configstrings::MAX_TEXT]; 2];
+            let info_context = qa_console::views::Context {
+                source: RuleSetId::Quake3,
+                side: qa_console::catalog::Scope::Server,
+                role: qa_console::views::Role::Engine,
+                ..row.request.context.console
+            };
+            let native_info = qa_compat::services::userinfo_rules(RuleSetId::Quake3);
+            let info_rules = [
+                native_info,
+                qa_core::text::InfoRules {
+                    bytes: qa_core::configstrings::MAX_TEXT,
+                    key_bytes: qa_core::configstrings::MAX_TEXT,
+                    value_bytes: qa_core::configstrings::MAX_TEXT,
+                    ..native_info
+                },
+            ];
             // Native CVAR_SERVERINFO / CVAR_SYSTEMINFO use the unified table's
             // source projection. They are engine rows, not game-module text.
             let mut lengths = [0; 2];
             let mut valid = true;
             for (slot, flag) in [4, 8].into_iter().enumerate() {
                 match self.console.cvars.info_string(
-                    qa_console::views::Context {
-                        source: RuleSetId::Quake3,
-                        side: qa_console::catalog::Scope::Server,
-                        role: qa_console::views::Role::Engine,
-                        ..row.request.context.console
-                    },
+                    info_context,
                     flag,
-                    qa_core::text::InfoRules {
-                        bytes: info[slot].len(),
-                        ..qa_compat::services::userinfo_rules(RuleSetId::Quake3)
-                    },
+                    info_rules[slot],
                     &mut info[slot],
                 ) {
                     Ok(length) => lengths[slot] = length,
@@ -1240,6 +1248,31 @@ impl FrameHost {
                 .is_some_and(|range| qa_core::text::atoi_prefix(&system_info[range]) != 0);
             let source = modules.storage.file_search(client.module);
             if source.is_some_and(|source| !runtime.vfs.read_view(None).accepts_search(source)) {
+                runtime.server.events.reject_publication();
+                continue;
+            }
+            let view = runtime.vfs.read_view(source);
+            // The world was parsed before the game program. Account for its
+            // existing selected file without reading or decoding the BSP again.
+            if let Some(map) = self
+                .console
+                .cvars
+                .bind("mapname", info_context)
+                .and_then(|view| self.console.cvars.read(view).ok())
+                .filter(|name| !name.as_str().is_empty())
+                .and_then(|name| crate::map::virtual_path(name.as_str()).ok())
+            {
+                let _ = view.open(map.as_bytes());
+            }
+            if view
+                .q3_package_info(
+                    pure_enabled,
+                    &mut info[ConfigLayout::Q3_SYSTEM_INFO],
+                    &mut lengths[1],
+                    info_rules[1],
+                )
+                .is_err()
+            {
                 runtime.server.events.reject_publication();
                 continue;
             }
