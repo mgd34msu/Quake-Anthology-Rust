@@ -1695,6 +1695,7 @@ fn bind_nq_preloaded_world(host: &mut FrameHost, clients: &[ClientId]) -> Geomet
             Some(geometry),
             bounds,
             None,
+            None,
         )
         .unwrap();
     host.runtime.model_assets = Some(owner);
@@ -3258,6 +3259,7 @@ fn install_received_world_owner(
             world,
             Some(geometry),
             host.runtime.geometry.model_bounds(geometry, 0).unwrap(),
+            None,
             None,
         )
         .unwrap();

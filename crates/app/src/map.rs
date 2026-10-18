@@ -2,7 +2,7 @@
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
 use qa_content::{
     products::{self, Edition},
-    vfs::{MountKind, Vfs, normalize},
+    vfs::{MountKind, ReadView, SearchView, Vfs, normalize},
 };
 use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags, Vec3};
 use qa_formats::{
@@ -36,6 +36,7 @@ pub struct SpawnAnchor {
 }
 
 pub struct LoadedMap {
+    pub search: SearchView,
     pub native_checksums: qa_formats::bsp::NativeMapChecksums,
     pub collision: GeometryId,
     pub portals: Option<qa_world::portals::AreaPortals>,
@@ -175,6 +176,7 @@ impl NativeEntityText {
 /// Owned cold input retains one VFS read while settings are imported. The
 /// validated lump directory selects its source; records are decoded at load.
 pub struct MapInput {
+    search: SearchView,
     /// Stock startup metadata from the winning mount, never the BSP format.
     pub client_rules: Option<RuleSetId>,
     bytes: Vec<u8>,
@@ -191,7 +193,10 @@ enum ProfileProduct {
 }
 
 /// Read once and establish the settings source before asset preparation.
-pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
+pub fn read(vfs: ReadView<'_>, name: &str) -> Result<MapInput, String> {
+    let search = vfs
+        .retain()
+        .map_err(|error| format!("map source selection: {error:?}"))?;
     let path = virtual_path(name)?;
     let file = vfs
         .open(path.as_bytes())
@@ -233,6 +238,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         ProfileProduct::Unselected(product.to_owned())
     };
     Ok(MapInput {
+        search,
         client_rules: product_metadata.map(|metadata| metadata.client_rules),
         bytes,
         native_source: source,
@@ -244,6 +250,9 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
 }
 
 impl MapInput {
+    pub fn search(&self) -> &SearchView {
+        &self.search
+    }
     pub fn native_checksums(&self) -> qa_formats::bsp::NativeMapChecksums {
         self.native_checksums
     }
@@ -287,6 +296,9 @@ impl MapInput {
         mut options: WorldLoadOptions,
         ui_fullscreen: bool,
     ) -> Result<LoadedMap, String> {
+        if !vfs.accepts_search(&self.search) {
+            return Err("map VFS owner mismatch".to_owned());
+        }
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
         let collision_bounds = map.models.first().ok_or("missing world model")?.bounds;
         let portals = load_portals(&map)?;
@@ -309,6 +321,7 @@ impl MapInput {
             }
         };
         Ok(LoadedMap {
+            search: self.search,
             native_checksums: self.native_checksums,
             collision,
             portals,

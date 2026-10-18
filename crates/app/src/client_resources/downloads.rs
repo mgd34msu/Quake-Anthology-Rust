@@ -476,7 +476,8 @@ impl ClientResources {
                         path.set_bytes(raw).map_err(|_| "Q2 world path capacity")?;
                         let state = self.startup.q2_mut().ok_or("Q2 startup owner changed")?;
                         if state.world_input.is_none() {
-                            state.world_input = Some(crate::map::read(vfs, path.as_str())?);
+                            state.world_input =
+                                Some(crate::map::read(vfs.read_view(None), path.as_str())?);
                         }
                         let input = state.world_input.as_ref().ok_or("Q2 world input missing")?;
                         if let Some(texture) = input.texture_names()?.nth(index as usize) {

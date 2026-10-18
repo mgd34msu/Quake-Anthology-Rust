@@ -684,6 +684,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
                 maxs: Vec3([1.; 3]),
             },
             None,
+            None,
         )
         .unwrap();
     host.local_worlds.fill(Some((world, presentation)));
@@ -2112,6 +2113,7 @@ pub(super) fn inline_entities(native: bool) {
             world,
             None,
             bounds,
+            None,
             None,
         )
         .unwrap();

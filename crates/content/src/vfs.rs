@@ -81,6 +81,9 @@ impl ReadView<'_> {
     pub fn source_precedence(self, file: &FileRef) -> Result<SourcePrecedence, VfsError> {
         self.vfs.source_precedence(file)
     }
+    pub fn origin<'a>(&'a self, file: &'a FileRef) -> Option<Origin<'a>> {
+        self.vfs.origin(file)
+    }
     pub fn read_file(
         self,
         path: &[u8],

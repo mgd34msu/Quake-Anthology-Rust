@@ -1078,7 +1078,7 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
             .prepare_world(
                 &fixture.vfs,
                 &mut geometry,
-                map::read(&fixture.vfs, "cold").unwrap(),
+                map::read(fixture.vfs.read_view(None), "cold").unwrap(),
                 world_registration(profile),
                 |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
                 |assets, _| {
@@ -1099,7 +1099,7 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "cold").unwrap(),
+            map::read(fixture.vfs.read_view(None), "cold").unwrap(),
             world_registration(profile),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
             |assets, append| {

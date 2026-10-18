@@ -1365,7 +1365,7 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
         profile.palette,
     );
     let mut geometry = qa_world::collision::CollisionStore::new();
-    let loaded = crate::map::read(&files.vfs, "selected")
+    let loaded = crate::map::read(files.vfs.read_view(None), "selected")
         .unwrap()
         .load(
             &files.vfs,
@@ -1489,4 +1489,166 @@ fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
                 .is_none()
         );
     }
+}
+
+#[test]
+fn selected_maps_keep_geometry_palette_and_loaded_world_name_ownership() {
+    let entries = |size, color: [u8; 3]| {
+        let mut palette = (0..=255u8).flat_map(|v| [v; 3]).collect::<Vec<_>>();
+        palette[33..36].copy_from_slice(&color);
+        let mut shades = (0..64).flat_map(|_| 0..=255u8).collect::<Vec<_>>();
+        shades.push(32);
+        vec![
+            ("maps/selected.bsp", support::world_map(size)),
+            ("gfx/palette.lmp", palette),
+            ("gfx/colormap.lmp", shades),
+        ]
+    };
+    let mut files = support::Fixture::new(&entries(8., [211, 0, 0]));
+    let high_files = support::Fixture::new(&entries(16., [0, 0, 211]));
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high_files.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let owner = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let (mut owner, mut cpu) = super::registration_tests::publish(owner);
+    let mut geometry = qa_world::collision::CollisionStore::new();
+    let mut file_ids = Vec::new();
+    let mut worlds = Vec::new();
+    for (search, material_search, size, expected) in [
+        (&low, &high, 8., [211, 0, 0]),
+        (&high, &low, 16., [0, 0, 211]),
+    ] {
+        let read = || crate::map::read(files.vfs.read_view(Some(search)), "selected").unwrap();
+        let input = read();
+        assert!(input.search().same_selection(search));
+        let checksum = input.native_checksums();
+        let registration = || WorldRegistration {
+            search: Some(material_search.clone()),
+            profile,
+            presentation: qa_render::material::world_load::WorldPresentationProfile::native(
+                profile.rules,
+                profile.palette,
+            ),
+            options: Default::default(),
+            ui_fullscreen: false,
+            trace_rules: qa_world::collision::TraceRules::ARENA,
+        };
+        let prefix = owner.assets().counts();
+        let geometries = geometry.geometries().collect::<Vec<_>>();
+        assert!(
+            owner
+                .prepare_world(
+                    &files.vfs,
+                    &mut geometry,
+                    read(),
+                    registration(),
+                    |_, _, _| Ok(()),
+                    |_, ()| Err("reject selected map".to_owned())
+                )
+                .is_err()
+        );
+        assert_eq!(owner.assets().counts(), prefix);
+        assert_eq!(geometry.geometries().collect::<Vec<_>>(), geometries);
+        assert!(
+            owner
+                .published_palette(RuleSetId::Quake, Some(search))
+                .is_none()
+        );
+        let (loaded, (), _) = owner
+            .prepare_world(
+                &files.vfs,
+                &mut geometry,
+                input,
+                registration(),
+                |_, _, _| Ok(()),
+                |assets, ()| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+            .unwrap();
+        assert!(loaded.search.same_selection(search));
+        let palette = owner
+            .published_palette(RuleSetId::Quake, Some(search))
+            .unwrap();
+        assert_eq!(
+            &owner
+                .assets()
+                .palette(palette)
+                .unwrap()
+                .color(11)
+                .to_le_bytes()[..3],
+            &expected
+        );
+        let world = owner.assets().world(loaded.render.world).unwrap();
+        assert_eq!(
+            world
+                .geometry()
+                .vertices
+                .iter()
+                .map(|v| v.vertex.position.0[1].abs())
+                .fold(0., f32::max),
+            size
+        );
+        assert!(
+            owner
+                .assets()
+                .world_presentation(loaded.render.presentations[0].id)
+                .unwrap()
+                .search()
+                .unwrap()
+                .same_selection(material_search)
+        );
+        let file = owner
+            .catalog
+            .file_id(loaded.virtual_path.as_bytes(), Some(search))
+            .unwrap();
+        let ModelFile::LoadedWorld {
+            binding,
+            collision,
+            native_checksums,
+            ..
+        } = owner.catalog.files.get(file).unwrap()
+        else {
+            panic!("loaded world")
+        };
+        assert_eq!(binding.world, loaded.render.world);
+        assert_eq!(*collision, Some(loaded.collision));
+        assert_eq!(*native_checksums, Some(checksum));
+        file_ids.push(file);
+        worlds.push(loaded.render.world);
+    }
+    assert_ne!(file_ids[0], file_ids[1]);
+    assert_ne!(worlds[0], worlds[1]);
+    assert!(owner.catalog.file_id(b"maps/selected.bsp", None).is_none());
+    let foreign = Vfs::default();
+    assert!(crate::map::read(foreign.read_view(Some(&low)), "selected").is_err());
+    let foreign_view = foreign.default_view();
+    assert!(crate::map::read(files.vfs.read_view(Some(&foreign_view)), "selected").is_err());
+    let mut assets = Assets::load().unwrap();
+    let prefix = assets.counts();
+    let mut empty = qa_world::collision::CollisionStore::new();
+    assert!(
+        crate::map::read(files.vfs.read_view(Some(&low)), "selected")
+            .unwrap()
+            .load(
+                &foreign,
+                &mut assets,
+                &mut empty,
+                None,
+                &[],
+                Default::default(),
+                false
+            )
+            .is_err()
+    );
+    assert_eq!(assets.counts(), prefix);
+    assert_eq!(empty.geometries().count(), 0);
 }

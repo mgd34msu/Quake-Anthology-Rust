@@ -4083,7 +4083,7 @@ impl ModelAssets {
         let checkpoint = RegistrationCheckpoint::capture(
             self,
             [&RendererRequest {
-                search: None,
+                search: Some(input.search().clone()),
                 name: input.virtual_path.as_bytes(),
                 source: profile.source_rules,
                 kind: RendererRegistration::Model,
@@ -4094,7 +4094,7 @@ impl ModelAssets {
         let mut created = None;
         let result = (|| {
             let source_palette = crate::render_settings::palette(
-                vfs.read_view(None),
+                vfs.read_view(Some(input.search())),
                 &mut self.assets,
                 input.native_source,
                 &mut self.palettes,
@@ -4133,6 +4133,7 @@ impl ModelAssets {
                 Some(loaded.collision),
                 loaded.collision_bounds,
                 Some(loaded.native_checksums),
+                Some(&loaded.search),
             )?;
             let staged = stage(self.view(), geometry, &loaded)?;
             let counts = self.assets.counts();
@@ -4243,9 +4244,14 @@ impl ModelAssets {
         collision: Option<qa_core::primitives::GeometryId>,
         native_bounds: Bounds,
         native_checksums: Option<qa_formats::bsp::NativeMapChecksums>,
+        search: Option<&SearchView>,
     ) -> Result<(), String> {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
+        let search = vfs
+            .read_view(search)
+            .retain()
+            .map_err(|error| format!("world source selection: {error:?}"))?;
         if path.is_empty() || path.starts_with('*') {
             return Err("loaded world filename".to_owned());
         }
@@ -4256,7 +4262,7 @@ impl ModelAssets {
             .ok_or("loaded world model0")?;
         let path = canonical_path(path);
         let name = self
-            .admit_file(path.as_bytes(), None)
+            .admit_file(path.as_bytes(), Some(&search))
             .map_err(|_| "model name capacity".to_owned())?;
         if !matches!(self.catalog.files[name], ModelFile::Empty) {
             return match self.catalog.files.get(name) {

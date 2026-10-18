@@ -437,7 +437,7 @@ fn run() -> Result<(), String> {
         None
     };
     let staged_map = if let Some(name) = map_name {
-        let input = map::read(&vfs, &name)?;
+        let input = map::read(vfs.read_view(None), &name)?;
         let policy = if let Some(policy) = seat_policies[0] {
             policy
         } else {
@@ -833,6 +833,7 @@ fn run() -> Result<(), String> {
                 Some(collision.geometry),
                 bounds,
                 native_map_checksums,
+                None,
             )?;
     }
     let sound_rules = host

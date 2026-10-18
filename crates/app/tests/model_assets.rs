@@ -88,7 +88,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     let mut geometry = CollisionStore::new();
-    let first = map::read(&fixture.vfs, "first")
+    let first = map::read(fixture.vfs.read_view(None), "first")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -128,6 +128,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             first_world,
             Some(first.collision),
             first.collision_bounds,
+            None,
             None,
         )
         .unwrap();
@@ -171,7 +172,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
                 .prepare_world(
                     &fixture.vfs,
                     &mut geometry,
-                    map::read(&fixture.vfs, "second").unwrap(),
+                    map::read(fixture.vfs.read_view(None), "second").unwrap(),
                     world_registration(unconfigured),
                     |_, _, _| -> Result<(), String> {
                         panic!("unconfigured profile must fail before staging")
@@ -188,7 +189,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "second").unwrap(),
+            map::read(fixture.vfs.read_view(None), "second").unwrap(),
             world_registration(profile),
             |view, store, loaded| {
                 assert!(loaded.spawns.is_empty());
@@ -294,7 +295,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
             .prepare_world(
                 &fixture.vfs,
                 &mut geometry,
-                map::read(&fixture.vfs, "staged").unwrap(),
+                map::read(fixture.vfs.read_view(None), "staged").unwrap(),
                 world_registration(profile),
                 |view, _, loaded| -> Result<(), String> {
                     let _append = scene.stage_world(view.assets, &loaded.render)?;
@@ -314,7 +315,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "first").unwrap(),
+            map::read(fixture.vfs.read_view(None), "first").unwrap(),
             world_registration(profile),
             |_, _, _| -> Result<(), String> { panic!("filename conflict must precede staging") },
             |_, _| panic!("filename conflict must precede backend"),
@@ -382,7 +383,7 @@ fn parsed_world_inline_capacity_failure_rolls_back_before_caller_or_backend() {
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "two").unwrap(),
+            map::read(fixture.vfs.read_view(None), "two").unwrap(),
             world_registration(profile),
             |_, _, _| -> Result<(), String> { panic!("inline capacity must precede staging") },
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
@@ -430,7 +431,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     let mut geometry = CollisionStore::new();
-    let old = map::read(&fixture.vfs, "old")
+    let old = map::read(fixture.vfs.read_view(None), "old")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -473,6 +474,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             old_world,
             Some(old.collision),
             old.collision_bounds,
+            None,
             None,
         )
         .unwrap();
@@ -523,7 +525,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
     let rejected = owner.prepare_world(
         &fixture.vfs,
         &mut geometry,
-        map::read(&fixture.vfs, "large").unwrap(),
+        map::read(fixture.vfs.read_view(None), "large").unwrap(),
         world_registration(profile),
         |view, store, loaded| {
             created.set(Some(loaded.collision));
@@ -580,7 +582,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "small").unwrap(),
+            map::read(fixture.vfs.read_view(None), "small").unwrap(),
             world_registration(profile),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
             |assets, append| {
@@ -614,7 +616,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
         .prepare_world(
             &fixture.vfs,
             &mut geometry,
-            map::read(&fixture.vfs, "large").unwrap(),
+            map::read(fixture.vfs.read_view(None), "large").unwrap(),
             world_registration(profile),
             |view, _, loaded| scene.stage_world(view.assets, &loaded.render),
             |assets, append| {
@@ -5517,6 +5519,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
             Some(geometry),
             native_bounds,
             None,
+            None,
         )
         .unwrap();
     owner
@@ -5526,6 +5529,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
             second,
             Some(geometry),
             native_bounds,
+            None,
             None,
         )
         .unwrap();
@@ -5537,6 +5541,7 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
                 first,
                 None,
                 native_bounds,
+                None,
                 None
             )
             .is_err()
@@ -5545,7 +5550,15 @@ fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
     for path in ["maps/start.bsp", "maps/foreign.bsp"] {
         assert!(
             owner
-                .bind_loaded_world(&foreign, path, first, Some(geometry), native_bounds, None)
+                .bind_loaded_world(
+                    &foreign,
+                    path,
+                    first,
+                    Some(geometry),
+                    native_bounds,
+                    None,
+                    None
+                )
                 .is_err()
         );
     }
@@ -5742,12 +5755,12 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
     .unwrap();
     assert!(
         owner
-            .bind_loaded_world(&vfs, "", first, None, bounds, None)
+            .bind_loaded_world(&vfs, "", first, None, bounds, None, None)
             .is_err()
     );
     assert!(
         owner
-            .bind_loaded_world(&vfs, "*1", first, None, bounds, None)
+            .bind_loaded_world(&vfs, "*1", first, None, bounds, None, None)
             .is_err()
     );
     assert!(
@@ -5758,6 +5771,7 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
                 WorldId(u32::MAX),
                 None,
                 bounds,
+                None,
                 None
             )
             .is_err()
@@ -5773,19 +5787,20 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
                     mins: Vec3([f32::NAN; 3]),
                     ..bounds
                 },
+                None,
                 None
             )
             .is_err()
     );
     owner
-        .bind_loaded_world(&vfs, "maps/start.bsp", first, None, bounds, None)
+        .bind_loaded_world(&vfs, "maps/start.bsp", first, None, bounds, None, None)
         .unwrap();
     owner
-        .bind_loaded_world(&vfs, "MAPS\\START.BSP", first, None, bounds, None)
+        .bind_loaded_world(&vfs, "MAPS\\START.BSP", first, None, bounds, None, None)
         .unwrap();
     assert!(
         owner
-            .bind_loaded_world(&vfs, "maps/start.bsp", second, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/start.bsp", second, None, bounds, None, None)
             .is_err()
     );
     assert!(
@@ -5799,13 +5814,14 @@ fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows()
                     maxs: Vec3([3.0; 3]),
                     ..bounds
                 },
+                None,
                 None
             )
             .is_err()
     );
     assert!(
         owner
-            .bind_loaded_world(&vfs, "maps/overflow.bsp", first, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/overflow.bsp", first, None, bounds, None, None)
             .is_err()
     );
     assert_eq!(
@@ -5850,7 +5866,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
         let mut owner = ModelAssets::new(&vfs, assets, [], [id], limits).unwrap();
         assert!(
             owner
-                .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
+                .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None, None)
                 .is_err()
         );
         assert_eq!(
@@ -5866,7 +5882,7 @@ fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
     let mut owner = ModelAssets::new(&vfs, assets, [], [], ModelLimits::default()).unwrap();
     assert!(
         owner
-            .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None)
+            .bind_loaded_world(&vfs, "maps/start.bsp", id, None, bounds, None, None)
             .is_err()
     );
     assert_eq!(
@@ -5908,6 +5924,7 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
                 id,
                 None,
                 native_bounds,
+                None,
                 None
             )
             .is_err()
@@ -5919,6 +5936,7 @@ fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
             id,
             None,
             native_bounds,
+            None,
             None,
         )
         .unwrap();

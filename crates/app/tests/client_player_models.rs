@@ -81,7 +81,7 @@ fn loading_with_connection(
     };
     let mut runtime = Runtime::load(1, []).unwrap();
     runtime.vfs = std::mem::take(&mut fixture.vfs);
-    let loaded = qa_app::map::read(&runtime.vfs, "maps/player.bsp")
+    let loaded = qa_app::map::read(runtime.vfs.read_view(None), "maps/player.bsp")
         .unwrap()
         .load(
             &runtime.vfs,
@@ -114,6 +114,7 @@ fn loading_with_connection(
             loaded.render.world,
             Some(loaded.collision),
             loaded.collision_bounds,
+            None,
             None,
         )
         .unwrap();

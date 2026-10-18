@@ -323,7 +323,7 @@ fn lighting_only_refresh_replaces_exact_presentations_and_rolls_back_rejected_re
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let mut collision = qa_world::collision::CollisionStore::new();
-    let loaded = crate::map::read(&fixture.vfs, "light")
+    let loaded = crate::map::read(fixture.vfs.read_view(None), "light")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -444,7 +444,7 @@ fn finish_refresh_reuses_world_images_after_backend_rejection() {
         image_settings: ImageSettings::native(RuleSetId::Quake3),
         finish: MaterialFinishPolicy::default(),
     };
-    let loaded = crate::map::read(&fixture.vfs, "finish")
+    let loaded = crate::map::read(fixture.vfs.read_view(None), "finish")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -550,7 +550,7 @@ fn initial_worlds_keep_their_own_default_image_when_the_catalog_adopts_a_peer() 
     let palette = support::palette(&mut assets);
     let mut collision = qa_world::collision::CollisionStore::new();
     let worlds = std::array::from_fn::<_, 2, _>(|_| {
-        crate::map::read(&fixture.vfs, "default")
+        crate::map::read(fixture.vfs.read_view(None), "default")
             .unwrap()
             .load(
                 &fixture.vfs,

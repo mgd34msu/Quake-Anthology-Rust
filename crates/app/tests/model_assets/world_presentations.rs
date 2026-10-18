@@ -59,7 +59,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake, palette);
     let mut geometry = CollisionStore::new();
-    let first = map::read(&fixture.vfs, "first")
+    let first = map::read(fixture.vfs.read_view(None), "first")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -71,7 +71,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             false,
         )
         .unwrap();
-    let second = map::read(&fixture.vfs, "second")
+    let second = map::read(fixture.vfs.read_view(None), "second")
         .unwrap()
         .load(
             &fixture.vfs,
@@ -122,6 +122,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             Some(collision),
             first.collision_bounds,
             None,
+            None,
         )
         .unwrap();
     owner
@@ -131,6 +132,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
             other_world,
             Some(second.collision),
             second.collision_bounds,
+            None,
             None,
         )
         .unwrap();
@@ -374,7 +376,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
     let palette = support::palette(&mut assets);
     let original_profile = native_profile(RuleSetId::Quake, palette);
     let mut geometry = CollisionStore::new();
-    let loaded = map::read(&fixture.vfs, "first")
+    let loaded = map::read(fixture.vfs.read_view(None), "first")
         .unwrap()
         .load(
             &fixture.vfs,

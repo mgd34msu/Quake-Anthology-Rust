@@ -780,7 +780,7 @@ impl FrameHost {
                 .and_then(|state| state.world_input.take())
             {
                 Some(input) if input.virtual_path == path => input,
-                _ => crate::map::read(&runtime.vfs, &path)?,
+                _ => crate::map::read(runtime.vfs.read_view(None), &path)?,
             };
             let (loaded, (append, scratches), _) = owner.prepare_world(
                 &runtime.vfs,

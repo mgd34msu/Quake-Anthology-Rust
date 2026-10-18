@@ -69,7 +69,7 @@ fn settings_follow_the_actual_product_with_foreign_bsp_syntax() -> Result<(), St
         let mut vfs = Vfs::default();
         vfs.mount_directory(&root, 0)
             .map_err(|e| format!("{e:?}"))?;
-        let input = map::read(&vfs, "foreign")?;
+        let input = map::read(vfs.read_view(None), "foreign")?;
         assert_eq!(input.native_source, reader);
         assert_eq!(input.client_rules, Some(client));
         // A different client module must retain this recognized product key.
@@ -81,7 +81,7 @@ fn settings_follow_the_actual_product_with_foreign_bsp_syntax() -> Result<(), St
         let mut vfs = Vfs::default();
         vfs.mount_directory(&unknown, 0)
             .map_err(|e| format!("{e:?}"))?;
-        let input = map::read(&vfs, "foreign")?;
+        let input = map::read(vfs.read_view(None), "foreign")?;
         assert_eq!(input.client_rules, None);
         assert!(ClientPolicy::select(None, input.client_rules, None, None, None).is_err());
         let policy =

@@ -95,7 +95,7 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
     let mut geometry = CollisionStore::new();
     let mut assets = Assets::load().unwrap();
     let loaded = load_input(
-        qa_app::map::read(&vfs, name).expect("map input"),
+        qa_app::map::read(vfs.read_view(None), name).expect("map input"),
         &vfs,
         &mut assets,
         &mut geometry,
@@ -234,7 +234,7 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
     let mut assets = Assets::load().unwrap();
     let mut loaded = Vec::new();
     for (_, name, rules, entity_rules) in cases {
-        let input = qa_app::map::read(&vfs, name).expect("shared VFS map");
+        let input = qa_app::map::read(vfs.read_view(None), name).expect("shared VFS map");
         let presentation = input.native_source;
         let map = load_input(input, &vfs, &mut assets, &mut geometry, presentation);
         assert!(geometry.model_count(map.collision).expect("model count") > 1);
@@ -320,7 +320,7 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
         }
     }
     let replacement = load_input(
-        qa_app::map::read(&vfs, "base1").expect("reload input"),
+        qa_app::map::read(vfs.read_view(None), "base1").expect("reload input"),
         &vfs,
         &mut assets,
         &mut geometry,
