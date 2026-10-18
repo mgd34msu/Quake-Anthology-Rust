@@ -225,7 +225,7 @@ type Projections = [[Result<(f32, i32), conversion::Error>; 3]; 5];
 pub struct Cvars {
     catalog_values: usize,
     values: Vec<Value>,
-    texts: Box<[FixedText<MAX_TEXT>]>,
+    texts: qa_core::text::TextSlots,
     offsets: Vec<usize>,
     defaults: Vec<[Option<Cow<'static, str>>; 5]>,
     pub(crate) names: NameTable,
@@ -345,9 +345,15 @@ impl Cvars {
         }
         let catalog_values = values.len();
         let pending_capacity = catalog_values + MODULE_CVARS;
-        let texts = (0..pending_capacity)
-            .map(|_| FixedText::default())
-            .collect();
+        let texts = qa_core::text::TextSlots::load(
+            (0..pending_capacity).map(|_| MAX_TEXT),
+            qa_core::text::SlotsLimits {
+                rows: pending_capacity,
+                width: MAX_TEXT,
+                bytes: 512 * 1024 * 1024,
+            },
+        )
+        .map_err(|_| NamesError::Capacity)?;
         let cheats_name = names
             .find_folded(b"sv_cheats")
             .ok_or(NamesError::Capacity)?;
@@ -692,7 +698,7 @@ impl Cvars {
                 }
             }
             if let Some(user_value) = user_value {
-                self.publish(view.handle, user_value);
+                self.publish(view.handle, user_value.as_str())?;
             }
             // Q3's first non-user registration takes ownership of the reset
             // default while retaining the console value and existing flags.
@@ -763,7 +769,7 @@ impl Cvars {
     fn effective(&self, handle: CvarHandle, source: RuleSetId) -> &str {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
-            self.texts[handle.0 as usize].as_str()
+            self.texts.text(handle.0 as usize).unwrap_or_default()
         } else {
             self.default_text(handle, source)
         }
@@ -1679,22 +1685,23 @@ impl Cvars {
             self.mark_dirty(handle);
         }
     }
-    fn publish(&mut self, handle: CvarHandle, text: FixedText<MAX_TEXT>) {
+    fn publish(&mut self, handle: CvarHandle, text: &str) -> Result<(), WriteError> {
+        let changed = self
+            .texts
+            .set(handle.0 as usize, text.as_bytes())
+            .map_err(|_| WriteError::Capacity)?;
         let value = &mut self.values[handle.0 as usize];
-        if !value.explicit || self.texts[handle.0 as usize].as_str() != text.as_str() {
+        if !value.explicit || changed {
             value.explicit = true;
-            self.texts[handle.0 as usize] = text;
             self.mark_change(handle);
         }
+        Ok(())
     }
+
     fn publish_group(&mut self, pending: &PendingWrite) -> Result<(), WriteError> {
         for (handle, text) in pending.values() {
-            let mut value = FixedText::default();
-            value
-                .set(text)
-                .map_err(|_| conversion::Error::TextTooLong)?;
             self.clear_details(handle);
-            self.publish(handle, value);
+            self.publish(handle, text)?;
         }
         for detail in pending.details.iter().flatten() {
             self.save_detail(detail.view, detail.text.as_str(), detail.modified)?;
@@ -1718,13 +1725,12 @@ impl Cvars {
         self.set_text(handle, text.as_str())
     }
     pub fn set_text(&mut self, handle: CvarHandle, text: &str) -> Result<(), WriteError> {
-        let mut value = FixedText::default();
-        value
-            .set(text)
-            .map_err(|_| conversion::Error::TextTooLong)?;
+        if text.len() > MAX_TEXT {
+            return Err(conversion::Error::TextTooLong.into());
+        }
         self.cancel_pending(handle);
         self.clear_details(handle);
-        self.publish(handle, value);
+        self.publish(handle, text)?;
         self.refresh_changes();
         Ok(())
     }

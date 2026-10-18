@@ -1144,10 +1144,10 @@ impl EventRing {
 
 /// A page is reusable only after its event and every display lease release it.
 pub struct TextStore {
-    bytes: Box<[u8]>,
-    lengths: Box<[u16]>,
+    text: crate::text::TextSlots,
     generations: Box<[u32]>,
     refs: Box<[u32]>,
+    /// Cached uniform page size for native payload framing.
     width: usize,
     next: usize,
     reused: u64,
@@ -1178,19 +1178,20 @@ impl TextStore {
         self.generations[slot] -= 1;
     }
     pub fn load(rows: usize, width: usize) -> Result<Self, EventStorageError> {
-        if rows == 0
-            || rows > u16::MAX as usize
-            || width == 0
-            || width > u16::MAX as usize
-            || rows
-                .checked_mul(width)
-                .is_none_or(|size| size > 64 * 1024 * 1024)
-        {
+        if rows == 0 || rows > u16::MAX as usize || width == 0 || width > u16::MAX as usize {
             return Err(EventStorageError::TextCapacity);
         }
+        let text = crate::text::TextSlots::load(
+            (0..rows).map(|_| width),
+            crate::text::SlotsLimits {
+                rows: u16::MAX as usize,
+                width: u16::MAX as usize,
+                bytes: 64 * 1024 * 1024,
+            },
+        )
+        .map_err(|_| EventStorageError::TextCapacity)?;
         Ok(Self {
-            bytes: vec![0; rows * width].into_boxed_slice(),
-            lengths: vec![0; rows].into_boxed_slice(),
+            text,
             generations: vec![0; rows].into_boxed_slice(),
             refs: vec![0; rows].into_boxed_slice(),
             width,
@@ -1200,7 +1201,7 @@ impl TextStore {
         })
     }
     fn reserve(&mut self) -> Option<(usize, TextLease)> {
-        let rows = self.lengths.len();
+        let rows = self.text.len();
         let slot = (0..rows)
             .map(|offset| (self.next + offset) % rows)
             .find(|&slot| self.refs[slot] == 0 && self.generations[slot] != u32::MAX)?;
@@ -1223,34 +1224,35 @@ impl TextStore {
     }
     fn insert_parts(&mut self, parts: &[&[u8]]) -> Option<TextLease> {
         let (slot, lease) = self.reserve()?;
-        let wanted = parts
-            .iter()
-            .fold(0usize, |length, part| length.saturating_add(part.len()));
-        let len = wanted.min(self.width);
-        self.truncated += u64::from(len != wanted);
-        let output = &mut self.bytes[slot * self.width..slot * self.width + len];
-        let mut at = 0;
-        for part in parts {
-            let count = part.len().min(len - at);
-            output[at..at + count].copy_from_slice(&part[..count]);
-            at += count;
-            if at == len {
-                break;
+        match self.text.write_parts(slot, parts) {
+            Ok((_, truncated)) => self.truncated += u64::from(truncated),
+            Err(_) => {
+                self.release(lease);
+                return None;
             }
         }
-        self.lengths[slot] = len as u16;
         Some(lease)
     }
     pub fn insert_formatted(&mut self, text: fmt::Arguments<'_>) -> Option<TextLease> {
         let (slot, lease) = self.reserve()?;
-        let mut writer = TextWriter {
-            bytes: &mut self.bytes[slot * self.width..(slot + 1) * self.width],
-            len: 0,
-            truncated: false,
+        let (length, truncated) = {
+            let Some(bytes) = self.text.buffer_mut(slot) else {
+                self.release(lease);
+                return None;
+            };
+            let mut writer = TextWriter {
+                bytes,
+                len: 0,
+                truncated: false,
+            };
+            let _ = writer.write_fmt(text);
+            (writer.len, writer.truncated)
         };
-        let _ = writer.write_fmt(text);
-        self.lengths[slot] = writer.len as u16;
-        self.truncated += u64::from(writer.truncated);
+        if self.text.set_length(slot, length).is_err() {
+            self.release(lease);
+            return None;
+        }
+        self.truncated += u64::from(truncated);
         Some(lease)
     }
     pub fn lease(&mut self, id: impl Into<PrintText>) -> Option<TextLease> {
@@ -1278,7 +1280,7 @@ impl TextStore {
         {
             return None;
         }
-        Some(&self.bytes[slot * self.width..slot * self.width + self.lengths[slot] as usize])
+        self.text.get(slot)
     }
     pub fn copy_payload<'a>(
         &self,

@@ -3,12 +3,14 @@ mod format;
 pub use format::{fixed_float, native_number};
 mod info;
 mod numbers;
+mod slots;
 pub use info::{
     InfoBytes, InfoError, InfoRules, InfoUpdate, info_delimiter, info_set, info_valid_field,
 };
 pub use numbers::{
     atof_prefix, atof_prefix_bytes, atoi_prefix, decimal_prefix_end, hex_digit, integer_prefix,
 };
+pub use slots::{SlotsError, SlotsLimits, TextSlots};
 
 /// Native inline names use atoi's prefix and wrap to the model ordinal width.
 pub fn inline_model_index(name: &[u8]) -> Option<u32> {

@@ -13,8 +13,6 @@ pub enum ConfigError {
 }
 
 struct Row {
-    bytes: IndexSpan,
-    length: usize,
     integer: i32,
     revision: u64,
 }
@@ -28,37 +26,29 @@ pub struct ConfigRef<'a> {
 
 /// All row bytes and metadata are reserved at load. Mutation never grows them.
 pub struct ConfigStrings {
-    bytes: Box<[u8]>,
+    text: crate::text::TextSlots,
     rows: Box<[Row]>,
 }
 impl ConfigStrings {
     pub fn load(capacities: impl IntoIterator<Item = usize>) -> Result<Self, ConfigError> {
-        let mut rows = Vec::new();
-        let mut size = 0usize;
-        for capacity in capacities {
-            if rows.len() == 65536 || capacity > MAX_TEXT {
-                return Err(ConfigError::Capacity);
-            }
-            let first = u32::try_from(size).map_err(|_| ConfigError::Capacity)?;
-            size = size.checked_add(capacity).ok_or(ConfigError::Capacity)?;
-            if size > 512 * 1024 * 1024 {
-                return Err(ConfigError::Capacity);
-            }
-            rows.push(Row {
-                bytes: IndexSpan {
-                    first,
-                    count: capacity as u32,
-                },
-                length: 0,
+        let text = crate::text::TextSlots::load(
+            capacities,
+            crate::text::SlotsLimits {
+                rows: 65536,
+                width: MAX_TEXT,
+                bytes: 512 * 1024 * 1024,
+            },
+        )
+        .map_err(|_| ConfigError::Capacity)?;
+        let rows = (0..text.len())
+            .map(|_| Row {
                 integer: 0,
                 revision: 0,
-            });
-        }
-        Ok(Self {
-            bytes: vec![0; size].into_boxed_slice(),
-            rows: rows.into_boxed_slice(),
-        })
+            })
+            .collect();
+        Ok(Self { text, rows })
     }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -66,13 +56,12 @@ impl ConfigStrings {
         self.rows.is_empty()
     }
     pub fn capacity(&self, index: usize) -> Option<usize> {
-        Some(self.rows.get(index)?.bytes.count as usize)
+        self.text.capacity(index)
     }
     pub fn config(&self, index: usize) -> Option<ConfigRef<'_>> {
         let row = self.rows.get(index)?;
-        let first = row.bytes.first as usize;
         Some(ConfigRef {
-            text: &self.bytes[first..first + row.length],
+            text: self.text.get(index)?,
             integer: row.integer,
             revision: row.revision,
         })
@@ -80,23 +69,20 @@ impl ConfigStrings {
     /// Rejection preserves the previous text, numeric projection and revision.
     pub fn set(&mut self, index: usize, text: &[u8]) -> Result<bool, ConfigError> {
         let row = self.rows.get_mut(index).ok_or(ConfigError::Index)?;
-        if text.len() > row.bytes.count as usize || text.contains(&0) {
+        if text.contains(&0) {
             return Err(ConfigError::Text);
         }
-        let first = row.bytes.first as usize;
-        if &self.bytes[first..first + row.length] == text {
+        if !self.text.set(index, text).map_err(|_| ConfigError::Text)? {
             return Ok(false);
         }
-        self.bytes[first..first + text.len()].copy_from_slice(text);
-        row.length = text.len();
         row.integer = crate::text::atoi_prefix(text);
         row.revision = row.revision.wrapping_add(1);
         Ok(true)
     }
     pub fn reset(&mut self) {
-        for row in &mut self.rows {
-            if row.length != 0 {
-                row.length = 0;
+        for (index, row) in self.rows.iter_mut().enumerate() {
+            if self.text.get(index).is_some_and(|text| !text.is_empty()) {
+                let _ = self.text.set_length(index, 0);
                 row.integer = 0;
                 row.revision = row.revision.wrapping_add(1);
             }

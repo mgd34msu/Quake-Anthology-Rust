@@ -19,6 +19,38 @@ fn running(server_active: bool) -> RuntimePolicy {
 }
 
 #[test]
+fn rejected_storage_write_preserves_pending_value_and_native_generation() {
+    let mut vars = Cvars::new().unwrap();
+    let view = vars
+        .register(
+            "_qa_storage_latch",
+            Some("1"),
+            32,
+            context(RuleSetId::Quake3),
+        )
+        .unwrap();
+    let native = vars.native_view(view).unwrap();
+    vars.set_runtime_policy(running(false));
+    vars.write(view, "2").unwrap();
+    let generation = vars.native_snapshot(native).unwrap().1;
+    assert_eq!(
+        vars.set_text(
+            view.canonical(),
+            &"x".repeat(qa_console::text::MAX_TEXT + 1)
+        ),
+        Err(WriteError::Conversion(
+            qa_console::conversion::Error::TextTooLong
+        ))
+    );
+    assert_eq!(vars.read(view).unwrap().as_str(), "1");
+    assert_eq!(vars.latched(view).unwrap().unwrap().as_str(), "2");
+    assert_eq!(vars.native_snapshot(native).unwrap().1, generation);
+    vars.set_text(view.canonical(), "é\0raw").unwrap();
+    assert_eq!(vars.read(view).unwrap().as_str(), "é\0raw");
+    assert!(vars.latched(view).unwrap().is_none());
+}
+
+#[test]
 fn host_policy_closes_the_initial_setup_window_without_changing_values() {
     let mut vars = Cvars::new().unwrap();
     assert_eq!(vars.runtime_policy(), RuntimePolicy::default());
