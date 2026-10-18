@@ -355,6 +355,7 @@ fn request(
     let callback = entries.iter().position(|&entry| entry == frame).unwrap() as u32;
     (
         ModuleRequest {
+            search: None,
             q3_image: None,
             context: CallContext {
                 native_rules: rules,

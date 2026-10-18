@@ -170,6 +170,7 @@ pub(in crate::modules) fn request(
     let body = (!matches!(program, Program::QuakeC(_))).then(|| allocate(2));
     (
         ModuleRequest {
+            search: None,
             q3_image: None,
             context: CallContext {
                 native_rules: rules,

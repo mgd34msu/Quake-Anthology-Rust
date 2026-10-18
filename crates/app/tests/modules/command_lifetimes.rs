@@ -91,6 +91,7 @@ fn request(
             .id
     });
     ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module,

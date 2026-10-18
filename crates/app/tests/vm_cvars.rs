@@ -395,6 +395,7 @@ fn session_function_dispatch_drives_vm_cvar_registration_and_updates() {
             .unwrap()
             .id;
         let request = ModuleRequest {
+            search: None,
             q3_image: None,
             context: CallContext {
                 native_rules: qa_core::primitives::RuleSetId::Quake3,

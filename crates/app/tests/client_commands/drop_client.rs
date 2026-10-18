@@ -233,6 +233,7 @@ fn host(program: Program) -> (FrameHost, ClientId, ClientId) {
         .unwrap()
         .id;
     let request = ModuleRequest {
+        search: None,
         q3_image: None,
         context: context(),
         phase: Phase::Server,

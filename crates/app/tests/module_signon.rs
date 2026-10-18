@@ -84,6 +84,7 @@ fn module(runtime: &mut Runtime, id: ModuleId, x: f32, rate: u32) -> ModuleReque
         slot: 0,
     });
     ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module: id,

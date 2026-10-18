@@ -148,6 +148,8 @@ impl Program {
     }
 }
 pub struct ModuleRequest {
+    /// Program-file sources, moved into ServiceStorage before guest callbacks.
+    pub search: Option<qa_content::vfs::SearchView>,
     pub context: CallContext,
     pub phase: Phase,
     pub timing_rules: RuleSetId,
@@ -874,6 +876,13 @@ impl FrameHost {
             storage
                 .bind_lifetime(request.context.module, request.anchor)
                 .map_err(|error| format!("module lifetime: {error:?}"))?;
+            storage
+                .set_file_search(
+                    request.context.module,
+                    request.search.take(),
+                    &host.runtime.vfs,
+                )
+                .map_err(|error| format!("module filesystem binding: {error:?}"))?;
             if let Some((index, syntax)) = request.entity_source {
                 let source = host
                     .runtime

@@ -11,6 +11,7 @@ use qa_console::{
     catalog::Scope,
     views::{Context, Role},
 };
+use qa_content::vfs::{ReadView, SearchView};
 use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{CallbackId, ClientId, ModuleId, NativeEntity, RuleSetId};
 use qa_core::sys_events::SeatId;
@@ -27,6 +28,7 @@ fn native_export(call: &qa_compat::native::LifecycleCall) -> Export {
 }
 
 pub struct QuakeCSpec {
+    pub search: Option<SearchView>,
     pub rules: RuleSetId,
     pub path: String,
 }
@@ -40,6 +42,7 @@ impl QuakeCSpec {
             return Err("quakec-module needs q1|qw:virtual-file");
         }
         Ok(Self {
+            search: None,
             rules,
             path: path.into(),
         })
@@ -53,6 +56,7 @@ pub enum Q3Role {
     Ui(SeatId),
 }
 pub struct Q3Spec {
+    pub search: Option<SearchView>,
     pub role: Q3Role,
     pub path: String,
     pub player_stats: qa_core::primitives::Q3StatLayout,
@@ -100,6 +104,7 @@ impl Q3Spec {
             return Err("Q3 module needs a virtual file");
         }
         Ok(Self {
+            search: None,
             role,
             path: path.into(),
             player_stats,
@@ -108,14 +113,17 @@ impl Q3Spec {
 }
 
 fn module_bytes(
-    runtime: &Runtime,
+    view: ReadView<'_>,
     path: &str,
     reader: &mut ArchiveReader,
-) -> Result<Vec<u8>, String> {
-    runtime
-        .vfs
+) -> Result<(SearchView, Vec<u8>), String> {
+    let search = view
+        .retain()
+        .map_err(|error| format!("module {path}: {error}"))?;
+    let bytes = view
         .read_file(path.as_bytes(), 256 * 1024 * 1024, reader)
-        .map_err(|error| format!("module {path}: {error}"))
+        .map_err(|error| format!("module {path}: {error}"))?;
+    Ok((search, bytes))
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -292,7 +300,11 @@ pub fn load_q3(
             return Err("invalid Q3 player stat layout".into());
         }
         let module = module_id(requests)?;
-        let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
+        let (search, bytes) = module_bytes(
+            runtime.vfs.read_view(spec.search.as_ref()),
+            &spec.path,
+            &mut reader,
+        )?;
         let allocation = AllocationPolicy::for_rules(RuleSetId::Quake3, 0);
         let clock = ThinkTime::module_clock(RuleSetId::Quake3);
         let anchor = allocate_anchor(runtime, module, clock, allocation)?;
@@ -399,6 +411,7 @@ pub fn load_q3(
             context.sound_policy = qa_gameplay::rules::native_sound_spatial(RuleSetId::Quake3);
         }
         requests.push(ModuleRequest {
+            search: Some(search),
             context,
             timing_rules: RuleSetId::Quake3,
             phase,
@@ -456,7 +469,11 @@ pub fn load_quakec(
     for spec in specs {
         // Module zero belongs to the existing built-in walk-through provider.
         let module = module_id(&requests)?;
-        let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
+        let (search, bytes) = module_bytes(
+            runtime.vfs.read_view(spec.search.as_ref()),
+            &spec.path,
+            &mut reader,
+        )?;
         let crc = if spec.rules == RuleSetId::QuakeWorld {
             54730
         } else {
@@ -485,6 +502,7 @@ pub fn load_quakec(
         runtime.server.entities.columns.native_entity[anchor.slot as usize] =
             Some(NativeEntity { module, slot: 0 });
         requests.push(ModuleRequest {
+            search: Some(search),
             context: call_context(
                 module,
                 clock,

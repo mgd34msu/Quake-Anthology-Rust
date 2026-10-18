@@ -196,6 +196,7 @@ fn module_trace_admission_precedes_initialize_and_allocates_shared_trace_scratch
                 runtime,
                 TickRate::FrameDriven,
                 vec![ModuleRequest {
+                    search: None,
                     q3_image: None,
                     context: CallContext {
                         native_rules: RuleSetId::Quake3,

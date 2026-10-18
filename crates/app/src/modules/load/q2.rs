@@ -3,6 +3,7 @@ use crate::{Runtime, modules::ModuleRequest};
 use qa_core::primitives::RuleSetId;
 
 pub struct Q2Spec {
+    pub search: Option<qa_content::vfs::SearchView>,
     pub rules: RuleSetId,
     pub path: String,
 }
@@ -32,6 +33,7 @@ impl Q2Spec {
             return Err("q2-module needs q2|q2rr:virtual-file");
         }
         Ok(Self {
+            search: None,
             rules,
             path: path.into(),
         })
@@ -61,7 +63,11 @@ pub fn load_q2(
         let mut reader = ArchiveReader::default();
         let mut clients = Vec::new();
         for spec in specs {
-            let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
+            let (search, bytes) = module_bytes(
+                runtime.vfs.read_view(spec.search.as_ref()),
+                &spec.path,
+                &mut reader,
+            )?;
             let mut image = super::parse_native(&bytes)?;
             let abi =
                 qa_compat::q2_abi::client_layout(spec.rules).ok_or("unsupported Q2 client ABI")?;
@@ -133,6 +139,7 @@ pub fn load_q2(
             let mut api_arguments = [Argument::Word(0); 9];
             api_arguments[0] = Argument::Word(game.imports_address);
             requests.push(ModuleRequest {
+                search: Some(search),
                 q3_image: None,
                 context: super::call_context(
                     module,

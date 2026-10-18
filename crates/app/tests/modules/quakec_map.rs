@@ -159,6 +159,7 @@ fn host_for_map(
     let frame = vm.image.function(b"StartFrame").unwrap();
     let entries = (0..vm.image.functions.len() as u32).collect();
     let request = ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module,

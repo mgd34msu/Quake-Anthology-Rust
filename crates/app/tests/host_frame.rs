@@ -376,6 +376,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
         .unwrap()
         .id;
     let request = ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module,

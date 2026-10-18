@@ -70,6 +70,7 @@ fn request(
         data[offset..offset + path.len()].copy_from_slice(path);
     }
     ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module,

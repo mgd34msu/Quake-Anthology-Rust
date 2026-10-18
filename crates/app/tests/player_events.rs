@@ -246,6 +246,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
         .unwrap()
         .id;
     let request = ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             module: MODULE,
@@ -292,6 +293,7 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
             .unwrap()
             .id;
         requests.push(ModuleRequest {
+            search: None,
             q3_image: None,
             context: client_context,
             timing_rules: RuleSetId::Quake3,

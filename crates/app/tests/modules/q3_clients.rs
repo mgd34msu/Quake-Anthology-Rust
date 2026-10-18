@@ -317,6 +317,7 @@ fn fixture_extra(
         .unwrap()
         .id;
     let request = ModuleRequest {
+        search: None,
         q3_image: None,
         context: CallContext {
             native_rules: RuleSetId::Quake3,
@@ -693,6 +694,7 @@ fn rejected_client_import_keeps_termination_and_dispatches_the_server_disconnect
             code.push((Op::Pop, 0));
             finish(&mut code, 0);
             vec![ModuleRequest {
+                search: None,
                 q3_image: None,
                 context: CallContext {
                     module: CGAME,

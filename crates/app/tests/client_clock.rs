@@ -306,6 +306,7 @@ fn bound_cgame_waits_for_an_active_clock_while_unbound_ui_keeps_refreshing() {
                 .unwrap()
                 .id;
             ModuleRequest {
+                search: None,
                 q3_image: None,
                 context: CallContext {
                     module,
