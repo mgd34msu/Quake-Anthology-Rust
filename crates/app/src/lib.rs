@@ -300,7 +300,7 @@ impl Runtime {
             renderer: self.renderer_configuration.as_deref(),
             scene: None,
             client_audio,
-            vfs: &self.vfs,
+            vfs: &mut self.vfs,
             localization: &self.localization,
             registry: &self.catalog.registry,
             names: &mut self.catalog.names,

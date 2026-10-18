@@ -300,6 +300,7 @@ pub struct MountInfo {
     pub priority: i32,
     active: bool,
     settings_only: bool,
+    writable: bool,
     product: Option<MountId>,
     package: Option<PackagePrecedence>,
     contents: Option<MountContents>,
@@ -410,6 +411,7 @@ pub struct Vfs {
     listing: Vec<u32>,
     generation: u64,
     lookups: AtomicU64,
+    write_directory: Option<(MountId, files::WriteDirectory)>,
 }
 
 pub fn normalize(path: &[u8]) -> Result<Vec<u8>, VfsError> {
@@ -455,6 +457,42 @@ fn normalize_into(path: &[u8], normalized: &mut [u8; MAX_PATH_BYTES]) -> Result<
 }
 
 impl Vfs {
+    /// Explicit writable authority; archive and saved-settings mounts cannot
+    /// become module output destinations. The directory handle survives renames.
+    pub fn set_write_directory(&mut self, mount: MountId) -> Result<(), VfsError> {
+        let path = self.directory_path(mount).ok_or(VfsError::Handle)?;
+        let directory = files::WriteDirectory::open(path)?;
+        self.write_directory = Some((mount, directory));
+        self.mounts[mount.0 as usize].writable = true;
+        Ok(())
+    }
+
+    pub fn open_write(
+        &mut self,
+        name: &[u8],
+        mode: files::WriteMode,
+    ) -> Result<files::WriteFile, VfsError> {
+        let mut path = [0; MAX_PATH_BYTES];
+        if name.len() > path.len() {
+            return Err(VfsError::Path);
+        }
+        for (out, byte) in path.iter_mut().zip(name) {
+            *out = if *byte == b'\\' { b'/' } else { *byte };
+        }
+        let path = std::str::from_utf8(&path[..name.len()]).map_err(|_| VfsError::Path)?;
+        let (mount, root) = self.write_directory.as_ref().ok_or(VfsError::Handle)?;
+        self.directory_path(*mount).ok_or(VfsError::Handle)?;
+        let writer = root.create(path, mode, 0)?;
+        let mount = *mount;
+        let prefix = name
+            .iter()
+            .rposition(|&c| c == b'/' || c == b'\\')
+            .map_or(&b""[..], |end| &name[..end]);
+        // Opening a new native file is a cold registration. All subsequent
+        // writes reuse its handle; reads and listings use the existing VFS index.
+        self.refresh_directory_prefix(mount, prefix)?;
+        Ok(writer)
+    }
     /// Cold binding uses the common selection table. Native file reads borrow
     /// the returned view directly; only deferred controls resolve its handle.
     pub fn bind_search(&self, search: Option<&SearchView>) -> Result<FileSearch, VfsError> {
@@ -602,7 +640,18 @@ impl Vfs {
         } else {
             normalize(prefix)?
         };
-        let scanned = scan_directory(&mount.path, id.0 as usize, mount.settings_only, &prefix)?;
+        let retained = self
+            .write_directory
+            .as_ref()
+            .filter(|(write_mount, _)| *write_mount == id)
+            .map(|(_, root)| root.scan_path())
+            .transpose()?;
+        let scanned = scan_directory(
+            retained.as_deref().unwrap_or(&mount.path),
+            id.0 as usize,
+            mount.settings_only,
+            &prefix,
+        )?;
         let previous = mount.contents.as_ref().ok_or(VfsError::Handle)?;
         let directories = previous
             .directories
@@ -774,6 +823,7 @@ impl Vfs {
             priority,
             active: true,
             settings_only,
+            writable: false,
             product,
             package,
             contents: Some(contents),
@@ -1007,7 +1057,11 @@ impl Vfs {
     }
 
     pub fn length(&self, reference: &FileRef) -> Result<u64, VfsError> {
-        Ok(self.entry(reference)?.length)
+        let entry = self.entry(reference)?;
+        match &entry.source {
+            EntrySource::Loose(file) if self.mounts[entry.mount].writable => Ok(file.length()?),
+            _ => Ok(entry.length),
+        }
     }
     pub fn name<'a>(&self, reference: &'a FileRef) -> Result<&'a [u8], VfsError> {
         Ok(&self.entry(reference)?.name)
@@ -1079,7 +1133,10 @@ impl Vfs {
         let EntrySource::Loose(file) = &entry.source else {
             return Err(VfsError::Handle);
         };
-        let remaining = entry.length.checked_sub(offset).ok_or(VfsError::Range)?;
+        let remaining = self
+            .length(reference)?
+            .checked_sub(offset)
+            .ok_or(VfsError::Range)?;
         let count = destination
             .len()
             .min(usize::try_from(remaining).unwrap_or(usize::MAX));

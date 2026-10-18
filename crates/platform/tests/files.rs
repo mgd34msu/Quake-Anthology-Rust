@@ -149,3 +149,66 @@ fn whole_file_text_reads_keep_raw_bytes_and_utf8_errors() {
         ErrorKind::NotFound
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn contained_writes_truncate_append_seek_and_flush_without_following_links() {
+    use qa_platform::files::{WriteDirectory, WriteMode};
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let root = fixture.0.join("output");
+    files::create_dir_all(&root).unwrap();
+    let directory = WriteDirectory::open(&root).unwrap();
+    let mut writer = directory
+        .create("logs/game.log", WriteMode::Truncate, 32)
+        .unwrap();
+    writer.write_all(b"abcdef").unwrap();
+    writer.seek(std::io::SeekFrom::Start(2)).unwrap();
+    writer.write_all(b"X").unwrap();
+    writer.flush().unwrap();
+    assert_eq!(files::read(root.join("logs/game.log")).unwrap(), b"abXdef");
+    drop(writer);
+    let mut append = directory
+        .create("logs/game.log", WriteMode::AppendSync, 32)
+        .unwrap();
+    append.seek(std::io::SeekFrom::Start(0)).unwrap();
+    append.write_all(b"!").unwrap();
+    // APPEND_SYNC is fflush after each native write, not fsync.
+    assert_eq!(files::read(root.join("logs/game.log")).unwrap(), b"abXdef!");
+    drop(append);
+    directory
+        .create("logs/game.log", WriteMode::Truncate, 0)
+        .unwrap();
+    assert!(files::read(root.join("logs/game.log")).unwrap().is_empty());
+    let outside = fixture.0.join("outside");
+    files::create_dir_all(&outside).unwrap();
+    files::write(outside.join("keep"), b"keep").unwrap();
+    symlink(&outside, root.join("link")).unwrap();
+    symlink(outside.join("keep"), root.join("file-link")).unwrap();
+    for path in [
+        "../outside/keep",
+        "/absolute",
+        "a/../b",
+        "a//b",
+        "a/./b",
+        "a\\b",
+        "a:b",
+        "link/keep",
+        "file-link",
+    ] {
+        assert!(
+            directory.create(path, WriteMode::Truncate, 0).is_err(),
+            "{path}"
+        );
+    }
+    assert_eq!(files::read(outside.join("keep")).unwrap(), b"keep");
+    files::rename(&root, fixture.0.join("moved")).unwrap();
+    files::create_dir_all(&root).unwrap();
+    let mut retained = directory.create("retained", WriteMode::Append, 0).unwrap();
+    retained.write_all(b"owned").unwrap();
+    assert_eq!(
+        files::read(fixture.0.join("moved/retained")).unwrap(),
+        b"owned"
+    );
+    assert!(files::read(root.join("retained")).is_err());
+}

@@ -557,6 +557,7 @@ const fn server() -> CallTable {
     t.entries[9] = scalar!(argv);
     t.entries[10] = scalar!(file_open);
     t.entries[11] = scalar!(file_read);
+    t.entries[12] = scalar!(file_write);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = Some(CallEntry {
         handler: Handler::Shared(|call, _| command(call)),
@@ -622,6 +623,7 @@ const fn client() -> CallTable {
     t.entries[9] = scalar!(client_args);
     t.entries[10] = scalar!(file_open);
     t.entries[11] = scalar!(file_read);
+    t.entries[12] = scalar!(file_write);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
     t.entries[15] = value!(client_command_registration::<false>);
@@ -720,6 +722,7 @@ const fn ui() -> CallTable {
     });
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
+    t.entries[15] = scalar!(file_write);
     t.entries[16] = scalar!(file_close);
     t.entries[17] = scalar!(file_list);
     t.entries[18] = value!(register_model);
@@ -2717,10 +2720,17 @@ fn send_client_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError>
     Ok(0)
 }
 fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    if c.arg(2)? != 0 {
-        return Err(CallError::File);
-    }
+    let mode = match c.arg(2)? as u32 {
+        0 => None,
+        1 => Some(qa_platform::files::WriteMode::Truncate),
+        2 => Some(qa_platform::files::WriteMode::Append),
+        3 => Some(qa_platform::files::WriteMode::AppendSync),
+        _ => return Err(CallError::File),
+    };
     if c.null_pointer(1)? {
+        if mode.is_some() {
+            return Err(CallError::Memory);
+        }
         return match (ENGINE_CALLS.file_length)(
             c.services,
             c.context.module,
@@ -2733,11 +2743,12 @@ fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     let target = c.pointer(1)?;
     c.memory.read(target, 4)?;
-    let result = (ENGINE_CALLS.file_open)(
-        c.services,
-        c.context.module,
-        c.memory.cstring(c.pointer(0)?)?,
-    );
+    let path = c.memory.cstring(c.required_pointer(0)?)?;
+    let result = match mode {
+        None => (ENGINE_CALLS.file_open)(c.services, c.context.module, path),
+        Some(mode) => (ENGINE_CALLS.file_open_write)(c.services, c.context.module, path, mode)
+            .map(|handle| (handle, 0)),
+    };
     match result {
         Ok((handle, length)) => {
             c.memory.write_word(target, handle as i32)?;
@@ -2754,6 +2765,9 @@ fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(0)?;
     let length = c.length(1)?;
     let handle = c.arg(2)? as u32;
+    if handle == 0 {
+        return Ok(0);
+    }
     (ENGINE_CALLS.file_read)(
         c.services,
         c.context.module,
@@ -2762,7 +2776,19 @@ fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     )?;
     Ok(0)
 }
+fn file_write(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let handle = c.arg(2)? as u32;
+    if handle == 0 {
+        return Ok(0);
+    }
+    let bytes = c.memory.read(c.pointer(0)?, c.length(1)?)?;
+    (ENGINE_CALLS.file_write)(c.services, c.context.module, handle, bytes)?;
+    Ok(0)
+}
 fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.arg(0)? as u32 == 0 {
+        return Ok(0);
+    }
     (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
     Ok(0)
 }

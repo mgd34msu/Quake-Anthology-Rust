@@ -852,7 +852,7 @@ fn with_brush_services(
     cvars.force_write(max_clients, "1").unwrap();
     let mut input = qa_input::Input::load();
     let mut commands = CommandBuffer::new();
-    let vfs = qa_content::vfs::Vfs::default();
+    let mut vfs = qa_content::vfs::Vfs::default();
     let localization = qa_content::localization::Catalog::default();
     let config_count = qa_core::configstrings::ConfigLayout::for_rules(rules).count;
     let mut storage =
@@ -912,7 +912,7 @@ fn with_brush_services(
         renderer: None,
         scene: None,
         client_audio: None,
-        vfs: &vfs,
+        vfs: &mut vfs,
         model_loader: model_loader
             .as_deref_mut()
             .map(|loader| loader as &mut dyn ModelLoader),

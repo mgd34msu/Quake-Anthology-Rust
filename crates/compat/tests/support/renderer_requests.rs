@@ -575,9 +575,9 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
             panic!("world selection requires logical admission")
         };
         assert_eq!(world, WorldId(9));
-        let foreign = qa_content::vfs::Vfs::default();
+        let mut foreign = qa_content::vfs::Vfs::default();
         let original_vfs = engine.vfs;
-        engine.vfs = &foreign;
+        engine.vfs = &mut foreign;
         assert!(matches!(
             step(
                 &mut engine,

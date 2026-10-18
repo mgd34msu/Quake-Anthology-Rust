@@ -3,12 +3,19 @@
 use std::{
     ffi::OsString,
     fs::File,
-    io::{self, BufWriter, Read, Write},
+    io::{self, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
 };
 
 mod contained;
-pub use contained::StagedFile;
+pub use contained::{StagedFile, WriteDirectory};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMode {
+    Truncate,
+    Append,
+    AppendSync,
+}
 
 pub struct ReadFile {
     file: File,
@@ -18,6 +25,7 @@ pub struct ReadFile {
 /// the file without resizing the buffer; frame callers retain no OS handle.
 pub struct WriteFile {
     file: BufWriter<File>,
+    synchronous: bool,
 }
 impl WriteFile {
     fn validate_buffer(buffer_bytes: usize) -> io::Result<()> {
@@ -29,6 +37,7 @@ impl WriteFile {
     fn from_file(file: File, buffer_bytes: usize) -> Self {
         Self {
             file: BufWriter::with_capacity(buffer_bytes, file),
+            synchronous: false,
         }
     }
     pub fn create_new(path: impl AsRef<Path>, buffer_bytes: usize) -> io::Result<Self> {
@@ -40,10 +49,17 @@ impl WriteFile {
         Ok(Self::from_file(file, buffer_bytes))
     }
     pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.file.write_all(bytes)
+        self.file.write_all(bytes)?;
+        if self.synchronous {
+            self.flush()?;
+        }
+        Ok(())
     }
     pub fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
+    }
+    pub fn seek(&mut self, from: io::SeekFrom) -> io::Result<u64> {
+        self.file.seek(from)
     }
 }
 impl ReadFile {

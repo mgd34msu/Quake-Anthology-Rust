@@ -81,6 +81,7 @@ fn run() -> Result<(), String> {
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut download_root = None;
+    let mut write_root = None;
     let mut skin_download_root = None;
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
@@ -172,6 +173,12 @@ fn run() -> Result<(), String> {
                     args.next()
                         .ok_or("--download-root needs an existing writable content directory")?,
                 ))
+            }
+            "--write-root" => {
+                write_root = Some(std::path::PathBuf::from(
+                    args.next()
+                        .ok_or("--write-root needs a writable game directory")?,
+                ));
             }
             "--skin-download-root" => {
                 skin_download_root =
@@ -458,6 +465,19 @@ fn run() -> Result<(), String> {
         .map(|(input, _)| input.catalog_names())
         .transpose()?
         .unwrap_or_default();
+    let file_rules = staged_map
+        .as_ref()
+        .map_or(console.cvars.context().source, |(_, policy)| policy.client);
+    let write_root = write_root
+        .or_else(|| qa_platform::user_files_root(file_rules.name()))
+        .ok_or("missing user file directory")?;
+    qa_platform::files::create_dir_all(&write_root)
+        .map_err(|error| format!("user files: {error}"))?;
+    let write_mount = vfs
+        .mount_directory(&write_root, i32::MAX)
+        .map_err(|error| format!("user files mount: {error}"))?;
+    vfs.set_write_directory(write_mount)
+        .map_err(|error| format!("user files authority: {error}"))?;
     let mut runtime = Runtime::load(max_clients, names.iter().map(|name| name.as_ref()))?;
     drop(names);
     runtime.vfs = vfs;

@@ -76,7 +76,7 @@ impl Fixture {
             client_audio: None,
             renderer: None,
             scene: None,
-            vfs: &self.vfs,
+            vfs: &mut self.vfs,
             model_loader: None,
             model_lookup: None,
             sound_loader: None,
@@ -806,4 +806,167 @@ fn q3_existence_probe_sees_denied_loose_file_without_granting_a_read_handle() {
         f.engine().file_open(ModuleId(1), b"music.ogg").unwrap().1,
         7
     );
+}
+
+#[test]
+fn writable_traps_share_handles_and_vfs_for_every_q3_role_and_address_width() {
+    use qa_platform::files;
+    let mut f = Fixture::new("writes");
+    let root = f.root.join("user");
+    files::create_dir_all(&root).unwrap();
+    let mount = f.vfs.mount_directory(&root, 100).unwrap();
+    f.vfs.set_write_directory(mount).unwrap();
+    f.storage =
+        ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 3, &f.cvars).unwrap();
+    for (mode, base) in modes() {
+        for (table, open, read, write, close, seek) in [
+            (&Q3_SERVER, 10, 11, 12, 13, 45),
+            (&Q3_CLIENT, 10, 11, 12, 13, 89),
+            (&Q3_UI, 13, 14, 15, 16, 86),
+        ] {
+            let mut bytes = [0xa5; 512];
+            let mut memory = ModuleMemory::borrow(base, &mut bytes).unwrap();
+            memory.write(base + 128, b"logs/game.log\0").unwrap();
+            memory.write(base + 160, b"abc\0").unwrap();
+            for (native_mode, expected) in
+                [(1, b"abc".as_slice()), (2, b"abcabc"), (3, b"abcabcabc")]
+            {
+                assert_eq!(
+                    f.call(
+                        table,
+                        mode,
+                        &mut memory,
+                        open,
+                        &[base + 128, base + 256, native_mode]
+                    ),
+                    Ok(0)
+                );
+                let handle = memory.read_word(base + 256).unwrap() as u64;
+                assert_eq!(handle, 1);
+                assert_eq!(
+                    f.call(table, mode, &mut memory, write, &[base + 160, 3, handle]),
+                    Ok(0)
+                );
+                assert_eq!(files::read(root.join("logs/game.log")).unwrap(), expected);
+                // Reopen immediately through VFS while the writer stays open.
+                assert_eq!(
+                    f.call(table, mode, &mut memory, open, &[base + 128, base + 260, 0]),
+                    Ok(expected.len() as u64)
+                );
+                let reader = memory.read_word(base + 260).unwrap() as u64;
+                assert_eq!(reader, 2);
+                assert_eq!(
+                    f.call(
+                        table,
+                        mode,
+                        &mut memory,
+                        read,
+                        &[base + 300, expected.len() as u64, reader]
+                    ),
+                    Ok(0)
+                );
+                assert_eq!(memory.read(base + 300, expected.len()).unwrap(), expected);
+                assert_eq!(
+                    f.call(table, mode, &mut memory, seek, &[handle, 0, 2]),
+                    Ok(0)
+                );
+                f.call(table, mode, &mut memory, close, &[reader]).unwrap();
+                f.call(table, mode, &mut memory, close, &[handle]).unwrap();
+            }
+            memory.write(base + 128, b"../escape\0").unwrap();
+            assert_eq!(
+                f.call(table, mode, &mut memory, open, &[base + 128, base + 256, 1]),
+                Ok(u32::MAX as u64)
+            );
+            assert_eq!(memory.read_word(base + 256).unwrap(), 0);
+            assert_eq!(
+                f.call(table, mode, &mut memory, write, &[u64::MAX, u64::MAX, 0]),
+                Ok(0)
+            );
+            assert_eq!(f.call(table, mode, &mut memory, close, &[0]), Ok(0));
+        }
+    }
+    assert!(!f.root.join("escape").exists());
+}
+
+#[test]
+fn writable_capacity_failure_preserves_bytes_and_module_handles_are_isolated() {
+    use qa_platform::files::{self, WriteMode};
+    let mut f = Fixture::new("write-capacity");
+    let mount = f.vfs.mounts().next().unwrap().id;
+    f.vfs.set_write_directory(mount).unwrap();
+    f.storage = ServiceStorage::load_modules(
+        &[
+            (ModuleId(1), 0, RuleSetId::Quake3, 1),
+            (ModuleId(2), 0, RuleSetId::Quake3, 1),
+        ],
+        &f.cvars,
+    )
+    .unwrap();
+    let (reader, _) = f.engine().file_open(ModuleId(1), b"data.dat").unwrap();
+    assert_eq!(
+        f.engine()
+            .file_open_write(ModuleId(1), b"data.dat", WriteMode::Truncate),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(files::read(f.root.join("data.dat")).unwrap(), b"abc");
+    let writer = f
+        .engine()
+        .file_open_write(ModuleId(2), b"write.dat", WriteMode::Append)
+        .unwrap();
+    assert_eq!(f.engine().file_write(ModuleId(1), reader, b"deny"), Ok(0));
+    assert_eq!(
+        f.engine().file_read(ModuleId(2), writer, &mut [0; 3]),
+        Err(CallError::File)
+    );
+    assert_eq!(f.engine().file_write(ModuleId(2), writer, b"yes"), Ok(3));
+    f.storage.reset_instance(ModuleId(2)).unwrap();
+    assert_eq!(
+        f.engine().file_write(ModuleId(2), writer, b"deny"),
+        Err(CallError::File)
+    );
+    assert_eq!(files::read(f.root.join("write.dat")).unwrap(), b"yes");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_write_mount_keeps_read_after_append_and_directory_replacement_consistent() {
+    use qa_platform::files::{self, WriteMode};
+    let mut f = Fixture::new("retained-writes");
+    let root = f.root.join("user");
+    files::create_dir_all(&root).unwrap();
+    let mount = f.vfs.mount_directory(&root, 100).unwrap();
+    f.vfs.set_write_directory(mount).unwrap();
+    f.storage =
+        ServiceStorage::load_native(&[(ModuleId(1), 0, RuleSetId::Quake3)], 3, &f.cvars).unwrap();
+    let writer = f
+        .engine()
+        .file_open_write(ModuleId(1), b"data.dat", WriteMode::Truncate)
+        .unwrap();
+    f.engine().file_write(ModuleId(1), writer, b"A").unwrap();
+    let reader = f.engine().file_open(ModuleId(1), b"data.dat").unwrap().0;
+    f.engine().file_write(ModuleId(1), writer, b"B").unwrap();
+    let mut bytes = [0; 8];
+    assert_eq!(f.engine().file_read(ModuleId(1), reader, &mut bytes), Ok(2));
+    assert_eq!(&bytes[..2], b"AB");
+    f.engine().file_close(ModuleId(1), reader).unwrap();
+    f.engine().file_close(ModuleId(1), writer).unwrap();
+    files::rename(&root, f.root.join("retained")).unwrap();
+    files::create_dir_all(&root).unwrap();
+    files::write(root.join("data.dat"), b"other").unwrap();
+    let writer = f
+        .engine()
+        .file_open_write(ModuleId(1), b"new.dat", WriteMode::Append)
+        .unwrap();
+    f.engine()
+        .file_write(ModuleId(1), writer, b"owned")
+        .unwrap();
+    assert!(files::read(root.join("new.dat")).is_err());
+    let reader = f.engine().file_open(ModuleId(1), b"new.dat").unwrap().0;
+    assert_eq!(f.engine().file_read(ModuleId(1), reader, &mut bytes), Ok(5));
+    assert_eq!(&bytes[..5], b"owned");
+    assert_eq!(files::read(root.join("data.dat")).unwrap(), b"other");
+    let reader = f.engine().file_open(ModuleId(1), b"data.dat").unwrap().0;
+    assert_eq!(f.engine().file_read(ModuleId(1), reader, &mut bytes), Ok(2));
+    assert_eq!(&bytes[..2], b"AB");
 }

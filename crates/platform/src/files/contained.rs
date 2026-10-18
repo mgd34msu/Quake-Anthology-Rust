@@ -1,5 +1,56 @@
-use super::{ReadFile, WriteFile};
+use super::{ReadFile, WriteFile, WriteMode};
 use std::{io, path::Path};
+
+/// An explicitly granted writable directory, retained across pathname changes.
+pub struct WriteDirectory {
+    #[cfg(target_os = "linux")]
+    root: std::fs::File,
+}
+impl WriteDirectory {
+    /// Enumeration must use this retained directory while the grant is alive,
+    /// rather than resolving its possibly renamed original pathname again.
+    pub fn scan_path(&self) -> io::Result<std::path::PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            Ok(linux::descriptor_path(self.root.as_raw_fd()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+    pub fn open(root: &Path) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self {
+                root: linux::open_directory(root)?,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = root;
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+    pub fn create(
+        &self,
+        name: &str,
+        mode: WriteMode,
+        buffer_bytes: usize,
+    ) -> io::Result<WriteFile> {
+        WriteFile::validate_buffer(buffer_bytes)?;
+        #[cfg(target_os = "linux")]
+        {
+            linux::open_write(&self.root, name, mode, buffer_bytes)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (name, mode);
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+}
 
 /// Sequential output whose destination stays below a retained directory.
 /// Linux publication links the retained file inode without replacing a target.
@@ -152,12 +203,72 @@ mod linux {
     use std::{
         ffi::{CString, c_char, c_int},
         fs::{File, OpenOptions},
-        os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+        os::{
+            fd::AsRawFd,
+            unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        },
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    pub(super) fn open_directory(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(O_DIRECTORY | O_NOFOLLOW)
+            .open(path)
+    }
+    fn parent(root: &File, name: &str) -> io::Result<(File, CString)> {
+        let mut parts = name.split('/');
+        if name.is_empty()
+            || name.contains(['\\', '\0', ':'])
+            || parts
+                .clone()
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid contained file path",
+            ));
+        }
+        let destination = CString::new(parts.next_back().ok_or(io::ErrorKind::InvalidInput)?)?;
+        let mut parent = root.try_clone()?;
+        for part in parts {
+            let path = descriptor_path(parent.as_raw_fd()).join(part);
+            match std::fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            parent = open_directory(&path)?;
+        }
+        Ok((parent, destination))
+    }
+    pub(super) fn open_write(
+        root: &File,
+        name: &str,
+        mode: WriteMode,
+        buffer_bytes: usize,
+    ) -> io::Result<WriteFile> {
+        let (parent, destination) = parent(root, name)?;
+        let name = std::ffi::OsStr::from_bytes(destination.to_bytes());
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(mode == WriteMode::Truncate)
+            .append(mode != WriteMode::Truncate)
+            .mode(0o600)
+            .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+            .open(descriptor_path(parent.as_raw_fd()).join(name))?;
+        if !file.metadata()?.is_file() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let mut output = WriteFile::from_file(file, buffer_bytes);
+        output.synchronous = mode == WriteMode::AppendSync;
+        Ok(output)
+    }
+
     const O_DIRECTORY: c_int = 0o200000;
+    const O_NONBLOCK: c_int = 0o4000;
     const O_NOFOLLOW: c_int = 0o400000;
     const AT_FDCWD: c_int = -100;
     const AT_SYMLINK_FOLLOW: c_int = 0x400;
@@ -180,35 +291,8 @@ mod linux {
     }
     impl Staging {
         pub(super) fn create(root: &Path, name: &str, buffer_bytes: usize) -> io::Result<Self> {
-            let mut parts = name.split('/');
-            if name.is_empty()
-                || name.contains(['\\', '\0', ':'])
-                || parts
-                    .clone()
-                    .any(|part| part.is_empty() || part == "." || part == "..")
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid contained file path",
-                ));
-            }
-            let destination = CString::new(parts.next_back().ok_or(io::ErrorKind::InvalidInput)?)?;
-            let open_directory = |path: &Path| {
-                OpenOptions::new()
-                    .read(true)
-                    .custom_flags(O_DIRECTORY | O_NOFOLLOW)
-                    .open(path)
-            };
-            let mut parent = open_directory(root)?;
-            for part in parts {
-                let path = descriptor_path(parent.as_raw_fd()).join(part);
-                match std::fs::create_dir(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(error) => return Err(error),
-                }
-                parent = open_directory(&path)?;
-            }
+            let root = open_directory(root)?;
+            let (parent, destination) = parent(&root, name)?;
             for _ in 0..128 {
                 let number = NEXT_TEMPORARY
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |number| {
@@ -280,7 +364,7 @@ mod linux {
         }
     }
 
-    fn descriptor_path(descriptor: c_int) -> PathBuf {
+    pub(super) fn descriptor_path(descriptor: c_int) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{descriptor}"))
     }
 }

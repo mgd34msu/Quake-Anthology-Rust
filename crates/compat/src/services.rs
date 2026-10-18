@@ -358,8 +358,11 @@ pub struct CallContext {
 
 struct OpenFile {
     owner: ModuleId,
-    reference: FileRef,
-    cursor: u64,
+    data: FileData,
+}
+enum FileData {
+    Read { reference: FileRef, cursor: u64 },
+    Write(qa_platform::files::WriteFile),
 }
 #[derive(Clone, Copy)]
 struct FreeClientClosing {
@@ -1212,7 +1215,7 @@ pub struct EngineServices<'a> {
     pub client_audio: Option<&'a mut dyn ClientAudio>,
     pub renderer: Option<&'a qa_core::presentation::RendererConfiguration>,
     pub scene: Option<&'a mut dyn crate::renderer::SceneService>,
-    pub vfs: &'a Vfs,
+    pub vfs: &'a mut Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
     pub sound_loader: Option<&'a mut dyn SoundRegistrar>,
@@ -1510,6 +1513,13 @@ pub struct EngineCallTable {
     pub model_bounds:
         fn(&EngineServices<'_>, ModuleId, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub file_open: FileOpenCall,
+    pub file_open_write: fn(
+        &mut EngineServices<'_>,
+        ModuleId,
+        &[u8],
+        qa_platform::files::WriteMode,
+    ) -> Result<u32, CallError>,
+    pub file_write: fn(&mut EngineServices<'_>, ModuleId, u32, &[u8]) -> Result<usize, CallError>,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<u64, CallError>,
     pub file_list: fn(
@@ -1930,6 +1940,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .ok_or(CallError::Geometry)
     },
     file_open: |s, m, p| s.file_open(m, p),
+    file_open_write: |s, m, p, mode| s.file_open_write(m, p, mode),
+    file_write: |s, m, h, b| s.file_write(m, h, b),
     entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, m, p| s.file_length(m, p),
     file_list: |s, m, q, out| s.file_list(m, q, out),
@@ -2565,18 +2577,62 @@ impl EngineServices<'_> {
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
         let reference = self.file_reference(owner, path)?;
         let length = self.vfs.length(&reference).map_err(|_| CallError::File)?;
+        let (ordinal, slot) = self.free_file(owner)?;
+        self.storage.files[slot] = Some(OpenFile {
+            owner,
+            data: FileData::Read {
+                reference,
+                cursor: 0,
+            },
+        });
+        Ok((ordinal as u32 + 1, length))
+    }
+    fn free_file(&self, owner: ModuleId) -> Result<(usize, usize), CallError> {
         let span = self.storage.file_span(owner)?;
         let ordinal = self.storage.files[span.range()]
             .iter()
             .position(Option::is_none)
             .ok_or(CallError::Capacity)?;
         let slot = span.first as usize + ordinal;
+        Ok((ordinal, slot))
+    }
+    pub fn file_open_write(
+        &mut self,
+        owner: ModuleId,
+        path: &[u8],
+        mode: qa_platform::files::WriteMode,
+    ) -> Result<u32, CallError> {
+        let (ordinal, slot) = self.free_file(owner)?;
+        let writer = self
+            .vfs
+            .open_write(path, mode)
+            .map_err(|_| CallError::File)?;
+        self.storage
+            .file_listing
+            .prepare(self.vfs)
+            .map_err(|_| CallError::Capacity)?;
         self.storage.files[slot] = Some(OpenFile {
             owner,
-            reference,
-            cursor: 0,
+            data: FileData::Write(writer),
         });
-        Ok((ordinal as u32 + 1, length))
+        Ok(ordinal as u32 + 1)
+    }
+    pub fn file_write(
+        &mut self,
+        owner: ModuleId,
+        handle: u32,
+        bytes: &[u8],
+    ) -> Result<usize, CallError> {
+        let slot = self.file_index(owner, handle)?;
+        let file = self.storage.files[slot].as_mut().ok_or(CallError::File)?;
+        let FileData::Write(writer) = &mut file.data else {
+            return Ok(0);
+        };
+        if writer.write_all(bytes).is_err() {
+            self.console(b"FS_Write: could not write file\n")?;
+            return Ok(0);
+        }
+        Ok(bytes.len())
     }
     fn file_reference(&self, owner: ModuleId, path: &[u8]) -> Result<FileRef, CallError> {
         let view = self.storage.file_search(owner);
@@ -2685,24 +2741,17 @@ impl EngineServices<'_> {
             .get_mut(slot)
             .and_then(Option::as_mut)
             .ok_or(CallError::File)?;
-        if file.cursor
-            >= self
-                .vfs
-                .length(&file.reference)
-                .map_err(|_| CallError::File)?
-        {
+        let FileData::Read { reference, cursor } = &mut file.data else {
+            return Err(CallError::File);
+        };
+        if *cursor >= self.vfs.length(reference).map_err(|_| CallError::File)? {
             return Ok(0);
         }
         let read = self
             .vfs
-            .read_range_reusing(
-                &file.reference,
-                file.cursor,
-                buffer,
-                &mut self.storage.reader,
-            )
+            .read_range_reusing(reference, *cursor, buffer, &mut self.storage.reader)
             .map_err(|_| CallError::File)?;
-        file.cursor += read as u64;
+        *cursor += read as u64;
         Ok(read)
     }
     pub fn file_seek(
@@ -2718,24 +2767,32 @@ impl EngineServices<'_> {
             .get_mut(slot)
             .and_then(Option::as_mut)
             .ok_or(CallError::File)?;
-        let target = match from {
-            std::io::SeekFrom::Start(offset) => Some(offset),
-            std::io::SeekFrom::Current(offset) => file.cursor.checked_add_signed(offset),
-            std::io::SeekFrom::End(offset) => self
-                .vfs
-                .length(&file.reference)
-                .map_err(|_| CallError::File)?
-                .checked_add_signed(offset),
-        };
-        let Some(target) = target else {
-            return Ok(false);
-        };
-        file.cursor = target;
-        Ok(true)
+        match &mut file.data {
+            FileData::Write(writer) => Ok(writer.seek(from).is_ok()),
+            FileData::Read { reference, cursor } => {
+                let target = match from {
+                    std::io::SeekFrom::Start(offset) => Some(offset),
+                    std::io::SeekFrom::Current(offset) => cursor.checked_add_signed(offset),
+                    std::io::SeekFrom::End(offset) => self
+                        .vfs
+                        .length(reference)
+                        .map_err(|_| CallError::File)?
+                        .checked_add_signed(offset),
+                };
+                let Some(target) = target else {
+                    return Ok(false);
+                };
+                *cursor = target;
+                Ok(true)
+            }
+        }
     }
     pub fn file_close(&mut self, owner: ModuleId, handle: u32) -> Result<(), CallError> {
         let slot = self.file_index(owner, handle)?;
-        self.storage.files[slot] = None;
+        let file = self.storage.files[slot].take().ok_or(CallError::File)?;
+        if let FileData::Write(mut writer) = file.data {
+            writer.flush().map_err(|_| CallError::File)?;
+        }
         Ok(())
     }
 }

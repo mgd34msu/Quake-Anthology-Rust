@@ -300,7 +300,7 @@ fn with_native_client(
     .unwrap();
     let mut input = qa_input::Input::load();
     let mut commands = CommandBuffer::new();
-    let vfs = qa_content::vfs::Vfs::default();
+    let mut vfs = qa_content::vfs::Vfs::default();
     let localization = qa_content::localization::Catalog::default();
     let layout = qa_core::configstrings::ConfigLayout::for_rules(context.native_rules);
     let mut storage = ServiceStorage::load_native(
@@ -325,7 +325,7 @@ fn with_native_client(
         renderer: None,
         scene: None,
         client_audio: None,
-        vfs: &vfs,
+        vfs: &mut vfs,
         model_loader: None,
         model_lookup: None,
         sound_loader: None,

@@ -94,7 +94,7 @@ impl Fixture {
             renderer: None,
             scene: None,
             client_audio: None,
-            vfs: &self.vfs,
+            vfs: &mut self.vfs,
             model_loader: None,
             model_lookup: None,
             sound_loader: None,

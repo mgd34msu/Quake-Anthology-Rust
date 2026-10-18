@@ -37,7 +37,7 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, [CallContext; 2])) {
     let mut cvars = Cvars::new().unwrap();
     let mut input = qa_input::Input::load();
     let mut commands = CommandBuffer::new();
-    let vfs = qa_content::vfs::Vfs::default();
+    let mut vfs = qa_content::vfs::Vfs::default();
     let localization = qa_content::localization::Catalog::default();
     let mut names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
     let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
@@ -77,7 +77,7 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, [CallContext; 2])) {
             renderer: None,
             scene: None,
             client_audio: None,
-            vfs: &vfs,
+            vfs: &mut vfs,
             model_loader: None,
             model_lookup: None,
             sound_loader: None,
