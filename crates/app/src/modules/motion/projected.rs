@@ -45,6 +45,10 @@ pub(super) fn client(host: &FrameHost, owner: CollisionOwner) -> Option<(ClientI
         .then_some((id, entity))
 }
 
+pub(super) fn candidate(host: &FrameHost, owner: CollisionOwner) -> bool {
+    client(host, owner).is_some_and(|(_, entity)| host.runtime.server.area.bounds(entity).is_some())
+}
+
 fn service_module(host: &FrameHost, owner: CollisionOwner, provider: ModuleId) -> ModuleId {
     host.runtime
         .server

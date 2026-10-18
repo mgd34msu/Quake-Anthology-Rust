@@ -32,6 +32,7 @@ mod command_lifetimes;
 mod cues;
 mod failure_cleanup;
 mod file_listing;
+mod passengers;
 #[path = "../elf32_q3.rs"]
 mod registered_q3;
 mod sound_routes;
@@ -242,6 +243,25 @@ fn request(
     rate: TickRate,
     vm: Vm,
 ) -> ModuleRequest {
+    request_program(
+        runtime,
+        id,
+        rules,
+        rate,
+        Program::Native {
+            vm: Box::new(vm),
+            imports: &Q3_SERVER,
+        },
+    )
+}
+
+fn request_program(
+    runtime: &mut Runtime,
+    id: ModuleId,
+    rules: RuleSetId,
+    rate: TickRate,
+    program: Program,
+) -> ModuleRequest {
     let anchor = runtime
         .server
         .entities
@@ -270,10 +290,7 @@ fn request(
         timing_rules: rules,
         rate,
         anchor,
-        program: Program::Native {
-            vm: Box::new(vm),
-            imports: &Q3_SERVER,
-        },
+        program,
         entries: vec![0],
         frame: Export::clocked(CallbackId(0)),
         prepare: Vec::new(),
@@ -5869,6 +5886,11 @@ pub fn run() {
         println!("native Q3 registered-game-data checks passed for 32/64");
         return;
     }
+    if std::env::args().any(|arg| arg == "--push-passengers") {
+        passengers::run();
+        println!("owned-child PUSH transaction checks passed");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q2-sound-routes") {
         sound_routes::server_sounds_wait_for_resource_ack_without_stalling_other_clients();
         sound_routes::unsupported_resource_names_drop_only_the_unrepresentable_client_delivery();
@@ -5911,6 +5933,7 @@ pub fn run() {
         println!("native Q2 client command checks passed");
         return;
     }
+    passengers::run();
     command_lifetimes::run();
     console_commands::run();
     appearance::native_appearance_uses_common_lifetimes_and_player_state();

@@ -8,20 +8,10 @@ use crate::{
 };
 use qa_compat::quakec::Layout;
 use qa_console::{commands::Console, views::Context};
-use qa_core::{
-    primitives::{Bounds, IndexSpan, Plane, SurfaceFlags},
-    sys_events::EventTime,
-};
+use qa_core::sys_events::EventTime;
 use qa_formats::program::quakec::{Image, Opcode::*};
 use qa_session::{clients::Connection, timing::TickRate};
-use qa_world::{
-    collision::{
-        Contents,
-        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
-        surfaces::SurfaceTable,
-    },
-    entities::AllocationPolicy,
-};
+use qa_world::entities::AllocationPolicy;
 
 #[path = "../../../compat/tests/support/quakec_program.rs"]
 mod quakec_program;
@@ -294,6 +284,73 @@ fn engine_passenger_relink_delivers_its_transported_pose_to_quakec_trigger() {
 }
 
 #[test]
+fn unlinked_projected_clients_do_not_reject_or_join_a_pusher_transaction() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for native in [false, true] {
+            let mut f = passenger_fixture(rules, Connection::Bot, native);
+            f.host.runtime.server.clients[0].player.movement.grounded = false;
+            f.host.runtime.server.clients[0].player.movement.ground = None;
+            assert!(f.host.runtime.server.area.unlink(f.rider));
+            let before = f.host.runtime.server.clients[0].player.body.position;
+            f.run().unwrap();
+            assert_eq!(f.raw_position(A, 40), Vec3([1.0, 0.0, 0.0]));
+            assert_eq!(
+                f.host.runtime.server.clients[0].player.body.position,
+                before
+            );
+            assert!(f.host.runtime.server.area.bounds(f.rider).is_none());
+        }
+    }
+}
+
+#[test]
+fn retired_projected_clients_do_not_block_or_receive_later_undo_stores() {
+    for native in [false, true] {
+        let mut f = passenger_fixture(RuleSetId::Quake, Connection::Local, native);
+        let owner = if native {
+            CollisionOwner::Native(NativeEntity { module: B, slot: 0 })
+        } else {
+            CollisionOwner::Lifetime(f.rider)
+        };
+        assert!(f.host.runtime.disconnect_client(ClientId(0)));
+        let replacement = f.host.runtime.server.clients[0].entity;
+        assert_ne!(replacement, f.rider);
+        let mut driver = crate::modules::Driver::cache_only();
+        let mut adapter = Host::new(
+            &mut f.host,
+            A,
+            f.pusher,
+            ThinkTime::Seconds(0.0),
+            &mut driver,
+        )
+        .unwrap();
+        assert!(PushHost::free(&mut adapter, owner).unwrap());
+        assert!(!PushHost::test_position(&mut adapter, owner).unwrap());
+        PushHost::store(
+            &mut adapter,
+            owner,
+            PushNumber::Motion(MotionWrite::Origin(0)),
+            99.0,
+        )
+        .unwrap();
+        PushHost::link(&mut adapter, owner, false).unwrap();
+        assert_eq!(
+            adapter.host.runtime.server.entities.columns.position[replacement.slot as usize],
+            Vec3::default()
+        );
+        assert!(
+            adapter
+                .host
+                .runtime
+                .server
+                .area
+                .bounds(replacement)
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn qvm_client_zero_rides_foreign_push_once_without_another_game_export() {
     for (rules, connection) in [RuleSetId::Quake, RuleSetId::QuakeWorld]
         .into_iter()
@@ -519,59 +576,7 @@ fn program(capacity: usize) -> Vm {
     vm
 }
 
-fn geometry(runtime: &mut Runtime, size: f32) -> qa_core::primitives::GeometryId {
-    let planes = [
-        Vec3([1.0, 0.0, 0.0]),
-        Vec3([-1.0, 0.0, 0.0]),
-        Vec3([0.0, 1.0, 0.0]),
-        Vec3([0.0, -1.0, 0.0]),
-        Vec3([0.0, 0.0, 1.0]),
-        Vec3([0.0, 0.0, -1.0]),
-    ]
-    .map(|normal| Plane::oriented(normal, size))
-    .to_vec();
-    runtime
-        .geometry
-        .load_brushes(
-            planes,
-            vec![Brush {
-                sides: IndexSpan { first: 0, count: 6 },
-                contents: Contents::SOLID,
-            }],
-            Vec::new(),
-            SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
-            BrushTree {
-                planes: vec![],
-                nodes: vec![],
-                leaves: vec![
-                    CollisionLeaf {
-                        stored_contents: None,
-                        brushes: IndexSpan::default(),
-                        patches: Default::default(),
-                    },
-                    CollisionLeaf {
-                        stored_contents: None,
-                        brushes: IndexSpan { first: 0, count: 1 },
-                        patches: Default::default(),
-                    },
-                ],
-                leaf_brushes: vec![0],
-                models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
-                leaf_patches: Vec::new(),
-            },
-            vec![
-                Bounds {
-                    mins: Vec3([-512.0; 3]),
-                    maxs: Vec3([512.0; 3]),
-                },
-                Bounds {
-                    mins: Vec3([-size; 3]),
-                    maxs: Vec3([size; 3]),
-                },
-            ],
-        )
-        .unwrap()
-}
+use visibility_world::inline_box as geometry;
 
 fn allocate(runtime: &mut Runtime, module: ModuleId, native: i32) -> EntityId {
     let entity = runtime

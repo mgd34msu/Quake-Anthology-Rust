@@ -1,6 +1,10 @@
-use qa_core::primitives::{Bounds, GeometryId, Plane, Vec3};
+use qa_core::primitives::{Bounds, GeometryId, IndexSpan, Plane, SurfaceFlags, Vec3};
 use qa_world::{
-    collision::CollisionStore,
+    collision::{
+        CollisionStore, Contents,
+        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+        surfaces::SurfaceTable,
+    },
     portals::{AreaPortals, Portal},
     visibility::{PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityWorld},
 };
@@ -60,4 +64,58 @@ pub fn collision(
         )
         .unwrap(),
     ))
+}
+
+pub fn inline_box(runtime: &mut qa_app::Runtime, size: f32) -> qa_core::primitives::GeometryId {
+    let planes = [
+        Vec3([1.0, 0.0, 0.0]),
+        Vec3([-1.0, 0.0, 0.0]),
+        Vec3([0.0, 1.0, 0.0]),
+        Vec3([0.0, -1.0, 0.0]),
+        Vec3([0.0, 0.0, 1.0]),
+        Vec3([0.0, 0.0, -1.0]),
+    ]
+    .map(|normal| Plane::oriented(normal, size))
+    .to_vec();
+    runtime
+        .geometry
+        .load_brushes(
+            planes,
+            vec![Brush {
+                sides: IndexSpan { first: 0, count: 6 },
+                contents: Contents::SOLID,
+            }],
+            Vec::new(),
+            SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
+            BrushTree {
+                planes: vec![],
+                nodes: vec![],
+                leaves: vec![
+                    CollisionLeaf {
+                        stored_contents: None,
+                        brushes: IndexSpan::default(),
+                        patches: Default::default(),
+                    },
+                    CollisionLeaf {
+                        stored_contents: None,
+                        brushes: IndexSpan { first: 0, count: 1 },
+                        patches: Default::default(),
+                    },
+                ],
+                leaf_brushes: vec![0],
+                models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                leaf_patches: Vec::new(),
+            },
+            vec![
+                Bounds {
+                    mins: Vec3([-512.0; 3]),
+                    maxs: Vec3([512.0; 3]),
+                },
+                Bounds {
+                    mins: Vec3([-size; 3]),
+                    maxs: Vec3([size; 3]),
+                },
+            ],
+        )
+        .unwrap()
 }

@@ -557,7 +557,7 @@ impl PushHost for Host<'_, '_> {
                     let slot = entity.slot as usize;
                     let Some(native) = entities.columns.native_entity[slot] else {
                         let owner = CollisionOwner::Lifetime(entity);
-                        if projected::client(self.host, owner).is_some() {
+                        if projected::candidate(self.host, owner) {
                             return Ok(Some(owner));
                         }
                         continue;
@@ -582,8 +582,7 @@ impl PushHost for Host<'_, '_> {
                         if native.slot == 0 {
                             continue;
                         }
-                    } else if projected::client(self.host, CollisionOwner::Native(native)).is_none()
-                    {
+                    } else if !projected::candidate(self.host, CollisionOwner::Native(native)) {
                         continue;
                     }
                     if row
@@ -716,8 +715,9 @@ impl PushHost for Host<'_, '_> {
 
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
         if projected::handles(self.host, owner) {
-            let (_, entity) =
-                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
+            let Some((_, entity)) = projected::client(self.host, owner) else {
+                return Ok(false);
+            };
             let position = self.host.runtime.server.entities.columns.position[entity.slot as usize];
             return projected::trace(
                 self.host,

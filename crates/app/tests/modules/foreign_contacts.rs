@@ -39,32 +39,9 @@ fn admit(
     )
 }
 
-pub(in crate::modules) const FIELDS: &[(u16, u16, &[u8])] = &[
-    (3, 0, b"origin"),
-    (3, 3, b"velocity"),
-    (3, 6, b"angles"),
-    (3, 9, b"mins"),
-    (3, 12, b"maxs"),
-    (3, 15, b"size"),
-    (3, 18, b"absmin"),
-    (3, 21, b"absmax"),
-    (2, 24, b"solid"),
-    (2, 25, b"flags"),
-    (4, 26, b"owner"),
-    (1, 27, b"model"),
-    (2, 28, b"modelindex"),
-    (1, 29, b"classname"),
-    (6, 30, b"touch"),
-    (2, 31, b"nextthink"),
-    (6, 32, b"think"),
-    (2, 33, b"movetype"),
-    (2, 34, b"frame"),
-    (4, 35, b"chain"),
-    (2, 36, b"invincible_sound"),
-    (2, 37, b"takedamage"),
-    (2, 38, b"colormap"),
-    (2, 39, b"skin"),
-];
+#[path = "../support/quakec_fields.rs"]
+mod quakec_fields;
+pub(in crate::modules) use quakec_fields::FIELDS;
 
 fn program(position: Vec3) -> Vm {
     let operations = [
