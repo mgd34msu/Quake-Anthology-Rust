@@ -1417,7 +1417,9 @@ impl FrameHost {
             ) {
                 continue;
             }
-            if let Err(error) = self.console.cvars.load_client_values(connection) {
+            if let Err(error) =
+                crate::host::load_client_cvars(&mut self.console.cvars, &self.runtime, connection.0)
+            {
                 let _ = self
                     .runtime
                     .server
@@ -2424,7 +2426,8 @@ impl FrameHost {
         if !shutdown
             && let Some(owner) = module_connection(self, module)
             && qa_console::commands::Host::client_command_live(&self.runtime, owner.0, owner.1)
-            && let Err(error) = self.console.cvars.load_client_values(owner)
+            && let Err(error) =
+                crate::host::load_client_cvars(&mut self.console.cvars, &self.runtime, owner.0)
         {
             let _ = self.runtime.server.events.console_formatted(format_args!(
                 "CLIENT module {} cvars: {error:?}\n",

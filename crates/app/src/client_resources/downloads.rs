@@ -1450,8 +1450,8 @@ impl crate::host::FrameHost {
         let resources = self
             .runtime
             .client_resources
-            .get_mut(client.0 as usize)
-            .and_then(Option::as_mut)
+            .get(client.0 as usize)
+            .and_then(Option::as_ref)
             .ok_or("no CLIENT resources")?;
         if let Some(existing) = &resources.downloads {
             if existing.config == Some(config) {
@@ -1477,12 +1477,12 @@ impl crate::host::FrameHost {
             client,
             self.runtime.server.clients[client.0 as usize].entity,
         );
-        self.console
-            .cvars
-            .load_client_values(owner)
+        crate::host::load_client_cvars(&mut self.console.cvars, &self.runtime, owner.0)
             .map_err(|error| format!("CLIENT download cvars: {error:?}"))?;
         let permissions = DownloadViews::bind(&self.console.cvars, protocol, seat, owner)?;
-        resources.downloads = Some(ClientDownload::new(Some(config), permissions, protocol));
+        if let Some(resources) = self.runtime.client_resources[client.0 as usize].as_mut() {
+            resources.downloads = Some(ClientDownload::new(Some(config), permissions, protocol));
+        }
         Ok(())
     }
 

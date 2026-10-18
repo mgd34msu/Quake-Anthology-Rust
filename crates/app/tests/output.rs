@@ -800,7 +800,7 @@ fn client_hud_durations_hold_independent_leases_after_ring_retirement() {
             client,
             host.runtime.server.clients[client.0 as usize].entity,
         );
-        host.console.cvars.load_client_values(owner).unwrap();
+        host.console.cvars.load_client_values(owner, None).unwrap();
         let context = Context {
             client_lifetime: Some(owner),
             ..Default::default()

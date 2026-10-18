@@ -412,7 +412,9 @@ impl Change {
                 Some(lease),
             )?;
             let owner = (id, host.runtime.server.clients[id.0 as usize].entity);
-            if let Err(error) = host.console.cvars.load_client_values(owner) {
+            if let Err(error) =
+                crate::host::load_client_cvars(&mut host.console.cvars, &host.runtime, owner.0)
+            {
                 host.runtime.disconnect_client(id);
                 return Err(format!("CLIENT cvars: {error:?}"));
             }

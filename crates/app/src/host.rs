@@ -556,6 +556,25 @@ pub(crate) fn local_seat<'a>(
     Some(selected)
 }
 
+pub(crate) fn load_client_cvars(
+    cvars: &mut qa_console::cvars::Cvars,
+    runtime: &Runtime,
+    id: ClientId,
+) -> Result<(), qa_console::cvars::WriteError> {
+    let client = runtime
+        .server
+        .clients
+        .get(id.0 as usize)
+        .ok_or(qa_console::cvars::WriteError::Capacity)?;
+    let local = runtime
+        .snapshots
+        .get(id.0 as usize)
+        .and_then(Option::as_ref)
+        .and_then(|binding| binding.seat())
+        .map(|seat| (seat, client.client_rules));
+    cvars.load_client_values((id, client.entity), local)
+}
+
 pub(crate) fn local_client<'a>(
     runtime: &'a Runtime,
     local_clients: &[Option<qa_core::primitives::ClientId>; SeatId::COUNT],
@@ -1285,10 +1304,7 @@ impl FrameHost {
     ) -> Result<Self, String> {
         for (index, resources) in runtime.client_resources.iter().enumerate() {
             if resources.is_some() {
-                let client = &runtime.server.clients[index];
-                console
-                    .cvars
-                    .load_client_values((ClientId(index as u32), client.entity))
+                load_client_cvars(&mut console.cvars, &runtime, ClientId(index as u32))
                     .map_err(|error| format!("CLIENT cvars: {error:?}"))?;
             }
         }
@@ -3782,7 +3798,7 @@ impl FrameHost {
                                     let owner = (id, self.runtime.server.clients[id.0 as usize].entity);
                                     let info = resources.state.configs.config(qa_core::configstrings::ConfigLayout::Q3_SYSTEM_INFO)
                                         .map_or(&b""[..], |row| row.text);
-                                    let result = self.console.cvars.load_client_values(owner)
+                                    let result = load_client_cvars(&mut self.console.cvars, &self.runtime, owner.0)
                                         .and_then(|()| self.console.cvars.apply_client_system_info(owner, info));
                                     if let Err(error) = result {
                                         self.reject_client_startup(id, format_args!("CLIENT systeminfo: {error:?}"));

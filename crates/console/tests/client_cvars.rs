@@ -26,7 +26,7 @@ fn connection_values_inherit_global_changes_until_locally_overridden() {
     let first = client(1, 3);
     let second = client(8, 5);
     for context in [first, second] {
-        vars.load_client_values(context.client_lifetime.unwrap())
+        vars.load_client_values(context.client_lifetime.unwrap(), None)
             .unwrap();
     }
     let global = vars.bind("pmove_msec", Context::default()).unwrap();
@@ -72,7 +72,7 @@ fn module_defaults_flags_aliases_latches_and_client_slot_reuse_are_isolated() {
     let a = client(1, 3);
     let b = client(8, 5);
     for context in [a, b] {
-        vars.load_client_values(context.client_lifetime.unwrap())
+        vars.load_client_values(context.client_lifetime.unwrap(), None)
             .unwrap();
     }
     let av = vars.register("_client_value", Some("1"), 32, a).unwrap();
@@ -101,7 +101,7 @@ fn module_defaults_flags_aliases_latches_and_client_slot_reuse_are_isolated() {
     assert_ne!(vars.numeric(fov_b).unwrap(), 110.0);
     let native = vars.native_view(av).unwrap();
     let next = client(1, 4);
-    vars.load_client_values(next.client_lifetime.unwrap())
+    vars.load_client_values(next.client_lifetime.unwrap(), None)
         .unwrap();
     assert!(vars.read(av).is_err());
     assert!(vars.bind("_client_value", a).is_none());
@@ -117,7 +117,7 @@ fn received_systeminfo_and_cheat_resets_do_not_change_server_or_another_client()
     let a = client(0, 1);
     let b = client(2, 9);
     for context in [a, b] {
-        vars.load_client_values(context.client_lifetime.unwrap())
+        vars.load_client_values(context.client_lifetime.unwrap(), None)
             .unwrap();
     }
     let allow = vars.bind("cl_allowDownload", a).unwrap();
@@ -201,7 +201,8 @@ fn inherited_latches_and_physical_controls_use_their_declared_owner() {
     vars.share_with_clients(volume);
     vars.set_text(volume, "0.75").unwrap();
     let a = client(0, 1);
-    vars.load_client_values(a.client_lifetime.unwrap()).unwrap();
+    vars.load_client_values(a.client_lifetime.unwrap(), None)
+        .unwrap();
     let local = vars.bind("_shared_latch", a).unwrap();
     let native = vars.native_view(local).unwrap();
     vars.set_runtime_policy(qa_console::cvars::RuntimePolicy {

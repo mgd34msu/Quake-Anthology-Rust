@@ -264,6 +264,17 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
         Some(token)
     );
     datagrams(&mut server);
+    queued(&mut host, &mut source, "fov 111\n", 25);
+    let settings = Context {
+        client_lifetime: Some((
+            client,
+            host.runtime.server.clients[client.0 as usize].entity,
+        )),
+        ..context()
+    };
+    let old_fov = host.console.cvars.bind("fov", settings).unwrap();
+    assert_eq!(host.console.cvars.numeric(old_fov).unwrap(), 111.0);
+    datagrams(&mut server);
     let before = host
         .runtime
         .network
@@ -313,6 +324,25 @@ fn queued_connect_reconnect_and_disconnect_use_one_owned_udp_channel() {
             .get(healthy, Endpoint::Server)
             .is_some()
     );
+    queued(&mut host, &mut source, &format!("connect {address}\n"), 50);
+    let replacement = host.local_clients[0].unwrap();
+    let settings = Context {
+        client_lifetime: Some((
+            replacement,
+            host.runtime.server.clients[replacement.0 as usize].entity,
+        )),
+        ..context()
+    };
+    assert_eq!(
+        host.console
+            .cvars
+            .numeric(host.console.cvars.bind("fov", settings).unwrap())
+            .unwrap(),
+        111.0
+    );
+    assert!(host.console.cvars.read(old_fov).is_err());
+    let root = host.console.cvars.bind("fov", context()).unwrap();
+    assert_eq!(host.console.cvars.numeric(root).unwrap(), 90.0);
 }
 
 #[test]

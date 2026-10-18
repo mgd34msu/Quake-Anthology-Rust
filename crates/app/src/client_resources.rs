@@ -957,7 +957,7 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                     if index == ConfigLayout::Q3_SYSTEM_INFO {
                         let info = self.resources.joined.as_bytes();
                         cvars
-                            .load_client_values((self.client, self.lifetime))
+                            .load_client_values((self.client, self.lifetime), None)
                             .map_err(|_| CallError::Cvar)?;
                         cvars
                             .apply_client_system_info((self.client, self.lifetime), info)

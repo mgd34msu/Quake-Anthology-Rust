@@ -255,7 +255,7 @@ fn check_client_handle_ownership(
         },
     );
     for owner in [first, peer] {
-        call.services.cvars.load_client_values(owner).unwrap();
+        call.services.cvars.load_client_values(owner, None).unwrap();
     }
     call.context.console.client_lifetime = Some(first);
     call.memory
@@ -298,7 +298,10 @@ fn check_client_handle_ownership(
             ..first.1
         },
     );
-    call.services.cvars.load_client_values(replacement).unwrap();
+    call.services
+        .cvars
+        .load_client_values(replacement, None)
+        .unwrap();
     call.context.console.client_lifetime = Some(first);
     assert_eq!(
         invoke(table, call, unknown, update, &[base + 256]),

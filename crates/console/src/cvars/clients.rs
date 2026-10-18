@@ -1,9 +1,16 @@
 //! CLIENT columns share names, bindings, conversions and the ordinary value path.
 use super::*;
 use qa_core::primitives::{ClientId, EntityId};
+use qa_core::sys_events::SeatId;
 
 pub(super) struct ClientColumn {
-    owner: (ClientId, EntityId),
+    owner: Option<(ClientId, EntityId)>,
+    local: Option<(SeatId, RuleSetId)>,
+}
+
+struct ClientArchive {
+    values: Vec<(CvarHandle, FixedText<MAX_TEXT>, [Option<u32>; 5])>,
+    details: Vec<(View, FixedText<MAX_TEXT>)>,
 }
 
 fn inherited(root: &Value) -> Value {
@@ -59,7 +66,9 @@ impl Cvars {
             .map_or(0, |span| span.range().end)
     }
     pub(super) fn column_owner(&self, column: usize) -> Option<(ClientId, EntityId)> {
-        column.checked_sub(1).map(|index| self.clients[index].owner)
+        column
+            .checked_sub(1)
+            .and_then(|index| self.clients[index].owner)
     }
     pub(super) fn context_column(&self, context: Context) -> Option<usize> {
         if context.side == Scope::Server {
@@ -70,7 +79,7 @@ impl Cvars {
             Some(owner) => self
                 .clients
                 .iter()
-                .position(|row| row.owner == owner)
+                .position(|row| row.owner == Some(owner))
                 .map(|index| index + 1),
         }
     }
@@ -113,19 +122,54 @@ impl Cvars {
     }
 
     pub fn has_client_values(&self, owner: (ClientId, EntityId)) -> bool {
-        self.clients.iter().any(|row| row.owner == owner)
+        self.clients.iter().any(|row| row.owner == Some(owner))
     }
 
     /// Reserve a connection's value column at load, before any of its modules
-    /// bind cvars. Rebinding the same lifetime is a no-op. A reused client slot
-    /// discards only that connection's values, latches and alias details.
-    pub fn load_client_values(&mut self, owner: (ClientId, EntityId)) -> Result<(), WriteError> {
-        if self.clients.iter().any(|row| row.owner == owner) {
+    /// bind cvars. Rebinding the same lifetime is a no-op.
+    /// Local seats retain their archived preferences across connections, even
+    /// when a different native client slot is assigned. Remote rows retain no
+    /// settings when their connection lifetime changes.
+    pub fn load_client_values(
+        &mut self,
+        owner: (ClientId, EntityId),
+        local: Option<(SeatId, RuleSetId)>,
+    ) -> Result<(), WriteError> {
+        let reserved = local.and_then(|(seat, _)| {
+            self.clients
+                .iter()
+                .position(|row| row.local.is_some_and(|(previous, _)| previous == seat))
+        });
+        if let Some(index) = self.clients.iter().position(|row| row.owner == Some(owner))
+            && reserved.is_none_or(|reserved| reserved == index)
+            && local.is_none_or(|(seat, _)| {
+                self.clients[index].local.is_none_or(|(old, _)| seat == old)
+            })
+        {
+            let row = &mut self.clients[index];
+            if local.is_some() {
+                row.local = local;
+            }
             return Ok(());
         }
         self.refresh_changes();
-        let previous = self.clients.iter().position(|row| row.owner.0 == owner.0);
+        let previous = if local.is_some() {
+            reserved
+        } else {
+            self.clients.iter().position(|row| {
+                row.local.is_none() && row.owner.is_none_or(|previous| previous.0 == owner.0)
+            })
+        };
         let column = previous.map_or(self.texts.len(), |index| index + 1);
+        let retained = previous
+            .and_then(|index| self.clients[index].local)
+            .map(|(seat, source)| self.local_archive(column, seat, source))
+            .transpose()?;
+        for row in &mut self.clients {
+            if row.owner.is_some_and(|previous| previous.0 == owner.0) {
+                row.owner = None;
+            }
+        }
         if previous.is_none() {
             let total = self
                 .stride
@@ -146,7 +190,10 @@ impl Cvars {
                 self.values.push(inherited(&self.values[index]));
             }
             self.texts.push(text);
-            self.clients.push(ClientColumn { owner });
+            self.clients.push(ClientColumn {
+                owner: Some(owner),
+                local,
+            });
             self.info_revisions.push([[0; INFO_FLAGS.len()]; 5]);
             let projections = self.projection_count();
             // Each column has its own alias retention, while immutable schema
@@ -171,7 +218,10 @@ impl Cvars {
                     .handles()
                     .any(|handle| handle.0 as usize / stride == column)
             });
-            self.clients[column - 1].owner = owner;
+            self.clients[column - 1] = ClientColumn {
+                owner: Some(owner),
+                local,
+            };
             for index in 0..self.stride {
                 self.values[column * self.stride + index] = inherited(&self.values[index]);
                 let _ = self.texts[column].set_length(index, 0);
@@ -186,8 +236,116 @@ impl Cvars {
             let handle = self.in_column(CvarHandle(index as u32), column);
             self.mark_change(handle);
         }
+        if let Some(retained) = retained {
+            for (handle, text, flags) in retained.values {
+                self.values[handle.0 as usize].command_flags = flags;
+                self.publish(handle, text.as_str())?;
+            }
+            for (mut view, text) in retained.details {
+                view.context.client_lifetime = Some(owner);
+                self.save_detail(view, text.as_str(), false)?;
+            }
+        }
         self.refresh_changes();
         Ok(())
+    }
+
+    fn local_archive(
+        &self,
+        column: usize,
+        seat: SeatId,
+        source: RuleSetId,
+    ) -> Result<ClientArchive, WriteError> {
+        let context = Context {
+            source,
+            seat,
+            client_lifetime: None,
+            cvar_client: None,
+            ..self.context
+        };
+        let mut retained = Vec::new();
+        for index in 0..self.registered_values {
+            let handle = self.in_column(CvarHandle(index as u32), column);
+            let value = &self.values[handle.0 as usize];
+            let Some(mut view) = self.bind_id(value.name_id, context) else {
+                continue;
+            };
+            view.handle = handle;
+            let flags = self.flags(view);
+            if flags & 1 == 0 || flags & (4 | 8 | 16 | 64 | 512) != 0 {
+                continue;
+            }
+            let pending = self
+                .pending
+                .iter()
+                .any(|group| group.handles().any(|changed| changed == handle));
+            if !value.explicit && !pending {
+                continue;
+            }
+            let text = if source == RuleSetId::Quake3 {
+                self.pending_text(handle, source)
+            } else {
+                self.effective(handle, source)
+            };
+            retained.push((
+                handle,
+                native_text(Text::Borrowed(text))?,
+                value.command_flags,
+            ));
+        }
+        let mut details = Vec::new();
+        for (binding, definition) in BINDINGS.iter().enumerate() {
+            let Some(handle) = self.binding_slot(definition, context) else {
+                continue;
+            };
+            let handle = self.in_column(handle, column);
+            if !retained.iter().any(|(saved, _, _)| *saved == handle) {
+                continue;
+            }
+            for source in RuleSetId::ALL {
+                let view = View {
+                    handle,
+                    binding: binding as u16,
+                    context: Context { source, ..context },
+                };
+                let prior = |handle| {
+                    if source == RuleSetId::Quake3 {
+                        self.pending_text(handle, source)
+                    } else {
+                        self.effective(handle, source)
+                    }
+                };
+                let unchanged = |handle| {
+                    let next = retained
+                        .iter()
+                        .find(|(saved, _, _)| *saved == handle)
+                        .map_or_else(
+                            || self.effective(self.root(handle), source),
+                            |(_, text, _)| text.as_str(),
+                        );
+                    prior(handle) == next
+                };
+                if !unchanged(handle)
+                    || !self
+                        .dependency_rows(view)
+                        .all(|row| unchanged(self.slot_in(row as usize, view)))
+                {
+                    continue;
+                }
+                let text = if source == RuleSetId::Quake3 {
+                    self.pending_detail(view)
+                } else {
+                    self.detail(view)
+                };
+                if let Some(text) = text {
+                    details.push((view, native_text(Text::Borrowed(text))?));
+                }
+            }
+        }
+        Ok(ClientArchive {
+            values: retained,
+            details,
+        })
     }
 
     /// Q3 CL_SystemInfoChanged sets native cvars in the receiving CLIENT.
