@@ -225,7 +225,10 @@ pub(super) fn connect(
                 && host.local_clients.contains(&Some(id))
                 && let Some(resources) = host.runtime.client_resources[id.0 as usize].as_mut()
             {
-                resources.begin_startup(qa_network::commands::packet::Protocol::Quake3_68);
+                resources.begin_startup(
+                    qa_network::commands::packet::Protocol::Quake3_68,
+                    &mut host.runtime.server.events.texts,
+                );
             }
         } else {
             begin(host, module, id, driver).map_err(|e| format!("ClientBegin: {e:?}"))?;

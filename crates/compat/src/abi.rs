@@ -762,6 +762,7 @@ const fn ui() -> CallTable {
     t.entries[40] = scalar!(input::catchers);
     t.entries[41] = scalar!(input::set_catchers);
     t.entries[43] = scalar!(renderer_configuration);
+    t.entries[44] = scalar!(ui_client_state);
     t.entries[45] = scalar!(ui_configstring);
     t.entries[80] = value!(remap_shader);
     t.entries[86] = scalar!(file_seek);
@@ -2525,6 +2526,34 @@ fn renderer_picture(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         [values[0], values[1], values[2], values[3]],
         [values[4], values[5], values[6], values[7]],
     );
+    Ok(0)
+}
+
+fn ui_client_state(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let target = c.required_pointer(0)?;
+    let state = (ENGINE_CALLS.client_status)(c.services)?;
+    c.memory.read_mut(target, 3084)?.fill(0);
+    for (offset, value) in [
+        (0, state.phase as u32),
+        (4, state.connect_packets),
+        (8, state.native_client as u32),
+    ] {
+        c.memory.write_word(target + offset, value as i32)?;
+    }
+    let mut name = FixedText::<1024>::default();
+    if let Some(peer) = state.peer {
+        use std::fmt::Write;
+        match peer {
+            qa_core::sys_events::Peer::Loopback(_) => {
+                let _ = name.write_str("localhost");
+            }
+            qa_core::sys_events::Peer::Socket(address) => {
+                let _ = write!(&mut name, "{address}");
+            }
+        }
+    }
+    c.memory.write_string(target + 12, 1024, name.as_bytes())?;
+    c.memory.write_string(target + 2060, 1024, state.message)?;
     Ok(0)
 }
 

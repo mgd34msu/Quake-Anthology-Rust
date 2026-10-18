@@ -237,6 +237,10 @@ impl Runtime {
                 .as_ref()
                 .filter(|owner| !owner.initial_registration())
                 .map(model_assets::ModelAssets::catalog),
+            self.snapshots
+                .get(client.0 as usize)
+                .and_then(Option::as_ref)
+                .and_then(|binding| binding.native_client()),
         )?;
         Some((
             view,
@@ -277,6 +281,10 @@ impl Runtime {
                 &mut self.network,
                 &mut self.client_resources,
                 model_view.map(|view| view.catalog),
+                self.snapshots
+                    .get(client.0 as usize)
+                    .and_then(Option::as_ref)
+                    .and_then(|binding| binding.native_client()),
             )
         });
         let client_audio = client.and_then(|(client, _)| {
@@ -682,6 +690,9 @@ impl Runtime {
         self.network.unbind(id);
         self.loopback.clear_client(id);
         self.snapshots[slot] = None;
+        if let Some(resources) = self.client_resources[slot].as_mut() {
+            resources.clear_connection_message(&mut self.server.events.texts);
+        }
         self.client_resources[slot] = None;
         self.client_collision[slot] = None;
         self.config_publications[slot].reset();
@@ -896,9 +907,12 @@ impl Runtime {
             .map_err(|error| format!("native channel {error:?}"))?;
         if let Some((binding, mut resources, collision)) = prepared {
             if connecting && let Some(resources) = resources.as_mut() {
-                resources.begin_startup(protocol);
+                resources.begin_startup(protocol, &mut self.server.events.texts);
             }
             self.snapshots[slot] = Some(binding);
+            if let Some(previous) = self.client_resources[slot].as_mut() {
+                previous.clear_connection_message(&mut self.server.events.texts);
+            }
             self.client_resources[slot] = resources;
             self.client_collision[slot] = collision;
             self.config_publications[slot].reset();

@@ -1,6 +1,6 @@
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, PrintKind, UserCmd},
+    primitives::{ClientId, UserCmd},
     sys_events::{EventTime, Peer},
 };
 use qa_network::{
@@ -215,13 +215,10 @@ fn retry_uses_five_second_challenges_and_only_admitted_current_info_is_accepted(
         b"\xff\xff\xff\xffnBad password.\xffignored",
         |id, endpoint, incoming| {
             assert_eq!((id, endpoint), (ClientId(0), Endpoint::Client));
-            let Incoming::Print(print) = incoming else {
-                panic!("console print")
+            let Incoming::ConnectionMessage(text) = incoming else {
+                panic!("connection notice")
             };
-            assert_eq!(
-                (print.kind, print.level, print.text),
-                (PrintKind::Console, None, b"Bad password.".as_slice())
-            );
+            assert_eq!(text, b"Bad password.");
             prints += 1;
             ControlFlow::Continue(())
         },
@@ -248,7 +245,8 @@ fn retry_uses_five_second_challenges_and_only_admitted_current_info_is_accepted(
                 incoming,
                 Incoming::ConnectAccepted {
                     port: 27500,
-                    userinfo: Some(b"\\name\\admitted")
+                    userinfo: Some(b"\\name\\admitted"),
+                    ..
                 }
             ));
             accepted += 1;
@@ -307,7 +305,8 @@ fn full_peer_binding_and_late_oob_preserve_the_same_channel_history_and_qport() 
             incoming,
             Incoming::ConnectAccepted {
                 port: 27500,
-                userinfo: Some(b"\\name\\accepted")
+                userinfo: Some(b"\\name\\accepted"),
+                ..
             }
         ));
         ControlFlow::Continue(())

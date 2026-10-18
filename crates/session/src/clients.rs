@@ -285,7 +285,7 @@ impl Server {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        // Ring pages plus six independent display slots per client/module.
+        // Ring pages, HUD/module displays and one connection notice per client.
         let rows = 4096usize
             .checked_add(qa_core::events::CONSOLE_DISPLAY_RECORDS)
             .ok_or(ServerError::OutputCapacity)?
@@ -295,6 +295,7 @@ impl Server {
                     .and_then(|n| n.checked_mul(6))
                     .ok_or(ServerError::OutputCapacity)?,
             )
+            .and_then(|rows| rows.checked_add(max_clients))
             .ok_or(ServerError::OutputCapacity)?;
         let mut events = EventRing::load(
             4096,

@@ -349,11 +349,12 @@ impl RendererGeneration {
     }
 }
 
-fn renderer_client(
+fn module_client(
     runtime: &Runtime,
     local_clients: &[Option<ClientId>; qa_core::sys_events::SeatId::COUNT],
     request: &ModuleRequest,
     connection: Option<(ClientId, EntityId)>,
+    connected_only: bool,
 ) -> Option<RendererClient> {
     let role = request.program.imports()?.command_export()?.role;
     let (client, lifetime, seat) = if role == qa_compat::abi::CommandRole::Ui {
@@ -366,7 +367,12 @@ fn renderer_client(
         let seat = runtime.snapshots.get(client.0 as usize)?.as_ref()?.seat()?;
         (client, lifetime, seat)
     };
-    let (actual, row, _) = crate::host::local_seat(runtime, local_clients, seat.index())?;
+    let selected = if connected_only {
+        crate::host::local_seat(runtime, local_clients, seat.index())
+    } else {
+        crate::host::local_client(runtime, local_clients, seat.index())
+    };
+    let (actual, row, _) = selected?;
     let snapshot = runtime.snapshots.get(client.0 as usize)?.as_ref()?;
     (actual == client
         && row.entity == lifetime
@@ -383,8 +389,14 @@ fn renderer_client(
 fn module_connection(host: &FrameHost, module: ModuleId) -> Option<(ClientId, EntityId)> {
     let row = host.module_row(module)?;
     row.client_connection.or_else(|| {
-        renderer_client(&host.runtime, &host.local_clients, &row.request, None)
-            .map(RendererClient::connection)
+        module_client(
+            &host.runtime,
+            &host.local_clients,
+            &row.request,
+            None,
+            false,
+        )
+        .map(RendererClient::connection)
     })
 }
 
@@ -1463,11 +1475,12 @@ impl FrameHost {
             let connection = if row.produces_client_view {
                 row.client_connection
             } else {
-                renderer_client(
+                module_client(
                     &self.runtime,
                     &self.local_clients,
                     &row.request,
                     row.client_connection,
+                    true,
                 )
                 .map(RendererClient::connection)
             };
@@ -1647,11 +1660,12 @@ impl FrameHost {
     }
 
     fn renderer_stamp(&self, row: &Module) -> Option<RendererStamp> {
-        let client = renderer_client(
+        let client = module_client(
             &self.runtime,
             &self.local_clients,
             &row.request,
             row.client_connection,
+            true,
         );
         if client.is_none()
             && row
@@ -1734,11 +1748,12 @@ impl FrameHost {
             .renderer_generation
             .and_then(RendererGeneration::stamp)
             .and_then(|stamp| stamp.client);
-        let desired = renderer_client(
+        let desired = module_client(
             &self.runtime,
             &self.local_clients,
             &row.request,
             row.client_connection,
+            true,
         );
         self.modules.as_ref().is_some_and(|modules| {
             modules.rows.iter().flatten().any(|other| {
@@ -1757,11 +1772,12 @@ impl FrameHost {
         let Some(row) = self.module_row(module) else {
             return false;
         };
-        let desired = renderer_client(
+        let desired = module_client(
             &self.runtime,
             &self.local_clients,
             &row.request,
             row.client_connection,
+            true,
         );
         self.modules.as_ref().is_some_and(|modules| {
             modules.rows.iter().flatten().any(|other| {
@@ -1774,11 +1790,12 @@ impl FrameHost {
                 (other.request.context.module == module
                     || desired.is_some_and(|client| {
                         stamp.client == Some(client)
-                            || renderer_client(
+                            || module_client(
                                 &self.runtime,
                                 &self.local_clients,
                                 &other.request,
                                 other.client_connection,
+                                true,
                             ) == Some(client)
                     }))
                     && self.renderer_stamp(other) != Some(stamp)
@@ -2067,11 +2084,12 @@ impl FrameHost {
                     continue;
                 }
                 let reset = stamp.client.is_some()
-                    && renderer_client(
+                    && module_client(
                         &self.runtime,
                         &self.local_clients,
                         &row.request,
                         row.client_connection,
+                        true,
                     ) == stamp.client;
                 let time = row.time(self.time);
                 let result = self
@@ -2153,11 +2171,12 @@ impl FrameHost {
     /// admitted policy and native reference account. This runs only at cold
     /// registration/restart boundaries, never during a guest callback.
     fn client_renderer_files(&self, row: &Module) -> Result<qa_content::vfs::FileSearch, String> {
-        let files = renderer_client(
+        let files = module_client(
             &self.runtime,
             &self.local_clients,
             &row.request,
             row.client_connection,
+            true,
         )
         .and_then(|client| self.runtime.client_resources[client.client.0 as usize].as_ref())
         .filter(|resources| resources.startup.q3().is_some() && resources.startup.allow_models());

@@ -42,6 +42,8 @@ pub struct ClientResources {
     joined: qa_core::text::FixedText<8192>,
     pub unsupported_commands: u64,
     pub(crate) startup: ClientStartup,
+    pub(crate) connect_packets: u32,
+    connection_message: Option<qa_core::primitives::TextLease>,
     nq_spawn_parameters: qa_core::text::FixedText<{ qa_network::message::LEGACY_STRING_BYTES }>,
 }
 /// Native server header retained independently of camera and physical identity.
@@ -186,6 +188,8 @@ impl ClientResources {
             joined: qa_core::text::FixedText::default(),
             unsupported_commands: 0,
             startup: ClientStartup::default(),
+            connect_packets: 0,
+            connection_message: None,
             nq_spawn_parameters: Default::default(),
             state: ResourceState {
                 files,
@@ -277,7 +281,32 @@ impl ClientResources {
     pub fn udp_socket(&self) -> Option<u16> {
         self.udp_lease.as_ref().map(qa_platform::UdpLease::socket)
     }
-    pub(crate) fn begin_startup(&mut self, protocol: Protocol) {
+    pub(crate) fn clear_connection_message(&mut self, texts: &mut qa_core::events::TextStore) {
+        texts.release_all([self.connection_message.take()]);
+    }
+    pub(crate) fn connection_message(
+        &mut self,
+        client: ClientId,
+        text: &[u8],
+        events: &mut qa_core::events::EventRing,
+    ) {
+        if let Ok((_, lease)) = events.retained_print_bytes(
+            Some(qa_core::events::OutputTarget::Local(client)),
+            Some(client),
+            qa_core::primitives::PrintKind::Console,
+            text,
+        ) {
+            self.clear_connection_message(&mut events.texts);
+            self.connection_message = Some(lease);
+        }
+    }
+    pub(crate) fn begin_startup(
+        &mut self,
+        protocol: Protocol,
+        texts: &mut qa_core::events::TextStore,
+    ) {
+        self.clear_connection_message(texts);
+        self.connect_packets = 0;
         self.startup.connecting(protocol);
     }
     pub(crate) fn nq_assignment_max_clients(&self) -> Option<u8> {
@@ -544,6 +573,9 @@ pub(crate) struct ClientConnectionView<'a> {
     lifetime: EntityId,
     channel: &'a mut qa_network::channel::Channel,
     commands: &'a mut qa_network::commands::connection::Commands,
+    phase: &'a qa_network::ingress::ConnectionPhase,
+    peer: qa_core::sys_events::Peer,
+    native_client: Option<u32>,
     resources: &'a mut ClientResources,
     catalog: Option<&'a ModelCatalog>,
     pub(crate) termination: Option<ClientTermination>,
@@ -554,17 +586,24 @@ pub(crate) fn connection_view<'a>(
     network: &'a mut qa_network::ingress::Connections,
     resources: &'a mut [Option<ClientResources>],
     catalog: Option<&'a ModelCatalog>,
+    native_client: Option<u32>,
 ) -> Option<ClientConnectionView<'a>> {
     let connection = network.get_mut(client, qa_core::loopback::Endpoint::Client)?;
-    if !connection.phase.is_connected() {
-        return None;
-    }
     let channel = &mut connection.channel;
     let commands = connection.commands.as_mut()?;
     let resources = resources.get_mut(client.0 as usize)?.as_mut()?;
-    Some(ClientConnectionView::new(
-        client, lifetime, channel, commands, resources, catalog,
-    ))
+    Some(ClientConnectionView {
+        client,
+        lifetime,
+        channel,
+        commands,
+        resources,
+        catalog,
+        phase: &connection.phase,
+        peer: connection.route.peer,
+        native_client,
+        termination: None,
+    })
 }
 pub(crate) fn send_client_command(
     runtime: &mut crate::Runtime,
@@ -579,29 +618,12 @@ pub(crate) fn send_client_command(
         &mut runtime.network,
         &mut runtime.client_resources,
         None,
+        None,
     )
     .ok_or(CallError::Entity)?;
     view.send_command(text, &mut runtime.server)
 }
 impl<'a> ClientConnectionView<'a> {
-    pub(crate) fn new(
-        client: ClientId,
-        lifetime: EntityId,
-        channel: &'a mut qa_network::channel::Channel,
-        commands: &'a mut qa_network::commands::connection::Commands,
-        resources: &'a mut ClientResources,
-        catalog: Option<&'a ModelCatalog>,
-    ) -> Self {
-        Self {
-            client,
-            lifetime,
-            channel,
-            commands,
-            resources,
-            catalog,
-            termination: None,
-        }
-    }
     fn reject<T>(
         &mut self,
         error: qa_compat::services::CallError,
@@ -611,6 +633,15 @@ impl<'a> ClientConnectionView<'a> {
         Err(error)
     }
     fn validate(
+        &self,
+        server: &qa_session::clients::Server,
+    ) -> Result<(), qa_compat::services::CallError> {
+        if !self.phase.is_connected() {
+            return Err(qa_compat::services::CallError::Entity);
+        }
+        self.validate_lifetime(server)
+    }
+    fn validate_lifetime(
         &self,
         server: &qa_session::clients::Server,
     ) -> Result<(), qa_compat::services::CallError> {
@@ -694,6 +725,60 @@ impl<'a> ClientConnectionView<'a> {
     }
 }
 impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
+    fn status<'a>(
+        &'a self,
+        server: &'a qa_session::clients::Server,
+    ) -> Result<qa_compat::services::ClientStatus<'a>, qa_compat::services::CallError> {
+        use qa_network::ingress::ConnectionPhase;
+        use startup::Q3Phase;
+        self.validate_lifetime(server)?;
+        let (phase, connect_packets) = match self.phase {
+            ConnectionPhase::Connecting(connect) => {
+                let (packets, challenge) = connect.progress();
+                (if challenge { 4 } else { 3 }, packets)
+            }
+            ConnectionPhase::Rejected => (1, self.resources.connect_packets),
+            ConnectionPhase::Connected => {
+                let phase = match self.resources.startup.q3() {
+                    Some(Q3Phase::AwaitGamestate | Q3Phase::Downloading | Q3Phase::FilesReset) => 5,
+                    Some(Q3Phase::Loading | Q3Phase::RendererReset) => 6,
+                    Some(Q3Phase::Primed) => 7,
+                    Some(Q3Phase::Active) => 8,
+                    None if self.commands.protocol == Protocol::Quake3_68 => {
+                        if self.channel.current_snapshot().is_some() {
+                            8
+                        } else if self.channel.q3_startup().is_some() {
+                            7
+                        } else {
+                            5
+                        }
+                    }
+                    None if !self.resources.startup.waiting() => 8,
+                    None if matches!(
+                        self.resources.startup,
+                        ClientStartup::AwaitHeader { .. } | ClientStartup::Restarting
+                    ) =>
+                    {
+                        5
+                    }
+                    None => 6,
+                };
+                (phase, self.resources.connect_packets)
+            }
+        };
+        Ok(qa_compat::services::ClientStatus {
+            phase,
+            connect_packets,
+            native_client: self.native_client.map_or(0, |number| number as i32),
+            peer: Some(self.peer),
+            message: self
+                .resources
+                .connection_message
+                .as_ref()
+                .and_then(|lease| server.events.texts.get(lease.id()))
+                .unwrap_or_default(),
+        })
+    }
     fn identity(
         &self,
         server: &qa_session::clients::Server,

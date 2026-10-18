@@ -1066,11 +1066,12 @@ impl FrameHost {
             .filter(|row| row.request.phase == super::Phase::Client)
         {
             let source = row.request.context.native_rules as usize;
-            let seat = super::renderer_client(
+            let seat = super::module_client(
                 &self.runtime,
                 &self.local_clients,
                 &row.request,
                 row.client_connection,
+                true,
             )
             .map(|client| client.seat)
             .or_else(|| {

@@ -46,14 +46,16 @@ fn qvm() -> Program {
     use Opcode::*;
     let mut operations = vec![(Enter, 64)];
     let mut branches = Vec::new();
-    for command in 0..20 {
+    for command in 0..21 {
         operations.extend([(Local, 72), (Load4, 0), (Const, command), (Eq, 0)]);
         branches.push(operations.len() - 1);
     }
     operations.extend([(Const, -1), (Leave, 64)]);
     for (command, branch) in branches.into_iter().enumerate() {
         operations[branch].1 = operations.len() as i32;
-        if command == 19 {
+        if command == 20 {
+            operations.extend([(Const, 128), (Arg, 8), (Const, -45), (Call, 0)]);
+        } else if command == 19 {
             operations.extend([
                 (Local, 76),
                 (Load4, 0),
@@ -180,15 +182,17 @@ fn native() -> Program {
     use qa_formats::program::native::{Image, LoadRole};
     use qa_platform::native::NativeScalar;
     let mut file = pe_export_fixture(64);
-    put(&mut file, 392 + 16, 4096, 4);
-    file.resize(4608, 0);
+    put(&mut file, 392 + 8, 8192, 4);
+    put(&mut file, 392 + 16, 8192, 4);
+    put(&mut file, 208, 12288, 4);
+    file.resize(8704, 0);
     pe_rva(&mut file, 0x1140, 0x1800, 4);
     pe_text(&mut file, 0x1800, &[0xc3]);
     let image = Image::parse(&file, None, LoadRole::Library).unwrap();
     let base = image.base;
     let mut vm = Vm::map_image(
         image,
-        &(0..20)
+        &(0..21)
             .map(|command| NamedExport {
                 name: b"GetGameAPI",
                 command: Some(command),
@@ -203,7 +207,7 @@ fn native() -> Program {
     let pointer = vm.import_callback();
     let buffer = base + 0x1e00;
     let mut code = Vec::new();
-    for command in 0..20u8 {
+    for command in 0..21u8 {
         code.extend([0x83, 0xf9, command, 0x0f, 0x85]); // cmp ecx,command; jne next
         let branch = code.len();
         code.extend([0; 4]);
@@ -230,11 +234,15 @@ fn native() -> Program {
                 17 => 58,
                 18 => 52,
                 19 => 45,
+                20 => 44,
                 12 | 14 => 43,
                 13 => 85,
                 _ => 9,
             };
-            if command == 19 {
+            if command == 20 {
+                code.extend([0x48, 0xba]);
+                code.extend(buffer.to_le_bytes());
+            } else if command == 19 {
                 code.extend([0x4d, 0x89, 0xc1, 0x49, 0xb8]);
                 code.extend(buffer.to_le_bytes());
             } else if command == 15 {
@@ -588,7 +596,7 @@ fn memory_query_uses_platform_service_for_both_client_roles(program: impl Fn() -
     }
 }
 
-fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Program) {
+fn ui_host(program: impl Fn() -> Program) -> (FrameHost, Vec<ClientId>) {
     let (mut runtime, ids) = runtime(2);
     let requests = ids
         .iter()
@@ -603,7 +611,7 @@ fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Pro
             }
             let mut request = request(&mut runtime, ModuleId(seat as u16 + 1), client, module);
             request.frame = Export::words(CallbackId(9), &[0]);
-            request.entries = (0..20).collect();
+            request.entries = (0..21).collect();
             request
         })
         .collect();
@@ -622,6 +630,10 @@ fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Pro
     );
     asset_frames::gamestate(&mut host, ids[0], 0, [(20, b"alpha".as_slice())]);
     asset_frames::gamestate(&mut host, ids[1], 13, [(20, b"beta".as_slice())]);
+    (host, ids)
+}
+fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Program) {
+    let (mut host, ids) = ui_host(program);
     assert_eq!(probe_args(&mut host, 0, 19, &[20, 4]), 1);
     assert_eq!(probe(&mut host, 0, 9, 0), u32::from_le_bytes(*b"alp\0"));
     assert_eq!(probe_args(&mut host, 1, 19, &[20, 16]), 1);
@@ -645,6 +657,74 @@ fn ui_reads_only_its_selected_clients_received_configs(program: impl Fn() -> Pro
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
     println!(
         "native UI config queries: received gamestate, separate seats, truncation, empty/out-of-range rows and live updates passed"
+    );
+}
+
+fn ui_status_uses_the_shared_connection_and_retained_notice(program: impl Fn() -> Program) {
+    use qa_network::ingress::{ConnectionPhase, NativeConnect};
+    let (mut host, ids) = ui_host(program);
+    host.runtime
+        .network
+        .get_mut(ids[0], Endpoint::Client)
+        .unwrap()
+        .phase = ConnectionPhase::Connecting(NativeConnect::new());
+    assert_eq!(probe(&mut host, 0, 20, 0), 0);
+    assert_eq!(probe(&mut host, 0, 9, 0), 3);
+    assert_eq!(probe(&mut host, 0, 9, 4), 0);
+    assert_eq!(probe(&mut host, 0, 9, 12), u32::from_le_bytes(*b"loca"));
+    assert_eq!(probe_args(&mut host, 0, 19, &[0, 4]), 0);
+    host.runtime
+        .network
+        .get_mut(ids[0], Endpoint::Client)
+        .unwrap()
+        .phase = ConnectionPhase::Connected;
+    asset_frames::gamestate(&mut host, ids[0], 0, [(20, b"first".as_slice())]);
+    asset_frames::gamestate(&mut host, ids[1], 13, [(20, b"second".as_slice())]);
+    assert_eq!(probe(&mut host, 1, 20, 0), 0);
+    assert_eq!(probe(&mut host, 1, 9, 0), 7);
+    assert_eq!(probe(&mut host, 1, 9, 8), 13);
+    host.queue
+        .push(SysEvent {
+            time: EventTime::from_milliseconds(200),
+            kind: EventKind::Packet {
+                socket: Endpoint::Client.socket(),
+                from: Peer::Loopback(ids[0]),
+                bytes: b"\xff\xff\xff\xffprint\nLoading level\0",
+            },
+        })
+        .unwrap();
+    host.drain(&mut FrameResult::default());
+    dispatch_fallback(&mut host);
+    assert_eq!(probe(&mut host, 0, 20, 0), 0);
+    assert_eq!(probe(&mut host, 0, 9, 2060), u32::from_le_bytes(*b"Load"));
+    assert_eq!(probe(&mut host, 1, 20, 0), 0);
+    assert_eq!(
+        probe(&mut host, 1, 9, 2060),
+        0,
+        "notice cannot leak to another UI seat"
+    );
+    host.runtime.disconnect_client(ids[0]);
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(CallbackId(20), &[]),
+        ThinkTime::Milliseconds(0),
+    )
+    .unwrap();
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(CallbackId(9), &[0]),
+        ThinkTime::Milliseconds(0),
+    )
+    .unwrap();
+    assert!(matches!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(1)) | Some(ModuleResult::Native(1))
+    ));
+    assert!(host.runtime.server.clients[ids[1].0 as usize].is_active());
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    println!(
+        "native UI state: connecting query, received native number, retained ring notice, client isolation and disconnect passed"
     );
 }
 
@@ -1489,6 +1569,7 @@ fn main() {
     music::native_music_reaches_shared_paint(qvm, true);
     memory_query_uses_platform_service_for_both_client_roles(qvm);
     ui_reads_only_its_selected_clients_received_configs(qvm);
+    ui_status_uses_the_shared_connection_and_retained_notice(qvm);
     selected_commands_use_one_session_service(qvm);
     retained_usercmds_reach_the_selected_module(qvm);
     native_scene_calls_use_the_session_frame(qvm);
@@ -1517,6 +1598,7 @@ fn main() {
         music::native_music_reaches_shared_paint(native, true);
         memory_query_uses_platform_service_for_both_client_roles(native);
         ui_reads_only_its_selected_clients_received_configs(native);
+        ui_status_uses_the_shared_connection_and_retained_notice(native);
         selected_commands_use_one_session_service(native);
         retained_usercmds_reach_the_selected_module(native);
         native_scene_calls_use_the_session_frame(native);

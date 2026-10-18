@@ -29,7 +29,8 @@ pub struct Route {
 
 #[derive(Clone, Debug)]
 pub struct NativeConnect {
-    submitted: u8,
+    submitted: u32,
+    phase_start: u32,
     last_submission: Option<EventTime>,
     pending_challenge: Option<i32>,
     admitted_userinfo: Option<FixedText<Q3_CONNECT_USERINFO_BYTES>>,
@@ -50,9 +51,21 @@ impl ConnectParameters {
     }
 }
 impl NativeConnect {
+    pub const fn progress(&self) -> (u32, bool) {
+        (
+            self.submitted.saturating_sub(self.phase_start),
+            self.pending_challenge.is_some(),
+        )
+    }
+    fn accept_challenge(&mut self, challenge: i32) {
+        self.phase_start = self.submitted;
+        self.pending_challenge = Some(challenge);
+        self.last_submission = None;
+    }
     pub const fn new() -> Self {
         Self {
             submitted: 0,
+            phase_start: 0,
             last_submission: None,
             pending_challenge: None,
             admitted_userinfo: None,
@@ -62,6 +75,7 @@ impl NativeConnect {
 impl PartialEq for NativeConnect {
     fn eq(&self, other: &Self) -> bool {
         self.submitted == other.submitted
+            && self.phase_start == other.phase_start
             && self.last_submission == other.last_submission
             && self.pending_challenge == other.pending_challenge
             && self.admitted_userinfo.as_ref().map(FixedText::as_bytes)
@@ -120,6 +134,7 @@ fn accept_native_connect(
             Incoming::ConnectAccepted {
                 port: address.port(),
                 userinfo: connect.admitted_userinfo.as_ref().map(FixedText::as_bytes),
+                packets: connect.progress().0,
             },
         );
     }
@@ -135,15 +150,7 @@ fn q3_print(
     if let Ok(text) =
         reader.read_string_into(crate::message::StringPolicy::Q3.allow_eof(), &mut scratch)
     {
-        let _ = consume(
-            client,
-            endpoint,
-            Incoming::Print(crate::outputs::Print {
-                kind: qa_core::primitives::PrintKind::Console,
-                level: None,
-                text,
-            }),
-        );
+        let _ = consume(client, endpoint, Incoming::ConnectionMessage(text));
     }
 }
 
@@ -203,7 +210,9 @@ pub enum Incoming<'a> {
         port: u16,
         /// Exact last transport-admitted native connect info; borrowed for this call.
         userinfo: Option<&'a [u8]>,
+        packets: u32,
     },
+    ConnectionMessage(&'a [u8]),
     ConnectRejected {
         reason: &'a [u8],
     },
@@ -653,8 +662,7 @@ impl Connections {
                                 && connect.pending_challenge.is_none()
                             {
                                 connection.route.peer = from;
-                                connect.pending_challenge = Some(challenge);
-                                connect.last_submission = None;
+                                connect.accept_challenge(challenge);
                             }
                         }
                         Q3Connectionless::Accepted => {
@@ -711,8 +719,7 @@ impl Connections {
                     match reply {
                         QwConnectionless::Challenge(challenge) => {
                             if let ConnectionPhase::Connecting(connect) = &mut connection.phase {
-                                connect.pending_challenge = Some(challenge);
-                                connect.last_submission = None;
+                                connect.accept_challenge(challenge);
                             }
                         }
                         QwConnectionless::Accepted => {
@@ -727,11 +734,7 @@ impl Connections {
                             let _ = consume(
                                 ClientId(client as u32),
                                 Endpoint::from_index(endpoint),
-                                Incoming::Print(crate::outputs::Print {
-                                    kind: qa_core::primitives::PrintKind::Console,
-                                    level: None,
-                                    text,
-                                }),
+                                Incoming::ConnectionMessage(text),
                             );
                         }
                     }
@@ -761,8 +764,7 @@ impl Connections {
                                 {
                                     return;
                                 }
-                                connect.pending_challenge = Some(challenge);
-                                connect.last_submission = None;
+                                connect.accept_challenge(challenge);
                             }
                         }
                         Q2Connectionless::Accepted(_) => {
@@ -783,11 +785,7 @@ impl Connections {
                             let _ = consume(
                                 ClientId(client as u32),
                                 Endpoint::from_index(endpoint),
-                                Incoming::Print(crate::outputs::Print {
-                                    kind: qa_core::primitives::PrintKind::Console,
-                                    level: None,
-                                    text,
-                                }),
+                                Incoming::ConnectionMessage(text),
                             );
                         }
                     }
@@ -830,10 +828,15 @@ impl Connections {
                             return;
                         };
                         connection.route = route;
+                        let packets = match &connection.phase {
+                            ConnectionPhase::Connecting(connect) => connect.progress().0,
+                            _ => 0,
+                        };
                         connection.phase = ConnectionPhase::Connected;
                         Incoming::ConnectAccepted {
                             port,
                             userinfo: None,
+                            packets,
                         }
                     }
                     NqControl::Reject { reason } => {

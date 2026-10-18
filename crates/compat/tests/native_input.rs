@@ -858,6 +858,12 @@ struct CommandWindow {
     admit: bool,
 }
 impl qa_compat::services::ClientConnection for CommandWindow {
+    fn status<'a>(
+        &'a self,
+        _: &'a qa_session::clients::Server,
+    ) -> Result<qa_compat::services::ClientStatus<'a>, CallError> {
+        Err(CallError::Unsupported)
+    }
     fn identity(
         &self,
         _: &qa_session::clients::Server,

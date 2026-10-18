@@ -544,17 +544,30 @@ pub(crate) fn local_seat<'a>(
     &'a qa_session::clients::Client,
     &'a qa_core::primitives::PlayerState,
 )> {
-    let client = local_clients.get(seat).copied().flatten()?;
-    let row = runtime.server.clients.get(client.0 as usize)?;
-    row.connection?;
+    let selected = local_client(runtime, local_clients, seat)?;
     if !runtime
         .network
-        .get(client, qa_core::loopback::Endpoint::Client)?
+        .get(selected.0, qa_core::loopback::Endpoint::Client)?
         .phase
         .is_connected()
     {
         return None;
     }
+    Some(selected)
+}
+
+pub(crate) fn local_client<'a>(
+    runtime: &'a Runtime,
+    local_clients: &[Option<qa_core::primitives::ClientId>; SeatId::COUNT],
+    seat: usize,
+) -> Option<(
+    qa_core::primitives::ClientId,
+    &'a qa_session::clients::Client,
+    &'a qa_core::primitives::PlayerState,
+)> {
+    let client = local_clients.get(seat).copied().flatten()?;
+    let row = runtime.server.clients.get(client.0 as usize)?;
+    row.connection?;
     if runtime
         .snapshots
         .get(client.0 as usize)?
@@ -3393,7 +3406,7 @@ impl FrameHost {
                             return std::ops::ControlFlow::Break(());
                         }
                         match incoming {
-                            Incoming::ConnectAccepted { userinfo, .. } => {
+                            Incoming::ConnectAccepted { userinfo, packets, .. } => {
                                 signon_client = Some(id);
                                 if let Some(text) = userinfo {
                                     let cache = &mut self.userinfo[seat.index()];
@@ -3405,7 +3418,13 @@ impl FrameHost {
                                     }
                                 }
                                 if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.connect_packets = packets;
                                     resources.startup.connected(download_protocol);
+                                }
+                            }
+                            Incoming::ConnectionMessage(text) => {
+                                if let Some(resources) = self.runtime.client_resources[id.0 as usize].as_mut() {
+                                    resources.connection_message(id, text, &mut self.runtime.server.events);
                                 }
                             }
                             Incoming::MaxSpeed(value) => {

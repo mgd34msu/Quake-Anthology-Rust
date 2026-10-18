@@ -1,6 +1,6 @@
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, PrintKind, UserCmd},
+    primitives::{ClientId, UserCmd},
     sys_events::{EventTime, Peer},
 };
 use qa_network::{
@@ -551,7 +551,8 @@ fn classic_rechallenges_but_rr_retries_current_connect_every_three_seconds() {
                     incoming,
                     Incoming::ConnectAccepted {
                         port: 27910,
-                        userinfo: Some(b"\\name\\current")
+                        userinfo: Some(b"\\name\\current"),
+                        ..
                     }
                 ));
                 ControlFlow::Continue(())
@@ -642,13 +643,10 @@ fn native_refusal_prints_remain_nonterminal_and_rr_restarts_its_challenge_cycle(
             &mut peers,
             b"\xff\xff\xff\xffprint\nBad challenge.\n",
             |_, _, incoming| {
-                let Incoming::Print(print) = incoming else {
-                    panic!("print")
+                let Incoming::ConnectionMessage(text) = incoming else {
+                    panic!("connection notice")
                 };
-                assert_eq!(
-                    (print.kind, print.text),
-                    (PrintKind::Console, b"Bad challenge.\n".as_slice())
-                );
+                assert_eq!(text, b"Bad challenge.\n");
                 printed += 1;
                 ControlFlow::Continue(())
             },

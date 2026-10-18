@@ -22,6 +22,36 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn retained_connection_notice_survives_delivery_and_releases_the_same_text_row() {
+    let mut ring = EventRing::load(2, 1, 1, 32).unwrap();
+    let consumer = ring.bind(OutputTarget::Presentation).unwrap();
+    let (sequence, lease) = ring
+        .retained_print_bytes(
+            Some(OutputTarget::Presentation),
+            None,
+            PrintKind::Console,
+            b"connecting",
+        )
+        .unwrap();
+    let id = lease.id();
+    assert_eq!(
+        consume(&mut ring, consumer, OutputSubmission::BestEffort),
+        [sequence]
+    );
+    assert!(ring.is_empty());
+    assert_eq!(ring.texts.get(id), Some(b"connecting".as_slice()));
+    let rejected = ring.rejected_publications();
+    assert!(
+        ring.retained_print_bytes(None, None, PrintKind::Console, b"replacement")
+            .is_err()
+    );
+    assert_eq!(ring.rejected_publications(), rejected + 1);
+    assert_eq!(ring.texts.get(id), Some(b"connecting".as_slice()));
+    ring.texts.release(lease);
+    assert!(ring.texts.get(id).is_none());
+    assert!(ring.texts.insert(b"next connection").is_some());
+}
+#[test]
 fn game_state_pages_follow_the_client_receipt_and_keep_encoded_watermarks() {
     let mut ring = EventRing::load(4, 3, 4, 8).unwrap();
     let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();

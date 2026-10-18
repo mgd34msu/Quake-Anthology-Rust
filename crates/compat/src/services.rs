@@ -293,9 +293,29 @@ pub enum ClientTermination {
     Rejected,
 }
 
-/// Accepted CLIENT snapshots and current command argv borrow the same
-/// connection for one synchronous module call, without reading SERVER state.
+/// Native UI status borrows the existing CLIENT connection and retained notice.
+pub struct ClientStatus<'a> {
+    /// Original Q3 connstate_t value, projected at the service boundary.
+    pub phase: i32,
+    pub connect_packets: u32,
+    pub native_client: i32,
+    pub peer: Option<qa_core::sys_events::Peer>,
+    pub message: &'a [u8],
+}
+impl Default for ClientStatus<'_> {
+    fn default() -> Self {
+        Self {
+            phase: 1,
+            connect_packets: 0,
+            native_client: 0,
+            peer: None,
+            message: &[],
+        }
+    }
+}
+/// CLIENT queries and current command argv borrow one connection per call.
 pub trait ClientConnection {
+    fn status<'a>(&'a self, server: &'a Server) -> Result<ClientStatus<'a>, CallError>;
     fn identity(&self, server: &Server) -> Result<(ClientId, EntityId), CallError>;
     fn send_command(&mut self, text: &[u8], server: &mut Server) -> Result<bool, CallError>;
     fn command_number(&self, server: &Server) -> Result<u64, CallError>;
@@ -1266,6 +1286,8 @@ pub type ClientSnapshotCall =
     ) -> Result<Option<qa_network::snapshots::Q3ClientSnapshot<'a>>, CallError>;
 pub type ClientConfigStringsCall =
     for<'a> fn(&'a EngineServices<'_>) -> Result<&'a ConfigStrings, CallError>;
+pub type ClientStatusCall =
+    for<'a> fn(&'a EngineServices<'_>) -> Result<ClientStatus<'a>, CallError>;
 pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
@@ -1383,6 +1405,7 @@ pub struct EngineCallTable {
         fn(&mut EngineServices<'_>, DropClientTarget, &[u8]) -> Result<(), CallError>,
     pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub client_configstrings: ClientConfigStringsCall,
+    pub client_status: ClientStatusCall,
     pub renderer: for<'a> fn(
         &'a EngineServices<'_>,
     )
@@ -1705,6 +1728,12 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .as_deref()
             .ok_or(CallError::Entity)?
             .configstrings(s.server)
+    },
+    client_status: |s| {
+        s.client_connection.as_deref().map_or_else(
+            || Ok(ClientStatus::default()),
+            |client| client.status(s.server),
+        )
     },
     snapshot_number: |s| {
         s.client_connection

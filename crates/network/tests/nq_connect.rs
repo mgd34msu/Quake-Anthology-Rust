@@ -255,7 +255,8 @@ fn acceptance_requires_the_requested_peer_and_preserves_the_same_native_channel(
                 incoming,
                 Incoming::ConnectAccepted {
                     port: 26001,
-                    userinfo: None
+                    userinfo: None,
+                    ..
                 }
             ));
             accepted += 1;
@@ -382,7 +383,8 @@ fn malformed_replies_are_atomic_and_complete_rejection_is_terminal() {
                 incoming,
                 Incoming::ConnectAccepted {
                     port: 65535,
-                    userinfo: None
+                    userinfo: None,
+                    ..
                 }
             ));
             ControlFlow::Continue(())
@@ -432,7 +434,8 @@ fn returned_port_conflict_is_rejected_before_changing_the_pending_route() {
             incoming,
             Incoming::ConnectAccepted {
                 port: 26001,
-                userinfo: None
+                userinfo: None,
+                ..
             }
         ));
         ControlFlow::Break(())

@@ -913,6 +913,32 @@ impl EventRing {
     ) -> Result<u64, EventStorageError> {
         self.publish_print(target, client, kind, level, |texts| texts.insert(text))
     }
+    /// A connection dialog holds the same text after its print is consumed.
+    pub fn retained_print_bytes(
+        &mut self,
+        target: Option<OutputTarget>,
+        client: Option<ClientId>,
+        kind: PrintKind,
+        text: &[u8],
+    ) -> Result<(u64, TextLease), EventStorageError> {
+        let mut retained = None;
+        let result = self.publish_print(target, client, kind, kind.default_level(), |texts| {
+            let lease = texts.insert(text)?;
+            retained = texts.lease(lease.id());
+            if retained.is_none() {
+                texts.release(lease);
+                return None;
+            }
+            Some(lease)
+        });
+        match (result, retained) {
+            (Ok(sequence), Some(lease)) => Ok((sequence, lease)),
+            (result, lease) => {
+                self.texts.release_all([lease]);
+                Err(result.err().unwrap_or(EventStorageError::TextCapacity))
+            }
+        }
+    }
     pub fn console_bytes(&mut self, text: &[u8]) -> Result<u64, EventStorageError> {
         self.console_parts(&[text])
     }
