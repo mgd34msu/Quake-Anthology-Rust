@@ -222,3 +222,24 @@ fn live_enforcement_and_unchanged_package_refresh_preserve_native_admission() {
     );
     assert_eq!(state.movement(), Movement::EnterWorld);
 }
+
+#[test]
+fn live_file_policy_compares_native_words_and_ignores_unrelated_systeminfo() {
+    use qa_network::pure::files_changed;
+    let before = b"\\sv_pure\\1\\fs_game\\MissionPack\\sv_paks\\-1 37\\sv_serverid\\7";
+    let after = b"\\SV_PURE\\2\\FS_GAME\\missionpack\\SV_PAKS\\4294967295  037\\sv_serverid\\8\\timescale\\2";
+    assert!(!files_changed(before, after).unwrap());
+    for changed in [
+        b"\\sv_pure\\0\\fs_game\\missionpack\\sv_paks\\-1 37".as_slice(),
+        b"\\sv_pure\\1\\fs_game\\newmod\\sv_paks\\-1 37",
+        b"\\sv_pure\\1\\fs_game\\missionpack\\sv_paks\\37 -1",
+        b"\\sv_pure\\1\\fs_game\\missionpack\\sv_paks\\-1",
+        b"\\sv_pure\\1\\fs_game\\missionpack\\sv_paks\\-1 37 99",
+    ] {
+        assert!(files_changed(before, changed).unwrap());
+    }
+    let mut packages = qa_network::downloads::PackageChecksums::loaded(after);
+    assert_eq!(packages.next().unwrap(), Some(u32::MAX));
+    assert_eq!(packages.next().unwrap(), Some(37));
+    assert_eq!(packages.next().unwrap(), None);
+}

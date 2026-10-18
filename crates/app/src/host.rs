@@ -1744,7 +1744,6 @@ impl FrameHost {
         }
         self.flush_client_connect_requests(source);
         self.restart_video(source);
-        self.flush_q3_renderer_resets();
         if let Err(error) = self.restart_client_modules(
             crate::modules::RendererRestart::ChangedClient,
             &mut source.driver(),
@@ -1755,6 +1754,7 @@ impl FrameHost {
                 .events
                 .console_formatted(format_args!("CLIENT renderer reset: {error}\n"));
         }
+        self.flush_q3_renderer_resets();
         self.rebind_client_view_modules();
         self.client_configurations(&mut source.driver());
         self.register_client_model_assets(source.asset_preparer());
@@ -2374,11 +2374,10 @@ impl FrameHost {
     }
 
     fn flush_q3_renderer_resets(&mut self) {
-        use crate::client_resources::startup::Q3Phase;
         for slot in 0..self.runtime.client_resources.len() {
             let Some(resources) = self.runtime.client_resources[slot]
                 .as_mut()
-                .filter(|resources| resources.startup.q3() == Some(Q3Phase::RendererReset))
+                .filter(|resources| resources.startup.q3_reset_pending())
             else {
                 continue;
             };

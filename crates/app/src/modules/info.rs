@@ -136,7 +136,7 @@ impl ServerInfo {
                 return false;
             };
             if index == ConfigLayout::Q3_SYSTEM_INFO {
-                let pure = qa_core::text::info_integer(&bytes[..length], b"sv_pure") != 0;
+                let pure = qa_network::pure::enabled(&bytes[..length]);
                 if view
                     .q3_package_info(pure, &mut bytes, &mut length, rules, &mut self.mounts)
                     .is_err()

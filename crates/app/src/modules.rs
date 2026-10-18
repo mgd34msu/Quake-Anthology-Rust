@@ -1661,10 +1661,7 @@ impl FrameHost {
                     .client_resources
                     .get(client.client.0 as usize)?
                     .as_ref();
-                if resources.is_some_and(|resources| {
-                    resources.startup.q3()
-                        == Some(crate::client_resources::startup::Q3Phase::RendererReset)
-                }) {
+                if resources.is_some_and(|resources| resources.startup.q3_reset_pending()) {
                     return None;
                 }
                 if resources.is_none()

@@ -51,6 +51,11 @@ impl ClientResources {
         channel: &mut qa_network::channel::Channel,
     ) -> Result<bool, String> {
         if Self::queue_q3_control(channel, b"vdr")? {
+            if self.startup.q3() == Some(startup::Q3Phase::FilesReset)
+                && let Some(downloads) = &mut self.downloads
+            {
+                downloads.close();
+            }
             self.startup.q3_renderer_reset_queued();
             Ok(true)
         } else {
@@ -75,19 +80,16 @@ impl ClientResources {
             .configs
             .config(ConfigLayout::Q3_SYSTEM_INFO)
             .map_or(&b""[..], |row| row.text);
-        let list = qa_core::text::info_value(info, b"sv_paks", false)
-            .map_or(&b""[..], |range| &info[range]);
-        let mut tokens = qa_formats::text::Tokens::words(list);
+        let mut tokens = qa_network::downloads::PackageChecksums::loaded(info);
         let mut checksums = Vec::new();
-        // FS_PureServerSetLoadedPaks retains at most MAX_SEARCH_PATHS words.
-        while checksums.len() < qa_network::downloads::Q3_PACKAGE_PATHS {
+        loop {
             let Some(word) = tokens
                 .next()
                 .map_err(|error| format!("Q3 package list: {error:?}"))?
             else {
                 break;
             };
-            checksums.push(qa_core::text::atoi_prefix(word) as u32);
+            checksums.push(word);
         }
         let policy = vfs
             .q3_search_view(Some(self.requested_files.view()), &checksums, false)
@@ -99,6 +101,10 @@ impl ClientResources {
             .bind_search(Some(&tracked))
             .map_err(|error| format!("Q3 client files: {error}"))?;
         self.state.files = files;
+        self.state.models.reset_received(None);
+        self.state.models.configs_replaced();
+        self.state.reset_world_request();
+        self.state.animation.clear();
         self.state.sound_source = None;
         self.state.cues_prepared = false;
         self.state.player_sounds.fill(None);

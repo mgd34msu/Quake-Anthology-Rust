@@ -228,9 +228,32 @@ fn downloaded_mounts_join_live_requests_but_cannot_escape_an_explicit_namespace(
     assert!(live.startup.q3() == Some(startup::Q3Phase::Downloading));
 }
 
+fn fill_reliable_window(channel: &mut qa_network::channel::Channel) {
+    for _ in 0..64 {
+        channel
+            .queue_client_command(Protocol::Quake3_68, b"x")
+            .unwrap();
+    }
+}
+fn acknowledge_reliable_window(channel: &mut qa_network::channel::Channel) {
+    use qa_core::sys_events::EventTime;
+    let codec = qa_network::commands::connection::Commands::load(Protocol::Quake3_68, 32768);
+    let mut bytes = [0; 32768];
+    let length = codec.encode_control(channel, &mut bytes).unwrap();
+    channel
+        .prepare_move(&bytes[..length], EventTime(0), None, None)
+        .unwrap()
+        .unwrap();
+    let message = channel.send_state().sequence;
+    channel.submitted(EventTime(0)).unwrap();
+    assert_eq!(channel.command_state().unwrap().submitted, 64);
+    // Supply a validated channel ACK result; the wire ACK has separate coverage.
+    channel.acknowledge_commands(64, message).unwrap();
+}
+
 #[test]
 fn renderer_reset_waits_for_native_reliable_room_then_reports_reloaded_modules() {
-    use qa_core::{loopback::Endpoint, sys_events::EventTime};
+    use qa_core::loopback::Endpoint;
     use qa_network::{
         channel::{Channel, commands::CommandContext},
         commands::{
@@ -272,11 +295,7 @@ fn renderer_reset_waits_for_native_reliable_room_then_reports_reloaded_modules()
             ..Default::default()
         })
         .unwrap();
-    for _ in 0..64 {
-        channel
-            .queue_client_command(Protocol::Quake3_68, b"x")
-            .unwrap();
-    }
+    fill_reliable_window(&mut channel);
     assert!(!client.queue_q3_renderer_reset(&mut channel).unwrap());
     assert_eq!(channel.command_state().unwrap().queued, 64);
     assert!(matches!(
@@ -285,17 +304,7 @@ fn renderer_reset_waits_for_native_reliable_room_then_reports_reloaded_modules()
     ));
     let codec = Commands::load(Protocol::Quake3_68, 32768);
     let mut bytes = [0; 32768];
-    let n = codec.encode_control(&channel, &mut bytes).unwrap();
-    channel
-        .prepare_move(&bytes[..n], EventTime(0), None, None)
-        .unwrap()
-        .unwrap();
-    let message = channel.send_state().sequence;
-    channel.submitted(EventTime(0)).unwrap();
-    assert_eq!(channel.command_state().unwrap().submitted, 64);
-    // The channel ACK parser has separate wire tests. This unit supplies its
-    // validated ACK result to isolate the startup transition under pressure.
-    channel.acknowledge_commands(64, message).unwrap();
+    acknowledge_reliable_window(&mut channel);
     assert!(client.queue_q3_renderer_reset(&mut channel).unwrap());
     assert!(matches!(
         client.startup.q3(),
@@ -433,11 +442,7 @@ fn renderer_reset_drains_the_existing_queue_while_the_healthy_peer_and_ticks_con
         .get_mut(id, Endpoint::Client)
         .unwrap()
         .channel;
-    for _ in 0..64 {
-        channel
-            .queue_client_command(Protocol::Quake3_68, b"x")
-            .unwrap();
-    }
+    fill_reliable_window(channel);
     let mut host = Box::new(
         FrameHost::load(
             qa_console::commands::Console::new(Default::default()).unwrap(),
@@ -501,4 +506,109 @@ fn renderer_reset_drains_the_existing_queue_while_the_healthy_peer_and_ticks_con
     let (sequence, text) = server.received_command().unwrap();
     assert_eq!(sequence, 66);
     assert!(text.starts_with(b"userinfo "));
+}
+
+#[test]
+fn live_package_policy_waits_for_vdr_then_replaces_only_its_client_files() {
+    use qa_core::loopback::Endpoint;
+    use qa_network::channel::{Channel, commands::CommandContext};
+    let mut files = support::Fixture::new(&[]);
+    let (_, first) = package(&mut files.vfs, "first.pk3", 0, b"first");
+    let (_, second) = package(&mut files.vfs, "second.pk3", 1, b"second");
+    let mut a = client(&files.vfs, 0, None);
+    let mut b = client(&files.vfs, 1, None);
+    for client in [&mut a, &mut b] {
+        admit(client, &files.vfs, &[first], 37);
+        client.startup.q3_primed();
+        client.startup.q3_snapshot(0);
+    }
+    let old = a.state.file_source();
+    let peer = b.state.file_source();
+    let info = format!("\\sv_serverid\\7\\sv_pure\\0\\sv_paks\\{}", second as i32);
+    assert!(a.apply(ConfigLayout::Q3_SYSTEM_INFO, info.as_bytes(), None, None));
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::FilesReset));
+    assert!(!a.startup.allows_commands());
+    assert!(!a.startup.allow_models());
+    assert!(!a.startup.allow_sounds());
+    assert_eq!(a.state.file_source(), old);
+    let mut channel =
+        Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+    channel
+        .set_command_context(CommandContext {
+            server_id: 7,
+            checksum_feed: 37,
+            ..Default::default()
+        })
+        .unwrap();
+    fill_reliable_window(&mut channel);
+    assert!(!a.queue_q3_renderer_reset(&mut channel).unwrap());
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::FilesReset));
+    assert_eq!(a.state.file_source(), old);
+    acknowledge_reliable_window(&mut channel);
+    assert!(a.queue_q3_renderer_reset(&mut channel).unwrap());
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::Downloading));
+    assert_eq!(channel.command_state().unwrap().queued, 65);
+    // A second policy during downloads invalidates the old package pass;
+    // coalesce replacements before readmission rather than loading its plan.
+    let superseded = format!("\\sv_serverid\\7\\sv_pure\\0\\sv_paks\\{}", first as i32);
+    assert!(a.apply(
+        ConfigLayout::Q3_SYSTEM_INFO,
+        superseded.as_bytes(),
+        None,
+        None
+    ));
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::FilesReset));
+    assert!(a.apply(ConfigLayout::Q3_SYSTEM_INFO, info.as_bytes(), None, None));
+    assert!(a.queue_q3_renderer_reset(&mut channel).unwrap());
+    a.admit_q3_files(&files.vfs, 37, Random::new(9)).unwrap();
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::Loading));
+    assert_ne!(a.state.file_source(), old);
+    assert_eq!(read(&files.vfs, &a, b"model.bin").unwrap(), b"second");
+    assert_eq!(read(&files.vfs, &b, b"model.bin").unwrap(), b"first");
+    assert_eq!(b.state.file_source(), peer);
+    assert_eq!(b.startup.q3(), Some(startup::Q3Phase::Active));
+    a.startup.q3_primed();
+    a.startup.q3_snapshot(0);
+    let current = a.state.file_source();
+    let unrelated = format!(
+        "\\sv_serverid\\8\\sv_pure\\0\\sv_paks\\  {}  \\timescale\\2",
+        second as i32
+    );
+    assert!(a.apply(
+        ConfigLayout::Q3_SYSTEM_INFO,
+        unrelated.as_bytes(),
+        None,
+        None
+    ));
+    assert_eq!(a.startup.q3(), Some(startup::Q3Phase::Active));
+    assert_eq!(a.state.file_source(), current);
+}
+
+#[test]
+fn live_server_metadata_keeps_a_ready_world_until_the_map_name_changes() {
+    let vfs = Vfs::default();
+    let mut client = client(&vfs, 0, None);
+    assert!(client.apply(
+        ConfigLayout::Q3_SERVER_INFO,
+        b"\\mapname\\ready\\sv_hostname\\old",
+        None,
+        None
+    ));
+    client.state.world_readiness = WorldReadiness::Ready;
+    assert!(client.apply(
+        ConfigLayout::Q3_SERVER_INFO,
+        b"\\MAPNAME\\ready\\sv_hostname\\new",
+        None,
+        None
+    ));
+    assert!(client.state.world_ready());
+    assert!(client.state.pending_world().is_none());
+    assert!(client.apply(
+        ConfigLayout::Q3_SERVER_INFO,
+        b"\\mapname\\replacement\\sv_hostname\\new",
+        None,
+        None
+    ));
+    let request = client.state.pending_world().unwrap();
+    assert_eq!(request.virtual_path().unwrap(), "maps/replacement.bsp");
 }

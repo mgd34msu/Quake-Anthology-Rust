@@ -70,6 +70,9 @@ enum WorldReadiness {
     Ready,
     Failed,
 }
+fn q3_map_name(info: &[u8]) -> Option<&[u8]> {
+    qa_core::text::info_value(info, b"mapname", true).map(|range| &info[range])
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ReceivedWorldName<'a> {
@@ -381,7 +384,45 @@ impl ClientResources {
         catalog: Option<&ModelCatalog>,
         bank: Option<&qa_audio::Bank>,
     ) -> bool {
-        self.state.apply(index, text, catalog, bank)
+        Self::apply_config(
+            &mut self.state,
+            &mut self.startup,
+            index,
+            text,
+            catalog,
+            bank,
+        )
+    }
+    fn apply_config(
+        state: &mut ResourceState,
+        startup: &mut ClientStartup,
+        index: usize,
+        text: &[u8],
+        catalog: Option<&ModelCatalog>,
+        bank: Option<&qa_audio::Bank>,
+    ) -> bool {
+        let files_changed = if state.layout.rules == RuleSetId::Quake3
+            && index == ConfigLayout::Q3_SYSTEM_INFO
+            && startup.q3().is_some()
+        {
+            let previous = state.configs.config(index).map_or(&b""[..], |row| row.text);
+            match qa_network::pure::files_changed(previous, text) {
+                Ok(changed) => changed,
+                Err(_) => {
+                    state.rejected += 1;
+                    return false;
+                }
+            }
+        } else {
+            false
+        };
+        if !state.apply(index, text, catalog, bank) {
+            return false;
+        }
+        if files_changed {
+            startup.q3_files_changed();
+        }
+        true
     }
 
     pub(crate) fn apply_gamestate(
@@ -812,7 +853,9 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
                     {
                         return self.reject(CallError::ConfigString);
                     }
-                    if !self.resources.state.apply(
+                    if !ClientResources::apply_config(
+                        &mut self.resources.state,
+                        &mut self.resources.startup,
                         index,
                         self.resources.joined.as_bytes(),
                         self.catalog,
@@ -1063,7 +1106,7 @@ impl ResourceState {
                 .config(self.world_config_row())
                 .is_some_and(|row| {
                     if self.layout.rules == RuleSetId::Quake3 {
-                        qa_core::text::info_value(row.text, b"mapname", true).is_some()
+                        q3_map_name(row.text).is_some()
                     } else {
                         !row.text.is_empty()
                     }
@@ -1089,7 +1132,7 @@ impl ResourceState {
     }
     pub(crate) fn q3_requirement(&self) -> Option<&'static str> {
         let map = self.configs.config(ConfigLayout::Q3_SERVER_INFO)?.text;
-        if qa_core::text::info_value(map, b"mapname", false).is_none_or(|range| range.is_empty()) {
+        if q3_map_name(map).is_none_or(|name| name.is_empty()) {
             return Some("Q3 gamestate has no world map");
         }
         None
@@ -1099,8 +1142,7 @@ impl ResourceState {
             .configs
             .config(ConfigLayout::Q3_SYSTEM_INFO)
             .map_or(&b""[..], |row| row.text);
-        qa_core::text::info_value(info, b"sv_pure", false)
-            .is_some_and(|range| qa_core::text::atoi_prefix(&info[range]) != 0)
+        qa_network::pure::enabled(info)
     }
     pub(crate) fn world_ready(&self) -> bool {
         matches!(
@@ -1119,8 +1161,7 @@ impl ResourceState {
         let row = self.world_config_row();
         let config = self.configs.config(row)?;
         let name = if self.layout.rules == RuleSetId::Quake3 {
-            let range = qa_core::text::info_value(config.text, b"mapname", true).unwrap_or(0..0);
-            ReceivedWorldName::Q3Map(&config.text[range])
+            ReceivedWorldName::Q3Map(q3_map_name(config.text).unwrap_or(&[]))
         } else {
             ReceivedWorldName::Path(config.text)
         };
@@ -1575,11 +1616,18 @@ impl ResourceState {
             self.rejected += 1;
             return false;
         }
+        let world_changed = index == self.world_config_row()
+            && (self.layout.rules != RuleSetId::Quake3
+                || self
+                    .configs
+                    .config(index)
+                    .and_then(|row| q3_map_name(row.text))
+                    != q3_map_name(text));
         match self.configs.set(index, text) {
             Ok(changed) => {
                 if changed {
                     self.models.config_received(index);
-                    if index == self.world_config_row() {
+                    if world_changed {
                         self.reset_world_request();
                     }
                 }

@@ -5,6 +5,37 @@ use qa_core::primitives::CommandArgs;
 pub const PACKAGE_LIMIT: usize = 1024;
 pub const REJECTION: &[u8] = b"Unpure client detected. Invalid .PK3 files referenced!";
 
+pub fn enabled(system_info: &[u8]) -> bool {
+    qa_core::text::info_value(system_info, b"sv_pure", true)
+        .is_some_and(|range| qa_core::text::atoi_prefix(&system_info[range]) != 0)
+}
+
+/// Native file-policy fields of a live systeminfo replacement. Numeric text
+/// spellings and whitespace may change without changing the admitted files.
+pub fn files_changed(before: &[u8], after: &[u8]) -> Result<bool, qa_formats::FormatError> {
+    let value = |info: &[u8], key| qa_core::text::info_value(info, key, true);
+    if enabled(before) != enabled(after)
+        || !qa_core::names::compare_folded(
+            value(before, b"fs_game").map_or(&[], |range| &before[range]),
+            value(after, b"fs_game").map_or(&[], |range| &after[range]),
+        )
+        .is_eq()
+    {
+        return Ok(true);
+    }
+    let mut before = crate::downloads::PackageChecksums::loaded(before);
+    let mut after = crate::downloads::PackageChecksums::loaded(after);
+    loop {
+        let (a, b) = (before.next()?, after.next()?);
+        if a != b {
+            return Ok(true);
+        }
+        if a.is_none() {
+            return Ok(false);
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub struct Policy {
     feed: u32,

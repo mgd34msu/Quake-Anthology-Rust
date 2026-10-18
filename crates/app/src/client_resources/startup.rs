@@ -69,12 +69,13 @@ pub(crate) enum ClientStartup {
     Quake3(Q3Phase),
     QuakeWorld(QwSignon),
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Q3Phase {
     AwaitGamestate,
     Downloading,
     Loading,
     RendererReset,
+    FilesReset,
     Primed,
     Active,
 }
@@ -271,7 +272,9 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
-                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
+                | Self::Quake3(
+                    Q3Phase::AwaitGamestate | Q3Phase::Downloading | Q3Phase::FilesReset
+                )
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List { .. } | QwPhase::Files { .. },
                     ..
@@ -286,7 +289,9 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
-                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
+                | Self::Quake3(
+                    Q3Phase::AwaitGamestate | Q3Phase::Downloading | Q3Phase::FilesReset
+                )
                 | Self::QuakeWorld(QwSignon {
                     phase: QwPhase::List {
                         kind: ResourceKind::Sound,
@@ -304,7 +309,9 @@ impl ClientStartup {
             self,
             Self::AwaitHeader { .. }
                 | Self::Restarting
-                | Self::Quake3(Q3Phase::AwaitGamestate | Q3Phase::Downloading)
+                | Self::Quake3(
+                    Q3Phase::AwaitGamestate | Q3Phase::Downloading | Q3Phase::FilesReset
+                )
         ) && !matches!(self, Self::QuakeWorld(state) if !matches!(state.phase, QwPhase::Skins { .. } | QwPhase::BeginQueued | QwPhase::Active))
     }
     pub(crate) fn q3(&self) -> Option<Q3Phase> {
@@ -345,8 +352,30 @@ impl ClientStartup {
         }
     }
     pub(crate) fn q3_renderer_reset_queued(&mut self) {
-        if self.q3() == Some(Q3Phase::RendererReset) {
-            *self = Self::Quake3(Q3Phase::Loading);
+        match self.q3() {
+            Some(Q3Phase::RendererReset) => *self = Self::Quake3(Q3Phase::Loading),
+            Some(Q3Phase::FilesReset) => *self = Self::Quake3(Q3Phase::Downloading),
+            _ => {}
+        }
+    }
+    pub(crate) fn q3_reset_pending(&self) -> bool {
+        matches!(
+            self.q3(),
+            Some(Q3Phase::RendererReset | Q3Phase::FilesReset)
+        )
+    }
+    pub(crate) fn q3_files_changed(&mut self) {
+        if matches!(
+            self.q3(),
+            Some(
+                Q3Phase::Downloading
+                    | Q3Phase::Loading
+                    | Q3Phase::Primed
+                    | Q3Phase::Active
+                    | Q3Phase::RendererReset
+            )
+        ) {
+            *self = Self::Quake3(Q3Phase::FilesReset);
         }
     }
     pub(crate) fn q3_snapshot(&mut self, flags: u8) {
