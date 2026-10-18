@@ -188,10 +188,15 @@ pub(crate) struct ProgressViews {
     time: qa_console::cvars::View,
 }
 impl ProgressViews {
-    pub(crate) fn bind(cvars: &qa_console::cvars::Cvars, seat: SeatId) -> Result<Self, String> {
+    pub(crate) fn bind(
+        cvars: &qa_console::cvars::Cvars,
+        seat: SeatId,
+        client: (ClientId, EntityId),
+    ) -> Result<Self, String> {
         let context = qa_console::views::Context {
             source: RuleSetId::Quake3,
             seat,
+            client_lifetime: Some(client),
             ..Default::default()
         };
         let [name, size, count, time] = [
@@ -511,6 +516,7 @@ impl DownloadViews {
         cvars: &qa_console::cvars::Cvars,
         protocol: Protocol,
         seat: SeatId,
+        client: (ClientId, EntityId),
     ) -> Result<Option<Self>, String> {
         if !matches!(
             protocol,
@@ -522,6 +528,7 @@ impl DownloadViews {
             source: protocol.resource_layout().rules,
             side: qa_console::catalog::Scope::Client,
             seat,
+            client_lifetime: Some(client),
             ..Default::default()
         };
         let allow = cvars
@@ -532,7 +539,7 @@ impl DownloadViews {
                 protocol,
                 allow,
                 categories: None,
-                progress: Some(ProgressViews::bind(cvars, seat)?),
+                progress: Some(ProgressViews::bind(cvars, seat, client)?),
             }));
         }
         let [maps, models, sounds, players] = [
@@ -1466,7 +1473,15 @@ impl crate::host::FrameHost {
             .and_then(Option::as_ref)
             .and_then(|binding| binding.seat())
             .ok_or("downloads require a local CLIENT seat")?;
-        let permissions = DownloadViews::bind(&self.console.cvars, protocol, seat)?;
+        let owner = (
+            client,
+            self.runtime.server.clients[client.0 as usize].entity,
+        );
+        self.console
+            .cvars
+            .load_client_values(owner)
+            .map_err(|error| format!("CLIENT download cvars: {error:?}"))?;
+        let permissions = DownloadViews::bind(&self.console.cvars, protocol, seat, owner)?;
         resources.downloads = Some(ClientDownload::new(Some(config), permissions, protocol));
         Ok(())
     }
@@ -1694,14 +1709,18 @@ impl crate::host::FrameHost {
                 else {
                     continue;
                 };
-                let permissions =
-                    match DownloadViews::bind(&self.console.cvars, Protocol::Quake3_68, seat) {
-                        Ok(permissions) => permissions,
-                        Err(error) => {
-                            self.reject_client_startup(client, format_args!("{error}"));
-                            continue;
-                        }
-                    };
+                let permissions = match DownloadViews::bind(
+                    &self.console.cvars,
+                    Protocol::Quake3_68,
+                    seat,
+                    (client, self.runtime.server.clients[index].entity),
+                ) {
+                    Ok(permissions) => permissions,
+                    Err(error) => {
+                        self.reject_client_startup(client, format_args!("{error}"));
+                        continue;
+                    }
+                };
                 resources.downloads =
                     Some(ClientDownload::new(None, permissions, Protocol::Quake3_68));
             }
@@ -1928,8 +1947,13 @@ impl crate::host::FrameHost {
             let Some(downloads) = resources.downloads.as_mut() else {
                 continue;
             };
+            let client = (
+                ClientId(index as u32),
+                self.runtime.server.clients[index].entity,
+            );
             let Some((stamp, count, enabled)) = self.player_skin_views.download_stamp(
                 &self.console.cvars,
+                client,
                 seat,
                 &resources.state.models,
             ) else {
@@ -1945,6 +1969,7 @@ impl crate::host::FrameHost {
                 |slot| {
                     self.player_skin_views.download_paths(
                         &self.console.cvars,
+                        client,
                         seat,
                         &resources.state.models,
                         &resources.state.configs,

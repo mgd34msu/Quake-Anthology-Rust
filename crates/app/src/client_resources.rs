@@ -1152,6 +1152,7 @@ impl ResourceState {
         views: &crate::client_scene::PlayerSkinViews,
         request: &crate::client_scene::PlayerSkinRefresh,
         cvars: &qa_console::cvars::Cvars,
+        client: (ClientId, EntityId),
         seat: qa_core::sys_events::SeatId,
         owner: &mut crate::model_assets::ModelAssets,
         vfs: &qa_content::vfs::Vfs,
@@ -1159,7 +1160,7 @@ impl ResourceState {
         ui_fullscreen: bool,
     ) -> Result<ClientImageRefresh, String> {
         let mut staged = ClientImageRefresh::capture(self, false);
-        views.update(cvars, Some(seat), &mut staged.models, Some(request));
+        views.update(cvars, client, Some(seat), &mut staged.models, Some(request));
         staged.models.refresh_indexed_skins(
             &self.configs,
             owner,

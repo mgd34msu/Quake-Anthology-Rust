@@ -260,6 +260,7 @@ pub struct Cvars {
     native_heads: Box<[Option<u32>]>,
     runtime_policy: RuntimePolicy,
     cheats_handle: CvarHandle,
+    download_handle: CvarHandle,
     video_policy: Option<crate::video::VideoPolicy>,
 }
 
@@ -362,16 +363,6 @@ impl Cvars {
             },
         )
         .map_err(|_| NamesError::Capacity)?;
-        let cheats_name = names
-            .find_folded(b"sv_cheats")
-            .ok_or(NamesError::Capacity)?;
-        let cheats_binding = name_bindings[cheats_name.0 as usize].first;
-        let cheats_handle = CvarHandle(
-            offsets[BINDINGS
-                .get(cheats_binding as usize)
-                .ok_or(NamesError::Capacity)?
-                .row as usize] as u32,
-        );
         let mut projection_count = 0;
         let projection_rows: Vec<_> = BINDINGS
             .iter()
@@ -449,7 +440,8 @@ impl Cvars {
             dirty_bindings: Vec::with_capacity(BINDINGS.len()),
             dirty_projections: StampSet::new(BINDINGS.len()),
             runtime_policy: RuntimePolicy::default(),
-            cheats_handle,
+            cheats_handle: CvarHandle(0),
+            download_handle: CvarHandle(0),
             video_policy: None,
         };
         for (i, binding) in BINDINGS.iter().enumerate() {
@@ -473,6 +465,16 @@ impl Cvars {
                 }
             }
         }
+        let context = Context {
+            side: Scope::Client,
+            client_lifetime: None,
+            cvar_client: None,
+            ..context
+        };
+        let [cheats, download] =
+            ["sv_cheats", "cl_allowDownload"].map(|name| registry.bind(name, context));
+        registry.cheats_handle = cheats.ok_or(NamesError::Capacity)?.canonical();
+        registry.download_handle = download.ok_or(NamesError::Capacity)?.canonical();
         registry.pad_values();
         registry.resolve_defaults();
         registry.refresh_numbers();

@@ -149,6 +149,10 @@ impl FrameHost {
                                 &self.player_skin_views,
                                 &request,
                                 &self.console.cvars,
+                                (
+                                    qa_core::primitives::ClientId(index as u32),
+                                    self.runtime.server.clients[index].entity,
+                                ),
                                 seat,
                                 owner,
                                 &vfs,
@@ -311,6 +315,10 @@ impl FrameHost {
                 .and_then(|binding| binding.seat());
             self.player_skin_views.update(
                 &self.console.cvars,
+                (
+                    qa_core::primitives::ClientId(index as u32),
+                    runtime.server.clients[index].entity,
+                ),
                 seat,
                 &mut resources.state.models,
                 None,

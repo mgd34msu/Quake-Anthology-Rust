@@ -23,11 +23,29 @@ impl IndexedPlayerOptions {
     }
 }
 
+#[derive(Clone, Copy)]
 struct NativeSkinViews {
     base: qa_console::cvars::View,
     player_mip: qa_console::cvars::View,
     no_colors: qa_console::cvars::View,
     no_skins: qa_console::cvars::View,
+}
+impl NativeSkinViews {
+    fn selected(
+        self,
+        cvars: &qa_console::cvars::Cvars,
+        client: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
+    ) -> Self {
+        let handles = [self.base, self.player_mip, self.no_colors, self.no_skins];
+        let [base, player_mip, no_colors, no_skins] =
+            cvars.client_views(handles, client).unwrap_or(handles);
+        Self {
+            base,
+            player_mip,
+            no_colors,
+            no_skins,
+        }
+    }
 }
 #[derive(Default)]
 pub(crate) struct PlayerSkinRefresh {
@@ -96,6 +114,7 @@ impl PlayerSkinViews {
     pub(crate) fn update(
         &self,
         cvars: &qa_console::cvars::Cvars,
+        client: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
         seat: Option<qa_core::sys_events::SeatId>,
         models: &mut ClientModelBindings,
         refresh: Option<&PlayerSkinRefresh>,
@@ -106,7 +125,7 @@ impl PlayerSkinViews {
         if players.color_rules.is_none() {
             return;
         }
-        let options = self.options(cvars, seat, players, refresh);
+        let options = self.options(cvars, client, seat, players, refresh);
         if !players.indexed_options.same(&options) {
             players.indexed_options = options;
             players.dirty = true;
@@ -117,11 +136,12 @@ impl PlayerSkinViews {
     fn options(
         &self,
         cvars: &qa_console::cvars::Cvars,
+        client: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
         seat: Option<qa_core::sys_events::SeatId>,
         players: &PlayerBindings,
         refresh: Option<&PlayerSkinRefresh>,
     ) -> IndexedPlayerOptions {
-        let views = &self.native[players.source as usize];
+        let views = self.native[players.source as usize].selected(cvars, client);
         let mut options = IndexedPlayerOptions {
             all: seat
                 .map(|seat| {
@@ -146,6 +166,7 @@ impl PlayerSkinViews {
     pub(crate) fn download_stamp(
         &self,
         cvars: &qa_console::cvars::Cvars,
+        client: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
         seat: qa_core::sys_events::SeatId,
         models: &ClientModelBindings,
     ) -> Option<([u64; 4], usize, bool)> {
@@ -153,7 +174,7 @@ impl PlayerSkinViews {
         if players.source != RuleSetId::QuakeWorld || !players.color_rules?.external_skins {
             return None;
         }
-        let views = &self.native[players.source as usize];
+        let views = self.native[players.source as usize].selected(cvars, client);
         Some((
             [
                 players.skin_revision,
@@ -169,6 +190,7 @@ impl PlayerSkinViews {
     pub(crate) fn download_paths(
         &self,
         cvars: &qa_console::cvars::Cvars,
+        client: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
         seat: qa_core::sys_events::SeatId,
         models: &ClientModelBindings,
         configs: &ConfigStrings,
@@ -179,7 +201,7 @@ impl PlayerSkinViews {
         if info.text.is_empty() {
             return None;
         }
-        let options = self.options(cvars, Some(seat), players, None);
+        let options = self.options(cvars, client, Some(seat), players, None);
         skin_paths(&options, info.text)
     }
 }

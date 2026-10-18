@@ -3590,7 +3590,7 @@ impl FrameHost {
                             }
                             Incoming::Download(chunk) => {
                                 if let Ok(qa_network::downloads::Chunk::Rejected { size, message }) = chunk {
-                                    let progress = crate::client_resources::downloads::ProgressViews::bind(&self.console.cvars, seat);
+                                    let progress = crate::client_resources::downloads::ProgressViews::bind(&self.console.cvars, seat, (id, self.runtime.server.clients[id.0 as usize].entity));
                                     if let Err(error) = progress.and_then(|views| views.rejected(size, &mut self.console.cvars)) {
                                         let _ = self.runtime.server.events.console_formatted(format_args!("{error}\n"));
                                     }

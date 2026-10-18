@@ -105,6 +105,7 @@ fn downloaded_skin(native: bool, packaged: bool) {
     let context = Context {
         source: RuleSetId::Quake2,
         seat: SeatId::FIRST,
+        client_lifetime: Some((ClientId(0), host.runtime.server.clients[0].entity)),
         ..Default::default()
     };
     let allow = host

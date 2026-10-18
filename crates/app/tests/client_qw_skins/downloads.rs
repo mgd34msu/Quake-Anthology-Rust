@@ -424,6 +424,8 @@ fn unavailable_and_oversized_qw_transfers_leave_the_q2_peer_and_empty_completion
 fn mixed_clients(protocol: Protocol) {
     let (_fixture, mut host, mut source) = loading();
     let other = add_q2_client(&mut host, &mut source, protocol);
+    configure(&mut host, CLIENT, 4);
+    configure(&mut host, other, 4);
     let [allow_download, _] = ["cl_allowDownload", "allow_download_players"].map(|name| {
         let view = host
             .console
@@ -434,6 +436,10 @@ fn mixed_clients(protocol: Protocol) {
                     source: protocol.rule_set(),
                     side: qa_console::catalog::Scope::Client,
                     seat: SeatId::ALL[1],
+                    client_lifetime: Some((
+                        other,
+                        host.runtime.server.clients[other.0 as usize].entity,
+                    )),
                     ..Default::default()
                 },
             )
@@ -441,8 +447,6 @@ fn mixed_clients(protocol: Protocol) {
         host.console.cvars.force_write(view, "1").unwrap();
         view
     });
-    configure(&mut host, CLIENT, 4);
-    configure(&mut host, other, 4);
     command(
         &mut host,
         &mut source,

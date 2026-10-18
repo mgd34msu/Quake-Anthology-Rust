@@ -993,7 +993,35 @@ fn video_reload_rebinds_received_qw_skin_selections_to_replayed_images() {
             },
         ],
     );
-    setting(&mut host, "gl_playermip", "1");
+    let owner = (
+        CLIENT,
+        host.runtime.server.clients[CLIENT.0 as usize].entity,
+    );
+    let view = host
+        .console
+        .cvars
+        .bind(
+            "gl_playermip",
+            Context {
+                source: RULES,
+                client_lifetime: Some(owner),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    host.console.cvars.force_write(view, "1").unwrap();
+    let global = host
+        .console
+        .cvars
+        .bind(
+            "gl_playermip",
+            Context {
+                source: RULES,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(host.console.cvars.integer_view(global).unwrap(), 0);
     prepare(&mut host, &mut source);
     let before = draw(&host, true);
     assert_eq!(before[0].prepared, [256, 128]);

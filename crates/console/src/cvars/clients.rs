@@ -235,7 +235,12 @@ impl Cvars {
             };
             // A remote setting cannot seize a physical host control shared
             // with other CLIENTs. Its wire text remains in their gamestate.
-            if self.column(view.handle) != 0 {
+            if self.column(view.handle) != 0
+                && self.values[view.handle.0 as usize].row
+                    != self.values[self.download_handle.0 as usize].row
+            {
+                // TypeScript's CLIENT retains the user's download choice when
+                // applying systeminfo; a server cannot enable that permission.
                 self.force_write(view, value)?;
             }
         }

@@ -27,6 +27,10 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
     let mut server = EventPump::new();
     let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
     let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
+    let owner = (
+        client,
+        host.runtime.server.clients[client.0 as usize].entity,
+    );
     let local = peer(&datagrams(&mut server)[0]);
     let mut native = accept(
         &mut host,
@@ -51,6 +55,7 @@ fn q3_udp_download_ack_cursors_survive_full_commands_and_publish_only_on_eof() {
                 name,
                 Context {
                     role: qa_console::views::Role::Cgame,
+                    client_lifetime: Some(owner),
                     ..context()
                 },
             )
@@ -362,6 +367,10 @@ fn q3_unsolicited_and_rejected_downloads_stay_scoped_to_the_receiving_client() {
     let mut server = EventPump::new();
     let (socket, address) = server.bind_udp(([127, 0, 0, 1], 0).into()).unwrap();
     let client = connect(&mut host, &mut source, SeatId::FIRST, address, None, 0);
+    let owner = (
+        client,
+        host.runtime.server.clients[client.0 as usize].entity,
+    );
     let local = peer(&datagrams(&mut server)[0]);
     let mut native = accept(
         &mut host,
@@ -427,13 +436,25 @@ fn q3_unsolicited_and_rejected_downloads_stay_scoped_to_the_receiving_client() {
     let size = host
         .console
         .cvars
-        .bind("cl_downloadSize", context())
+        .bind(
+            "cl_downloadSize",
+            Context {
+                client_lifetime: Some(owner),
+                ..context()
+            },
+        )
         .unwrap();
     assert_eq!(host.console.cvars.integer_view(size).unwrap(), -1);
     let name = host
         .console
         .cvars
-        .bind("cl_downloadName", context())
+        .bind(
+            "cl_downloadName",
+            Context {
+                client_lifetime: Some(owner),
+                ..context()
+            },
+        )
         .unwrap();
     assert_eq!(host.console.cvars.read(name).unwrap().as_str(), "");
 
@@ -497,7 +518,16 @@ fn q3_separate_remote_and_local_names_survive_cancel_retry_and_package_publicati
     let progress = host
         .console
         .cvars
-        .bind("cl_downloadName", context())
+        .bind(
+            "cl_downloadName",
+            Context {
+                client_lifetime: Some((
+                    client,
+                    host.runtime.server.clients[client.0 as usize].entity,
+                )),
+                ..context()
+            },
+        )
         .unwrap();
     assert_eq!(
         host.console.cvars.read(progress).unwrap().as_str(),

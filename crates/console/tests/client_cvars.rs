@@ -117,6 +117,8 @@ fn received_systeminfo_and_cheat_resets_do_not_change_server_or_another_client()
         vars.load_client_values(context.client_lifetime.unwrap())
             .unwrap();
     }
+    let allow = vars.bind("cl_allowDownload", a).unwrap();
+    vars.force_write(allow, "0").unwrap();
     let global = Context::default();
     let cheats = vars.bind("sv_cheats", global).unwrap();
     vars.force_write(cheats, "1").unwrap();
@@ -128,7 +130,7 @@ fn received_systeminfo_and_cheat_resets_do_not_change_server_or_another_client()
     vars.force_write(root, "8").unwrap();
     vars.apply_client_system_info(
         a.client_lifetime.unwrap(),
-        b"\\sv_serverid\\42\\sv_cheats\\0\\pmove_msec\\16\\_mod_setting\\a\\fs_game\\missionpack",
+        b"\\sv_serverid\\42\\sv_cheats\\0\\pmove_msec\\16\\cl_allowDownload\\1\\_mod_setting\\a\\fs_game\\missionpack",
     )
     .unwrap();
     vars.apply_client_system_info(
@@ -183,6 +185,7 @@ fn received_systeminfo_and_cheat_resets_do_not_change_server_or_another_client()
         .unwrap();
     assert_eq!(vars.integer_in(scoped, RuleSetId::Quake3), 16);
     assert_eq!(vars.integer_in(handle, RuleSetId::Quake3), 8);
+    assert_eq!(vars.integer_view(allow).unwrap(), 0);
 }
 
 #[test]
