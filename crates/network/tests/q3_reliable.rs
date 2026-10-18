@@ -352,6 +352,7 @@ fn client_records(
                             weapon: native_weapon.unwrap(),
                         });
                     }
+                    qa_network::ingress::Incoming::MoveStart { .. } => {}
                     _ => panic!("unexpected CLIENT record"),
                 }
                 std::ops::ControlFlow::Continue(())

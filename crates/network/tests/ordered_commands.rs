@@ -80,8 +80,9 @@ fn string(bytes: &mut Vec<u8>, text: &[u8]) {
     bytes.extend_from_slice(text);
     bytes.push(0);
 }
-fn seen(incoming: Incoming<'_>) -> Seen {
-    match incoming {
+fn seen(incoming: Incoming<'_>) -> Option<Seen> {
+    Some(match incoming {
+        Incoming::MoveBegin | Incoming::MoveEnd | Incoming::MoveStart { .. } => return None,
         Incoming::CommandString { text, .. } => Seen::Text(text.to_vec()),
         Incoming::Command {
             command, execution, ..
@@ -95,7 +96,7 @@ fn seen(incoming: Incoming<'_>) -> Seen {
         Incoming::Userinfo { text, .. } => Seen::Userinfo(text.to_vec()),
         Incoming::Disconnect { .. } => Seen::Disconnect,
         _ => panic!("unexpected client record"),
-    }
+    })
 }
 fn deliver(protocol: Protocol, bytes: &[u8]) -> (Result<usize, packet::Error>, Vec<Seen>) {
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
@@ -103,12 +104,7 @@ fn deliver(protocol: Protocol, bytes: &[u8]) -> (Result<usize, packet::Error>, V
     let length = commands.stage(bytes).unwrap();
     let mut output = Vec::new();
     let result = commands.decode(length, 7, 16, &mut channel, None, |incoming| {
-        // This fixture observes ordered records; batch lifecycle is covered by
-        // qw_move_batches and does not change text/move ordering.
-        if matches!(incoming, Incoming::MoveBegin | Incoming::MoveEnd) {
-            return ControlFlow::Continue(());
-        }
-        output.push(seen(incoming));
+        output.extend(seen(incoming));
         ControlFlow::Continue(())
     });
     (result, output)
@@ -252,7 +248,7 @@ fn native_disconnect_and_callback_stop_leave_the_tail_unexecuted() {
         let mut output = Vec::new();
         assert_eq!(
             commands.decode(length, 7, 16, &mut channel, None, |incoming| {
-                output.push(seen(incoming));
+                output.extend(seen(incoming));
                 ControlFlow::Break(())
             }),
             Ok(0)
@@ -290,15 +286,19 @@ fn q3_new_reliable_strings_precede_moves_and_duplicates_never_execute_twice() {
     let mut channel =
         Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 16).unwrap();
     let mut commands = Commands::load(Protocol::Quake3_68, 8192);
-    for (expected_count, expected) in [
-        (1, vec![Seen::Text(b"say ..".to_vec()), Seen::Move(11)]),
-        (0, vec![]),
+    for (authorized, expected_count, expected) in [
+        (false, 0, vec![Seen::Text(b"say ..".to_vec())]),
+        (true, 1, vec![Seen::Move(11)]),
+        (true, 0, vec![]),
     ] {
         let length = commands.stage(&bytes).unwrap();
         let mut output = Vec::new();
         assert_eq!(
             commands.decode(length, 7, 16, &mut channel, None, |incoming| {
-                output.push(seen(incoming));
+                if !authorized && matches!(incoming, Incoming::MoveStart { .. }) {
+                    return ControlFlow::Break(());
+                }
+                output.extend(seen(incoming));
                 ControlFlow::Continue(())
             }),
             Ok(expected_count)
@@ -310,7 +310,7 @@ fn q3_new_reliable_strings_precede_moves_and_duplicates_never_execute_twice() {
     let mut output = Vec::new();
     assert_eq!(
         commands.decode(length, 7, 16, &mut channel, None, |incoming| {
-            output.push(seen(incoming));
+            output.extend(seen(incoming));
             ControlFlow::Continue(())
         }),
         Err(packet::Error::Context)

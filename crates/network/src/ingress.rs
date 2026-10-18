@@ -275,6 +275,11 @@ pub enum Incoming<'a> {
         cue: crate::outputs::Cue,
         current: Option<crate::snapshots::ReceivedFrame<'a>>,
     },
+    /// Q3 authorizes this decoded move before old-command filtering changes
+    /// its retained command time. This synchronous boundary retains no bytes.
+    MoveStart {
+        output: Option<OutputConsumerId>,
+    },
     /// One accepted QW move record, including all admitted loss recovery.
     MoveBegin,
     /// Completion is omitted if the synchronous consumer stops the batch.

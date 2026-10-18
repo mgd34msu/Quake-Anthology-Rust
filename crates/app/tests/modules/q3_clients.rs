@@ -1356,12 +1356,12 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
         expected as i32,
         (feed ^ expected ^ 1) as i32
     );
-    wire.time = EventTime::from_milliseconds(230);
+    wire.time = EventTime::from_milliseconds(220);
     command(&mut host, &mut wire, peer, &mut client, Some(cp.as_bytes()));
     assert_eq!(
         count(&mut host, 7),
         thinks + 1,
-        "cp authenticates the following move in its packet"
+        "a denied packet must not consume the time of the following authenticated move"
     );
     wire.time = EventTime::from_milliseconds(240);
     command(&mut host, &mut wire, peer, &mut client, Some(b"vdr"));

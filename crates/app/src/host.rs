@@ -3683,6 +3683,20 @@ impl FrameHost {
                         return std::ops::ControlFlow::Continue(());
                     }
                     match incoming {
+                    Incoming::MoveStart { output } => {
+                        if output.is_none() || self.runtime.server.clients[id.0 as usize].output != output {
+                            return std::ops::ControlFlow::Break(());
+                        }
+                        let publication = &mut self.runtime.config_publications[id.0 as usize];
+                        match publication.pure.movement() {
+                            qa_network::pure::Movement::Allowed => {},
+                            qa_network::pure::Movement::Wait => return std::ops::ControlFlow::Break(()),
+                            qa_network::pure::Movement::ResendGamestate => {
+                                publication.restart_game_state();
+                                return std::ops::ControlFlow::Break(());
+                            }
+                        }
+                    }
                     Incoming::MoveBegin => self.begin_command_batch(id),
                     Incoming::MoveEnd => self.end_command_batch(id, driver),
                     Incoming::CommandString {

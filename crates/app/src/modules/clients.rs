@@ -528,15 +528,6 @@ impl FrameHost {
         observation: Option<SnapshotObservation>,
         driver: &mut crate::modules::Driver<'_>,
     ) {
-        let publication = &mut self.runtime.config_publications[id.0 as usize];
-        match publication.pure.movement() {
-            qa_network::pure::Movement::Allowed => {}
-            qa_network::pure::Movement::Wait => return,
-            qa_network::pure::Movement::ResendGamestate => {
-                publication.restart_game_state();
-                return;
-            }
-        }
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
             .movement_rules;

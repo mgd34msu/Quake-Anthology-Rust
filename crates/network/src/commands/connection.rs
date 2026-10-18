@@ -375,6 +375,12 @@ impl Commands {
                 key,
                 |record| match record {
                     packet::Record::Move(movement) => {
+                        if let Move::Quake3 { delta, .. } = movement {
+                            self.delta_request = delta.then_some(message_acknowledged);
+                            if consume(Incoming::MoveStart { output }).is_break() {
+                                return Ok(ControlFlow::Break(()));
+                            }
+                        }
                         let batch = matches!(movement, Move::QuakeWorld { .. });
                         if batch && consume(Incoming::MoveBegin).is_break() {
                             return Ok(ControlFlow::Break(()));
@@ -566,12 +572,8 @@ impl Commands {
                 accepted
             }
             Move::Quake3 {
-                commands,
-                count,
-                delta,
+                commands, count, ..
             } => {
-                // This precedes old-command filtering in native SV_UserMove.
-                self.delta_request = delta.then_some(message_acknowledged);
                 let observation = channel.snapshot_observation(message_acknowledged);
                 let final_time = commands[usize::from(count) - 1].server_time;
                 let mut accepted = 0;
