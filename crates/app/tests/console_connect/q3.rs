@@ -263,13 +263,13 @@ fn q3_udp_admission_retries_compressed_current_info_and_captures_proxy_and_accep
     assert!(source.pump.send_udp(old_token, address, b"closed").is_err());
 }
 
-fn cgame() -> Vec<u8> {
+fn cgame(multiplier: i32) -> Vec<u8> {
     use Opcode::*;
     let mut ops = vec![(Enter, 64), (Local, 72), (Load4, 0), (Const, 0), (Eq, 0)];
     let result = [
         (Const, 128),
         (Load4, 0),
-        (Const, 100),
+        (Const, multiplier),
         (MulI, 0),
         (Const, 132),
         (Load4, 0),
@@ -396,11 +396,13 @@ fn media_host() -> (
 ) {
     let mut fixture = support::Fixture::new(&[
         ("maps/ready.bsp", support::world_map(16.0)),
+        ("gfx/palette.lmp", (0u8..=255).flat_map(|value| [value, 255 - value, value / 2]).collect()),
+        ("gfx/colormap.lmp", (0..64u8).flat_map(|shade| (0..=255u8).map(move |index| index.wrapping_add(shade))).chain([32]).collect()),
         ("models/test/tris.md2", support::md2()),
         ("models/test/skin0.pcx", support::pcx(11)),
         ("models/test/skin1.pcx", support::pcx(22)),
         ("sound/step.wav", samples::wav()),
-        ("vm/udp.qvm", cgame()),
+        ("vm/udp.qvm", cgame(100)),
         ("scripts/udp.shader", b"gfx/2d/bigchars { { map $whiteimage } }\nwhite { { map $whiteimage } }\nconsole { { map $whiteimage } }\n".to_vec()),
     ]);
     let (mut runtime, requests, old) = media_runtime(std::mem::take(&mut fixture.vfs));
@@ -668,6 +670,30 @@ fn q3_fragmented_gamestate_waits_for_real_media_backend_and_current_cgame_before
         local,
         40,
     );
+    // Code loaded before connecting must be resolved again in the admitted
+    // connection view, including its native package-reference account.
+    let root = host
+        .runtime
+        .vfs
+        .directory_path(host.runtime.vfs.mounts().next().unwrap().id)
+        .unwrap();
+    let package_path = root.join("newcode.pk3");
+    qa_platform::files::write(
+        &package_path,
+        downloads::zip::stored_zip(&[(b"vm/udp.qvm", &cgame(200))]),
+    )
+    .unwrap();
+    let archive = std::sync::Arc::new(
+        qa_formats::archive::Archive::parse(std::sync::Arc::new(
+            qa_platform::files::ReadFile::open(&package_path).unwrap(),
+        ))
+        .unwrap(),
+    );
+    let code_pure = archive.q3_checksums().unwrap().pure_checksum(FEED);
+    host.runtime
+        .vfs
+        .mount_archive(&package_path, 100, archive)
+        .unwrap();
     assert!(
         gamestate(
             &mut server,
@@ -684,12 +710,40 @@ fn q3_fragmented_gamestate_waits_for_real_media_backend_and_current_cgame_before
     collect(&mut server, &mut native, 80);
     frame(&mut host, &mut source, 85);
     collect(&mut server, &mut native, 85);
-    assert!(host.local_worlds[0].is_some());
+    assert!(
+        host.local_worlds[0].is_some(),
+        "{}",
+        String::from_utf8_lossy(
+            &host
+                .console
+                .scrollback
+                .chunks(&host.runtime.server.events.texts)
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>()
+        )
+    );
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().last_result,
-        Some(ModuleResult::Qvm(104)),
+        Some(ModuleResult::Qvm(204)),
         "one CG_INIT must capture native client4 after media admission"
+    );
+    let mut references = qa_core::text::FixedText::<8191>::default();
+    host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .file_search()
+        .q3_reference_command(&host.runtime.vfs, SERVER_ID, false, &mut references)
+        .unwrap();
+    assert!(
+        references
+            .as_str()
+            .split_ascii_whitespace()
+            .any(|word| word == (code_pure as i32).to_string()),
+        "the actual replacement QVM must register in the CLIENT account: {}",
+        references.as_str()
     );
     assert_eq!(
         source.backend.as_ref().unwrap().cpu.admitted_assets(),
@@ -854,7 +908,7 @@ fn q3_fragmented_gamestate_waits_for_real_media_backend_and_current_cgame_before
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().last_result,
-        Some(ModuleResult::Qvm(104))
+        Some(ModuleResult::Qvm(204))
     );
     assert!(!native.q3_moves.is_empty());
     assert_eq!(native.moves, 0);

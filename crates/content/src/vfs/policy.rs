@@ -117,6 +117,34 @@ impl Vfs {
         selected.references = view.and_then(|view| view.references.clone());
         Ok(selected)
     }
+    /// Apply a connection's admitted order, read policy and reference account
+    /// inside the caller's requested namespace. Neither side can widen reads.
+    pub fn admitted_search(
+        &self,
+        requested: Option<&SearchView>,
+        admitted: &SearchView,
+    ) -> Result<SearchView, VfsError> {
+        let mut selected = self.read_view(requested).retain()?;
+        let mut order = Vec::new();
+        self.mount_order(Some(admitted), &mut order)?;
+        order.retain(|&id| selected.fixed().is_none() || selected.rank(id).is_some());
+        selected.ranks = self.search_view(order)?.ranks;
+        selected.references = admitted.references.clone();
+        let Some(policy) = &admitted.read_policy else {
+            return Ok(selected);
+        };
+        let archives: Vec<_> = self
+            .mounts()
+            .filter(|mount| mount.kind != MountKind::Directory && admitted.allows_archive(mount.id))
+            .map(|mount| mount.id)
+            .collect();
+        let suffixes: Vec<_> = policy
+            .loose_suffixes
+            .iter()
+            .map(|suffix| suffix.as_ref())
+            .collect();
+        self.restricted_search(Some(&selected), &archives, &suffixes)
+    }
     /// Q3 FS_ReorderPurePaks and FS_PakIsPure. Checksums are the existing native
     /// archive wire metadata; the selection itself is keyed by mount identity.
     pub fn q3_search_view(

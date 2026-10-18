@@ -148,7 +148,7 @@ impl Program {
     }
 }
 pub struct ModuleRequest {
-    /// Program-file sources, moved into ServiceStorage before guest callbacks.
+    /// Requested program namespace, retained across connection admission/restarts.
     pub search: Option<qa_content::vfs::SearchView>,
     pub context: CallContext,
     pub phase: Phase,
@@ -323,6 +323,7 @@ struct RendererStamp {
     client: Option<RendererClient>,
     reset: Option<u64>,
     video: u64,
+    files: Option<qa_core::primitives::FileSearchId>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RendererRestart {
@@ -887,7 +888,7 @@ impl FrameHost {
             storage
                 .set_file_search(
                     request.context.module,
-                    request.search.take(),
+                    request.search.clone(),
                     &host.runtime.vfs,
                 )
                 .map_err(|error| format!("module filesystem binding: {error:?}"))?;
@@ -1650,6 +1651,12 @@ impl FrameHost {
             client,
             reset,
             video: self.video_serial,
+            files: client.and_then(|client| {
+                self.runtime.client_resources[client.client.0 as usize]
+                    .as_ref()
+                    .filter(|resources| resources.startup.q3().is_some())
+                    .and_then(|resources| resources.state.file_source())
+            }),
         })
     }
 
@@ -2098,20 +2105,55 @@ impl FrameHost {
         self.cleanup_failed_module(module, driver);
     }
 
+    /// Modules retain their requested namespace while sharing the connection's
+    /// admitted policy and native reference account. This runs only at cold
+    /// registration/restart boundaries, never during a guest callback.
+    fn client_renderer_files(&self, row: &Module) -> Result<qa_content::vfs::FileSearch, String> {
+        let files = renderer_client(
+            &self.runtime,
+            &self.local_clients,
+            &row.request,
+            row.client_connection,
+        )
+        .and_then(|client| self.runtime.client_resources[client.client.0 as usize].as_ref())
+        .filter(|resources| resources.startup.q3().is_some() && resources.startup.allow_models());
+        let selected = if let Some(files) = files {
+            self.runtime
+                .vfs
+                .admitted_search(row.request.search.as_ref(), files.state.file_search())
+        } else {
+            self.runtime
+                .vfs
+                .read_view(row.request.search.as_ref())
+                .retain()
+        }
+        .map_err(|error| format!("CLIENT module admission: {error}"))?;
+        self.runtime
+            .vfs
+            .bind_search(Some(&selected))
+            .map_err(|error| format!("CLIENT module files: {error}"))
+    }
+
     fn recreate_client_renderer(&mut self, module: ModuleId) -> Result<(), String> {
         let row = self.module_row(module).ok_or("missing CLIENT renderer")?;
+        let files = self.client_renderer_files(row)?;
+        let current = self
+            .modules
+            .as_ref()
+            .and_then(|modules| modules.storage.file_search(module));
+        if !matches!(
+            row.renderer_generation,
+            Some(RendererGeneration::Retired(_))
+        ) && current.is_some_and(|current| current.same_selection(files.view()))
+        {
+            return Ok(());
+        }
         let image = row
             .request
             .q3_image
             .as_ref()
             .ok_or("missing CLIENT renderer image")?
-            .reload(
-                self.runtime.vfs.read_view(
-                    self.modules
-                        .as_ref()
-                        .and_then(|modules| modules.storage.file_search(module)),
-                ),
-            )?;
+            .reload(self.runtime.vfs.read_view(Some(files.view())))?;
         let mut candidate = image.instantiate()?;
         if candidate.entries != row.request.entries
             || !candidate
@@ -2132,9 +2174,13 @@ impl FrameHost {
             .program
             .imports()
             .and_then(|table| table.input_exports());
-        let row = self
-            .module_row_mut(module)
-            .ok_or("missing CLIENT renderer")?;
+        let modules = self.modules.as_mut().ok_or("missing CLIENT modules")?;
+        modules
+            .storage
+            .set_file_search(module, Some(files.view().clone()), &self.runtime.vfs)
+            .map_err(|error| format!("CLIENT module filesystem binding: {error:?}"))?;
+        let row = modules.row_mut(module).ok_or("missing CLIENT renderer")?;
+        row.request.context.console.file_search = files.id();
         row.request.program = candidate.program;
         row.request.q3_image = Some(image);
         row.request.prepare = candidate.prepare;
@@ -2295,7 +2341,7 @@ impl FrameHost {
             matches!(
                 row.renderer_generation,
                 Some(RendererGeneration::Retired(_))
-            )
+            ) || row.renderer_generation.is_some() && row.request.q3_image.is_some()
         }) {
             if let Err(error) = self.recreate_client_renderer(module) {
                 let _ = self.runtime.server.events.console_formatted(format_args!(

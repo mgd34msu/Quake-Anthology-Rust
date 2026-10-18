@@ -1717,11 +1717,30 @@ impl crate::host::FrameHost {
                 match downloads.begin_packages(
                     info,
                     &self.runtime.vfs,
-                    resources.state.file_search(),
+                    resources.requested_files.view(),
                     &self.console.cvars,
                 ) {
                     Ok(false) => {
-                        resources.startup.q3_packages_ready();
+                        let Some(startup) = self
+                            .runtime
+                            .network
+                            .get(client, qa_core::loopback::Endpoint::Client)
+                            .and_then(|connection| connection.channel.q3_startup())
+                        else {
+                            self.reject_client_startup(
+                                client,
+                                format_args!("missing Q3 gamestate"),
+                            );
+                            continue;
+                        };
+                        if let Err(error) = resources.admit_q3_files(
+                            &self.runtime.vfs,
+                            startup.checksum_feed,
+                            self.cue_random.clone(),
+                        ) {
+                            self.reject_client_startup(client, format_args!("{error}"));
+                            continue;
+                        }
                         if let Some(assets) = self.runtime.sound_assets.as_deref_mut() {
                             resources.prepare_sounds(assets, &self.runtime.vfs);
                         }

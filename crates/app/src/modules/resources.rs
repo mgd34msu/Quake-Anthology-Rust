@@ -925,6 +925,12 @@ impl FrameHost {
             let Some(selected_profile) = row.scene_role.profile() else {
                 continue;
             };
+            let files = self.client_renderer_files(row)?;
+            let same_files = self.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .is_some_and(|resources| {
+                    files.view().same_selection(resources.state.file_search())
+                });
             let selected_profile = if selected_profile.source_rules == profile.source_rules
                 && selected_profile.rules == profile.rules
             {
@@ -932,13 +938,13 @@ impl FrameHost {
             } else {
                 selected_profile
             };
-            let selected = if selected_profile == profile {
+            let selected = if selected_profile == profile && same_files {
                 Some(presentation)
             } else {
                 self.runtime.model_assets.as_ref().and_then(|owner| {
                     owner
                         .view()
-                        .world_presentation(world, Some(selected_profile), None, None)
+                        .world_presentation(world, Some(selected_profile), None, Some(files.view()))
                         .filter(|entry| {
                             entry.compile_policy.collapse_vertex()
                                 == selected_profile.finish.compile(false).collapse_vertex()
@@ -977,7 +983,7 @@ impl FrameHost {
                     selected_profile,
                     policy,
                     false,
-                    None,
+                    Some(files.view()),
                     |view, loaded| scene.stage_world(view.assets, loaded),
                     |assets, append| preparer.prepare_assets(assets, Some(append.limits())),
                 )?;

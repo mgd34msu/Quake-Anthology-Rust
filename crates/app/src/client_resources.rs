@@ -11,6 +11,7 @@ use qa_core::{
 use qa_network::commands::packet::Protocol;
 
 mod animation;
+mod files;
 pub use animation::ModelSynchronization;
 pub(crate) mod downloads;
 pub(crate) mod startup;
@@ -33,6 +34,7 @@ pub(crate) fn model_world(
 
 pub struct ClientResources {
     pub state: ResourceState,
+    requested_files: qa_content::vfs::FileSearch,
     pub(crate) udp_lease: Option<qa_platform::UdpLease>,
     pub(crate) downloads: Option<downloads::ClientDownload>,
     commands: qa_network::outputs::ConfigCommandReader,
@@ -173,6 +175,7 @@ impl ClientResources {
             .is_none()
             .then_some(qa_audio::SoundSource::DEFAULT);
         Ok(Some(Self {
+            requested_files: files.clone(),
             udp_lease: None,
             downloads: None,
             commands: qa_network::outputs::ConfigCommandReader::load(),
@@ -390,7 +393,10 @@ impl ClientResources {
         // Both native readers validate the complete replacement before entering
         // this shared CLIENT reset and registration boundary.
         let q3 = self.startup.q3();
-        let world = self.state.models.world_binding();
+        let world = q3
+            .is_none()
+            .then(|| self.state.models.world_binding())
+            .flatten();
         self.reset_received(world);
         if let Some(phase) = q3 {
             self.startup = ClientStartup::Quake3(phase);
@@ -472,7 +478,9 @@ impl ClientResources {
         self.state.rejected += u64::from(invalid);
         self.state.models.configs_replaced();
         self.state.reset_world_request();
-        if let Some(catalog) = catalog {
+        if self.startup.allow_models()
+            && let Some(catalog) = catalog
+        {
             self.state.rejected += u64::from(self.state.models.refresh_all(
                 &self.state.configs,
                 catalog,
@@ -482,7 +490,9 @@ impl ClientResources {
         for ordinal in 1..self.state.layout.resources[1].count as usize {
             self.state.sound_dirty.insert(ordinal);
         }
-        self.state.rejected += u64::from(!self.state.refresh_sounds(bank));
+        if self.startup.allow_sounds() {
+            self.state.rejected += u64::from(!self.state.refresh_sounds(bank));
+        }
     }
 }
 

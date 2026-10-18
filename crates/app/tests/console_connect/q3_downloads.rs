@@ -1,7 +1,7 @@
 use super::*;
 use qa_network::downloads::{self, Chunk};
 #[path = "../../../formats/tests/support/stored_zip.rs"]
-mod zip;
+pub(super) mod zip;
 
 fn command(host: &mut FrameHost, source: &mut Source, text: &str, time: u64) {
     host.console.append(text, context()).unwrap();

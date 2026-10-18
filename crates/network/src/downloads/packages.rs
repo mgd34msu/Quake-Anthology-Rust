@@ -1,6 +1,8 @@
 //! Original Q3 FS_PureServerSetReferencedPaks checksum/name columns.
 use qa_formats::{FormatError, text::Tokens};
 
+pub const Q3_PACKAGE_PATHS: usize = 4096;
+
 pub struct ReferencedPackage<'a> {
     pub checksum: u32,
     pub name: Option<&'a [u8]>,
@@ -20,7 +22,7 @@ impl<'a> ReferencedPackages<'a> {
         Self {
             checksums: Tokens::words(value(b"sv_referencedPaks")),
             names: Tokens::words(value(b"sv_referencedPakNames")),
-            remaining: 4096,
+            remaining: Q3_PACKAGE_PATHS,
         }
     }
     pub fn next(&mut self) -> Result<Option<ReferencedPackage<'a>>, FormatError> {

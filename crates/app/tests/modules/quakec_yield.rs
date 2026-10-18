@@ -568,6 +568,7 @@ fn console_fallback_propagates_only_the_internal_owner_scope() {
                 client: None,
                 reset: Some(17),
                 video: host.video_serial,
+                files: None,
             }),
             2,
         ),
