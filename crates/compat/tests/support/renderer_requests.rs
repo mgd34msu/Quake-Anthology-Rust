@@ -141,6 +141,11 @@ pub(super) fn returned(step: ImportStep) -> u64 {
 fn deferred_renderer_handle_owns_name_and_resumes_before_bounds_and_scene_use() {
     for addresses in modes() {
         let mut fixture = Fixture::new();
+        let selected = fixture.vfs.search_view([]).unwrap();
+        fixture
+            .storage
+            .set_file_search(ModuleId(1), Some(selected.clone()), &fixture.vfs)
+            .unwrap();
         let submitted = Cell::new(None);
         let mut scene = Scene {
             submitted: &submitted,
@@ -174,6 +179,19 @@ fn deferred_renderer_handle_owns_name_and_resumes_before_bounds_and_scene_use() 
         assert!(matches!(continuation, ImportContinuation::HostValue));
         assert_eq!(request.name.as_bytes(), name);
         assert_eq!(request.source, RuleSetId::Quake3);
+        assert!(request.search.as_ref().unwrap().same_selection(&selected));
+        engine
+            .storage
+            .set_file_search(ModuleId(1), None, engine.vfs)
+            .unwrap();
+        assert!(request.search.as_ref().unwrap().same_selection(&selected));
+        assert!(
+            !engine
+                .storage
+                .file_search(ModuleId(1))
+                .unwrap()
+                .same_selection(&selected)
+        );
         assert!(matches!(request.kind, RendererRegistration::Model));
         assert_eq!(request.world, None);
         memory.write(base + 16, b"changed\0").unwrap();

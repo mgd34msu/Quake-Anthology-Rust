@@ -1,5 +1,6 @@
 //! Renderer lifetime contexts shared by CLIENT UI and cgame, independent of the frontend.
 use crate::model_assets::{ModelProfile, RendererAdmission, ShaderResource};
+use qa_content::vfs::SearchView;
 use qa_core::primitives::{ClientId, EntityId, IndexSpan, NameId, Vec3};
 use qa_render::shader::{
     context::{ShaderContext, ShaderContextAppend, ShaderNodeId},
@@ -31,6 +32,7 @@ impl ResourceAdmission {
 }
 struct Context {
     owner: Owner,
+    search: SearchView,
     profile: ModelProfile,
     generation: u64,
     users: usize,
@@ -40,13 +42,20 @@ struct Context {
     resources: Vec<ResourceAdmission>,
     resource_undo: Vec<(usize, IndexSpan)>,
 }
+impl Context {
+    fn matches(&self, owner: Owner, profile: ModelProfile, search: &SearchView) -> bool {
+        self.owner == owner && self.profile == profile && self.search.same_selection(search)
+    }
+}
 pub(crate) struct Contexts {
+    default: SearchView,
     slots: Vec<Option<Context>>,
     generation: u64,
 }
 impl Contexts {
-    pub fn load(capacity: usize) -> Self {
+    pub fn load(default: SearchView, capacity: usize) -> Self {
         Self {
+            default,
             slots: (0..capacity).map(|_| None).collect(),
             generation: 0,
         }
@@ -87,13 +96,15 @@ impl Contexts {
         previous: Option<Handle>,
         owner: Owner,
         profile: ModelProfile,
+        search: Option<&SearchView>,
         assets: &qa_render::Assets,
         budget: (usize, usize),
         reset: Option<u64>,
     ) -> Result<Handle, String> {
+        let search = search.unwrap_or(&self.default).clone();
         if let Some(handle) = previous
             && self.get(handle).is_some_and(|context| {
-                context.owner == owner && context.profile == profile && context.reset == Some(reset)
+                context.matches(owner, profile, &search) && context.reset == Some(reset)
             })
         {
             return Ok(handle);
@@ -105,7 +116,7 @@ impl Contexts {
                 .find_map(|(slot, context)| {
                     context
                         .as_mut()
-                        .filter(|context| context.owner == owner && context.profile == profile)
+                        .filter(|context| context.matches(owner, profile, &search))
                         .map(|context| (slot, context))
                 })
         {
@@ -131,20 +142,23 @@ impl Contexts {
                 generation,
             });
         }
-        let slot = self
-            .slots
-            .iter()
-            .position(Option::is_none)
-            .or_else(|| {
-                previous
-                    .filter(|handle| {
-                        self.get(*handle).is_some_and(|context| {
-                            context.users == 1 && matches!(context.owner, Owner::Private(..))
-                        })
+        let available = self.slots.iter().position(Option::is_none).or_else(|| {
+            previous
+                .filter(|handle| {
+                    self.get(*handle).is_some_and(|context| {
+                        context.users == 1 && matches!(context.owner, Owner::Private(..))
                     })
-                    .map(|handle| handle.slot as usize)
-            })
-            .ok_or("renderer context slots")?;
+                })
+                .map(|handle| handle.slot as usize)
+        });
+        let slot = match available {
+            Some(slot) => slot,
+            None => {
+                let slot = self.slots.len();
+                self.reserve(slot.checked_add(1).ok_or("renderer context slots")?)?;
+                slot
+            }
+        };
         let shaders = ShaderContext::load(assets.name_capacity(), assets.shader_binding_capacity())
             .map_err(str::to_owned)?;
         let mut uses = Vec::new();
@@ -165,6 +179,7 @@ impl Contexts {
         self.release(previous);
         self.slots[slot] = Some(Context {
             owner,
+            search,
             profile,
             generation: self.generation,
             users: 1,
@@ -183,18 +198,21 @@ impl Contexts {
         &mut self,
         owner: Owner,
         profile: ModelProfile,
+        search: Option<&SearchView>,
         assets: &qa_render::Assets,
         budget: (usize, usize),
         reset: Option<u64>,
     ) -> Result<Handle, String> {
-        if let Some(handle) = self.find(owner, profile)
+        let search = search.unwrap_or(&self.default).clone();
+        let existing = self.find(owner, profile, Some(&search));
+        if let Some(handle) = existing
             && self
                 .get(handle)
                 .is_some_and(|context| context.reset == Some(reset))
         {
             return Ok(handle);
         }
-        if self.find(owner, profile).is_none() {
+        if existing.is_none() {
             self.reserve(
                 self.slots
                     .len()
@@ -202,7 +220,7 @@ impl Contexts {
                     .ok_or("renderer context slots")?,
             )?;
         }
-        let handle = self.bind(None, owner, profile, assets, budget, reset)?;
+        let handle = self.bind(None, owner, profile, Some(&search), assets, budget, reset)?;
         self.release(Some(handle));
         Ok(handle)
     }
@@ -217,6 +235,9 @@ impl Contexts {
             .and_then(Option::as_mut)
             .filter(|context| context.generation == handle.generation)
             .ok_or("stale renderer context")?;
+        if !context.search.same_selection(&self.default) {
+            return Ok(());
+        }
         stage_entries(
             context,
             (0, 0),
@@ -230,11 +251,17 @@ impl Contexts {
         .commit();
         Ok(())
     }
-    fn find(&self, owner: Owner, profile: ModelProfile) -> Option<Handle> {
+    fn find(
+        &self,
+        owner: Owner,
+        profile: ModelProfile,
+        search: Option<&SearchView>,
+    ) -> Option<Handle> {
+        let search = search.unwrap_or(&self.default);
         let (slot, context) = self.slots.iter().enumerate().find_map(|(slot, entry)| {
             entry
                 .as_ref()
-                .filter(|context| context.owner == owner && context.profile == profile)
+                .filter(|context| context.matches(owner, profile, search))
                 .map(|context| (slot, context))
         })?;
         Some(Handle {
@@ -247,6 +274,13 @@ impl Contexts {
             .get(handle.slot as usize)?
             .as_ref()
             .filter(|context| context.generation == handle.generation)
+    }
+    pub(super) fn search(&self, handle: Handle) -> Option<&SearchView> {
+        Some(&self.get(handle)?.search)
+    }
+    pub(super) fn matches_search(&self, handle: Handle, search: Option<&SearchView>) -> bool {
+        self.search(handle)
+            .is_some_and(|current| current.same_selection(search.unwrap_or(&self.default)))
     }
     pub fn release(&mut self, handle: Option<Handle>) {
         let Some(handle) = handle else { return };
@@ -391,9 +425,11 @@ impl Contexts {
         &'a mut self,
         registrations: impl Iterator<Item = (ModelProfile, &'r qa_render::ShaderRegistration)> + Clone,
     ) -> Result<Vec<Append<'a>>, String> {
+        let default = &self.default;
         self.slots
             .iter_mut()
             .flatten()
+            .filter(|context| context.search.same_selection(default))
             .filter_map(|context| {
                 let profile = context.profile;
                 let selected = registrations
@@ -606,7 +642,7 @@ impl NativeShaders for Contexts {
         ResolvedShader::select(assets, source, binding, offset, target == reference.node)
     }
     fn context(&self, owner: Owner, profile: ModelProfile) -> Option<ShaderContextId> {
-        self.find(owner, profile)
+        self.find(owner, profile, None)
     }
     fn resource_nodes(
         &self,
@@ -616,3 +652,7 @@ impl NativeShaders for Contexts {
         Contexts::resource_nodes(self, context, resource)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/modules/renderer_sources.rs"]
+mod tests;

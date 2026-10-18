@@ -103,6 +103,11 @@ fn audible(host: &FrameHost, audio: &mut Audio) {
 }
 
 pub(super) fn run(native: bool) {
+    let mut files = model_support::Fixture::new(&[
+        ("sound/feedback/hit.wav", samples::wav()),
+        ("sound/late.wav", samples::wav()),
+        ("sound/nested.wav", samples::wav()),
+    ]);
     let mut host = fixture_config(
         native,
         |seat, ui, bodies| {
@@ -124,13 +129,8 @@ pub(super) fn run(native: bool) {
             vec![]
         },
         |_| {},
+        Some(std::mem::take(&mut files.vfs)),
     );
-    let mut files = model_support::Fixture::new(&[
-        ("sound/feedback/hit.wav", samples::wav()),
-        ("sound/late.wav", samples::wav()),
-        ("sound/nested.wav", samples::wav()),
-    ]);
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
     qa_app::audio::begin_registration(
         &mut host,
         &[String::from_utf8(Bank::DEFAULT_SOUND.to_vec()).unwrap()],

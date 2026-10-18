@@ -118,31 +118,30 @@ pub enum RegistrationVariant {
 struct RegistrationTarget<'a> {
     request: RendererRequest<&'a [u8]>,
     file: Option<ModelFileId>,
-    search: Option<&'a SearchView>,
 }
 impl<'a> RegistrationTarget<'a> {
     fn named(request: &'a RendererRequest<impl AsRef<[u8]>>) -> Self {
         Self {
             request: RendererRequest {
+                search: request.search.clone(),
                 name: request.name.as_ref(),
                 source: request.source,
                 kind: request.kind,
                 world: request.world,
             },
             file: None,
-            search: None,
         }
     }
     fn retained(file: ModelFileId, source: RuleSetId) -> Self {
         Self {
             request: RendererRequest {
+                search: None,
                 name: &[],
                 source,
                 kind: RendererRegistration::Model,
                 world: None,
             },
             file: Some(file),
-            search: None,
         }
     }
 }
@@ -2011,7 +2010,7 @@ impl RegistrationCheckpoint {
     ) -> Result<Self, String> {
         let mut checkpoint = Self::base(owner)?;
         for request in requests {
-            checkpoint.capture_target(owner, request, None)?;
+            checkpoint.capture_target(owner, request)?;
         }
         Ok(checkpoint)
     }
@@ -2020,8 +2019,8 @@ impl RegistrationCheckpoint {
         &mut self,
         owner: &ModelAssets,
         request: &RendererRequest<impl AsRef<[u8]>>,
-        search: Option<&SearchView>,
     ) -> Result<(), String> {
+        let search = request.search.as_ref();
         let catalog = &owner.catalog;
         let mut file_name = None;
         let mut shader_index = None;
@@ -2042,7 +2041,7 @@ impl RegistrationCheckpoint {
                 let path = canonical_path(
                     std::str::from_utf8(raw).map_err(|_| "model name is not UTF-8")?,
                 );
-                file_name = catalog.file_id(path.as_bytes(), None);
+                file_name = catalog.file_id(path.as_bytes(), search);
             }
             RendererRegistration::Skin => {
                 skin_index = find_skin_index(
@@ -2148,6 +2147,7 @@ impl RegistrationCheckpoint {
             self.capture_target(
                 owner,
                 &RendererRequest {
+                    search: Some(shader.search.clone()),
                     name: catalog.names.get(shader.name).ok_or("shader name")?,
                     source: RuleSetId::Quake3,
                     kind: RendererRegistration::Shader {
@@ -2156,19 +2156,18 @@ impl RegistrationCheckpoint {
                     },
                     world: None,
                 },
-                Some(&shader.search),
             )?;
         }
         for (search, name, _) in catalog.skin_indices.all_entries() {
             self.capture_target(
                 owner,
                 &RendererRequest {
+                    search: Some(search.clone()),
                     name: catalog.names.get(name).ok_or("skin name")?,
                     source: RuleSetId::Quake3,
                     kind: RendererRegistration::Skin,
                     world: None,
                 },
-                Some(search),
             )?;
         }
         self.inline_before = catalog
@@ -3156,13 +3155,13 @@ impl ModelAssets {
                 continue;
             }
             let request = RendererRequest {
+                search: Some(search),
                 name,
                 source: profile.source_rules,
                 kind: RendererRegistration::Skin,
                 world: None,
             };
-            let mut target = RegistrationTarget::named(&request);
-            target.search = Some(&search);
+            let target = RegistrationTarget::named(&request);
             self.prepare_targets(
                 vfs,
                 [target],
@@ -3201,6 +3200,7 @@ impl ModelAssets {
                 };
                 shaders.push((
                     RendererRequest {
+                        search: Some(shader.search.clone()),
                         name: request.name,
                         source: profile.source_rules,
                         kind: RendererRegistration::Shader {
@@ -3210,13 +3210,11 @@ impl ModelAssets {
                         world,
                     },
                     profile,
-                    shader.search.clone(),
                 ));
             }
         }
-        for (request, profile, search) in shaders {
-            let mut target = RegistrationTarget::named(&request);
-            target.search = Some(&search);
+        for (request, profile) in shaders {
+            let target = RegistrationTarget::named(&request);
             self.prepare_targets(
                 vfs,
                 [target],
@@ -3380,7 +3378,6 @@ impl ModelAssets {
         handles: [i32; N],
         profile: ModelProfile,
         variant: RegistrationVariant,
-        searches: [Option<&SearchView>; N],
     ) -> Result<[RendererAdmission<'_>; N], String> {
         let mut candidates = [RendererAdmission {
             resource: None,
@@ -3388,10 +3385,8 @@ impl ModelAssets {
             owner: self,
             profile,
         }; N];
-        for (index, ((candidate, request), handle)) in
-            candidates.iter_mut().zip(requests).zip(handles).enumerate()
-        {
-            let search = searches[index];
+        for ((candidate, request), handle) in candidates.iter_mut().zip(requests).zip(handles) {
+            let search = request.search.as_ref();
             if handle <= 0 && matches!(request.kind, RendererRegistration::Model) {
                 continue;
             }
@@ -3504,12 +3499,13 @@ impl ModelAssets {
         name: &[u8],
         profile: ModelProfile,
         variant: RegistrationVariant,
+        search: Option<&SearchView>,
     ) -> Option<RendererAdmission<'_>> {
         let (_, Some(index)) = find_skin_index(
             &self.catalog.names,
             &self.catalog.skin_indices,
             name,
-            &self.catalog.registration_vfs,
+            search.unwrap_or(&self.catalog.registration_vfs),
         )?
         else {
             return None;
@@ -3527,13 +3523,14 @@ impl ModelAssets {
             return None;
         }
         let request = RendererRequest {
+            search: search.cloned(),
             name,
             source: profile.source_rules,
             kind: RendererRegistration::Skin,
             world: None,
         };
         let [candidate] = self
-            .registration_candidates([&request], [0], profile, variant, [None])
+            .registration_candidates([&request], [0], profile, variant)
             .ok()?;
         Some(candidate)
     }
@@ -3677,7 +3674,7 @@ impl ModelAssets {
             return Err("renderer registration source/profile mismatch".to_owned());
         }
         for (request, target) in requests.into_iter().zip(&targets) {
-            vfs.read_view(target.search)
+            vfs.read_view(target.request.search.as_ref())
                 .retain()
                 .map_err(|error| format!("renderer source selection: {error:?}"))?;
             if let Some(file) = target.file {
@@ -3715,7 +3712,7 @@ impl ModelAssets {
                 profile,
                 target.request.world,
                 variant,
-                target.search,
+                target.request.search.as_ref(),
             ),
         });
         let mut handles = [0; N];
@@ -3725,13 +3722,7 @@ impl ModelAssets {
             }
         }
         if cached.iter().all(Option::is_some) {
-            let candidates = self.registration_candidates(
-                requests,
-                handles,
-                profile,
-                variant,
-                targets.each_ref().map(|target| target.search),
-            )?;
+            let candidates = self.registration_candidates(requests, handles, profile, variant)?;
             let staged = stage(candidates)?;
             return Ok((handles, staged, self.assets.counts()));
         }
@@ -3748,7 +3739,7 @@ impl ModelAssets {
                                 request.name.as_ref(),
                                 profile,
                                 lighting,
-                                targets[index].search,
+                                targets[index].request.search.as_ref(),
                             )
                             .is_none(),
                         _ => true,
@@ -3762,7 +3753,7 @@ impl ModelAssets {
         for target in &targets {
             match target.file {
                 Some(file) => checkpoint.capture_file(&self.catalog, file),
-                None => checkpoint.capture_target(self, &target.request, target.search)?,
+                None => checkpoint.capture_target(self, &target.request)?,
             }
         }
         let mut rollback = RegistrationRollback::Source;
@@ -3794,11 +3785,12 @@ impl ModelAssets {
                                 &canonical_path(path),
                                 selected,
                                 ui_fullscreen,
+                                request.search.as_ref(),
                             )
                             .map_err(|error| error.kind)
                             .and_then(|_| {
                                 self.catalog
-                                    .file_id(raw, None)
+                                    .file_id(raw, request.search.as_ref())
                                     .and_then(|file| i32::try_from(file.0).ok())
                                     .ok_or(CallError::File)
                             })
@@ -3810,7 +3802,7 @@ impl ModelAssets {
                         request.source,
                         selected,
                         ui_fullscreen,
-                        targets[index].search,
+                        targets[index].request.search.as_ref(),
                     ),
                     RendererRegistration::Shader { mipmaps, lighting } => self
                         .admit_shader_profile(
@@ -3821,7 +3813,7 @@ impl ModelAssets {
                             lighting,
                             selected,
                             ui_fullscreen,
-                            targets[index].search,
+                            targets[index].request.search.as_ref(),
                         ),
                 }
                 .map_err(|error| format!("renderer registration: {error:?}"))?;
@@ -3833,7 +3825,7 @@ impl ModelAssets {
                             profile,
                             lighting,
                             variant,
-                            targets[index].search,
+                            targets[index].request.search.as_ref(),
                         )
                         .map(|(registration, _)| {
                             if registration.defaulted.is_some() {
@@ -3856,13 +3848,7 @@ impl ModelAssets {
                 self.validate_admission(counts)
                     .map_err(|error| format!("renderer publication: {error:?}"))?;
             }
-            let candidates = self.registration_candidates(
-                requests,
-                handles,
-                profile,
-                variant,
-                targets.each_ref().map(|target| target.search),
-            )?;
+            let candidates = self.registration_candidates(requests, handles, profile, variant)?;
             let staged = stage(candidates)?;
             if !initial {
                 prepare(&self.assets, &staged)?;
@@ -3910,9 +3896,7 @@ impl ModelAssets {
         }
         let mut checkpoint = ProfileCheckpoint::capture(self)?;
         if let Some(request) = crate::renderer::console::FontAssets::registration_request(rules) {
-            checkpoint
-                .registration
-                .capture_target(self, &request, None)?;
+            checkpoint.registration.capture_target(self, &request)?;
         }
         let result = (|| {
             let font = match reuse_font.filter(|font| {
@@ -4099,6 +4083,7 @@ impl ModelAssets {
         let checkpoint = RegistrationCheckpoint::capture(
             self,
             [&RendererRequest {
+                search: None,
                 name: input.virtual_path.as_bytes(),
                 source: profile.source_rules,
                 kind: RendererRegistration::Model,
@@ -4881,15 +4866,20 @@ impl ModelAssets {
         path: &str,
         selected: Option<ModelProfile>,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
     ) -> Result<Bounds, FileError> {
         self.check_registration_vfs(vfs).map_err(|kind| FileError {
             kind,
             message: "model VFS owner mismatch".to_owned(),
         })?;
-        let name = match self.catalog.file_id(path.as_bytes(), None) {
+        let search = vfs.read_view(search).retain().map_err(|_| FileError {
+            kind: CallError::File,
+            message: "model source owner mismatch".to_owned(),
+        })?;
+        let name = match self.catalog.file_id(path.as_bytes(), Some(&search)) {
             Some(name) => name,
             None => self
-                .admit_file(path.as_bytes(), None)
+                .admit_file(path.as_bytes(), Some(&search))
                 .map_err(|_| FileError::capacity("model name capacity"))?,
         };
         self.ensure_file_record(vfs, name, selected, ui_fullscreen)
@@ -5621,16 +5611,18 @@ impl ModelAssets {
         &self,
         kind: RendererRegistration,
         name: &[u8],
+        search: Option<&SearchView>,
     ) -> Option<ShaderResource> {
         match kind {
-            RendererRegistration::Model if !name.starts_with(b"*") => {
-                self.catalog.file_id(name, None).map(ShaderResource::Model)
-            }
+            RendererRegistration::Model if !name.starts_with(b"*") => self
+                .catalog
+                .file_id(name, search)
+                .map(ShaderResource::Model),
             RendererRegistration::Skin => find_skin_index(
                 &self.catalog.names,
                 &self.catalog.skin_indices,
                 name,
-                &self.catalog.registration_vfs,
+                search.unwrap_or(&self.catalog.registration_vfs),
             )
             .and_then(|(_, index)| index)
             .map(|index| ShaderResource::Skin(index + 1)),
@@ -6003,7 +5995,7 @@ impl ModelAssets {
         if path.is_empty() || path.starts_with('*') {
             return Err(CallError::File);
         }
-        self.ensure_file_profile(vfs, &canonical_path(path), None, ui_fullscreen)
+        self.ensure_file_profile(vfs, &canonical_path(path), None, ui_fullscreen, None)
             .map_err(|error| error.kind)?;
         self.catalog
             .model_source_cached(name, source, variant)
@@ -6167,6 +6159,7 @@ impl ModelAssets {
             return Ok(selected);
         }
         let target = RendererRequest {
+            search: Some(view.clone()),
             name: path.as_bytes(),
             source: profile.source_rules,
             kind: RendererRegistration::Skin,
@@ -6175,7 +6168,7 @@ impl ModelAssets {
         let mut checkpoint =
             RegistrationCheckpoint::base(self).map_err(IndexedSkinError::Rejected)?;
         checkpoint
-            .capture_target(self, &target, Some(&view))
+            .capture_target(self, &target)
             .map_err(IndexedSkinError::Rejected)?;
         if matches!(request, SkinRequest::ModelColors(_)) {
             checkpoint
@@ -7236,7 +7229,7 @@ impl ModelLoader for ModelAssets {
         {
             return Ok(bounds);
         }
-        self.ensure_file_profile(vfs, &canonical_path(path), None, false)
+        self.ensure_file_profile(vfs, &canonical_path(path), None, false, None)
             .map_err(|error| error.kind)
     }
     fn register_model(

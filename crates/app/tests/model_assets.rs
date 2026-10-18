@@ -49,6 +49,7 @@ fn renderer_request(
     let mut text = qa_core::text::FixedText::default();
     text.set(name).unwrap();
     qa_compat::services::RendererRequest {
+        search: None,
         name: text,
         kind,
         source,
@@ -3164,6 +3165,7 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
         .unwrap();
     owner.end_initial_registration();
     let request = RendererRequest {
+        search: None,
         name: path.as_bytes(),
         source: profile.source_rules,
         kind: RendererRegistration::Model,

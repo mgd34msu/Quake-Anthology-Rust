@@ -1550,6 +1550,17 @@ fn register_renderer(
     request: &RendererRequest<impl AsRef<[u8]>>,
     driver: &mut Driver<'_>,
 ) -> Result<RegisteredRenderer, String> {
+    host.runtime
+        .vfs
+        .read_view(request.search.as_ref())
+        .retain()
+        .map_err(|error| format!("renderer source selection: {error:?}"))?;
+    if !host
+        .renderer_contexts
+        .matches_search(scope.context, request.search.as_ref())
+    {
+        return Err("renderer request source changed".into());
+    }
     let owner = host
         .runtime
         .model_assets
@@ -1579,7 +1590,7 @@ fn register_renderer(
         });
     }
     let variant = if owner
-        .native_resource(request.kind, request.name.as_ref())
+        .native_resource(request.kind, request.name.as_ref(), request.search.as_ref())
         .is_some_and(|resource| {
             host.renderer_contexts
                 .resource_nodes(scope.context, resource)
@@ -1593,7 +1604,7 @@ fn register_renderer(
                                 scope.profile,
                                 request.world,
                                 crate::model_assets::RegistrationVariant::Retained,
-                                None,
+                                request.search.as_ref(),
                             )
                             .is_some()
                 })
@@ -1658,7 +1669,12 @@ fn register_renderer(
     if result.is_err()
         && matches!(request.kind, RendererRegistration::Skin)
         && let Some(admission) = host.runtime.model_assets.as_ref().and_then(|owner| {
-            owner.failed_skin_admission(request.name.as_ref(), scope.profile, variant)
+            owner.failed_skin_admission(
+                request.name.as_ref(),
+                scope.profile,
+                variant,
+                request.search.as_ref(),
+            )
         })
     {
         stage_renderer(
@@ -1734,6 +1750,7 @@ fn remap_lookup(
             .set_bytes(name)
             .map_err(|_| "renderer registration name length")?;
         let request = RendererRequest {
+            search: host.renderer_contexts.search(scope.context).cloned(),
             name: copied,
             source: scope.profile.source_rules,
             kind: RendererRegistration::Shader {

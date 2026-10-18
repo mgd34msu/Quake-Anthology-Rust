@@ -631,6 +631,7 @@ impl FrameHost {
             self.renderer_contexts.ensure_owner(
                 qa_render::shader::registration::ShaderOwner::Engine,
                 profile,
+                None,
                 owner.assets(),
                 owner.shader_occurrence_budget(),
                 None,
@@ -652,6 +653,7 @@ impl FrameHost {
             let handle = self.renderer_contexts.ensure_owner(
                 qa_render::shader::registration::ShaderOwner::Engine,
                 profile,
+                None,
                 owner.assets(),
                 owner.shader_occurrence_budget(),
                 None,
@@ -690,6 +692,7 @@ impl FrameHost {
                 let handle = self.renderer_contexts.ensure_owner(
                     authority,
                     profile,
+                    None,
                     owner.assets(),
                     owner.shader_occurrence_budget(),
                     reset.flatten().flatten(),
@@ -1003,6 +1006,7 @@ impl FrameHost {
                         self.renderer_contexts.ensure_owner(
                             qa_render::shader::registration::ShaderOwner::Engine,
                             profile,
+                            None,
                             owner.assets(),
                             owner.shader_occurrence_budget(),
                             None,
@@ -1510,7 +1514,10 @@ impl FrameHost {
             .collect::<Result<Box<[_]>, _>>()?;
         Ok(Self {
             modules: None,
-            renderer_contexts: crate::modules::renderer_contexts::Contexts::load(0),
+            renderer_contexts: crate::modules::renderer_contexts::Contexts::load(
+                runtime.vfs.default_view(),
+                0,
+            ),
             execution: crate::modules::ExecutionSlot::reserve(1)?,
             muzzle_sounds: crate::audio::MuzzleSounds::default(),
             console,

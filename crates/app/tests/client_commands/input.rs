@@ -533,22 +533,28 @@ fn fixture_with(
             Vec::new()
         },
         |_| {},
+        None,
     )
 }
 fn fixture_config(
     native: bool,
     customize: impl FnMut(usize, bool, &mut Vec<Vec<Op>>) -> Vec<Export>,
     before_initialize: impl FnOnce(&mut FrameHost),
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> FrameHost {
-    fixture_roles(native, native, customize, before_initialize)
+    fixture_roles(native, native, customize, before_initialize, vfs)
 }
 fn fixture_roles(
     native: bool,
     cgame_native: bool,
     mut customize: impl FnMut(usize, bool, &mut Vec<Vec<Op>>) -> Vec<Export>,
     before_initialize: impl FnOnce(&mut FrameHost),
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> FrameHost {
     let (mut runtime, ids) = runtime(2);
+    if let Some(vfs) = vfs {
+        runtime.vfs = vfs;
+    }
     let mut requests = vec![];
     for (seat, &client) in ids.iter().enumerate() {
         for ui in [true, false] {

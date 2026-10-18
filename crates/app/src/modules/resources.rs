@@ -449,6 +449,7 @@ impl FrameHost {
                     contexts.ensure_owner(
                         qa_render::shader::registration::ShaderOwner::Engine,
                         profile,
+                        None,
                         view.assets,
                         (0, 0),
                         None,
@@ -457,6 +458,7 @@ impl FrameHost {
                         contexts.ensure_owner(
                             qa_render::shader::registration::ShaderOwner::Client(client, lifetime),
                             profile,
+                            None,
                             view.assets,
                             (0, 0),
                             reset,

@@ -12,6 +12,7 @@ fn profile(source: RuleSetId) -> ModelProfile {
 
 fn request(name: &[u8], source: RuleSetId, kind: RendererRegistration) -> RendererRequest<&[u8]> {
     RendererRequest {
+        search: None,
         name,
         source,
         kind,
@@ -1262,6 +1263,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     let profile_rows = owner.catalog.shaders[shader_index].profiles.len();
     let all_rows = owner.catalog.shader_bindings.len();
     let requests = [presentations[0], presentations[1]].map(|presentation| RendererRequest {
+        search: None,
         name: b"textures/lit".as_slice(),
         source: profile.source_rules,
         kind: RendererRegistration::Shader {
@@ -1386,6 +1388,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
 
     let vertex = RendererRequest {
+        search: None,
         name: b"textures/implicit.tga".as_slice(),
         source: profile.source_rules,
         kind: RendererRegistration::Shader {
@@ -1443,6 +1446,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     );
 
     let missing = RendererRequest {
+        search: None,
         name: b"textures/absent".as_slice(),
         ..vertex
     };
@@ -1506,6 +1510,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);
     let ordinary_missing = RendererRequest {
+        search: None,
         kind: RendererRegistration::Shader {
             mipmaps: false,
             lighting: ShaderLighting::TwoDimensional,

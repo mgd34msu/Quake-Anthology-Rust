@@ -427,6 +427,7 @@ impl ClientAssets<'_> {
             return None;
         };
         let request = RendererRequest {
+            search: None,
             name: path,
             source: profile.source_rules,
             kind,

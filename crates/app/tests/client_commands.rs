@@ -365,14 +365,23 @@ fn request(
     }
 }
 fn host(program: impl Fn() -> Program, clients: usize) -> (FrameHost, Vec<ClientId>) {
-    host_capacity(program, clients, qa_core::command_history::DEFAULT_CAPACITY)
+    host_capacity(
+        program,
+        clients,
+        qa_core::command_history::DEFAULT_CAPACITY,
+        None,
+    )
 }
 fn host_capacity(
     program: impl Fn() -> Program,
     clients: usize,
     capacity: usize,
+    vfs: Option<qa_content::vfs::Vfs>,
 ) -> (FrameHost, Vec<ClientId>) {
     let (mut runtime, ids) = runtime(clients);
+    if let Some(vfs) = vfs {
+        runtime.vfs = vfs;
+    }
     let requests = ids
         .iter()
         .enumerate()
@@ -444,7 +453,7 @@ fn word(text: &[u8]) -> u32 {
 }
 fn retained_usercmds_reach_the_selected_module(program: impl Fn() -> Program) {
     let capacity = 8193;
-    let (mut host, ids) = host_capacity(program, 2, capacity);
+    let (mut host, ids) = host_capacity(program, 2, capacity, None);
     assert_eq!(host.runtime.network.history_capacity(), capacity);
     assert_eq!(probe(&mut host, 0, 7, 0), 0);
     // Native startup exposes zeroed commands without manufacturing recorded rows.

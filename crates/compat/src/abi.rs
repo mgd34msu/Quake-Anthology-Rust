@@ -157,6 +157,7 @@ fn register_renderer(
         };
     Ok(CallValue::Host(
         HostRequest::RegisterRenderer(crate::services::RendererRequest {
+            search: c.services.storage.file_search(c.context.module).cloned(),
             name: copied,
             source: c.context.native_rules,
             kind,

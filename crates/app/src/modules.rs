@@ -1478,6 +1478,14 @@ impl FrameHost {
             .module_row(module)
             .ok_or("missing renderer module")?
             .renderer_context
+            .filter(|&handle| {
+                self.renderer_contexts.matches_search(
+                    handle,
+                    self.modules
+                        .as_ref()
+                        .and_then(|modules| modules.storage.file_search(module)),
+                )
+            })
         {
             return Ok(handle);
         }
@@ -1506,6 +1514,16 @@ impl FrameHost {
             renderer_contexts::Owner::Private(module, row.request.anchor),
             |client| renderer_contexts::Owner::Client(client.client, client.lifetime),
         );
+        let search = self
+            .runtime
+            .vfs
+            .read_view(
+                self.modules
+                    .as_ref()
+                    .and_then(|modules| modules.storage.file_search(module)),
+            )
+            .retain()
+            .map_err(|error| format!("renderer source selection: {error:?}"))?;
         let previous = row.renderer_context;
         let world = row
             .scene_role
@@ -1538,6 +1556,7 @@ impl FrameHost {
             previous,
             owner,
             profile,
+            Some(&search),
             assets.assets(),
             assets.shader_occurrence_budget(),
             reset,

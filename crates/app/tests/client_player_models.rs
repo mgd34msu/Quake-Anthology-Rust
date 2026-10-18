@@ -834,6 +834,7 @@ fn registered_static_player_capture_waits_for_its_profile_across_peer_publicatio
     let counts = {
         let runtime = &mut host.runtime;
         let request = RendererRequest {
+            search: None,
             name: b"models/ordinary.md2".as_slice(),
             source: profile.source_rules,
             kind: RendererRegistration::Model,

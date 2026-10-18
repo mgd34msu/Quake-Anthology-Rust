@@ -91,6 +91,7 @@ fn nested_clear(native: bool, cgame_native: bool, cross_module: bool) {
             vec![]
         },
         |_| {},
+        None,
     );
     seed_text(&mut host);
     let mut source = Source::default();
@@ -380,6 +381,7 @@ fn clear_during_initialization(native: bool) {
                 &mut HeldOnly,
             );
         },
+        None,
     );
     assert_eq!(
         host.module_state(module(0, true)),

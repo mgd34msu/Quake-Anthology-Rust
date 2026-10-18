@@ -616,6 +616,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             .unwrap()
             .to_owned();
         let request = RendererRequest {
+            search: None,
             name: name.as_bytes(),
             source: second.source_rules,
             kind: RendererRegistration::Model,
@@ -646,6 +647,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         );
     }
     let request = RendererRequest {
+        search: None,
         name: b"sprites/test.sp2".as_slice(),
         source: second.source_rules,
         kind: RendererRegistration::Model,
@@ -686,6 +688,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         .enumerate()
     {
         let request = RendererRequest {
+            search: None,
             name: path.as_bytes(),
             source: second.source_rules,
             kind: RendererRegistration::Shader {
@@ -728,6 +731,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
         );
     }
     let request = RendererRequest {
+        search: None,
         name: b"models/test/skin0.pcx".as_slice(),
         source: second.source_rules,
         kind: RendererRegistration::Skin,
@@ -829,6 +833,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         )
         .unwrap();
     let request = RendererRequest {
+        search: None,
         name: b"ui.part/second.tga".as_slice(),
         source: second.source_rules,
         kind: RendererRegistration::Shader {
@@ -883,6 +888,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
         )
         .unwrap();
     let request = RendererRequest {
+        search: None,
         name: b"ui.part/second.tga".as_slice(),
         source: third.source_rules,
         kind: RendererRegistration::Shader {
@@ -1005,6 +1011,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
         .unwrap();
     assert_eq!(owner.catalog().capacity().registrations, 1);
     let request = RendererRequest {
+        search: None,
         name: b"progs/test.mdl".as_slice(),
         source: profile.source_rules,
         kind: RendererRegistration::Model,

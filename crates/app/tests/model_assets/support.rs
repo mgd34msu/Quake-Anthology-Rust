@@ -101,8 +101,9 @@ pub struct Fixture {
 impl Fixture {
     pub fn new(entries: &[(&str, Vec<u8>)]) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "qa-rust-model-assets-{}-{}",
+            "qa-rust-model-assets-{}-{}-{}",
             std::process::id(),
+            module_path!().replace("::", "-"),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         qa_platform::files::create_dir_all(&root).unwrap();

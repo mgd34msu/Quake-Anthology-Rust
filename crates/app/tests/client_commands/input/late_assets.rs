@@ -170,6 +170,7 @@ fn seed(host: &mut FrameHost, ui: bool) {
 
 pub(super) fn run(native: bool) {
     use Value::*;
+    let mut files = model_support::Fixture::surfaces();
     let mut host = fixture_config(
         native,
         |seat, ui, bodies| {
@@ -215,9 +216,8 @@ pub(super) fn run(native: bool) {
             vec![]
         },
         |_| {},
+        Some(std::mem::take(&mut files.vfs)),
     );
-    let mut files = model_support::Fixture::surfaces();
-    host.runtime.vfs = std::mem::take(&mut files.vfs);
     let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
     let mut owner = ModelAssets::new(
         &host.runtime.vfs,

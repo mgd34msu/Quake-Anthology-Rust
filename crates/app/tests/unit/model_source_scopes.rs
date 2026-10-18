@@ -247,6 +247,7 @@ fn warm_renderer_resources_reject_a_different_vfs_before_cached_admission() {
         Err(CallError::File)
     );
     let request = RendererRequest {
+        search: None,
         name: b"models/test.md3".as_slice(),
         source: profile.source_rules,
         kind: RendererRegistration::Model,

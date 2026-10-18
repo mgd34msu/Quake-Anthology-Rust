@@ -310,8 +310,12 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program, c
     if compressed {
         fixture.archive();
     }
-    let (mut host, clients) = host(program, 1);
-    host.runtime.vfs = std::mem::take(&mut fixture.vfs);
+    let (mut host, clients) = host_capacity(
+        program,
+        1,
+        qa_core::command_history::DEFAULT_CAPACITY,
+        Some(std::mem::take(&mut fixture.vfs)),
+    );
     let volume = host
         .console
         .cvars

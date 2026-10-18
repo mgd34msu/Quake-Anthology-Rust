@@ -375,6 +375,7 @@ impl FontAssets {
         rules: RuleSetId,
     ) -> Option<qa_compat::services::RendererRequest<&'static [u8]>> {
         (rules == RuleSetId::Quake3).then_some(qa_compat::services::RendererRequest {
+            search: None,
             name: b"gfx/2d/bigchars",
             source: rules,
             kind: qa_compat::services::RendererRegistration::Shader {

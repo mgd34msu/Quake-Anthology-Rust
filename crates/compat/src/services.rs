@@ -220,6 +220,8 @@ pub enum RendererRegistration {
 
 #[derive(Clone, Debug)]
 pub struct RendererRequest<N = qa_core::text::FixedText<64>> {
+    /// Retained file selection for dependencies; None selects the engine default.
+    pub search: Option<qa_content::vfs::SearchView>,
     pub name: N,
     pub source: RuleSetId,
     pub kind: RendererRegistration,
@@ -406,7 +408,7 @@ impl ServiceStorage {
         Ok(())
     }
 
-    fn file_search(&self, module: ModuleId) -> Option<&qa_content::vfs::SearchView> {
+    pub fn file_search(&self, module: ModuleId) -> Option<&qa_content::vfs::SearchView> {
         self.range(module)
             .and_then(|range| range.file_search.as_ref())
     }

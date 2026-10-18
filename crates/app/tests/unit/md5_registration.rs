@@ -79,6 +79,7 @@ fn fixture(scales: Option<&[u8]>) -> support::Fixture {
 
 fn request(profile: ModelProfile) -> RendererRequest<&'static [u8]> {
     RendererRequest {
+        search: None,
         name: b"models/paired.md5mesh",
         source: profile.source_rules,
         kind: RendererRegistration::Model,
@@ -481,6 +482,7 @@ fn optional_md5_scale_diagnostics_and_retained_pair_survive_reload_rollback() {
         )
         .unwrap();
     let native = RendererRequest {
+        search: None,
         name: request.path.as_bytes(),
         source: request.source_rules,
         kind: RendererRegistration::Model,
@@ -1173,6 +1175,7 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
         )
         .unwrap();
     let request = RendererRequest {
+        search: None,
         name: b"models/test/tris.md2".as_slice(),
         source: profile.source_rules,
         kind: RendererRegistration::Model,

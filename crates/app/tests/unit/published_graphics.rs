@@ -118,6 +118,7 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
         .ensure_owner(
             ShaderOwner::Engine,
             profile,
+            None,
             owner.assets(),
             owner.shader_occurrence_budget(),
             None,

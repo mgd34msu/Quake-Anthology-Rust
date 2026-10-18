@@ -616,6 +616,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         qvm_scene(ui)
     };
     let (mut runtime, ids) = runtime(2);
+    runtime.vfs = std::mem::take(&mut fixture.vfs);
     let requests = ids
         .iter()
         .enumerate()
@@ -655,7 +656,6 @@ pub(super) fn submissions(native: bool, ui: bool) {
     for (seat, &client) in ids.iter().enumerate() {
         host.local_clients[seat] = Some(client);
     }
-    host.runtime.vfs = std::mem::take(&mut fixture.vfs);
     let mut peer_profile = profile;
     peer_profile.rules = RuleSetId::Quake2;
     peer_profile.image_settings =
