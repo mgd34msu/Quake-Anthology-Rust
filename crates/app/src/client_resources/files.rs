@@ -101,6 +101,7 @@ impl ClientResources {
             .bind_search(Some(&tracked))
             .map_err(|error| format!("Q3 client files: {error}"))?;
         self.state.files = files;
+        self.state.hud_pending = true;
         self.state.models.reset_received(None);
         self.state.models.configs_replaced();
         self.state.reset_world_request();

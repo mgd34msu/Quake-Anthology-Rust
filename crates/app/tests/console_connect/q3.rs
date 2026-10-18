@@ -269,6 +269,10 @@ fn q3_udp_admission_retries_compressed_current_info_and_captures_proxy_and_accep
 fn cgame(multiplier: i32) -> Vec<u8> {
     use Opcode::*;
     let mut ops = vec![(Enter, 64), (Local, 72), (Load4, 0), (Const, 0), (Eq, 0)];
+    // Test export 9 consumes the real native reliable command, through
+    // GetServerCommand, after this cgame has completed managed startup.
+    ops.extend([(Local, 72), (Load4, 0), (Const, 9), (Eq, 0)]);
+    let select = ops.len() - 1;
     let result = [
         (Const, 128),
         (Load4, 0),
@@ -300,6 +304,18 @@ fn cgame(multiplier: i32) -> Vec<u8> {
         (Store4, 0),
     ]);
     ops.extend(result);
+    ops[select].1 = ops.len() as i32;
+    ops.extend([
+        (Local, 76),
+        (Load4, 0),
+        (Arg, 8),
+        (Const, -54),
+        (Call, 0),
+        (Const, -8), // CG_ARGC after the reset request, in the same callback
+        (Call, 0),
+        (Pop, 0),
+        (Leave, 64),
+    ]);
     let mut data = [0; 256];
     data[160..175].copy_from_slice(b"maps/ready.bsp\0");
     program::bytes(&ops, &data)
@@ -1335,7 +1351,7 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
             break;
         }
     }
-    let logs = || {
+    let logs = |host: &FrameHost| {
         String::from_utf8_lossy(
             &host
                 .console
@@ -1350,20 +1366,20 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
     assert!(
         host.runtime.server.clients[id.0 as usize].is_active(),
         "{}",
-        logs()
+        logs(&host)
     );
-    assert!(host.local_worlds[0].is_some(), "{}", logs());
+    assert!(host.local_worlds[0].is_some(), "{}", logs(&host));
     assert_eq!(
         host.module_state(ModuleId(1)),
         Some(State::Running),
         "{}",
-        logs()
+        logs(&host)
     );
     assert_eq!(
         host.module_state(ModuleId(2)),
         Some(State::Running),
         "{}",
-        logs()
+        logs(&host)
     );
     assert_eq!(value(&mut host, 3), 1);
     assert_eq!(host.module_counts(game).unwrap().traps, 0);
@@ -1420,5 +1436,71 @@ fn local_q3_game_cgame_and_ui_use_native_pure_admission_before_begin() {
     assert!(
         value(&mut host, 7) > 0,
         "native ClientThink consumes commands after admission"
+    );
+    let before = host.runtime.client_resources[id.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .file_source();
+    setting(&mut host, "sv_pure", "0");
+    frame(&mut host, &mut source, 450);
+    frame(&mut host, &mut source, 470);
+    let channel = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Client)
+        .unwrap()
+        .channel;
+    let received = channel.command_state().unwrap().received;
+    let executed = channel.last_executed_server_command().unwrap();
+    assert!(received > executed, "live systeminfo must reach this cgame");
+    for sequence in executed + 1..=received {
+        host.call_module_export(
+            ModuleId(1),
+            Export {
+                client: Some(id),
+                ..Export::words(CallbackId(9), &[u64::from(sequence)])
+            },
+            ThinkTime::Milliseconds(470),
+        )
+        .unwrap();
+    }
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    for time in (490..=1100).step_by(20) {
+        frame(&mut host, &mut source, time);
+        if host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .file_source()
+            != before
+            && host.module_state(ModuleId(1)) == Some(State::Running)
+            && host.module_state(ModuleId(2)) == Some(State::Running)
+        {
+            break;
+        }
+    }
+    assert!(host.runtime.server.clients[id.0 as usize].is_active());
+    assert_ne!(
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .file_source(),
+        before
+    );
+    assert_eq!(
+        host.module_state(ModuleId(1)),
+        Some(State::Running),
+        "{}",
+        logs(&host)
+    );
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    assert_eq!(
+        value(&mut host, 3),
+        1,
+        "filesystem restart must not begin the SERVER client twice"
     );
 }
