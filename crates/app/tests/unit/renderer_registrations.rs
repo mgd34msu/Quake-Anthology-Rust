@@ -1228,7 +1228,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
         defaults: Default::default(),
     });
     assets
-        .register_world_presentation_metadata(world, &entries)
+        .register_world_presentation_metadata(world, &entries, None)
         .unwrap();
     let owner =
         ModelAssets::new(&fixture.vfs, assets, [profile], [world], Default::default()).unwrap();

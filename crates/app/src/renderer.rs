@@ -966,7 +966,11 @@ impl SceneComposer {
             (0..assets.worlds().len()).map(|_| None).collect();
         let mut max_surfaces = 0usize;
         for loaded in worlds {
-            assets.register_world_presentation_metadata(loaded.world, &loaded.presentations)?;
+            assets.register_world_presentation_metadata(
+                loaded.world,
+                &loaded.presentations,
+                None,
+            )?;
             let world = assets.world(loaded.world).ok_or("missing loaded world")?;
             let index = loaded.world.0 as usize;
             if scenes[index].is_some() {

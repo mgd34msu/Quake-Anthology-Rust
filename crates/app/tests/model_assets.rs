@@ -64,6 +64,7 @@ fn world_registration(profile: ModelProfile) -> WorldRegistration {
     presentation.image_settings = profile.image_settings;
     presentation.finish = profile.finish;
     WorldRegistration {
+        search: None,
         profile,
         presentation,
         options: Default::default(),
@@ -1105,6 +1106,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 compile_policy: Default::default(),
                 defaults: Default::default(),
             }],
+            None,
         )
         .unwrap();
     let mut owner =

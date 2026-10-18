@@ -1866,6 +1866,7 @@ impl Assets {
         &mut self,
         world: WorldId,
         entries: &[crate::material::world_load::LoadedWorldPresentation],
+        search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<(), &'static str> {
         let registered = self.world(world).ok_or("missing world")?;
         for (index, entry) in entries.iter().enumerate() {
@@ -1879,6 +1880,11 @@ impl Assets {
             if self
                 .world_presentation_registration(entry.id)
                 .is_some_and(|current| current != *entry)
+                || search.is_some_and(|search| {
+                    self.world_presentation(entry.id)
+                        .and_then(WorldPresentation::search)
+                        .is_some_and(|current| !current.same_selection(search))
+                })
                 || entries[..index]
                     .iter()
                     .any(|previous| previous.id == entry.id && previous != entry)
@@ -1887,6 +1893,9 @@ impl Assets {
             }
         }
         for entry in entries {
+            if let Some(search) = search {
+                self.presentations[entry.id.0 as usize].search = Some(search.clone());
+            }
             self.presentations[entry.id.0 as usize].profile = Some((
                 entry.profile,
                 entry.defaults,

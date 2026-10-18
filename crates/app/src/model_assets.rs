@@ -197,6 +197,7 @@ fn with_image_owner<T>(
 
 /// Cold world policies are explicit and independent of BSP decoding.
 pub struct WorldRegistration {
+    pub search: Option<SearchView>,
     pub profile: ModelProfile,
     pub presentation: qa_render::material::world_load::WorldPresentationProfile,
     pub options: qa_render::material::world_load::WorldLoadOptions,
@@ -1566,7 +1567,11 @@ impl<'a> ModelView<'a> {
             .iter()
             .filter_map(|&id| presentation(id))
             .find(|entry| {
-                entry.profile.rules == profile.rules
+                self.assets
+                    .world_presentation(entry.id)
+                    .and_then(|entry| entry.search())
+                    .is_none_or(|search| search.same_selection(&self.catalog.registration_vfs))
+                    && entry.profile.rules == profile.rules
                     && entry.profile.indexed_palette == profile.palette
                     && entry.profile.image_settings == profile.image_settings
                     && entry.profile.finish == profile.finish
@@ -3056,12 +3061,18 @@ impl ModelAssets {
             };
             let reload =
                 (self.image_transaction_active == Some(ImageRefreshMode::Reload)).then_some(old);
+            let search = self
+                .assets
+                .world_presentation(old)
+                .and_then(|entry| entry.search())
+                .cloned();
             let (loaded, (), _) = self.prepare_world_presentation_value(
                 vfs,
                 world,
                 profile,
                 policy,
                 ui_fullscreen,
+                search.as_ref(),
                 reload,
                 |_, _| Ok(()),
                 |assets, ()| prepare(assets),
@@ -3269,7 +3280,7 @@ impl ModelAssets {
                 shader_bindings: Vec::new(),
                 skin_indices,
                 skins: Vec::new(),
-                shader_catalogs: scopes::Selections::new(),
+                shader_catalogs: scopes::Selections::default(),
                 profiles: unique,
                 registrations: Vec::new(),
                 bindings: Vec::new(),
@@ -3969,6 +3980,7 @@ impl ModelAssets {
         profile: ModelProfile,
         presentation: qa_render::material::world_load::WorldPresentationProfile,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
         stage: impl FnOnce(
             ModelView<'_>,
             &qa_render::material::world_load::LoadedWorld,
@@ -3981,6 +3993,7 @@ impl ModelAssets {
             profile,
             presentation,
             ui_fullscreen,
+            search,
             None,
             stage,
             prepare,
@@ -3994,6 +4007,7 @@ impl ModelAssets {
         profile: ModelProfile,
         presentation: qa_render::material::world_load::WorldPresentationProfile,
         ui_fullscreen: bool,
+        search: Option<&SearchView>,
         reload: Option<WorldPresentationId>,
         stage: impl FnOnce(
             ModelView<'_>,
@@ -4013,6 +4027,7 @@ impl ModelAssets {
             let request = WorldPresentationRequest {
                 profile: presentation,
                 native_default,
+                search,
             };
             let loaded = match reload {
                 Some(old) => qa_render::material::world_load::reload_world_presentation(
@@ -4072,6 +4087,7 @@ impl ModelAssets {
             return Err("world registration requires a published resource prefix".to_owned());
         }
         let WorldRegistration {
+            search,
             profile,
             presentation,
             options,
@@ -4106,6 +4122,7 @@ impl ModelAssets {
                 &[WorldPresentationRequest {
                     profile: presentation,
                     native_default,
+                    search: search.as_ref(),
                 }],
                 options,
                 ui_fullscreen,

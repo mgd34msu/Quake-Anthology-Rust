@@ -237,6 +237,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 selected,
                 presentation,
                 false,
+                None,
                 |view, loaded| {
                     assert_eq!(
                         view.assets
@@ -340,6 +341,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 selected,
                 presentation,
                 false,
+                None,
                 |view, loaded| scene.stage_world(view.assets, loaded),
                 |assets, append| {
                     cpu.prepare_assets(assets, Some(append.limits()))
@@ -443,6 +445,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
                 profile,
                 invalid,
                 false,
+                None,
                 |_, _| -> Result<(), String> { panic!("invalid presentation reached stage") },
                 |_, _| panic!("invalid presentation reached CPU")
             )
@@ -458,6 +461,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
                 profile,
                 presentation,
                 false,
+                None,
                 |view, loaded| scene.stage_world(view.assets, loaded),
                 |_, _| panic!("active scene reached CPU")
             )
@@ -476,6 +480,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             profile,
             presentation,
             false,
+            None,
             |view, loaded| scene.stage_world(view.assets, loaded),
             |assets, append| {
                 let mut incompatible = append.limits();
@@ -506,6 +511,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             profile,
             presentation,
             false,
+            None,
             |view, loaded| scene.stage_world(view.assets, loaded),
             |assets, append| {
                 cpu.prepare_assets(assets, Some(append.limits()))

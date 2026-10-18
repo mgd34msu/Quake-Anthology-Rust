@@ -89,6 +89,7 @@ impl Default for WorldRenderSettings {
 
 pub struct WorldPresentation {
     pub world: WorldId,
+    pub(crate) search: Option<qa_content::vfs::SearchView>,
     pub(crate) bindings: Box<[SurfaceBinding]>,
     registrations: Box<[ShaderRegistration]>,
     native_page0: Option<ImageId>,
@@ -126,6 +127,7 @@ impl WorldPresentation {
         let initial_sun_light = context.sun_light();
         Ok(Self {
             world,
+            search: None,
             bindings: materials
                 .iter()
                 .zip(mesh_ranges)
@@ -143,6 +145,9 @@ impl WorldPresentation {
             initial_sun_direction,
             initial_sun_light,
         })
+    }
+    pub fn search(&self) -> Option<&qa_content::vfs::SearchView> {
+        self.search.as_ref()
     }
     pub fn sun_direction(&self) -> qa_core::primitives::Vec3 {
         self.initial_sun_direction

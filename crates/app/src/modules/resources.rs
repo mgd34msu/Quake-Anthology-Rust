@@ -759,6 +759,7 @@ impl FrameHost {
                     profile,
                     presentation,
                     false,
+                    None,
                     |view, loaded| scene.stage_world(view.assets, loaded),
                     |assets, append| {
                         if !current() {
@@ -784,6 +785,7 @@ impl FrameHost {
                 &mut runtime.geometry,
                 input,
                 crate::model_assets::WorldRegistration {
+                    search: None,
                     profile,
                     presentation,
                     options: crate::render_settings::world_load_options(
@@ -963,6 +965,7 @@ impl FrameHost {
                     selected_profile,
                     policy,
                     false,
+                    None,
                     |view, loaded| scene.stage_world(view.assets, loaded),
                     |assets, append| preparer.prepare_assets(assets, Some(append.limits())),
                 )?;

@@ -37,7 +37,7 @@ use crate::{
         load_visibility,
     },
 };
-use qa_content::vfs::Vfs;
+use qa_content::vfs::{SearchView, SelectionId, Selections, Vfs};
 use qa_core::primitives::RuleSetId;
 use qa_core::text::FixedText;
 use qa_formats::bsp::Map;
@@ -190,15 +190,17 @@ impl WorldPresentationProfile {
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub struct WorldPresentationRequest {
+pub struct WorldPresentationRequest<'a> {
     pub profile: WorldPresentationProfile,
     pub native_default: Option<ShaderBindingId>,
+    pub search: Option<&'a SearchView>,
 }
-impl From<WorldPresentationProfile> for WorldPresentationRequest {
+impl From<WorldPresentationProfile> for WorldPresentationRequest<'_> {
     fn from(profile: WorldPresentationProfile) -> Self {
         Self {
             profile,
             native_default: None,
+            search: None,
         }
     }
 }
@@ -278,7 +280,7 @@ struct MaterialSurface {
 /// Rollback storage for retained world image owners. Geometry and lightmap
 /// recipes remain in their original owners throughout the reload.
 pub struct WorldImageReload {
-    pub(crate) states: Vec<(WorldId, Vec<(ImageProfile, ImageReload)>)>,
+    pub(crate) states: Vec<(WorldId, Vec<(WorldImageKey, ImageReload)>)>,
 }
 impl WorldImageReload {
     pub fn replay(&self, vfs: &Vfs, assets: &mut Assets) -> Result<(), WorldMaterialError> {
@@ -295,8 +297,13 @@ impl WorldImageReload {
     }
 }
 
-struct WorldImages {
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct WorldImageKey {
     profile: ImageProfile,
+    source: SelectionId,
+}
+struct WorldImages {
+    key: WorldImageKey,
     state: Option<ImagesState>,
 }
 #[derive(Clone, PartialEq)]
@@ -317,6 +324,7 @@ struct WorldLightmaps {
 /// Authored cold inputs retained once after the BSP boundary. Geometry can be
 /// rebuilt without rereading the BSP; visibility and collision stay separately owned.
 pub(crate) struct WorldMaterialSource {
+    owner: SearchView,
     rules: RuleSetId,
     palette: Option<crate::PaletteId>,
     options: WorldLoadOptions,
@@ -328,7 +336,7 @@ pub(crate) struct WorldMaterialSource {
     surfaces: Vec<MaterialSurface>,
     legacy_kinds: Vec<(bool, bool)>,
     layout: LightmapLayout,
-    catalog: ShaderCatalog,
+    catalogs: Selections<ShaderCatalog>,
     images: Vec<WorldImages>,
     lightmaps: Vec<WorldLightmaps>,
 }
@@ -337,30 +345,30 @@ impl WorldMaterialSource {
         self.images.iter().all(|entry| entry.state.is_some())
     }
 
-    pub(crate) fn begin_image_reload(&mut self) -> Vec<(ImageProfile, ImageReload)> {
+    pub(crate) fn begin_image_reload(&mut self) -> Vec<(WorldImageKey, ImageReload)> {
         self.images
             .iter_mut()
             .filter_map(|entry| {
                 entry
                     .state
                     .as_mut()
-                    .map(|state| (entry.profile, state.begin_reload(ImageReloadScope::All)))
+                    .map(|state| (entry.key, state.begin_reload(ImageReloadScope::All)))
             })
             .collect()
     }
 
-    pub(crate) fn image_reload_matches(&self, states: &[(ImageProfile, ImageReload)]) -> bool {
+    pub(crate) fn image_reload_matches(&self, states: &[(WorldImageKey, ImageReload)]) -> bool {
         self.images.len() >= states.len()
             && self
                 .images
                 .iter()
                 .zip(states)
-                .all(|(entry, (profile, _))| entry.profile == *profile && entry.state.is_some())
+                .all(|(entry, (profile, _))| entry.key == *profile && entry.state.is_some())
     }
 
     pub(crate) fn restore_image_reload(
         &mut self,
-        states: Vec<(ImageProfile, ImageReload)>,
+        states: Vec<(WorldImageKey, ImageReload)>,
         assets: &mut Assets,
     ) -> Result<(), &'static str> {
         let retained = states.len();
@@ -373,7 +381,7 @@ impl WorldMaterialSource {
         Ok(())
     }
 
-    pub(crate) fn commit_image_reload(&mut self, states: Vec<(ImageProfile, ImageReload)>) {
+    pub(crate) fn commit_image_reload(&mut self, states: Vec<(WorldImageKey, ImageReload)>) {
         for (entry, (_, reload)) in self.images.iter_mut().zip(states) {
             if let Some(state) = &mut entry.state {
                 state.commit_reload(reload);
@@ -385,7 +393,7 @@ impl WorldMaterialSource {
         &mut self,
         vfs: &Vfs,
         assets: &mut Assets,
-        states: &[(ImageProfile, ImageReload)],
+        states: &[(WorldImageKey, ImageReload)],
     ) -> Result<(), WorldMaterialError> {
         if !self.image_reload_matches(states) {
             return Err(WorldMaterialError::Boundary(
@@ -409,11 +417,14 @@ impl WorldMaterialSource {
         let source_rules = self.rules;
         let source_palette = self.palette;
         self.images.retain_mut(|entry| {
-            if !presentations
-                .iter()
-                .filter_map(|presentation| presentation.profile.as_ref().map(|entry| entry.0))
-                .any(|profile| profile.image_profile(source_rules, source_palette) == entry.profile)
-            {
+            if !presentations.iter().any(|presentation| {
+                presentation.profile.as_ref().is_some_and(|profile| {
+                    profile.0.image_profile(source_rules, source_palette) == entry.key.profile
+                        && presentation.search().is_some_and(|view| {
+                            view.same_selection(self.catalogs.view(entry.key.source))
+                        })
+                })
+            }) {
                 return false;
             }
             if let Some(state) = &mut entry.state {
@@ -448,12 +459,33 @@ impl WorldMaterialSource {
         &mut self,
         vfs: &Vfs,
         assets: &mut Assets,
-        profile: WorldPresentationProfile,
-        compile: impl FnOnce(&Self, &mut Images<'_>) -> Result<T, WorldMaterialError>,
+        request: WorldPresentationRequest,
+        compile: impl FnOnce(&Self, &ShaderCatalog, &mut Images<'_>) -> Result<T, WorldMaterialError>,
     ) -> Result<T, WorldMaterialError> {
-        let key = profile.image_profile(self.rules, self.palette);
+        if !vfs.accepts_search(&self.owner) {
+            return Err(ResourceError::Vfs(qa_content::vfs::VfsError::Handle).into());
+        }
+        let view = vfs
+            .read_view(request.search)
+            .retain()
+            .map_err(ResourceError::Vfs)?;
+        let source = match self.catalogs.find(&view) {
+            Some(id) => id,
+            None => {
+                let catalog =
+                    load_catalog(vfs, Some(&view)).map_err(WorldMaterialError::Catalog)?;
+                self.catalogs
+                    .intern(view, usize::MAX, || catalog)
+                    .map_err(ResourceError::Vfs)?
+            }
+        };
+        let profile = request.profile;
+        let key = WorldImageKey {
+            profile: profile.image_profile(self.rules, self.palette),
+            source,
+        };
         let previous = self.images.len();
-        let index = if let Some(index) = self.images.iter().position(|entry| entry.profile == key) {
+        let index = if let Some(index) = self.images.iter().position(|entry| entry.key == key) {
             index
         } else {
             let mut state = ImagesState::new(
@@ -461,7 +493,7 @@ impl WorldMaterialSource {
                 profile.rules,
                 profile.image_settings,
                 self.palette.zip(profile.indexed_palette),
-                None,
+                Some(self.catalogs.view(source).clone()),
             )?;
             state.set_raster_target(
                 assets,
@@ -471,14 +503,14 @@ impl WorldMaterialSource {
                 }),
             )?;
             self.images.push(WorldImages {
-                profile: key,
+                key,
                 state: Some(state),
             });
             previous
         };
         let retained = assets.counts();
         let (mut images, mark) = borrow_images(vfs, assets, &mut self.images[index].state)?;
-        let result = compile(self, &mut images);
+        let result = compile(self, self.catalogs.get(source), &mut images);
         let mut state = images.into_state();
         let rollback = if result.is_err() {
             state.rollback_registration(mark, retained.images, assets)
@@ -584,6 +616,7 @@ impl WorldMaterialSource {
             })
             .collect();
         Ok(Self {
+            owner: vfs.default_view(),
             rules: map.bsp.format.rule_set(),
             palette,
             options,
@@ -596,7 +629,7 @@ impl WorldMaterialSource {
             surfaces,
             legacy_kinds,
             layout,
-            catalog: load_catalog(vfs, None).map_err(WorldMaterialError::Catalog)?,
+            catalogs: Selections::default(),
             images: Vec::new(),
             lightmaps: Vec::new(),
         })
@@ -742,9 +775,10 @@ fn compile_profile(
             registered
         }
     };
-    let bindings = source.with_images(vfs, assets, request.profile, |source, images| {
+    let bindings = source.with_images(vfs, assets, request, |source, catalog, images| {
         compile_presentation(
             source,
+            catalog,
             images,
             request,
             policy,
@@ -809,6 +843,14 @@ pub fn load_world(
     mut options: WorldLoadOptions,
     ui_fullscreen: bool,
 ) -> Result<LoadedWorld, WorldMaterialError> {
+    let searches = profiles
+        .iter()
+        .map(|request| {
+            vfs.read_view(request.search)
+                .retain()
+                .map_err(ResourceError::Vfs)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let geometry_source = map.bsp.format.rule_set();
     validate_profiles(assets, geometry_source, source_palette, profiles)?;
     // Nonlinear Q3 color normalization precedes patch interpolation once. These
@@ -897,11 +939,17 @@ pub fn load_world(
     let mut diagnostics = Vec::new();
     let mut distinct = Vec::<WorldPresentationRequest>::new();
     let mut request_indices = Vec::with_capacity(profiles.len());
-    for &request in profiles {
-        let index = if let Some(index) = distinct
-            .iter()
-            .position(|existing| existing.profile == request.profile)
-        {
+    for (&request, search) in profiles.iter().zip(&searches) {
+        let request = WorldPresentationRequest {
+            search: Some(search),
+            ..request
+        };
+        let index = if let Some(index) = distinct.iter().position(|existing| {
+            existing.profile == request.profile
+                && existing
+                    .search
+                    .is_some_and(|view| view.same_selection(search))
+        }) {
             if distinct[index].native_default.is_some()
                 && request.native_default.is_some()
                 && distinct[index].native_default != request.native_default
@@ -970,6 +1018,7 @@ pub fn load_world(
                     lighting,
                     compile_policy: request.profile.finish.compile(ui_fullscreen),
                 }],
+                request.search,
             )
             .map_err(WorldMaterialError::Boundary)?;
     }
@@ -1028,15 +1077,37 @@ fn append_world_presentation_inner(
     ui_fullscreen: bool,
     replaced: Option<WorldPresentationId>,
 ) -> Result<LoadedWorld, WorldMaterialError> {
+    let view = vfs
+        .read_view(request.search)
+        .retain()
+        .map_err(ResourceError::Vfs)?;
+    let request = WorldPresentationRequest {
+        search: Some(&view),
+        ..request
+    };
     let profile = request.profile;
     let policy = profile.finish.compile(ui_fullscreen);
     let row = assets
         .world(world)
         .ok_or(WorldMaterialError::Boundary("missing presentation world"))?;
+    if row
+        .material_source
+        .as_ref()
+        .is_some_and(|source| !vfs.accepts_search(&source.owner))
+    {
+        return Err(ResourceError::Vfs(qa_content::vfs::VfsError::Handle).into());
+    }
     if replaced.is_some_and(|old| !row.presentations().contains(&old)) {
         return Err(WorldMaterialError::Boundary(
             "missing replaced world presentation",
         ));
+    }
+    if replaced
+        .and_then(|old| assets.world_presentation(old))
+        .and_then(WorldPresentation::search)
+        .is_some_and(|search| !search.same_selection(&view))
+    {
+        return Err(WorldMaterialError::Boundary("world reload source changed"));
     }
     let current_lighting = row.render_settings().map(|settings| settings.lighting);
     let existing = replaced
@@ -1045,6 +1116,10 @@ fn append_world_presentation_inner(
             row.presentations().iter().find_map(|&id| {
                 assets.world_presentation_registration(id).filter(|entry| {
                     entry.profile == profile
+                        && assets
+                            .world_presentation(id)
+                            .and_then(WorldPresentation::search)
+                            .is_some_and(|search| search.same_selection(&view))
                         && current_lighting.is_none_or(|lighting| entry.lighting == lighting)
                         && entry.compile_policy.collapse_vertex() == policy.collapse_vertex()
                 })
@@ -1092,6 +1167,7 @@ fn append_world_presentation_inner(
                     lighting,
                     compile_policy: policy,
                 }],
+                Some(&view),
             )
             .map_err(WorldMaterialError::Boundary)?;
         Ok(LoadedWorld {
@@ -1163,6 +1239,7 @@ fn presentation_defaults(
 )]
 fn compile_presentation(
     source: &WorldMaterialSource,
+    catalog: &ShaderCatalog,
     images: &mut Images<'_>,
     request: WorldPresentationRequest,
     policy: ShaderCompilePolicy,
@@ -1182,7 +1259,6 @@ fn compile_presentation(
     let geometry_source = source.rules;
     let palette = source.palette;
     let options = &source.options;
-    let catalog = &source.catalog;
     // Copy only cold name bytes to end the arena borrow before Images appends.
     let name = |id| {
         images

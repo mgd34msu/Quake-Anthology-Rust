@@ -3044,3 +3044,6 @@ fn format_reload_recompiles_each_world_family_without_replacing_geometry_or_ligh
     }
     Ok(())
 }
+
+#[path = "world_materials/sources.rs"]
+mod sources;

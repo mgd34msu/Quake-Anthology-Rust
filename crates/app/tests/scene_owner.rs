@@ -102,7 +102,7 @@ fn in_memory_world_metadata_is_adopted_once_and_stage_requires_that_same_registr
     changed.profile.q2_modulate = 2.;
     assert!(
         assets
-            .register_world_presentation_metadata(world, &[changed])
+            .register_world_presentation_metadata(world, &[changed], None)
             .is_err()
     );
     assert_eq!(
@@ -115,7 +115,7 @@ fn in_memory_world_metadata_is_adopted_once_and_stage_requires_that_same_registr
     assert!(owner.stage_world(&assets, &second).is_err());
     assert!(
         assets
-            .register_world_presentation_metadata(second.world, &[candidate, entry])
+            .register_world_presentation_metadata(second.world, &[candidate, entry], None)
             .is_err()
     );
     assert!(
@@ -124,7 +124,7 @@ fn in_memory_world_metadata_is_adopted_once_and_stage_requires_that_same_registr
             .is_none()
     );
     assets
-        .register_world_presentation_metadata(second.world, &second.presentations)
+        .register_world_presentation_metadata(second.world, &second.presentations, None)
         .unwrap();
     let mut inconsistent = second;
     inconsistent.presentations[0].defaults.identity_light = 0.5;
@@ -144,7 +144,7 @@ fn cold_world_stage_waits_for_the_existing_frame_and_both_consumers() {
     let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![first]).unwrap();
     let second = empty_world(&mut assets);
     assets
-        .register_world_presentation_metadata(second.world, &second.presentations)
+        .register_world_presentation_metadata(second.world, &second.presentations, None)
         .unwrap();
     assert!(owner.begin_frame());
     assert!(owner.stage_world(&assets, &second).is_err());
@@ -178,13 +178,13 @@ fn dropped_world_stage_allows_suffix_rollback_and_clean_same_id_retry() {
     let (mut owner, _) = SceneComposer::load(Limits::default(), &mut assets, vec![]).unwrap();
     let first = empty_world(&mut assets);
     assets
-        .register_world_presentation_metadata(first.world, &first.presentations)
+        .register_world_presentation_metadata(first.world, &first.presentations, None)
         .unwrap();
     owner.stage_world(&assets, &first).unwrap().commit();
     let retained = assets.counts();
     let mut rejected = empty_world(&mut assets);
     assets
-        .register_world_presentation_metadata(rejected.world, &rejected.presentations)
+        .register_world_presentation_metadata(rejected.world, &rejected.presentations, None)
         .unwrap();
     let candidate_id = rejected.world;
     let original = rejected.presentations[0].id;
@@ -198,13 +198,13 @@ fn dropped_world_stage_allows_suffix_rollback_and_clean_same_id_retry() {
 
     let retry = empty_world(&mut assets);
     assets
-        .register_world_presentation_metadata(retry.world, &retry.presentations)
+        .register_world_presentation_metadata(retry.world, &retry.presentations, None)
         .unwrap();
     assert_eq!(retry.world, candidate_id);
     owner.stage_world(&assets, &retry).unwrap().commit();
     let third = empty_world(&mut assets);
     assets
-        .register_world_presentation_metadata(third.world, &third.presentations)
+        .register_world_presentation_metadata(third.world, &third.presentations, None)
         .unwrap();
     owner.stage_world(&assets, &third).unwrap().commit();
     for frame in 1..=4 {

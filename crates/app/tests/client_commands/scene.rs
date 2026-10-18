@@ -604,7 +604,7 @@ pub(super) fn submissions(native: bool, ui: bool) {
         diagnostics: Box::default(),
     };
     assets
-        .register_world_presentation_metadata(world, &loaded.presentations)
+        .register_world_presentation_metadata(world, &loaded.presentations, None)
         .unwrap();
     let program = || {
         if native {
@@ -2076,7 +2076,7 @@ pub(super) fn inline_entities(native: bool) {
         diagnostics: Box::default(),
     };
     assets
-        .register_world_presentation_metadata(world, &loaded.presentations)
+        .register_world_presentation_metadata(world, &loaded.presentations, None)
         .unwrap();
     let bounds = assets.world(world).unwrap().geometry().models[1].bounds;
     let grid = qa_render::lighting::LightGrid::load(

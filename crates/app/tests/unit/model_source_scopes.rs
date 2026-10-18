@@ -1333,3 +1333,159 @@ fn palette_registration_keeps_source_aliases_and_rollback_in_the_owned_vfs() {
         Some(low_id)
     );
 }
+
+#[test]
+fn world_presentations_keep_their_source_through_owner_refresh_and_rejection() {
+    let mut files = support::Fixture::new(&[
+        ("maps/selected.bsp", support::world_map(8.0)),
+        (
+            "scripts/source.shader",
+            b"textures/wall { cull none { map textures/low.tga } }".to_vec(),
+        ),
+        ("textures/low.tga", support::tga(1, 1, &[[211, 0, 0, 255]])),
+    ]);
+    let high_files = support::Fixture::new(&[
+        (
+            "scripts/source.shader",
+            b"textures/wall { cull none { map textures/high.tga } }".to_vec(),
+        ),
+        ("textures/high.tga", support::tga(1, 1, &[[0, 0, 211, 255]])),
+    ]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high_files.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let mut profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let presentation = qa_render::material::world_load::WorldPresentationProfile::native(
+        profile.rules,
+        profile.palette,
+    );
+    let mut geometry = qa_world::collision::CollisionStore::new();
+    let loaded = crate::map::read(&files.vfs, "selected")
+        .unwrap()
+        .load(
+            &files.vfs,
+            &mut assets,
+            &mut geometry,
+            Some(palette),
+            &[qa_render::material::world_load::WorldPresentationRequest {
+                profile: presentation,
+                native_default: None,
+                search: Some(&low),
+            }],
+            Default::default(),
+            false,
+        )
+        .unwrap();
+    let world = loaded.render.world;
+    let mesh = assets.world(world).unwrap().mesh();
+    let first = loaded.render.presentations[0];
+    let owner =
+        ModelAssets::new(&files.vfs, assets, [profile], [world], Default::default()).unwrap();
+    let (mut owner, mut cpu) = super::registration_tests::publish(owner);
+    assert!(
+        owner
+            .view()
+            .world_presentation(world, Some(profile), None)
+            .is_none()
+    );
+    assert_eq!(
+        owner.view().world_presentation(world, None, Some(first.id)),
+        Some(first)
+    );
+    let color = |assets: &Assets, id| {
+        let shader = assets
+            .shader_binding(assets.surface_shader(id, 0).unwrap())
+            .unwrap();
+        let material = assets.material(shader.material).unwrap();
+        let StageTexture::Image(image) = material.stages[0].texture else {
+            panic!("world image")
+        };
+        assets.image(image).unwrap().rgba[..4].to_vec()
+    };
+    assert_eq!(color(owner.assets(), first.id), [211, 0, 0, 255]);
+    let before = owner.assets().counts();
+    assert!(
+        owner
+            .prepare_world_presentation(
+                &files.vfs,
+                world,
+                profile,
+                presentation,
+                false,
+                Some(&high),
+                |_, _| Ok(()),
+                |_, ()| Err("rejected selected world".to_owned())
+            )
+            .is_err()
+    );
+    assert_eq!(owner.assets().counts(), before);
+    assert_eq!(
+        owner.assets().world(world).unwrap().presentations(),
+        &[first.id]
+    );
+    assert_eq!(color(owner.assets(), first.id), [211, 0, 0, 255]);
+    let (second, (), _) = owner
+        .prepare_world_presentation(
+            &files.vfs,
+            world,
+            profile,
+            presentation,
+            false,
+            Some(&high),
+            |_, _| Ok(()),
+            |assets, ()| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+        )
+        .unwrap();
+    let mut rows = [first, second.presentations[0]];
+    assert_eq!(color(owner.assets(), rows[1].id), [0, 0, 211, 255]);
+    for mode in [ImageRefreshMode::Reconfigure, ImageRefreshMode::Reload] {
+        let mut settings = [None; 5];
+        if mode == ImageRefreshMode::Reconfigure {
+            settings[profile.rules as usize] = Some(ImageSettings {
+                picmip: 1,
+                ..profile.image_settings
+            });
+        }
+        let refresh = owner
+            .image_transaction(&files.vfs, None, mode, |owner, _| {
+                owner.refresh_images(
+                    &files.vfs,
+                    &[profile],
+                    &rows.map(|row| (world, row.id)),
+                    settings,
+                    profile.finish,
+                    false,
+                    |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+                )
+            })
+            .unwrap();
+        profile = refresh.profile(profile);
+        for (index, (row, search)) in rows.iter_mut().zip([&low, &high]).enumerate() {
+            *row = refresh.presentation(world, row.id).unwrap();
+            assert_eq!(
+                color(owner.assets(), row.id),
+                [[211, 0, 0, 255], [0, 0, 211, 255]][index]
+            );
+            assert!(
+                owner
+                    .assets()
+                    .world_presentation(row.id)
+                    .unwrap()
+                    .search()
+                    .unwrap()
+                    .same_selection(search)
+            );
+        }
+        assert_eq!(owner.assets().world(world).unwrap().mesh(), mesh);
+        assert!(
+            owner
+                .view()
+                .world_presentation(world, Some(profile), None)
+                .is_none()
+        );
+    }
+}

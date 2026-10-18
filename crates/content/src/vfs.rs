@@ -3,7 +3,9 @@ use qa_core::{
     primitives::IndexSpan,
 };
 mod list;
+mod selections;
 pub use list::{FileListName, FileListQuery, FileListRequest, FileListing};
+pub use selections::{SelectionId, Selections};
 
 use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
