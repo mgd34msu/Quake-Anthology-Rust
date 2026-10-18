@@ -469,6 +469,15 @@ impl<'a, 'd> Host<'a, 'd> {
     }
 
     fn current_owner(&self, owner: CollisionOwner) -> Result<Option<EntityId>, ClientCommandError> {
+        if let CollisionOwner::Lifetime(entity) = owner {
+            return Ok(self
+                .host
+                .runtime
+                .server
+                .entities
+                .resolve(entity)
+                .map(|_| entity));
+        }
         let reference = self.reference(owner)?;
         let ResourceNamespace::Module(module) = reference.namespace else {
             return Err(ClientCommandError::DifferentModule);
@@ -547,6 +556,10 @@ impl PushHost for Host<'_, '_> {
                     *next = entity.slot as usize + 1;
                     let slot = entity.slot as usize;
                     let Some(native) = entities.columns.native_entity[slot] else {
+                        let owner = CollisionOwner::Lifetime(entity);
+                        if projected::client(self.host, owner).is_some() {
+                            return Ok(Some(owner));
+                        }
                         continue;
                     };
                     if native.module == self.module
@@ -569,7 +582,8 @@ impl PushHost for Host<'_, '_> {
                         if native.slot == 0 {
                             continue;
                         }
-                    } else if projected::client(self.host, native).is_none() {
+                    } else if projected::client(self.host, CollisionOwner::Native(native)).is_none()
+                    {
                         continue;
                     }
                     if row
@@ -597,8 +611,8 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn free(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
-            return Ok(projected::client(self.host, native).is_none());
+        if projected::handles(self.host, owner) {
+            return Ok(projected::client(self.host, owner).is_none());
         }
         let reference = self.reference(owner)?;
         let ResourceNamespace::Module(module) = reference.namespace else {
@@ -614,8 +628,8 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn number(&mut self, owner: CollisionOwner, field: PushNumber) -> Result<f32, Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
-            return projected::number(self.host, native, field, self.push_rules()?);
+        if projected::handles(self.host, owner) {
+            return projected::number(self.host, owner, field, self.push_rules()?);
         }
         self.edit_owner(owner, |vm, _, _, native| vm.push_number(native, field))
     }
@@ -626,8 +640,8 @@ impl PushHost for Host<'_, '_> {
         field: PushNumber,
         value: f32,
     ) -> Result<(), Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
-            return projected::store(self.host, native, field, value);
+        if projected::handles(self.host, owner) {
+            return projected::store(self.host, owner, field, value);
         }
         let entity = self.current_owner(owner)?;
         self.edit_owner(owner, |vm, services, context, native| {
@@ -644,9 +658,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn flags(&mut self, owner: CollisionOwner) -> Result<u32, Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
+        if projected::handles(self.host, owner) {
             let (id, _) =
-                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
             return Ok(
                 if self.host.runtime.server.clients[id.0 as usize]
                     .player
@@ -663,9 +677,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn store_flags(&mut self, owner: CollisionOwner, flags: u32) -> Result<(), Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
+        if projected::handles(self.host, owner) {
             let (id, _) =
-                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
             let grounded = flags & self.push_rules()?.ground_flag != 0;
             let movement = &mut self.host.runtime.server.clients[id.0 as usize]
                 .player
@@ -682,9 +696,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
+        if projected::handles(self.host, owner) {
             let (id, _) =
-                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
             return Ok(self.host.runtime.server.clients[id.0 as usize]
                 .player
                 .movement
@@ -701,12 +715,18 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
+        if projected::handles(self.host, owner) {
             let (_, entity) =
-                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
             let position = self.host.runtime.server.entities.columns.position[entity.slot as usize];
-            return projected::trace(self.host, native, position, QuakeTraceKind::Normal)
-                .map(|trace| trace.trace.start_solid);
+            return projected::trace(
+                self.host,
+                owner,
+                self.module,
+                position,
+                QuakeTraceKind::Normal,
+            )
+            .map(|trace| trace.trace.start_solid);
         }
         let reference = self.reference(owner)?;
         let ResourceNamespace::Module(module) = reference.namespace else {
@@ -729,8 +749,8 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn link(&mut self, owner: CollisionOwner, touch: bool) -> Result<(), Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
-            return projected::link(self.host, native, touch, self.driver);
+        if projected::handles(self.host, owner) {
+            return projected::link(self.host, owner, self.module, touch, self.driver);
         }
         if PushHost::free(self, owner)? {
             return Ok(());
@@ -770,16 +790,17 @@ impl PushHost for Host<'_, '_> {
         owner: CollisionOwner,
         displacement: Vec3,
     ) -> Result<(), Self::Error> {
-        if let Some(native) = projected::native(self.host, owner) {
+        if projected::handles(self.host, owner) {
             let (_, entity) =
-                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+                projected::client(self.host, owner).ok_or(ClientCommandError::Inactive)?;
             let rules = self.push_rules()?;
             let mover = contacts::capture(self.host, entity)?;
             return physics::push_entity(
                 &mut projected::Passenger {
                     host: self.host,
                     driver: self.driver,
-                    native,
+                    owner,
+                    provider: self.module,
                     mover,
                     rules,
                 },
@@ -819,7 +840,6 @@ impl PushHost for Host<'_, '_> {
         captured: Option<EntityReference>,
     ) -> Result<(), Self::Error> {
         let subject = self.reference(pusher)?;
-        let other = self.reference(blocker)?;
         let binding = self.edit_owner(pusher, |vm, _, _, native| vm.blocked_binding(native))?;
         let Some(binding) = binding else {
             return Ok(());
@@ -843,7 +863,15 @@ impl PushHost for Host<'_, '_> {
         let resolved = functions
             .resolve_binding(&self.host.runtime.server.entities, binding, entity)
             .map_err(ClientCommandError::Dispatch)?;
-        let admitted = if other.namespace == subject.namespace {
+        let other = self
+            .host
+            .runtime
+            .server
+            .entities
+            .native_owner(blocker)
+            .map(|_| self.reference(blocker))
+            .transpose()?;
+        let admitted = if other.is_some_and(|other| other.namespace == subject.namespace) {
             None
         } else {
             Some(contacts::admit_captured(
@@ -853,12 +881,15 @@ impl PushHost for Host<'_, '_> {
                 captured.ok_or(ClientCommandError::InvalidSlot)?,
             )?)
         };
+        let other = admitted
+            .as_ref()
+            .map(|admitted| admitted.reference())
+            .or(other)
+            .ok_or(ClientCommandError::InvalidSlot)?;
         let call = CallbackCall::Blocked {
             entity,
             subject,
-            other: admitted
-                .as_ref()
-                .map_or(other, |admitted| admitted.reference()),
+            other,
         };
         let result = functions
             .dispatch_resolved(self.host, resolved, call)

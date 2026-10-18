@@ -77,7 +77,8 @@ pub(super) fn admit_captured(
 /// One owned traversal serves both ordinary provider calls and a stopped QC
 /// builtin. No link or entity borrow survives a returned callback request.
 pub(super) struct TriggerRun {
-    mover: NativeEntityRef,
+    module: ModuleId,
+    mover: Option<EntityReference>,
     time: ThinkTime,
     cursor: Option<AreaCursor>,
 }
@@ -87,7 +88,23 @@ impl TriggerRun {
         mover: NativeEntityRef,
         time: ThinkTime,
     ) -> Result<Self, ClientCommandError> {
-        let cursor = current(host, mover)?
+        let ResourceNamespace::Module(module) = mover.namespace else {
+            return Err(ClientCommandError::DifferentModule);
+        };
+        let mover = current(host, mover)?
+            .map(|entity| capture(host, entity))
+            .transpose()?;
+        Ok(Self::from_capture(host, module, mover, time))
+    }
+
+    fn from_capture(
+        host: &FrameHost,
+        module: ModuleId,
+        mover: Option<EntityReference>,
+        time: ThinkTime,
+    ) -> Self {
+        let cursor = mover
+            .and_then(|mover| host.runtime.server.entities.resolve_reference(mover))
             .and_then(|entity| host.runtime.server.area.bounds(entity))
             .map(|bounds| {
                 host.runtime
@@ -95,11 +112,12 @@ impl TriggerRun {
                     .area
                     .query_cursor(bounds, LinkFlags::TRIGGER)
             });
-        Ok(Self {
+        Self {
+            module,
             mover,
             time,
             cursor,
-        })
+        }
     }
 
     pub(super) fn next(
@@ -107,13 +125,14 @@ impl TriggerRun {
         host: &mut FrameHost,
         access: TraceAccess<'_>,
     ) -> Result<Option<PreparedTouch>, ClientCommandError> {
-        let ResourceNamespace::Module(module) = self.mover.namespace else {
-            return Err(ClientCommandError::DifferentModule);
-        };
+        let module = self.module;
         while let Some(cursor) = self.cursor.as_mut() {
             // The previous callback can free/reuse or teleport the native row.
             // Refresh both its common lifetime and bounds before taking next.
-            let Some(entity) = current(host, self.mover)? else {
+            let Some(entity) = self
+                .mover
+                .and_then(|mover| host.runtime.server.entities.resolve_reference(mover))
+            else {
                 break;
             };
             let Some(bounds) = host.runtime.server.area.bounds(entity) else {
@@ -161,11 +180,14 @@ pub(super) fn triggers(
     time: ThinkTime,
     driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    let mover = reference(host, entity)?;
-    if mover.namespace != ResourceNamespace::Module(module) {
+    let mover = capture(host, entity)?;
+    if mover
+        .reference()
+        .is_some_and(|reference| reference.namespace != ResourceNamespace::Module(module))
+    {
         return Err(ClientCommandError::DifferentModule);
     }
-    let mut run = TriggerRun::begin(host, mover, time)?;
+    let mut run = TriggerRun::from_capture(host, module, Some(mover), time);
     while let Some(touch) = run.next(host, access)? {
         touch.invoke(host, driver)?;
     }

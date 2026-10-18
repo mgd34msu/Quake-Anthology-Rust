@@ -31,7 +31,7 @@ mod service_program;
 #[path = "../support/visibility_world.rs"]
 mod visibility_world;
 
-fn qvm_passenger_fixture(a: RuleSetId, connection: Connection) -> Fixture {
+fn passenger_fixture(a: RuleSetId, connection: Connection, native_client: bool) -> Fixture {
     use qa_formats::program::qvm::Opcode as Q;
     let mut runtime = Runtime::load(1, []).unwrap();
     let owner = geometry(&mut runtime, 4.0);
@@ -48,83 +48,92 @@ fn qvm_passenger_fixture(a: RuleSetId, connection: Connection) -> Fixture {
         (0..10).collect(),
         a,
     );
-    let mut vm = service_program::program(
-        &[
-            (Q::Enter, 64),
-            (Q::Const, 4096),
-            (Q::Arg, 8),
-            (Q::Const, 1),
-            (Q::Arg, 12),
-            (Q::Const, 608),
-            (Q::Arg, 16),
-            (Q::Const, 16384),
-            (Q::Arg, 20),
-            (Q::Const, 640),
-            (Q::Arg, 24),
-            (Q::Const, -16),
-            (Q::Call, 0),
-            (Q::Pop, 0),
-            (Q::Const, 0),
-            (Q::Leave, 64),
-        ],
-        &[],
-    );
-    vm.configure_q3_game(qa_core::primitives::Q3StatLayout::BASE);
-    for (offset, value) in [(0, 0), (460, 1), (512, 1023)] {
-        vm.memory.write_word(4096 + offset, value).unwrap();
-    }
-    for offset in [24, 92, 488] {
+    let second = native_client.then(|| {
+        let mut vm = service_program::program(
+            &[
+                (Q::Enter, 64),
+                (Q::Const, 4096),
+                (Q::Arg, 8),
+                (Q::Const, 1),
+                (Q::Arg, 12),
+                (Q::Const, 608),
+                (Q::Arg, 16),
+                (Q::Const, 16384),
+                (Q::Arg, 20),
+                (Q::Const, 640),
+                (Q::Arg, 24),
+                (Q::Const, -16),
+                (Q::Call, 0),
+                (Q::Pop, 0),
+                (Q::Const, 0),
+                (Q::Leave, 64),
+            ],
+            &[],
+        );
+        vm.configure_q3_game(qa_core::primitives::Q3StatLayout::BASE);
+        for (offset, value) in [(0, 0), (460, 1), (512, 1023)] {
+            vm.memory.write_word(4096 + offset, value).unwrap();
+        }
+        for offset in [24, 92, 488] {
+            vm.memory
+                .write_vec3(4096 + offset, Vec3([0.0, 0.0, 6.0]))
+                .unwrap();
+        }
+        vm.memory.write_vec3(4096 + 436, Vec3([-1.0; 3])).unwrap();
+        vm.memory.write_vec3(4096 + 448, Vec3([1.0; 3])).unwrap();
         vm.memory
-            .write_vec3(4096 + offset, Vec3([0.0, 0.0, 6.0]))
+            .write_vec3(16384 + 20, Vec3([0.0, 0.0, 6.0]))
             .unwrap();
-    }
-    vm.memory.write_vec3(4096 + 436, Vec3([-1.0; 3])).unwrap();
-    vm.memory.write_vec3(4096 + 448, Vec3([1.0; 3])).unwrap();
-    vm.memory
-        .write_vec3(16384 + 20, Vec3([0.0, 0.0, 6.0]))
-        .unwrap();
-    vm.memory
-        .write_vec3(16384 + 32, Vec3([2.0, 3.0, 4.0]))
-        .unwrap();
-    vm.memory.write_word(16384 + 148, 1023).unwrap();
-    let (mut second, extra) = request(
-        &mut runtime,
-        B,
-        Program::Qvm {
-            vm: Box::new(vm),
-            imports: &qa_compat::abi::Q3_SERVER,
-        },
-        vec![0],
-        RuleSetId::Quake3,
-    );
-    runtime.server.entities.columns.native_entity[second.anchor.slot as usize] = None;
-    runtime
-        .server
-        .entities
-        .release(extra.unwrap(), ThinkTime::Milliseconds(0));
-    second.initialize = vec![super::super::Export::words(
-        qa_core::primitives::CallbackId(0),
-        &[],
-    )];
+        vm.memory
+            .write_vec3(16384 + 32, Vec3([2.0, 3.0, 4.0]))
+            .unwrap();
+        vm.memory.write_word(16384 + 148, 1023).unwrap();
+        let (mut second, extra) = request(
+            &mut runtime,
+            B,
+            Program::Qvm {
+                vm: Box::new(vm),
+                imports: &qa_compat::abi::Q3_SERVER,
+            },
+            vec![0],
+            RuleSetId::Quake3,
+        );
+        runtime.server.entities.columns.native_entity[second.anchor.slot as usize] = None;
+        runtime
+            .server
+            .entities
+            .release(extra.unwrap(), ThinkTime::Milliseconds(0));
+        second.initialize = vec![super::super::Export::words(
+            qa_core::primitives::CallbackId(0),
+            &[],
+        )];
+        second
+    });
     let pusher = allocate(&mut runtime, A, 40);
     let id = runtime
         .server
-        .connect(connection, B, Some(NativeEntity { module: B, slot: 0 }))
+        .connect(
+            connection,
+            B,
+            native_client.then_some(NativeEntity { module: B, slot: 0 }),
+        )
         .unwrap();
     let rider = runtime.server.clients[id.0 as usize].entity;
-    runtime.server.clients[id.0 as usize].module_movement = true;
+    runtime.server.clients[id.0 as usize].module_movement = native_client;
     runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake2;
     runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake3;
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
         runtime,
         TickRate::FrameDriven,
-        vec![first, second],
+        std::iter::once(first).chain(second).collect(),
     )
     .unwrap();
     host.initialize_modules(super::super::Phase::Server);
-    assert_eq!(host.module_state(B), Some(crate::modules::State::Running));
-    assert_eq!(host.module_counts(B).unwrap().traps, 0);
+    if native_client {
+        assert_eq!(host.module_state(B), Some(crate::modules::State::Running));
+        assert_eq!(host.module_counts(B).unwrap().traps, 0);
+    }
     edit_quakec(
         &mut host,
         A,
@@ -148,13 +157,33 @@ fn qvm_passenger_fixture(a: RuleSetId, connection: Connection) -> Fixture {
         },
     )
     .unwrap();
-    projected::transport(
-        &mut host,
-        NativeEntity { module: B, slot: 0 },
-        Vec3([0.0, 0.0, 6.0]),
-        true,
-    )
-    .unwrap();
+    if native_client {
+        projected::transport(
+            &mut host,
+            CollisionOwner::Native(NativeEntity { module: B, slot: 0 }),
+            Vec3([0.0, 0.0, 6.0]),
+            true,
+        )
+        .unwrap();
+    } else {
+        let body = &mut host.runtime.server.clients[id.0 as usize].player.body;
+        body.position = Vec3([0.0, 0.0, 6.0]);
+        body.velocity = Vec3([2.0, 3.0, 4.0]);
+        body.mins = Vec3([-1.0; 3]);
+        body.maxs = Vec3([1.0; 3]);
+        host.runtime
+            .server
+            .entities
+            .columns
+            .set_body(rider.slot as usize, *body);
+        host.runtime.server.area.link(
+            &host.runtime.server.entities,
+            rider,
+            qa_world::area::LinkFlags::SOLID,
+            host.runtime.server.clients[id.0 as usize].link_order,
+            qa_world::area::LinkIntent::Explicit,
+        );
+    }
     host.runtime.server.clients[id.0 as usize]
         .player
         .movement
@@ -174,6 +203,94 @@ fn qvm_passenger_fixture(a: RuleSetId, connection: Connection) -> Fixture {
         owner,
         query,
     }
+}
+
+fn qvm_passenger_fixture(a: RuleSetId, connection: Connection) -> Fixture {
+    passenger_fixture(a, connection, true)
+}
+
+#[test]
+fn engine_clients_ride_foreign_push_using_canonical_state_and_independent_rules() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for connection in [Connection::Local, Connection::Remote, Connection::Bot] {
+            let mut f = passenger_fixture(rules, connection, false);
+            assert!(f.host.module_row(B).is_none());
+            assert!(
+                f.host.runtime.server.entities.columns.native_entity[f.rider.slot as usize]
+                    .is_none()
+            );
+            let before = f.host.runtime.server.clients[0].player.body;
+            f.run().unwrap();
+            let position = Vec3([1.0, 0.0, 6.0]);
+            assert_eq!(
+                f.host.runtime.server.entities.columns.position[f.rider.slot as usize],
+                position
+            );
+            let player = &f.host.runtime.server.clients[0].player;
+            assert_eq!(player.body.position, position);
+            assert_eq!(player.body.velocity, before.velocity);
+            assert_eq!(player.body.mins, before.mins);
+            assert_eq!(player.body.maxs, before.maxs);
+            assert_eq!(player.movement_rules, RuleSetId::Quake2);
+            assert_eq!(player.trace_rules, RuleSetId::Quake3);
+            assert_eq!(player.movement.ground, Some(f.pusher));
+            assert_eq!(
+                f.host.runtime.server.area.bounds(f.rider).unwrap().mins,
+                position + before.mins - Vec3([1.0; 3])
+            );
+        }
+    }
+}
+
+#[test]
+fn engine_passenger_rollback_admits_the_canonical_blocker_to_quakec() {
+    let mut f = passenger_fixture(RuleSetId::Quake, Connection::Bot, false);
+    let position = Vec3([5.5, 0.0, 0.0]);
+    f.host.runtime.server.clients[0].player.body.position = position;
+    f.host
+        .runtime
+        .server
+        .entities
+        .columns
+        .transport_position(f.rider.slot as usize, position);
+    f.host.runtime.server.area.link(
+        &f.host.runtime.server.entities,
+        f.rider,
+        qa_world::area::LinkFlags::SOLID,
+        f.host.runtime.server.clients[0].link_order,
+        qa_world::area::LinkIntent::Explicit,
+    );
+    Fixture::body(&mut f.host, A, Vec3([7.5625, 0.0, 0.0]), 2.0, 0);
+    f.blocked(3);
+    f.run().unwrap();
+    assert_eq!(
+        f.host.runtime.server.clients[0].player.body.position,
+        position
+    );
+    assert_eq!(
+        f.host.runtime.server.entities.columns.position[f.rider.slot as usize],
+        position
+    );
+    assert_eq!(f.raw_position(A, 40), Vec3::default());
+    let Program::QuakeC(qc) = &f.host.module_row(A).unwrap().request.program else {
+        unreachable!()
+    };
+    assert_eq!(qc.vm.image.globals[68..71], position.0.map(f32::to_bits));
+}
+
+#[test]
+fn engine_passenger_relink_delivers_its_transported_pose_to_quakec_trigger() {
+    let mut f = passenger_fixture(RuleSetId::Quake, Connection::Bot, false);
+    Fixture::body(&mut f.host, A, Vec3([1.0, 0.0, 6.0]), 1.0, 2);
+    f.run().unwrap();
+    let Program::QuakeC(qc) = &f.host.module_row(A).unwrap().request.program else {
+        unreachable!()
+    };
+    assert_eq!(
+        qc.vm.image.globals[60..63],
+        [1.0f32, 0.0, 6.0].map(f32::to_bits)
+    );
+    assert_eq!(qc.vm.image.globals[59], 1.0f32.to_bits());
 }
 
 #[test]
@@ -215,7 +332,7 @@ fn qvm_passenger_rollback_restores_public_player_pose_after_foreign_blocked() {
     let mut f = qvm_passenger_fixture(RuleSetId::Quake, Connection::Bot);
     let native = NativeEntity { module: B, slot: 0 };
     let position = Vec3([5.5, 0.0, 0.0]);
-    projected::transport(&mut f.host, native, position, true).unwrap();
+    projected::transport(&mut f.host, CollisionOwner::Native(native), position, true).unwrap();
     Fixture::body(&mut f.host, A, Vec3([7.5625, 0.0, 0.0]), 2.0, 0);
     f.blocked(4);
     let before = f.host.module_counts(B).unwrap().calls;
@@ -275,7 +392,8 @@ fn qvm_passenger_impact_keeps_its_capture_after_relink_retires_the_client() {
     let mut passenger = projected::Passenger {
         host: &mut f.host,
         driver: &mut driver,
-        native: NativeEntity { module: B, slot: 0 },
+        owner: CollisionOwner::Native(NativeEntity { module: B, slot: 0 }),
+        provider: A,
         mover,
         rules: qa_gameplay::rules::motion::push_rules(RuleSetId::Quake).unwrap(),
     };
