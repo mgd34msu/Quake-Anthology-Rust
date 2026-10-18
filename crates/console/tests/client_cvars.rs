@@ -41,10 +41,13 @@ fn connection_values_inherit_global_changes_until_locally_overridden() {
     vars.force_write(a, "16").unwrap();
     assert_eq!(vars.integer_view(a).unwrap(), 16);
     assert_eq!(vars.integer_view(b).unwrap(), 12);
-    let b_generation = vars.native_snapshot(native_b).unwrap().1;
+    let b_generation = vars.native_snapshot(native_b, b.context()).unwrap().1;
     vars.force_write(a, "20").unwrap();
-    assert_eq!(vars.native_snapshot(native_b).unwrap().1, b_generation);
-    assert_eq!(vars.native_snapshot(native_a).unwrap().1, 4);
+    assert_eq!(
+        vars.native_snapshot(native_b, b.context()).unwrap().1,
+        b_generation
+    );
+    assert_eq!(vars.native_snapshot(native_a, a.context()).unwrap().1, 4);
     vars.force_write(global, "24").unwrap();
     assert_eq!(vars.integer_view(a).unwrap(), 20);
     assert_eq!(vars.integer_view(b).unwrap(), 24);
@@ -207,10 +210,10 @@ fn inherited_latches_and_physical_controls_use_their_declared_owner() {
     });
     vars.write(global, "2").unwrap();
     assert_eq!(vars.latched(local).unwrap().unwrap().as_str(), "2");
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 2);
+    assert_eq!(vars.native_snapshot(native, local.context()).unwrap().1, 2);
     vars.apply_latch(global).unwrap();
     assert_eq!(vars.read(local).unwrap().as_str(), "2");
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 3);
+    assert_eq!(vars.native_snapshot(native, local.context()).unwrap().1, 3);
     let local_volume = vars.bind("s_volume", a).unwrap();
     assert_eq!(local_volume.canonical(), volume);
     let server_info = vars.info_generation(RuleSetId::Quake3, 4 | 8);

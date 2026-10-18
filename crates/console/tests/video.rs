@@ -196,11 +196,11 @@ fn pending_alias_groups_update_native_dependencies_and_apply_without_server_latc
     });
     let alias = vars.bind("vid_mode", context(RuleSetId::Quake)).unwrap();
     let native = vars.native_view(alias).unwrap();
-    let before = vars.native_snapshot(native).unwrap().1;
+    let before = vars.native_snapshot(native, alias.context()).unwrap().1;
     let selected = PendingSettings::capture(&vars, vars.window_views(false).unwrap());
     vars.write(alias, "3").unwrap();
     assert!(!selected.unchanged(&vars));
-    assert!(vars.native_snapshot(native).unwrap().1 > before);
+    assert!(vars.native_snapshot(native, alias.context()).unwrap().1 > before);
     assert_eq!(vars.latched(alias).unwrap().unwrap().as_str(), "3");
     assert_eq!(vars.window_request(false, false, None).unwrap().width, 640);
     assert_eq!(vars.window_request(true, false, None).unwrap().width, 1280);
@@ -245,13 +245,13 @@ fn custom_dimensions_refresh_cached_alias_values_without_promoting_a_mode() {
     let alias = vars.bind("gl_mode", context(RuleSetId::Quake2)).unwrap();
     let native = vars.native_view(alias).unwrap();
     let generation = vars.view_generation(alias);
-    let modifications = vars.native_snapshot(native).unwrap().1;
+    let modifications = vars.native_snapshot(native, alias.context()).unwrap().1;
     assert_eq!(vars.integer_view(alias).unwrap(), 3);
     write(&mut vars, "r_customwidth", "800", RuleSetId::Quake3);
     write(&mut vars, "r_customheight", "600", RuleSetId::Quake3);
     assert_eq!(vars.integer_view(alias).unwrap(), 4);
     assert!(vars.view_generation(alias) > generation);
-    assert!(vars.native_snapshot(native).unwrap().1 > modifications);
+    assert!(vars.native_snapshot(native, alias.context()).unwrap().1 > modifications);
     assert_eq!(read(&vars, "r_mode", RuleSetId::Quake3), "-1");
 }
 
@@ -265,12 +265,12 @@ fn installing_video_capabilities_refreshes_already_registered_native_aliases() {
     write(&mut vars, "r_mode", "3", RuleSetId::Quake3);
     let view = vars.bind("gl_mode", context(RuleSetId::Quake2)).unwrap();
     let native = vars.native_view(view).unwrap();
-    let before = vars.native_snapshot(native).unwrap().1;
+    let before = vars.native_snapshot(native, view.context()).unwrap().1;
     assert_eq!(vars.read(view).err(), Some(Error::VideoPolicyRequired));
     vars.set_video_policy(capabilities(), mode(640, 400, 0, 0))
         .unwrap();
     assert_eq!(vars.integer_view(view).unwrap(), 3);
-    assert!(vars.native_snapshot(native).unwrap().1 > before);
+    assert!(vars.native_snapshot(native, view.context()).unwrap().1 > before);
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn rewriting_modelist_reprojects_the_retained_index_in_one_pending_group() {
     write(&mut vars, "vid_fullscreen", "2", source);
     let selector = vars.bind("vid_fullscreen", context(source)).unwrap();
     let native = vars.native_view(selector).unwrap();
-    let before = vars.native_snapshot(native).unwrap().1;
+    let before = vars.native_snapshot(native, selector.context()).unwrap().1;
     vars.set_runtime_policy(RuntimePolicy {
         initialized: true,
         server_active: true,
@@ -361,7 +361,7 @@ fn rewriting_modelist_reprojects_the_retained_index_in_one_pending_group() {
             color_bits: 24
         }
     );
-    assert!(vars.native_snapshot(native).unwrap().1 > before);
+    assert!(vars.native_snapshot(native, selector.context()).unwrap().1 > before);
     // Replacing the same pending list must not preserve its previous target.
     write(&mut vars, "vid_modelist", "desktop 1280x720:32@60", source);
     let pending = vars.window_request(true, false, None).unwrap();
@@ -779,7 +779,7 @@ fn pending_geometry_refreshes_cached_native_mode_without_changing_current_genera
     );
     let alias = vars.bind("gl_mode", context(RuleSetId::Quake2)).unwrap();
     let native = vars.native_view(alias).unwrap();
-    let modifications = vars.native_snapshot(native).unwrap().1;
+    let modifications = vars.native_snapshot(native, alias.context()).unwrap().1;
     let generation = vars.view_generation(alias);
     vars.set_runtime_policy(RuntimePolicy {
         initialized: true,
@@ -794,7 +794,7 @@ fn pending_geometry_refreshes_cached_native_mode_without_changing_current_genera
     assert_eq!(vars.integer_view(alias).unwrap(), 4);
     assert_eq!(vars.latched(alias).unwrap().unwrap().as_str(), "6.000000");
     assert_eq!(vars.view_generation(alias), generation);
-    assert!(vars.native_snapshot(native).unwrap().1 > modifications);
+    assert!(vars.native_snapshot(native, alias.context()).unwrap().1 > modifications);
     PendingSettings::capture(&vars, vars.window_views(false).unwrap())
         .apply(&mut vars)
         .unwrap();

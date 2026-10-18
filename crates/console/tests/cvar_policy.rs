@@ -32,7 +32,7 @@ fn rejected_storage_write_preserves_pending_value_and_native_generation() {
     let native = vars.native_view(view).unwrap();
     vars.set_runtime_policy(running(false));
     vars.write(view, "2").unwrap();
-    let generation = vars.native_snapshot(native).unwrap().1;
+    let generation = vars.native_snapshot(native, view.context()).unwrap().1;
     assert_eq!(
         vars.set_text(
             view.canonical(),
@@ -44,7 +44,10 @@ fn rejected_storage_write_preserves_pending_value_and_native_generation() {
     );
     assert_eq!(vars.read(view).unwrap().as_str(), "1");
     assert_eq!(vars.latched(view).unwrap().unwrap().as_str(), "2");
-    assert_eq!(vars.native_snapshot(native).unwrap().1, generation);
+    assert_eq!(
+        vars.native_snapshot(native, view.context()).unwrap().1,
+        generation
+    );
     vars.set_text(view.canonical(), "é\0raw").unwrap();
     assert_eq!(vars.read(view).unwrap().as_str(), "é\0raw");
     assert!(vars.latched(view).unwrap().is_none());
@@ -82,15 +85,24 @@ fn initialized_q3_latches_before_cheat_checks_without_an_active_server() {
     vars.write(latched, "2").unwrap();
     assert_eq!(vars.read(latched).unwrap().as_str(), "1");
     assert_eq!(vars.latched(latched).unwrap().unwrap().as_str(), "2");
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 2);
+    assert_eq!(
+        vars.native_snapshot(native, latched.context()).unwrap().1,
+        2
+    );
     let generation = vars.view_update_generation(latched);
     vars.write(latched, "2").unwrap();
     assert_eq!(vars.view_update_generation(latched), generation);
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 2);
+    assert_eq!(
+        vars.native_snapshot(native, latched.context()).unwrap().1,
+        2
+    );
     vars.apply_latch(latched).unwrap();
     assert_eq!(vars.read(latched).unwrap().as_str(), "2");
     assert!(vars.latched(latched).unwrap().is_none());
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 3);
+    assert_eq!(
+        vars.native_snapshot(native, latched.context()).unwrap().1,
+        3
+    );
 }
 
 #[test]
@@ -129,7 +141,7 @@ fn equal_q3_writes_preserve_a_latch_and_forced_different_values_apply_it_once() 
     vars.write(view, "1").unwrap();
     assert_eq!(vars.view_update_generation(view), generation);
     assert_eq!(vars.latched(view).unwrap().unwrap().as_str(), "2");
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 2);
+    assert_eq!(vars.native_snapshot(native, view.context()).unwrap().1, 2);
     // Matching a pending string must not bypass a newly added ROM flag.
     vars.register("_qa_policy_equal_latch", None, 64, q3)
         .unwrap();
@@ -137,7 +149,7 @@ fn equal_q3_writes_preserve_a_latch_and_forced_different_values_apply_it_once() 
     vars.force_write(view, "2").unwrap();
     assert_eq!(vars.read(view).unwrap().as_str(), "2");
     assert!(vars.latched(view).unwrap().is_none());
-    assert_eq!(vars.native_snapshot(native).unwrap().1, 3);
+    assert_eq!(vars.native_snapshot(native, view.context()).unwrap().1, 3);
 }
 
 #[test]

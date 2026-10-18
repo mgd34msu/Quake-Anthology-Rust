@@ -51,6 +51,9 @@ impl View {
     pub fn binding_id(self) -> u16 {
         self.binding
     }
+    pub fn context(self) -> Context {
+        self.context
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteError {
@@ -893,10 +896,11 @@ impl Cvars {
     /// name/value table. Registration uses capacity reserved at registry load.
     pub fn native_view(&mut self, mut view: View) -> Result<u32, WriteError> {
         self.validate_view(view)?;
-        view.context = cvar_context(view.context);
-        view.context.event_time = None;
-        view.context.key_source = None;
-        view.context.producer = None;
+        view.context = Context {
+            client_lifetime: view.context.client_lifetime,
+            cvar_client: view.context.cvar_client,
+            ..native_context(view.context)
+        };
         let binding = view.binding as usize;
         let mut cursor = self.native_heads[binding];
         while let Some(index) = cursor {
@@ -926,8 +930,14 @@ impl Cvars {
         self.native_heads[binding] = Some(index);
         Ok(index)
     }
-    pub fn native_snapshot(&self, handle: u32) -> Option<(View, i32)> {
+    pub fn native_snapshot(&self, handle: u32, context: Context) -> Option<(View, i32)> {
         let row = self.native_views.get(handle as usize)?;
+        self.validate_view(row.view).ok()?;
+        if self.context_column(context)? != self.context_column(row.view.context)?
+            || native_context(context) != native_context(row.view.context)
+        {
+            return None;
+        }
         Some((row.view, row.modifications as i32))
     }
     fn native_current(&self, view: View) -> Result<FixedText<MAX_TEXT>, conversion::Error> {

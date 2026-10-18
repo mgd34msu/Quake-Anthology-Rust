@@ -2407,6 +2407,20 @@ impl FrameHost {
         shutdown: bool,
         driver: &mut crate::modules::Driver<'_>,
     ) {
+        // UI can follow a reused seat without a cgame owning the replacement.
+        // Reserve its selected column at this cold boundary before any imports.
+        if !shutdown
+            && let Some(owner) = module_connection(self, module)
+            && qa_console::commands::Host::client_command_live(&self.runtime, owner.0, owner.1)
+            && let Err(error) = self.console.cvars.load_client_values(owner)
+        {
+            let _ = self.runtime.server.events.console_formatted(format_args!(
+                "CLIENT module {} cvars: {error:?}\n",
+                module.0
+            ));
+            self.fail_renderer_restart(module, driver);
+            return;
+        }
         if shutdown {
             self.disconnect_module_recipients(module, driver);
         } else if self.module_row(module).is_some_and(|row| {

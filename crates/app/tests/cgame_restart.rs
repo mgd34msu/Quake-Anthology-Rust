@@ -65,7 +65,10 @@ const UI_STOP_TEXT: u32 = 0x4720;
 const COMMAND_OWNED: u32 = 0x4680;
 const COMMAND_SHARED: u32 = 0x46a0;
 const CLIENT_TEXT: u32 = 0x46c0;
+const CVAR_NAME: u32 = 0x47a0;
+const CVAR_DEFAULT: u32 = 0x47b8;
 const BSS: u32 = 0x7000;
+const VM_CVAR: u32 = BSS + 64;
 const GAMESTATE: u32 = 0x8000;
 const GLCONFIG: u32 = 0xd000;
 const GLCONFIG_ASPECT: u32 = GLCONFIG + 11264 + 12 * 4;
@@ -94,6 +97,8 @@ fn data() -> Vec<u8> {
         (COMMAND_OWNED, b"restart_owned\0".as_slice()),
         (COMMAND_SHARED, b"restart_shared\0".as_slice()),
         (CLIENT_TEXT, b"-native raw \"quoted\" payload\0".as_slice()),
+        (CVAR_NAME, b"_qa_ui_client_value\0".as_slice()),
+        (CVAR_DEFAULT, b"17\0".as_slice()),
     ] {
         data[at as usize..at as usize + text.len()].copy_from_slice(text);
     }
@@ -180,6 +185,17 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                 1 => {
                     qvm_check(&mut ops, INITIAL, 7, 0);
                     qvm_check(&mut ops, BSS, 0, 0);
+                    qvm_call(
+                        &mut ops,
+                        50,
+                        &[
+                            ImportArg::Pointer(VM_CVAR),
+                            ImportArg::Pointer(CVAR_NAME),
+                            ImportArg::Pointer(CVAR_DEFAULT),
+                            ImportArg::Integer(0),
+                        ],
+                    );
+                    ops.push((Pop, 0));
                     if graphics {
                         // Engine font, white, and console own the first three
                         // real registrations before this guest shader.
@@ -263,6 +279,10 @@ fn qvm_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> Vec<
                     ops.push((Const, 0x600d));
                 }
                 10 => ops.extend([(Const, BSS as i32), (Load4, 0)]),
+                4 => {
+                    qvm_call(&mut ops, 51, &[ImportArg::Pointer(VM_CVAR)]);
+                    ops.extend([(Pop, 0), (Const, VM_CVAR as i32 + 12), (Load4, 0)]);
+                }
                 _ => ops.push((Const, 0)),
             }
             ops.push((Leave, 64));
@@ -518,6 +538,17 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                     // The same fresh native child constructor already checks
                     // initialized/BSS storage before dllEntry and this UI_INIT.
                     code.extend([0x48, 0x83, 0xec, 8]);
+                    call(
+                        &mut code,
+                        50,
+                        &[
+                            ImportArg::Pointer(VM_CVAR),
+                            ImportArg::Pointer(CVAR_NAME),
+                            ImportArg::Pointer(CVAR_DEFAULT),
+                            ImportArg::Integer(0),
+                        ],
+                        base,
+                    );
                     if graphics {
                         call(&mut code, 20, &[ImportArg::Pointer(GRAPHICS_TEXT)], base);
                         rip(&mut code, &[0x89, 0x05], GRAPHICS_HANDLE, base);
@@ -545,6 +576,13 @@ fn native_role_with_graphics(ui: bool, fail_shutdown: bool, graphics: bool) -> V
                     call(&mut code, 43, &[ImportArg::Pointer(GLCONFIG)], base);
                     code.extend([0x48, 0x83, 0xc4, 8]);
                     rip(&mut code, &[0x8b, 0x05], GLCONFIG_ASPECT, base);
+                    code.push(0xc3);
+                }
+                4 => {
+                    code.extend([0x48, 0x83, 0xec, 8]);
+                    call(&mut code, 51, &[ImportArg::Pointer(VM_CVAR)], base);
+                    code.extend([0x48, 0x83, 0xc4, 8]);
+                    rip(&mut code, &[0x8b, 0x05], VM_CVAR + 12, base);
                     code.push(0xc3);
                 }
                 5 => {
@@ -2000,6 +2038,24 @@ fn verify_ui_association_replacement(module: Vec<u8>, ui: Vec<u8>) {
     queue_gamestate(&mut host, ids[0], "a", 11);
     queue_gamestate(&mut host, ids[1], "a", 22);
     until_running(&mut host, &mut source);
+    for (seat, (client, value)) in [(ids[0], "71"), (ids[1], "82")].into_iter().enumerate() {
+        let context = Context {
+            seat: SeatId::new(seat as u8).unwrap(),
+            client_lifetime: Some((
+                client,
+                host.runtime.server.clients[client.0 as usize].entity,
+            )),
+            ..Context::default()
+        };
+        let view = host
+            .console
+            .cvars
+            .bind("_qa_ui_client_value", context)
+            .unwrap();
+        host.console.cvars.force_write(view, value).unwrap();
+    }
+    assert_eq!(ui_query(&mut host, ModuleId(3), 4), Ok(71));
+    assert_eq!(ui_query(&mut host, ModuleId(4), 4), Ok(82));
     let old_lifetime = host.runtime.server.clients[ids[0].0 as usize].entity;
     let peer_ui_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
     assert!(host.shutdown_module_with_driver(ModuleId(1), &mut source.driver()));
@@ -2042,6 +2098,8 @@ fn verify_ui_association_replacement(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
     assert_eq!(host.module_state(ModuleId(4)), Some(State::Running));
     assert_eq!(&renderer_markers(&host)[before..], b"uU");
+    assert_eq!(ui_query(&mut host, ModuleId(3), 4), Ok(17));
+    assert_eq!(ui_query(&mut host, ModuleId(4), 4), Ok(82));
     assert_eq!(source.reset_receipts, resets);
     assert!(ui_query(&mut host, ModuleId(4), 10).unwrap() > peer_ui_frames);
     assert_eq!(host.module_counts(ModuleId(3)).unwrap().traps, 0);

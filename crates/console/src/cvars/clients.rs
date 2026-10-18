@@ -20,8 +20,13 @@ fn inherited(root: &Value) -> Value {
 
 pub(super) fn native_context(context: Context) -> Context {
     Context {
+        file_search: None,
+        event_time: None,
+        key_source: None,
+        producer: None,
         client_lifetime: None,
         cvar_client: None,
+        client_policy: None,
         ..context
     }
 }

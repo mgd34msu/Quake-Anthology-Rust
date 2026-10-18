@@ -1520,7 +1520,7 @@ pub struct EngineCallTable {
     pub free: fn(&mut EngineServices<'_>, CallContext, EntityId) -> Result<(), CallError>,
     pub cvar_register: CvarRegisterCall,
     pub cvar_view: fn(&mut EngineServices<'_>, View) -> Result<u32, CallError>,
-    pub cvar_snapshot: fn(&EngineServices<'_>, u32) -> Result<(View, i32), CallError>,
+    pub cvar_snapshot: fn(&EngineServices<'_>, u32, Context) -> Result<(View, i32), CallError>,
     pub cvar_latch: fn(&mut EngineServices<'_>, View) -> Result<(), CallError>,
     pub cvar_set: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub cvar_force: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
@@ -1927,7 +1927,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     free: |s, c, e| s.free(c, e),
     cvar_register: |s, c, n, d, f| s.cvar_register(c, n, d, f),
     cvar_view: |s, view| s.cvars.native_view(view).map_err(|_| CallError::Capacity),
-    cvar_snapshot: |s, handle| s.cvars.native_snapshot(handle).ok_or(CallError::Cvar),
+    cvar_snapshot: |s, handle, context| {
+        s.cvars
+            .native_snapshot(handle, context)
+            .ok_or(CallError::Cvar)
+    },
     cvar_latch: |s, view| s.cvars.apply_latch(view).map_err(|_| CallError::Cvar),
     cvar_set: |s, v, t| s.cvar_set(v, t),
     cvar_force: |s, v, t| s.cvar_force(v, t),

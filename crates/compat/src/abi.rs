@@ -2059,7 +2059,7 @@ fn q3_cvar_update(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn q3_cvar_project(c: &mut Invocation<'_, '_, '_>, address: u64) -> Result<(), CallError> {
     c.memory.read(address, VM_CVAR_BYTES)?;
     let handle = c.memory.read_word(address)? as u32;
-    let (view, count) = (ENGINE_CALLS.cvar_snapshot)(c.services, handle)?;
+    let (view, count) = (ENGINE_CALLS.cvar_snapshot)(c.services, handle, c.context.console)?;
     if c.memory.read_word(address + 4)? == count {
         return Ok(());
     }

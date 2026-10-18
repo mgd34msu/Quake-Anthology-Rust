@@ -217,8 +217,118 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
                 assert_eq!(call.memory.cstring(16).unwrap(), b"99");
             }
             assert_eq!(unknown.calls, 0);
+            if !std::ptr::eq(table, &Q3_SERVER) {
+                check_client_handle_ownership(
+                    table,
+                    &mut call,
+                    &mut unknown,
+                    register,
+                    update,
+                    base,
+                );
+            }
         }
     }
+}
+
+fn check_client_handle_ownership(
+    table: &CallTable,
+    call: &mut Invocation<'_, '_, '_>,
+    unknown: &mut UnknownCalls,
+    register: u32,
+    update: u32,
+    base: u64,
+) {
+    use qa_core::primitives::{ClientId, EntityId};
+    let first = (
+        ClientId(0),
+        EntityId {
+            slot: 2,
+            generation: 1,
+        },
+    );
+    let peer = (
+        ClientId(1),
+        EntityId {
+            slot: 3,
+            generation: 1,
+        },
+    );
+    for owner in [first, peer] {
+        call.services.cvars.load_client_values(owner).unwrap();
+    }
+    call.context.console.client_lifetime = Some(first);
+    call.memory
+        .write_string(base + 16, 64, b"_qa_client_owned")
+        .unwrap();
+    call.memory.write_string(base + 80, 64, b"17").unwrap();
+    invoke(
+        table,
+        call,
+        unknown,
+        register,
+        &[base + 256, base + 16, base + 80, 0],
+    )
+    .unwrap();
+    let saved = call.memory.read(base + 256, 272).unwrap().to_vec();
+    let handle = call.memory.read_word(base + 256).unwrap();
+    // Equal modification counts must not admit a handle from another CLIENT.
+    call.context.console.client_lifetime = Some(peer);
+    assert_eq!(
+        invoke(table, call, unknown, update, &[base + 256]),
+        Err(CallError::Cvar)
+    );
+    assert_eq!(call.memory.read(base + 256, 272).unwrap(), saved);
+    call.memory.write_string(base + 80, 64, b"29").unwrap();
+    invoke(
+        table,
+        call,
+        unknown,
+        register,
+        &[base + 576, base + 16, base + 80, 0],
+    )
+    .unwrap();
+    let peer_handle = call.memory.read_word(base + 576).unwrap();
+    assert_ne!(peer_handle, handle);
+    assert_eq!(call.memory.cstring(base + 592).unwrap(), b"29");
+    let replacement = (
+        first.0,
+        EntityId {
+            generation: 2,
+            ..first.1
+        },
+    );
+    call.services.cvars.load_client_values(replacement).unwrap();
+    call.context.console.client_lifetime = Some(first);
+    assert_eq!(
+        invoke(table, call, unknown, update, &[base + 256]),
+        Err(CallError::Cvar)
+    );
+    call.context.console.client_lifetime = Some(replacement);
+    assert_eq!(
+        invoke(table, call, unknown, update, &[base + 256]),
+        Err(CallError::Cvar)
+    );
+    call.memory.write_string(base + 80, 64, b"41").unwrap();
+    invoke(
+        table,
+        call,
+        unknown,
+        register,
+        &[base + 256, base + 16, base + 80, 0],
+    )
+    .unwrap();
+    assert_eq!(call.memory.read_word(base + 256).unwrap(), handle);
+    assert_eq!(call.memory.cstring(base + 272).unwrap(), b"41");
+    call.context.console.client_lifetime = Some(first);
+    assert_eq!(
+        invoke(table, call, unknown, update, &[base + 256]),
+        Err(CallError::Cvar)
+    );
+    call.context.console.client_lifetime = Some(peer);
+    invoke(table, call, unknown, update, &[base + 576]).unwrap();
+    assert_eq!(call.memory.read_word(base + 576).unwrap(), peer_handle);
+    assert_eq!(call.memory.cstring(base + 592).unwrap(), b"29");
 }
 
 fn compare_reference_rows(

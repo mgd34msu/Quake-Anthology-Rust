@@ -30,7 +30,12 @@ fn native_progress_aliases_keep_independent_seat_values_and_cached_vm_views() {
             .force_write(view, &(41 + index * 1000).to_string())
             .unwrap();
     }
-    let modifications = native.map(|handle| cvars.native_snapshot(handle).unwrap().1);
+    let modifications = std::array::from_fn::<_, 4, _>(|index| {
+        cvars
+            .native_snapshot(native[index], guest[index].context())
+            .unwrap()
+            .1
+    });
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
     cvars.reset_lookup_count();
     for _ in 0..1000 {
@@ -50,7 +55,10 @@ fn native_progress_aliases_keep_independent_seat_values_and_cached_vm_views() {
     cvars.force_write(explicit, "777").unwrap();
     for index in 0..4 {
         assert_eq!(
-            cvars.native_snapshot(native[index]).unwrap().1,
+            cvars
+                .native_snapshot(native[index], guest[index].context())
+                .unwrap()
+                .1,
             modifications[index] + i32::from(index == 1)
         );
         assert_eq!(
