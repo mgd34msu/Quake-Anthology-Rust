@@ -1209,3 +1209,71 @@ fn malformed_foreign_qvm_trace_rejects_the_consumer_and_preserves_producer_recov
     assert_eq!(qvm_foreign_probe(&mut host), 18.875);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 1);
 }
+
+#[test]
+fn queued_module_exec_and_nested_scripts_keep_the_publication_time_source() {
+    struct Files(std::path::PathBuf);
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = qa_platform::files::remove_dir_all(&self.0);
+        }
+    }
+    let files = Files(std::env::temp_dir().join(format!("qa-scoped-exec-{}", std::process::id())));
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut searches = Vec::new();
+    for (name, priority, nested) in [
+        ("low", 0, b"set _qa_script_source 1\n".as_slice()),
+        ("high", 10, b"set _qa_script_source 2\n"),
+    ] {
+        let root = files.0.join(name);
+        qa_platform::files::create_dir_all(&root).unwrap();
+        qa_platform::files::write(root.join("native.cfg"), b"exec nested\n").unwrap();
+        qa_platform::files::write(root.join("nested.cfg"), nested).unwrap();
+        let mount = runtime.vfs.mount_directory(&root, priority).unwrap();
+        searches.push(runtime.vfs.search_view([mount]).unwrap());
+    }
+    let requests = searches
+        .into_iter()
+        .enumerate()
+        .map(|(index, search)| {
+            let mut data = Data::default();
+            let command = data.text(b"exec native\n");
+            let mut body = Code::new();
+            syscall(&mut body, 14, &[2, command]);
+            body.extend([(Const, 0), (Leave, 64)]);
+            let mut request = request(
+                &mut runtime,
+                index as u16 + 1,
+                &Q3_SERVER,
+                SeatId::FIRST,
+                vm(&[(10, body)], data),
+            );
+            request.search = Some(search);
+            request
+        })
+        .collect();
+    let mut host = host(runtime, requests);
+    invoke(&mut host, 1);
+    assert_eq!(value(&host, "_qa_script_source"), None);
+    host.execute_commands();
+    assert_eq!(value(&host, "_qa_script_source"), Some(1.0));
+    invoke(&mut host, 2);
+    host.execute_commands();
+    assert_eq!(value(&host, "_qa_script_source"), Some(2.0));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    let foreign = qa_content::vfs::Vfs::default();
+    let foreign_view = foreign.search_view([]).unwrap();
+    let id = foreign.bind_search(Some(&foreign_view)).unwrap().id();
+    host.console
+        .append(
+            "exec native\n",
+            Context {
+                file_search: id,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    host.execute_commands();
+    assert_eq!(value(&host, "_qa_script_source"), Some(2.0));
+}

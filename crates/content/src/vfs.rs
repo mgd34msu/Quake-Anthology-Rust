@@ -4,6 +4,7 @@ use qa_core::{
 };
 mod list;
 mod policy;
+mod references;
 mod selections;
 pub use list::{FileListName, FileListQuery, FileListRequest, FileListing};
 pub use selections::{SelectionId, Selections};
@@ -26,14 +27,21 @@ pub struct MountId(pub u32);
 #[derive(Clone, Debug)]
 pub struct SearchView {
     owner: Arc<()>,
-    ranks: Option<Arc<[u32]>>,
+    ranks: Option<Arc<SourceOrder>>,
     read_policy: Option<Arc<policy::ReadPolicy>>,
+    references: Option<Arc<references::References>>,
+}
+#[derive(Debug, PartialEq, Eq)]
+struct SourceOrder {
+    ranks: Box<[u32]>,
+    mounts: Box<[MountId]>,
 }
 impl SearchView {
     /// Selection identity uses only VFS ownership and ordered mount metadata.
     pub fn same_selection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner)
             && self.read_policy == other.read_policy
+            && references::same_account(self.references.as_ref(), other.references.as_ref())
             && match (&self.ranks, &other.ranks) {
                 (None, None) => true,
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
@@ -46,6 +54,7 @@ impl SearchView {
     fn rank(&self, mount: MountId) -> Option<u32> {
         self.ranks
             .as_ref()?
+            .ranks
             .get(mount.0 as usize)
             .copied()
             .filter(|rank| *rank != u32::MAX)
@@ -101,7 +110,32 @@ impl ReadView<'_> {
         cap: usize,
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<Vec<u8>, VfsError> {
+        self.prepare_read(file)?;
         self.vfs.read_to_vec(file, cap, reader)
+    }
+    pub fn read_whole_into(
+        self,
+        file: &FileRef,
+        destination: &mut [u8],
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<usize, VfsError> {
+        self.prepare_read(file)?;
+        self.vfs.read_whole_into(file, destination, reader)
+    }
+    fn prepare_read(self, file: &FileRef) -> Result<(), VfsError> {
+        let entry = self.vfs.entry(file)?;
+        if self.search.is_some_and(|view| {
+            !self.vfs.accepts_search(view)
+                || !view.admits(&self.vfs.mounts[entry.mount], &entry.name, true)
+        }) {
+            return Err(VfsError::Handle);
+        }
+        if let Some(view) = self.search
+            && !references::same_account(view.references.as_ref(), file.references.as_ref())
+        {
+            view.record_open(entry, &entry.name)?;
+        }
+        Ok(())
     }
     pub fn source_precedence(self, file: &FileRef) -> Result<SourcePrecedence, VfsError> {
         self.vfs.source_precedence(file)
@@ -116,7 +150,7 @@ impl ReadView<'_> {
         reader: &mut qa_formats::archive::ArchiveReader,
     ) -> Result<Vec<u8>, VfsError> {
         let file = self.open(path).ok_or(VfsError::Missing)?;
-        self.vfs.read_to_vec(&file, limit, reader)
+        self.read_to_vec(&file, limit, reader)
     }
 }
 
@@ -166,6 +200,7 @@ impl PreparedArchive {
 pub struct FileRef {
     owner: Arc<()>,
     entry: Arc<Entry>,
+    references: Option<Arc<references::References>>,
 }
 impl std::fmt::Debug for FileRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -433,6 +468,7 @@ impl Vfs {
             owner: Arc::clone(&self.owner),
             ranks: None,
             read_policy: None,
+            references: None,
         }
     }
     pub fn read_view<'a>(&'a self, search: Option<&'a SearchView>) -> ReadView<'a> {
@@ -777,6 +813,7 @@ impl Vfs {
         Some(FileRef {
             owner: Arc::clone(&self.owner),
             entry: Arc::clone(entry),
+            references: None,
         })
     }
 
@@ -789,6 +826,7 @@ impl Vfs {
         order: impl IntoIterator<Item = MountId>,
     ) -> Result<SearchView, VfsError> {
         let mut ranks = vec![u32::MAX; self.mounts.len()];
+        let mut mounts = Vec::new();
         let mut next = 0;
         for id in order {
             self.mounts
@@ -799,6 +837,7 @@ impl Vfs {
             if *rank == u32::MAX {
                 *rank = next;
                 next += 1;
+                mounts.push(id);
             }
         }
         // Trailing exclusions do not change the fixed selection's identity.
@@ -809,8 +848,12 @@ impl Vfs {
         ranks.truncate(length);
         Ok(SearchView {
             owner: Arc::clone(&self.owner),
-            ranks: Some(ranks.into()),
+            ranks: Some(Arc::new(SourceOrder {
+                ranks: ranks.into_boxed_slice(),
+                mounts: mounts.into_boxed_slice(),
+            })),
             read_policy: None,
+            references: None,
         })
     }
     pub fn accepts_search(&self, view: &SearchView) -> bool {
@@ -829,7 +872,12 @@ impl Vfs {
             return None;
         }
         let candidates = self.find_candidates(path)?;
-        self.reference(self.select_candidate(candidates, view, read)?)
+        let mut reference = self.reference(self.select_candidate(candidates, view, read)?)?;
+        if read && let Some(view) = view {
+            view.record_open(&reference.entry, path).ok()?;
+            reference.references.clone_from(&view.references);
+        }
+        Some(reference)
     }
 
     fn select_candidate(
@@ -839,14 +887,12 @@ impl Vfs {
         read: bool,
     ) -> Option<u32> {
         let candidates = candidates.iter().copied().filter(|&slot| {
-            !read
-                || view.is_none_or(|view| {
-                    let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref)
-                    else {
-                        return false;
-                    };
-                    view.allows_read(&self.mounts[entry.mount], &entry.name)
-                })
+            view.is_none_or(|view| {
+                let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref) else {
+                    return false;
+                };
+                view.admits(&self.mounts[entry.mount], &entry.name, read)
+            })
         });
         if let Some(view) = view.and_then(SearchView::fixed) {
             candidates

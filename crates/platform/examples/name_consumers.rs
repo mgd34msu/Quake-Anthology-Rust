@@ -41,7 +41,12 @@ impl Host for Capture {
     fn quit(&mut self) {
         self.failed = true;
     }
-    fn read_script(&mut self, _: &str, _: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        _: &str,
+        _: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         Err(ScriptError::Missing)
     }
 }

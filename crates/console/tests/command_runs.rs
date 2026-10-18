@@ -24,7 +24,12 @@ impl Host for Capture {
     fn print_bytes(&mut self, text: &[u8]) {
         self.output.extend_from_slice(text);
     }
-    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        path: &str,
+        destination: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         if path != "script.cfg" {
             return Err(ScriptError::Missing);
         }

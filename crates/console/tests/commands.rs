@@ -25,7 +25,12 @@ impl Host for Capture {
     fn print(&mut self, text: Arguments<'_>) {
         self.output.write_fmt(text).unwrap();
     }
-    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        path: &str,
+        destination: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         let text = match path {
             "inner.cfg" => "mark inside\n",
             "outer.cfg" => "mark before; exec inner; mark after\n",

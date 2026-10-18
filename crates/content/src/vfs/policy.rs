@@ -1,12 +1,21 @@
 //! Read admission is source metadata on the shared VFS selection.
 use super::*;
 
+pub(super) const Q3_LOOSE_SUFFIXES: &[&[u8]] = &[b".cfg", b".menu", b".game", b".dm_68", b".dat"];
+pub(super) fn has_suffix(path: &[u8], suffix: &[u8]) -> bool {
+    path.get(path.len().saturating_sub(suffix.len())..)
+        .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
+}
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ReadPolicy {
     archives: Box<[bool]>,
     loose_suffixes: Box<[Box<[u8]>]>,
 }
 impl SearchView {
+    pub(super) fn admits(&self, mount: &MountInfo, path: &[u8], read: bool) -> bool {
+        (self.fixed().is_none() || self.rank(mount.id).is_some())
+            && (!read || self.allows_read(mount, path))
+    }
     pub(super) fn allows_archive(&self, mount: MountId) -> bool {
         self.read_policy.as_ref().is_none_or(|policy| {
             policy
@@ -18,10 +27,10 @@ impl SearchView {
     }
     fn allows_loose(&self, path: &[u8]) -> bool {
         self.read_policy.as_ref().is_none_or(|policy| {
-            policy.loose_suffixes.iter().any(|suffix| {
-                path.get(path.len().saturating_sub(suffix.len())..)
-                    .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
-            })
+            policy
+                .loose_suffixes
+                .iter()
+                .any(|suffix| has_suffix(path, suffix))
         })
     }
     pub(super) fn allows_read(&self, mount: &MountInfo, path: &[u8]) -> bool {
@@ -42,21 +51,22 @@ impl Vfs {
         if view.is_some_and(|view| !self.accepts_search(view)) {
             return Err(VfsError::Handle);
         }
-        let fixed = view.and_then(SearchView::fixed);
         output.clear();
-        output.extend(
-            self.mounts()
-                .filter(|mount| fixed.is_none_or(|view| view.rank(mount.id).is_some()))
-                .map(|mount| mount.id),
-        );
+        if let Some(order) = view.and_then(|view| view.ranks.as_ref()) {
+            output.extend(
+                order
+                    .mounts
+                    .iter()
+                    .copied()
+                    .filter(|id| self.mounts[id.0 as usize].active),
+            );
+            return Ok(());
+        }
+        output.extend(self.mounts().map(|mount| mount.id));
         output.sort_unstable_by(|a, b| {
-            if let Some(view) = fixed {
-                view.rank(*a).cmp(&view.rank(*b))
-            } else {
-                self.mounts[b.0 as usize]
-                    .precedence()
-                    .cmp(&self.mounts[a.0 as usize].precedence())
-            }
+            self.mounts[b.0 as usize]
+                .precedence()
+                .cmp(&self.mounts[a.0 as usize].precedence())
         });
         Ok(())
     }
@@ -104,6 +114,7 @@ impl Vfs {
             archives: admitted.into_boxed_slice(),
             loose_suffixes: suffixes.into_boxed_slice(),
         }));
+        selected.references = view.and_then(|view| view.references.clone());
         Ok(selected)
     }
     /// Q3 FS_ReorderPurePaks and FS_PakIsPure. Checksums are the existing native
@@ -142,11 +153,7 @@ impl Vfs {
                             .is_some_and(|pack| server_checksums.contains(&pack.checksum())))
             })
             .collect();
-        let mut selected = self.restricted_search(
-            view,
-            &archives,
-            &[b".cfg", b".menu", b".game", b".dm_68", b".dat"],
-        )?;
+        let mut selected = self.restricted_search(view, &archives, Q3_LOOSE_SUFFIXES)?;
         selected.ranks = self.search_view(order)?.ranks;
         Ok(selected)
     }

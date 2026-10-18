@@ -1587,3 +1587,285 @@ fn repeated_pure_checksums_admit_each_mount_without_merging_source_identity() {
         low
     );
 }
+
+#[test]
+fn q3_references_follow_actual_selected_opens_and_native_report_order() {
+    use qa_core::{random::Random, text::FixedText};
+    let root = Fixture::new("q3-references");
+    let mut vfs = Vfs::default();
+    let mut mounts = Vec::new();
+    for (name, entries) in [
+        (
+            "modules",
+            vec![
+                (b"vm/cgame.qvm".as_slice(), b"client".as_slice()),
+                (b"vm/ui.qvm", b"ui"),
+                (b"vm/qagame.qvm", b"server"),
+            ],
+        ),
+        (
+            "world",
+            vec![(b"textures/wall.tga".as_slice(), b"texture".as_slice())],
+        ),
+        (
+            "scripts",
+            vec![
+                (b"scripts/fx.shader".as_slice(), b"shader".as_slice()),
+                (b"readme.txt", b"text"),
+                (b"setup.cfg", b"cfg"),
+                (b"game.config", b"config"),
+                (b"a.bot", b"bot"),
+                (b"a.arena", b"arena"),
+                (b"a.menu", b"menu"),
+                (b"levelshots/map.tga", b"levelshot"),
+            ],
+        ),
+    ] {
+        let path = root.0.join(format!("{name}.pk3"));
+        qa_platform::files::write(&path, zip::stored_zip(&entries)).unwrap();
+        let archive = Arc::new(Archive::parse(Arc::new(ReadFile::open(&path).unwrap())).unwrap());
+        let id = vfs.mount_archive(&path, 0, archive).unwrap();
+        mounts.push(id);
+    }
+    let feed = 0x8abb_ccdd;
+    let module_word = vfs
+        .q3_package_checksums(mounts[0])
+        .unwrap()
+        .pure_checksum(feed);
+    let world_word = vfs
+        .q3_package_checksums(mounts[1])
+        .unwrap()
+        .pure_checksum(feed);
+    let order = vfs.search_view([mounts[1], mounts[0], mounts[2]]).unwrap();
+    let tracked = vfs
+        .track_q3_references(Some(&order), feed, Random::new(1))
+        .unwrap();
+    let peer = vfs
+        .track_q3_references(Some(&order), feed, Random::new(1))
+        .unwrap();
+    assert!(!peer.same_selection(&tracked));
+    assert_ne!(
+        vfs.bind_search(Some(&peer)).unwrap().id(),
+        vfs.bind_search(Some(&tracked)).unwrap().id()
+    );
+    let view = vfs.read_view(Some(&tracked));
+    let mut report = FixedText::<8191>::default();
+    let empty = format!("cp 9 @ {}", feed as i32);
+    assert!(view.query(b"vm/cgame.qvm").is_some());
+    let enumerated = vfs.files_with(Some(&tracked)).count();
+    assert!(enumerated > 0);
+    let mut listing = FileListing::default();
+    listing.prepare(&vfs).unwrap();
+    listing
+        .visit(
+            &vfs,
+            Some(&tracked),
+            FileListQuery {
+                path: b"vm",
+                extension: b".qvm",
+                maximum: 64,
+            },
+            |_| true,
+        )
+        .unwrap();
+    tracked
+        .q3_reference_command(&vfs, 9, false, &mut report)
+        .unwrap();
+    assert_eq!(report.as_bytes(), empty.as_bytes());
+    assert!(matches!(
+        tracked.q3_reference_command(&vfs, 9, true, &mut report),
+        Err(VfsError::Missing)
+    ));
+    for (_, name) in vfs.files_in_mount(mounts[2]) {
+        assert!(view.open(name).is_some());
+    }
+    tracked
+        .q3_reference_command(&vfs, 9, false, &mut report)
+        .unwrap();
+    assert_eq!(report.as_bytes(), empty.as_bytes());
+    let cgame = view.open(b"vm/cgame.qvm").unwrap();
+    assert_eq!(
+        view.read_to_vec(&cgame, 64, &mut Default::default())
+            .unwrap(),
+        b"client"
+    );
+    assert!(view.open(b"vm/ui.qvm").is_some());
+    assert!(view.open(b"vm/qagame.qvm").is_some());
+    // Resource loaders may retain enumerated numeric file references. The first
+    // actual read still participates, without another name lookup or reader.
+    let wall = vfs.files_in_mount(mounts[1]).next().unwrap().0;
+    assert_eq!(
+        view.read_to_vec(&wall, 64, &mut Default::default())
+            .unwrap(),
+        b"texture"
+    );
+    assert!(view.open(b"textures/wall.tga").is_some());
+    tracked
+        .q3_reference_command(&vfs, 9, true, &mut report)
+        .unwrap();
+    let expected = format!(
+        "cp 9 {} {} @ {} {} {}",
+        module_word as i32,
+        module_word as i32,
+        world_word as i32,
+        module_word as i32,
+        (feed ^ world_word ^ module_word ^ 2) as i32
+    );
+    assert_eq!(report.as_bytes(), expected.as_bytes());
+    let sums: Vec<_> = mounts
+        .iter()
+        .map(|&id| vfs.q3_package_checksums(id).unwrap().checksum())
+        .collect();
+    let reordered = vfs.q3_search_view(Some(&tracked), &sums, false).unwrap();
+    reordered
+        .q3_reference_command(&vfs, 9, true, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!(
+            "cp 9 {} {} @ {} {} {}",
+            module_word as i32,
+            module_word as i32,
+            module_word as i32,
+            world_word as i32,
+            (feed ^ world_word ^ module_word ^ 2) as i32
+        )
+        .as_bytes()
+    );
+    peer.q3_reference_command(&vfs, 9, false, &mut report)
+        .unwrap();
+    assert_eq!(report.as_bytes(), empty.as_bytes());
+    let mut short = FixedText::<4>::default();
+    assert!(matches!(
+        tracked.q3_reference_command(&vfs, 9, true, &mut short),
+        Err(VfsError::Limit)
+    ));
+    assert!(short.as_bytes().is_empty());
+    assert!(matches!(
+        tracked.q3_reference_command(&Vfs::default(), 9, true, &mut report),
+        Err(VfsError::Handle)
+    ));
+    assert!(vfs.unmount(mounts[0]));
+    assert!(matches!(
+        tracked.q3_reference_command(&vfs, 9, true, &mut report),
+        Err(VfsError::Missing)
+    ));
+    tracked
+        .q3_reference_command(&vfs, 9, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!(
+            "cp 9 @ {} {}",
+            world_word as i32,
+            (feed ^ world_word ^ 1) as i32
+        )
+        .as_bytes()
+    );
+}
+
+#[test]
+fn q3_loose_open_wire_marker_reuses_the_shared_random_stream_once_per_open() {
+    use qa_core::{
+        random::{Algorithm, Random},
+        text::FixedText,
+    };
+    let root = Fixture::new("q3-loose-reference");
+    qa_platform::files::write(root.0.join("config.cfg"), b"settings").unwrap();
+    qa_platform::files::write(root.0.join("texture.tga"), b"loose").unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let random = Random::with_algorithm(1, Algorithm::GlibcType3);
+    let mut expected = random.clone();
+    let tracked = vfs.track_q3_references(None, 37, random).unwrap();
+    let view = vfs.read_view(Some(&tracked));
+    assert_eq!(
+        view.read_file(b"config.cfg", 64, &mut Default::default())
+            .unwrap(),
+        b"settings"
+    );
+    let mut report = FixedText::<8191>::default();
+    tracked
+        .q3_reference_command(&vfs, 5, false, &mut report)
+        .unwrap();
+    assert_eq!(report.as_bytes(), b"cp 5 @ 37");
+    let loose = view.open(b"texture.tga").unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            view.read_to_vec(&loose, 64, &mut Default::default())
+                .unwrap(),
+            b"loose"
+        );
+    }
+    let first = expected.next_u32() as i32;
+    tracked
+        .q3_reference_command(&vfs, 5, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!("cp 5 {first} {first} @ {first} 37").as_bytes()
+    );
+    view.read_file(b"texture.tga", 64, &mut Default::default())
+        .unwrap();
+    let second = expected.next_u32() as i32;
+    tracked
+        .q3_reference_command(&vfs, 5, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!("cp 5 {second} {second} @ {second} 37").as_bytes()
+    );
+}
+
+#[test]
+fn retained_numeric_file_reads_enforce_the_selected_namespace_and_policy() {
+    let root = Fixture::new("scoped-numeric-read-policy");
+    qa_platform::files::write(root.0.join("asset.tga"), b"retained").unwrap();
+    let mut vfs = Vfs::default();
+    let mount = vfs.mount_directory(&root.0, 0).unwrap();
+    let retained = vfs.open(b"asset.tga").unwrap();
+    let selected = vfs.search_view([mount]).unwrap();
+    let denied = vfs.q3_search_view(Some(&selected), &[123], false).unwrap();
+    let empty = vfs.search_view([]).unwrap();
+    let foreign = Vfs::default().search_view([]).unwrap();
+    for selection in [&denied, &empty, &foreign] {
+        assert!(matches!(
+            vfs.read_view(Some(selection))
+                .read_to_vec(&retained, 64, &mut Default::default()),
+            Err(VfsError::Handle)
+        ));
+        let mut bytes = [0x5a; 64];
+        assert!(matches!(
+            vfs.read_view(Some(selection)).read_whole_into(
+                &retained,
+                &mut bytes,
+                &mut Default::default()
+            ),
+            Err(VfsError::Handle)
+        ));
+        assert_eq!(bytes, [0x5a; 64]);
+    }
+    assert_eq!(
+        vfs.read_view(Some(&selected))
+            .read_to_vec(&retained, 64, &mut Default::default())
+            .unwrap(),
+        b"retained"
+    );
+    // The source remains the accepted inode, including after publication of a
+    // replacement. Checking policy must not redirect an existing native handle.
+    qa_platform::files::write(root.0.join("new"), b"replacement").unwrap();
+    qa_platform::files::rename(root.0.join("new"), root.0.join("asset.tga")).unwrap();
+    vfs.refresh_directory_prefix(mount, b"").unwrap();
+    assert_eq!(
+        vfs.read_view(Some(&selected))
+            .read_to_vec(&retained, 64, &mut Default::default())
+            .unwrap(),
+        b"retained"
+    );
+    assert_eq!(
+        vfs.read_view(Some(&selected))
+            .read_file(b"asset.tga", 64, &mut Default::default())
+            .unwrap(),
+        b"replacement"
+    );
+}

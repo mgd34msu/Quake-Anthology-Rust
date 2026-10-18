@@ -40,7 +40,12 @@ impl Host for Capture {
     fn reject_input(&mut self, count: u64) {
         self.rejected += count;
     }
-    fn read_script(&mut self, path: &str, bytes: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        path: &str,
+        bytes: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         let script = match path {
             "held.cfg" => "+forward 999 9999; wait; mark retained\n",
             _ => return Err(ScriptError::Missing),

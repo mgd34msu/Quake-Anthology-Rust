@@ -1236,10 +1236,21 @@ impl Host for Runtime {
             self.server.events.reject_publication();
         }
     }
-    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
-        let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
-        self.vfs
-            .read_whole_into(&file, destination, &mut self.script_reader)
+    fn read_script(
+        &mut self,
+        path: &str,
+        destination: &mut [u8],
+        context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
+        let selected = self
+            .vfs
+            .file_search(context.file_search)
+            .map_err(|_| ScriptError::Read)?;
+        let view = self
+            .vfs
+            .read_view(selected.as_ref().map(qa_content::vfs::FileSearch::view));
+        let file = view.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
+        view.read_whole_into(&file, destination, &mut self.script_reader)
             .map_err(|error| match error {
                 qa_content::vfs::VfsError::Missing => ScriptError::Missing,
                 qa_content::vfs::VfsError::Size | qa_content::vfs::VfsError::Limit => {

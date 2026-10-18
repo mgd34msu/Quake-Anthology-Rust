@@ -30,7 +30,12 @@ impl Host for Capture {
         EventTime::default()
     }
     fn print(&mut self, _: std::fmt::Arguments<'_>) {}
-    fn read_script(&mut self, _: &str, _: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        _: &str,
+        _: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         Err(ScriptError::Missing)
     }
     fn quit(&mut self) {}

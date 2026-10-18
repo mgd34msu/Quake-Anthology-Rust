@@ -203,3 +203,88 @@ fn foreign_module_sources_are_rejected_before_program_loading_or_guest_callbacks
     .unwrap();
     assert!(error.contains("module filesystem binding"), "{error}");
 }
+
+#[path = "../../../formats/tests/support/stored_zip.rs"]
+mod zip;
+
+#[test]
+fn actual_qvm_load_and_lifecycle_reads_publish_their_native_package_references() {
+    use qa_core::{random::Random, text::FixedText};
+    use std::sync::Arc;
+    let files = Files::new("package-account");
+    let package = files.0.join("pak0.pk3");
+    qa_platform::files::write(
+        &package,
+        zip::stored_zip(&[(b"vm/ui.qvm", &ui_program(77)), (b"source.txt", b"pak")]),
+    )
+    .unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let archive = Arc::new(
+        qa_formats::archive::Archive::parse(Arc::new(
+            qa_platform::files::ReadFile::open(&package).unwrap(),
+        ))
+        .unwrap(),
+    );
+    let mount = runtime.vfs.mount_archive(&package, 0, archive).unwrap();
+    let feed = 0x1020_3040;
+    let metadata = runtime.vfs.q3_package_checksums(mount).unwrap();
+    let word = metadata.pure_checksum(feed);
+    let policy = runtime
+        .vfs
+        .q3_search_view(None, &[metadata.checksum()], false)
+        .unwrap();
+    let tracked = runtime
+        .vfs
+        .track_q3_references(Some(&policy), feed, Random::new(1))
+        .unwrap();
+    let peer = runtime
+        .vfs
+        .track_q3_references(Some(&policy), feed, Random::new(1))
+        .unwrap();
+    let mut spec = Q3Spec::parse("ui:vm/ui.qvm").unwrap();
+    spec.search = Some(tracked.clone());
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &[spec],
+        &mut requests,
+        TickRate::FrameDriven,
+        None,
+    )
+    .unwrap();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.initialize_modules(Phase::Client);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(77))
+    );
+    assert_eq!(prints(&host), [b"pak".to_vec()]);
+    let mut report = FixedText::<8191>::default();
+    tracked
+        .q3_reference_command(&host.runtime.vfs, 7, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!(
+            "cp 7 {} @ {} {}",
+            word as i32,
+            word as i32,
+            (feed ^ word ^ 1) as i32
+        )
+        .as_bytes()
+    );
+    peer.q3_reference_command(&host.runtime.vfs, 7, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_bytes(),
+        format!("cp 7 @ {}", feed as i32).as_bytes()
+    );
+    host.shutdown_modules();
+}

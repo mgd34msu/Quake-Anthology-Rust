@@ -34,7 +34,12 @@ pub trait Host {
         }
     }
     fn reject_input(&mut self, _count: u64) {}
-    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError>;
+    fn read_script(
+        &mut self,
+        path: &str,
+        destination: &mut [u8],
+        context: Context,
+    ) -> Result<usize, ScriptError>;
     fn quit(&mut self);
     fn input(&mut self) -> &mut Input;
     fn input_time(&self) -> EventTime;
@@ -1061,7 +1066,7 @@ impl<H: Host> Console<H> {
             path.write_str(".cfg").map_err(|_| TextError::TooLong)?;
         }
         let length = host
-            .read_script(path.as_str(), &mut self.script)
+            .read_script(path.as_str(), &mut self.script, context)
             .map_err(CommandError::Script)?;
         let text = std::str::from_utf8(&self.script[..length])
             .map_err(|_| CommandError::Script(ScriptError::Encoding))?;

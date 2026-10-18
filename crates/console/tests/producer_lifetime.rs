@@ -31,7 +31,12 @@ impl Host for Capture {
     fn print_bytes(&mut self, text: &[u8]) {
         self.output.extend(text);
     }
-    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
+    fn read_script(
+        &mut self,
+        path: &str,
+        destination: &mut [u8],
+        _context: qa_console::views::Context,
+    ) -> Result<usize, ScriptError> {
         let bytes = match path {
             "outer.cfg" => b"echo before; exec inner; echo outer-tail\n".as_slice(),
             "inner.cfg" => b"alias route \"wait 100; echo alias-tail\"; route; echo inner-tail\n",
