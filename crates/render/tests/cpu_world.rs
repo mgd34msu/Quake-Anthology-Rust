@@ -2800,7 +2800,7 @@ fn cold_scene_capacity_growth_rebuilds_an_unchanged_prefix_and_survives_later_as
     assert!(cpu.render(&too_many, &assets).rejected > 0);
 
     let mut frontend = FrontEnd::load(initial).unwrap();
-    let staged = frontend.stage_capacity(required).unwrap();
+    let staged = frontend.stage_capacity(required, [None, None]).unwrap();
     assert_eq!(staged.limits().draws, 8, "explicit draw budget is retained");
     cpu.prepare_assets(&assets, Some(staged.limits())).unwrap();
     staged.commit();
@@ -3270,10 +3270,13 @@ fn rejected_world_append_discards_every_suffix_and_keeps_the_old_raster_usable()
     assert!(assets.counts().contains(retained));
     let mut growth = FrontEnd::load(Limits::default()).unwrap();
     let staged = growth
-        .stage_capacity(Limits {
-            surfaces: Limits::default().surfaces * 2,
-            ..Limits::default()
-        })
+        .stage_capacity(
+            Limits {
+                surfaces: Limits::default().surfaces * 2,
+                ..Limits::default()
+            },
+            [None, None],
+        )
         .unwrap();
     for _ in 0..2 {
         assert!(cpu.prepare_assets(&assets, Some(staged.limits())).is_err());

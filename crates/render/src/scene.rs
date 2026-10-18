@@ -1167,12 +1167,12 @@ pub struct FrontEnd {
     owner: u64,
 }
 
-/// A cold candidate borrows the owner and optional caller-owned active frame.
+/// A cold candidate borrows the owner and its explicitly retained frames.
 /// Outstanding consumers cannot coexist with this borrow.
 pub struct FrontEndCapacity<'a> {
     frontend: &'a mut FrontEnd,
     lists: Option<[Option<CommandList>; 2]>,
-    active: Option<ActiveFrameCapacity<'a>>,
+    active: [Option<ActiveFrameCapacity<'a>>; 2],
     limits: Limits,
 }
 struct ActiveFrameCapacity<'a> {
@@ -1185,10 +1185,10 @@ impl FrontEndCapacity<'_> {
     }
 
     pub fn commit(self) {
-        if let Some(active) = self.active
-            && let Some(list) = active.list
-        {
-            active.frame.list = list;
+        for active in self.active.into_iter().flatten() {
+            if let Some(list) = active.list {
+                active.frame.list = list;
+            }
         }
         if let Some(lists) = self.lists {
             self.frontend.lists = lists;
@@ -1233,39 +1233,29 @@ impl FrontEnd {
         self.limits
     }
 
-    /// Reserve larger owned arenas without mutating them until commit.
-    pub fn stage_capacity(
-        &mut self,
-        required: Limits,
-    ) -> Result<FrontEndCapacity<'_>, &'static str> {
-        self.stage_capacity_inner(required, None)
-    }
-
-    /// A parked cold registration may retain its active packet. Its payload
-    /// prefixes are staged with the available list; another consumer still blocks.
-    pub fn stage_capacity_with_frame<'a>(
+    /// Reserve larger owned arenas without mutating them until commit. Both
+    /// frontend lists must be returned or explicitly lent as owned frames;
+    /// a sealed packet still held by a backend always rejects the transaction.
+    pub fn stage_capacity<'a>(
         &'a mut self,
         required: Limits,
-        frame: &'a mut Frame,
+        active: [Option<&'a mut Frame>; 2],
     ) -> Result<FrontEndCapacity<'a>, &'static str> {
-        self.stage_capacity_inner(required, Some(frame))
-    }
-
-    fn stage_capacity_inner<'a>(
-        &'a mut self,
-        required: Limits,
-        active: Option<&'a mut Frame>,
-    ) -> Result<FrontEndCapacity<'a>, &'static str> {
-        let active_slot = active.as_ref().map(|frame| frame.list.slot);
-        if active.as_ref().is_some_and(|frame| {
-            frame.list.owner != self.owner || frame.list.slot >= self.lists.len()
-        }) || self.lists.iter().enumerate().any(|(slot, list)| {
-            if active_slot == Some(slot) {
-                list.is_some()
-            } else {
-                list.is_none()
+        let mut owned = [false; 2];
+        for frame in active.iter().flatten() {
+            if frame.list.owner != self.owner
+                || frame.list.slot >= self.lists.len()
+                || std::mem::replace(&mut owned[frame.list.slot], true)
+            {
+                return Err("invalid owned scene frame");
             }
-        }) {
+        }
+        if self
+            .lists
+            .iter()
+            .enumerate()
+            .any(|(slot, list)| list.is_none() != owned[slot])
+        {
             return Err("scene command lists are outstanding");
         }
         let current = self.limits;
@@ -1296,9 +1286,11 @@ impl FrontEnd {
                 .each_ref()
                 .map(|list| list.as_ref().map(|list| list.grown(limits)))
         });
-        let active = active.map(|frame| ActiveFrameCapacity {
-            list: grows.then(|| frame.list.grown(limits)),
-            frame,
+        let active = active.map(|frame| {
+            frame.map(|frame| ActiveFrameCapacity {
+                list: grows.then(|| frame.list.grown(limits)),
+                frame,
+            })
         });
         Ok(FrontEndCapacity {
             frontend: self,

@@ -534,7 +534,10 @@ fn zero_choice_capacity_keeps_ordinary_meshes_and_can_grow_cold() {
         model_joints: 0,
         ..front.limits()
     };
-    front.stage_capacity(required).unwrap().commit();
+    front
+        .stage_capacity(required, [None, None])
+        .unwrap()
+        .commit();
     let mut next = front.begin_frame(CLEAR.to_le_bytes()).unwrap();
     assert!(model_choices::lods(
         &mut next,

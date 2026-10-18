@@ -679,11 +679,9 @@ impl SceneComposer {
             .unwrap_or(self.frontend.limits())
             .for_assets(assets)?
             .for_model_choices(choices)?;
-        match self.frame.as_mut() {
-            Some(frame) => self.frontend.stage_capacity_with_frame(limits, frame),
-            None => self.frontend.stage_capacity(limits),
-        }
-        .map_err(str::to_owned)
+        self.frontend
+            .stage_capacity(limits, [self.frame.as_mut(), None])
+            .map_err(str::to_owned)
     }
     pub fn limits(&self) -> Limits {
         self.frontend.limits()
@@ -695,7 +693,11 @@ impl SceneComposer {
     }
 
     pub fn asset_stage_ready(&mut self) -> bool {
-        self.frame.is_none() && self.frontend.stage_capacity(self.frontend.limits()).is_ok()
+        self.frame.is_none()
+            && self
+                .frontend
+                .stage_capacity(self.frontend.limits(), [None, None])
+                .is_ok()
     }
 
     fn hud_index(
@@ -859,7 +861,7 @@ impl SceneComposer {
             self.ui_commands,
             ui_command_capacity(self.console.as_ref(), true)?,
         )?;
-        let frontend = self.frontend.stage_capacity(limits)?;
+        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
         Ok(SceneHudAppend {
             frontend,
             target: &mut self.hud,
@@ -908,10 +910,9 @@ impl SceneComposer {
             .limits()
             .for_assets(owner.assets())?
             .for_model_choices(owner.catalog().max_choice_nodes())?;
-        let frontend = match self.frame.as_mut() {
-            Some(frame) => self.frontend.stage_capacity_with_frame(limits, frame),
-            None => self.frontend.stage_capacity(limits),
-        }?;
+        let frontend = self
+            .frontend
+            .stage_capacity(limits, [self.frame.as_mut(), None])?;
         let reserved_ui_commands = self.ui_commands;
         Ok(Some(SceneHudAppend {
             frontend,
@@ -1035,7 +1036,7 @@ impl SceneComposer {
         limits = limits
             .for_assets(assets)?
             .for_model_choices(model_choices)?;
-        let frontend = self.frontend.stage_capacity(limits)?;
+        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
         Ok(SceneVideoAppend {
             frontend,
             kind: &mut self.kind,
@@ -1146,7 +1147,7 @@ impl SceneComposer {
         let limits =
             scene_surface_limits(self.frontend.limits(), world.visibility().surface_count())?
                 .for_assets(assets)?;
-        let frontend = self.frontend.stage_capacity(limits)?;
+        let frontend = self.frontend.stage_capacity(limits, [None, None])?;
         let append = if append_world {
             self.scenes
                 .try_reserve(1)

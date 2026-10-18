@@ -806,14 +806,14 @@ fn cold_capacity_stage_requires_both_owned_packets_returned() {
     let limits = cold_limits();
     let mut front = FrontEnd::load(limits).unwrap();
     let first = front.begin_frame([1; 4]).unwrap().finish();
-    assert!(front.stage_capacity(limits).is_err());
+    assert!(front.stage_capacity(limits, [None, None]).is_err());
     let second = front.begin_frame([2; 4]).unwrap().finish();
-    assert!(front.stage_capacity(limits).is_err());
+    assert!(front.stage_capacity(limits, [None, None]).is_err());
     assert!(front.recycle(first).is_ok());
-    assert!(front.stage_capacity(limits).is_err());
+    assert!(front.stage_capacity(limits, [None, None]).is_err());
     assert!(matches!(second.commands(), [Command::Clear([2, 2, 2, 2])]));
     assert!(front.recycle(second).is_ok());
-    front.stage_capacity(limits).unwrap().commit();
+    front.stage_capacity(limits, [None, None]).unwrap().commit();
     let third = front.begin_frame([3; 4]).unwrap().finish();
     assert_eq!(third.frame, 3);
     assert!(front.recycle(third).is_ok());
@@ -833,14 +833,17 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
         area_bytes: 2,
         ..cold_limits()
     };
-    drop(front.stage_capacity(required).unwrap());
+    drop(front.stage_capacity(required, [None, None]).unwrap());
     assert_eq!(front.limits().entities, 1);
     let mut old = front.begin_frame([0; 4]).unwrap();
     assert!(old.add_entity(SceneEntity::default()));
     assert!(!old.add_entity(SceneEntity::default()));
     assert!(front.recycle(old.finish()).is_ok());
 
-    front.stage_capacity(required).unwrap().commit();
+    front
+        .stage_capacity(required, [None, None])
+        .unwrap()
+        .commit();
     assert_eq!(front.limits().draws, 8);
     let mut grown = front.begin_frame([0; 4]).unwrap();
     for _ in 0..3 {
@@ -879,7 +882,10 @@ fn dropped_capacity_stage_preserves_arenas_and_commit_grows_the_same_owner() {
     assert_eq!(view.scene.draws.count, 8);
     assert_eq!(packet.hidden_areas(view.hidden_areas), &[1, 2]);
     assert!(front.recycle(packet).is_ok());
-    front.stage_capacity(cold_limits()).unwrap().commit();
+    front
+        .stage_capacity(cold_limits(), [None, None])
+        .unwrap()
+        .commit();
     assert_eq!(front.limits().entities, 3);
     assert_eq!(front.limits().surfaces, 3);
 }
@@ -990,7 +996,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
             palette,
             ..Default::default()
         }));
-        drop(front.stage_capacity_with_frame(required, frame).unwrap());
+        drop(front.stage_capacity(required, [Some(frame), None]).unwrap());
         assert_eq!(front.limits().model_choices, 3);
         assert!(!model_choices::skin(
             frame,
@@ -1000,7 +1006,7 @@ fn active_capacity_stage_preserves_captured_and_open_scene_prefixes_until_commit
             shaders[6..12].iter().copied().map(Into::into)
         ));
         front
-            .stage_capacity_with_frame(required, frame)
+            .stage_capacity(required, [Some(frame), None])
             .unwrap()
             .commit();
         assert_eq!(front.limits().model_choices, 10);
@@ -1120,7 +1126,7 @@ fn active_capacity_rejects_another_inflight_packet_or_foreign_frame_then_retries
     };
     assert!(
         front
-            .stage_capacity_with_frame(required, &mut active)
+            .stage_capacity(required, [Some(&mut active), None])
             .is_err()
     );
     assert!(front.recycle(first).is_ok());
@@ -1128,12 +1134,12 @@ fn active_capacity_rejects_another_inflight_packet_or_foreign_frame_then_retries
     let mut foreign = other.begin_frame([3; 4]).unwrap();
     assert!(
         front
-            .stage_capacity_with_frame(required, &mut foreign)
+            .stage_capacity(required, [Some(&mut foreign), None])
             .is_err()
     );
     assert!(other.recycle(foreign.finish()).is_ok());
     front
-        .stage_capacity_with_frame(required, &mut active)
+        .stage_capacity(required, [Some(&mut active), None])
         .unwrap()
         .commit();
     let packet = active.finish();
@@ -1149,10 +1155,13 @@ fn rejected_capacity_stage_preserves_pool_and_explicit_draw_budget() {
     let mut front = FrontEnd::load(cold_limits()).unwrap();
     assert!(
         front
-            .stage_capacity(Limits {
-                entities: usize::MAX,
-                ..cold_limits()
-            })
+            .stage_capacity(
+                Limits {
+                    entities: usize::MAX,
+                    ..cold_limits()
+                },
+                [None, None]
+            )
             .is_err()
     );
     let packet = front.begin_frame([0; 4]).unwrap().finish();
@@ -1163,11 +1172,14 @@ fn rejected_capacity_stage_preserves_pool_and_explicit_draw_budget() {
     })
     .unwrap();
     front
-        .stage_capacity(Limits {
-            entities: 3,
-            surfaces: 3,
-            ..cold_limits()
-        })
+        .stage_capacity(
+            Limits {
+                entities: 3,
+                surfaces: 3,
+                ..cold_limits()
+            },
+            [None, None],
+        )
         .unwrap()
         .commit();
     assert_eq!(front.limits().draws, 2);
@@ -2100,4 +2112,58 @@ fn bounded_patch_views_keep_prior_selection_after_failed_inline_submission() {
     }
     assert_eq!(counts, [8, 2]);
     assert_eq!(packet.rejected, 1);
+}
+
+#[test]
+fn capacity_transaction_grows_both_owned_frames_and_keeps_their_distinct_prefixes() {
+    let mut front = FrontEnd::load(cold_limits()).unwrap();
+    let mut caller = front.begin_frame([1, 2, 3, 4]).unwrap();
+    let mut loading = front.begin_frame([5, 6, 7, 8]).unwrap();
+    let origins = [Vec3([1.25, -0.0, 7.0]), Vec3([-2.0, 0.0, 9.0])];
+    assert!(caller.add_entity(SceneEntity {
+        origin: origins[0],
+        ..Default::default()
+    }));
+    assert!(loading.add_entity(SceneEntity {
+        origin: origins[1],
+        ..Default::default()
+    }));
+    assert!(
+        front.begin_frame([0; 4]).is_none(),
+        "only the existing two lists are used"
+    );
+    let required = Limits {
+        entities: 3,
+        ..cold_limits()
+    };
+    drop(
+        front
+            .stage_capacity(required, [Some(&mut loading), Some(&mut caller)])
+            .unwrap(),
+    );
+    assert_eq!(front.limits().entities, 1);
+    assert!(!caller.add_entity(SceneEntity::default()));
+    assert!(!loading.add_entity(SceneEntity::default()));
+    front
+        .stage_capacity(required, [Some(&mut caller), Some(&mut loading)])
+        .unwrap()
+        .commit();
+    for frame in [&mut caller, &mut loading] {
+        assert!(frame.add_entity(SceneEntity::default()));
+        assert!(frame.add_entity(SceneEntity::default()));
+    }
+    for (index, frame) in [caller, loading].into_iter().enumerate() {
+        let packet = frame.finish();
+        assert_eq!(packet.frame, index as u64 + 1);
+        assert_eq!(
+            packet.entity(0).origin.0.map(f32::to_bits),
+            origins[index].0.map(f32::to_bits)
+        );
+        assert_eq!(packet.rejected, 1);
+        assert!(
+            matches!(packet.commands(), [Command::Clear(color)] if *color == if index == 0 { [1,2,3,4] } else { [5,6,7,8] })
+        );
+        assert!(front.recycle(packet).is_ok());
+    }
+    assert!(front.stage_capacity(required, [None, None]).is_ok());
 }

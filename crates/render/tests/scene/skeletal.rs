@@ -302,12 +302,12 @@ fn active_capacity_staging_preserves_prepared_pose_receipts_on_drop_and_commit()
     };
     drop(
         frontend
-            .stage_capacity_with_frame(larger, &mut frame)
+            .stage_capacity(larger, [Some(&mut frame), None])
             .unwrap(),
     );
     assert_eq!(frontend.limits(), old);
     frontend
-        .stage_capacity_with_frame(larger, &mut frame)
+        .stage_capacity(larger, [Some(&mut frame), None])
         .unwrap()
         .commit();
     assert!(frame.add_entity(pose(model, 1, 1, 0.)));
