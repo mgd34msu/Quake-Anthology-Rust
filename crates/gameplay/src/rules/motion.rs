@@ -1,6 +1,9 @@
 //! Nonclient motion policy, selected by the entity's owning module at load.
 use super::sweep::{LegacySweepRules, entity_sweep};
-use qa_core::primitives::RuleSetId;
+use qa_core::primitives::{MovementMode, RuleSetId};
+
+const WALK: f32 = 3.0;
+const NOCLIP: f32 = 8.0;
 
 /// Native client motion policies; movement and trace roles remain independent.
 #[derive(Clone, Copy, Debug)]
@@ -25,8 +28,8 @@ pub const fn client_motion_rules(rules: RuleSetId) -> Option<ClientMotionRules> 
             allow_step: true,
             allow_missile: true,
             water_jump_flag: 1 << 11,
-            walk_move_type: 3.0,
-            noclip_move_type: 8.0,
+            walk_move_type: WALK,
+            noclip_move_type: NOCLIP,
             bsp_solid: 4.0,
         }),
         _ => None,
@@ -71,10 +74,22 @@ pub struct PushRules {
 }
 impl PushRules {
     pub const fn candidate(&self, move_type: f32) -> bool {
-        move_type != 7.0 && move_type != 0.0 && move_type != 8.0
+        move_type != 7.0 && move_type != 0.0 && move_type != NOCLIP
     }
     pub const fn walking(&self, move_type: f32) -> bool {
-        move_type == 3.0
+        move_type == WALK
+    }
+    pub const fn player_move_type(&self, mode: MovementMode, collidable: bool) -> f32 {
+        if !collidable {
+            0.0
+        } else if matches!(mode, MovementMode::Noclip | MovementMode::Spectator) {
+            NOCLIP
+        } else {
+            WALK
+        }
+    }
+    pub const fn box_solid(&self) -> f32 {
+        2.0
     }
     pub const fn corpse(&self, solid: f32) -> bool {
         solid == 0.0 || solid == 1.0

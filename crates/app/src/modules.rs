@@ -78,6 +78,18 @@ struct QwPhysics {
     last: Option<ThinkTime>,
 }
 impl Program {
+    fn bound_entity(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+    ) -> Result<Option<EntityId>, qa_compat::services::CallError> {
+        match self {
+            Self::QuakeC(qc) => qc.vm.bound_entity(entities, native),
+            Self::Qvm { vm, .. } => Ok(vm.entity_binding(entities, native)),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { vm, .. } => Ok(vm.entity_binding(entities, native)),
+        }
+    }
     pub fn quakec(vm: quakec::Vm, map: Option<QuakeCMap>) -> Self {
         Self::QuakeC(QuakeCProgram {
             vm: Box::new(vm),
@@ -3053,6 +3065,24 @@ fn edit_quakec<R>(
         qa_compat::services::CallContext,
     ) -> Result<R, qa_compat::services::CallError>,
 ) -> Result<R, ClientCommandError> {
+    edit_module(host, module, access, |program, services, context| {
+        let Program::QuakeC(qc) = program else {
+            return Err(ClientCommandError::NeedsNativeModule);
+        };
+        call(&mut qc.vm, services, context).map_err(ClientCommandError::Usercmd)
+    })
+}
+
+fn edit_module<R>(
+    host: &mut FrameHost,
+    module: ModuleId,
+    access: execution::TraceAccess<'_>,
+    call: impl FnOnce(
+        &mut Program,
+        &mut qa_compat::services::EngineServices<'_>,
+        CallContext,
+    ) -> Result<R, ClientCommandError>,
+) -> Result<R, ClientCommandError> {
     let time = host.time;
     let (row, storage, traces) = host
         .modules
@@ -3060,20 +3090,16 @@ fn edit_quakec<R>(
         .and_then(|m| m.trace_parts_mut(module, access))
         .ok_or(ClientCommandError::MissingModule)?;
     let clock = row.time(time);
-    let Program::QuakeC(qc) = &mut row.request.program else {
-        return Err(ClientCommandError::NeedsNativeModule);
-    };
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
     services.native_geometry = row.geometry;
     services.foreign_trace = Some(traces.borrow());
     call(
-        &mut qc.vm,
+        &mut row.request.program,
         &mut services,
         context(row.request.context, clock),
     )
-    .map_err(ClientCommandError::Usercmd)
 }
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;

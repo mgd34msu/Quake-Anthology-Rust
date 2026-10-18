@@ -434,7 +434,16 @@ pub(super) fn impact(
     time: ThinkTime,
     driver: &mut crate::modules::Driver<'_>,
 ) -> Result<(), ClientCommandError> {
-    let restore = super::edit_quakec(host, module, access, |vm, _, _| vm.prepare_impact(time))?;
+    let quakec = host
+        .module_row(module)
+        .is_some_and(|row| matches!(&row.request.program, Program::QuakeC(_)));
+    let restore = if quakec {
+        Some(super::edit_quakec(host, module, access, |vm, _, _| {
+            vm.prepare_impact(time)
+        })?)
+    } else {
+        None
+    };
     let mut first = None;
     let mut second = None;
     let execution = (|| {
@@ -513,9 +522,13 @@ pub(super) fn impact(
         .take()
         .map(|admitted| release(host, admitted))
         .transpose();
-    let restored = super::edit_quakec(host, module, access, |vm, _, _| {
-        vm.finish_client_call(restore)
-    });
+    let restored = if let Some(restore) = restore {
+        super::edit_quakec(host, module, access, |vm, _, _| {
+            vm.finish_client_call(restore)
+        })
+    } else {
+        Ok(())
+    };
     execution
         .and(released_first.map(|_| ()))
         .and(released_second.map(|_| ()))

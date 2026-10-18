@@ -104,7 +104,7 @@ impl Host {
     }
 }
 
-impl MotionHost for Host {
+impl qa_session::physics::DisplacementHost for Host {
     type Error = PhysicsError;
     fn entities(&mut self) -> &mut EntityTable {
         &mut self.entities
@@ -112,12 +112,35 @@ impl MotionHost for Host {
     fn state(&mut self, _: EntityId) -> Result<MotionState, Self::Error> {
         Ok(self.state)
     }
-    fn prepare_motion(&mut self, _: EntityId) -> Result<(), Self::Error> {
-        Ok(())
+    fn write_origin(
+        &mut self,
+        entity: EntityId,
+        axis: usize,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        MotionHost::write_motion(self, entity, MotionWrite::Origin(axis), value)
     }
-    fn check_velocity(&mut self, _: EntityId, _: f32) -> Result<(), Self::Error> {
-        panic!("control has no velocity sanitizer")
+    fn trace(
+        &mut self,
+        _: EntityId,
+        _: Vec3,
+        _: QuakeTraceKind,
+    ) -> Result<MotionTrace, Self::Error> {
+        panic!("control uses a point probe")
     }
+    fn relink(&mut self, _: EntityId) -> Result<Option<EntityId>, Self::Error> {
+        panic!("control does not relink")
+    }
+    fn impact(
+        &mut self,
+        _: Option<EntityId>,
+        _: &MotionTrace,
+    ) -> Result<Option<EntityId>, Self::Error> {
+        panic!("control has no impact")
+    }
+}
+
+impl MotionHost for Host {
     fn write_motion(
         &mut self,
         entity: EntityId,
@@ -141,6 +164,12 @@ impl MotionHost for Host {
         self.events.push(Event::Velocity(axis, value));
         Ok(())
     }
+    fn prepare_motion(&mut self, _: EntityId) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn check_velocity(&mut self, _: EntityId, _: f32) -> Result<(), Self::Error> {
+        panic!("control has no velocity sanitizer")
+    }
     fn write_flags(&mut self, _: EntityId, flags: u32) -> Result<(), Self::Error> {
         self.state.flags = Some(flags);
         self.events.push(Event::Flags(flags));
@@ -148,24 +177,6 @@ impl MotionHost for Host {
     }
     fn gravity_scale(&mut self, _: EntityId) -> Result<Option<f32>, Self::Error> {
         panic!("control has no gravity")
-    }
-    fn trace(
-        &mut self,
-        _: EntityId,
-        _: Vec3,
-        _: QuakeTraceKind,
-    ) -> Result<MotionTrace, Self::Error> {
-        panic!("control uses a point probe")
-    }
-    fn relink(&mut self, _: EntityId) -> Result<Option<EntityId>, Self::Error> {
-        panic!("control does not relink")
-    }
-    fn impact(
-        &mut self,
-        _: Option<EntityId>,
-        _: &MotionTrace,
-    ) -> Result<Option<EntityId>, Self::Error> {
-        panic!("control has no impact")
     }
     fn ground(&mut self, _: EntityId, _: Option<EntityReference>) -> Result<(), Self::Error> {
         panic!("control does not assign ground")

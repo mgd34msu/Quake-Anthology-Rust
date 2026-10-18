@@ -19,6 +19,8 @@ use qa_world::{
 };
 use std::sync::Arc;
 
+mod projected;
+
 impl From<PhysicsError> for ClientCommandError {
     fn from(error: PhysicsError) -> Self {
         Self::Usercmd(error.into())
@@ -324,10 +326,14 @@ impl<'a, 'd> Host<'a, 'd> {
         {
             return Err(ClientCommandError::Inactive);
         }
-        if !matches!(&row.request.program, Program::QuakeC(_)) {
-            return Err(ClientCommandError::NeedsNativeModule);
-        }
         Ok(row.time(self.host.time))
+    }
+
+    fn push_rules(&self) -> Result<qa_gameplay::rules::motion::PushRules, ClientCommandError> {
+        self.host
+            .module_row(self.module)
+            .and_then(|row| row.push)
+            .ok_or(ClientCommandError::Unsupported)
     }
 
     fn client_entity(&self) -> Option<EntityId> {
@@ -471,10 +477,8 @@ impl<'a, 'd> Host<'a, 'd> {
             .host
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?;
-        let Program::QuakeC(qc) = &row.request.program else {
-            return Err(ClientCommandError::NeedsNativeModule);
-        };
-        qc.vm
+        row.request
+            .program
             .bound_entity(
                 &self.host.runtime.server.entities,
                 NativeEntity {
@@ -546,7 +550,7 @@ impl PushHost for Host<'_, '_> {
                         continue;
                     };
                     if native.module == self.module
-                        || native.slot <= 0
+                        || native.slot < 0
                         || entities.columns.owner[slot] != native.module
                     {
                         continue;
@@ -561,11 +565,16 @@ impl PushHost for Host<'_, '_> {
                     {
                         continue;
                     }
-                    let Program::QuakeC(qc) = &row.request.program else {
+                    if matches!(&row.request.program, Program::QuakeC(_)) {
+                        if native.slot == 0 {
+                            continue;
+                        }
+                    } else if projected::client(self.host, native).is_none() {
                         continue;
-                    };
-                    if qc
-                        .vm
+                    }
+                    if row
+                        .request
+                        .program
                         .bound_entity(entities, native)
                         .map_err(ClientCommandError::Usercmd)?
                         == Some(entity)
@@ -588,6 +597,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn free(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            return Ok(projected::client(self.host, native).is_none());
+        }
         let reference = self.reference(owner)?;
         let ResourceNamespace::Module(module) = reference.namespace else {
             return Err(ClientCommandError::DifferentModule);
@@ -602,6 +614,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn number(&mut self, owner: CollisionOwner, field: PushNumber) -> Result<f32, Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            return projected::number(self.host, native, field, self.push_rules()?);
+        }
         self.edit_owner(owner, |vm, _, _, native| vm.push_number(native, field))
     }
 
@@ -611,6 +626,9 @@ impl PushHost for Host<'_, '_> {
         field: PushNumber,
         value: f32,
     ) -> Result<(), Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            return projected::store(self.host, native, field, value);
+        }
         let entity = self.current_owner(owner)?;
         self.edit_owner(owner, |vm, services, context, native| {
             vm.push_store(&mut services.server.entities, context, native, field, value)?;
@@ -626,16 +644,53 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn flags(&mut self, owner: CollisionOwner) -> Result<u32, Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            let (id, _) =
+                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+            return Ok(
+                if self.host.runtime.server.clients[id.0 as usize]
+                    .player
+                    .movement
+                    .grounded
+                {
+                    self.push_rules()?.ground_flag
+                } else {
+                    0
+                },
+            );
+        }
         self.edit_owner(owner, |vm, _, _, native| vm.push_flags(native))
     }
 
     fn store_flags(&mut self, owner: CollisionOwner, flags: u32) -> Result<(), Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            let (id, _) =
+                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+            let grounded = flags & self.push_rules()?.ground_flag != 0;
+            let movement = &mut self.host.runtime.server.clients[id.0 as usize]
+                .player
+                .movement;
+            movement.grounded = grounded;
+            if !grounded {
+                movement.ground = None;
+            }
+            return Ok(());
+        }
         self.edit_owner(owner, |vm, services, context, native| {
             vm.push_store_flags(&mut services.server.entities, context, native, flags)
         })
     }
 
     fn ground_owner(&mut self, owner: CollisionOwner) -> Result<CollisionOwner, Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            let (id, _) =
+                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+            return Ok(self.host.runtime.server.clients[id.0 as usize]
+                .player
+                .movement
+                .ground
+                .map_or(CollisionOwner::None, CollisionOwner::Lifetime));
+        }
         self.edit_owner(owner, |vm, _, context, native| {
             vm.push_ground(context, native)
         })
@@ -646,6 +701,13 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn test_position(&mut self, owner: CollisionOwner) -> Result<bool, Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            let (_, entity) =
+                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+            let position = self.host.runtime.server.entities.columns.position[entity.slot as usize];
+            return projected::trace(self.host, native, position, QuakeTraceKind::Normal)
+                .map(|trace| trace.trace.start_solid);
+        }
         let reference = self.reference(owner)?;
         let ResourceNamespace::Module(module) = reference.namespace else {
             return Err(ClientCommandError::DifferentModule);
@@ -667,6 +729,9 @@ impl PushHost for Host<'_, '_> {
     }
 
     fn link(&mut self, owner: CollisionOwner, touch: bool) -> Result<(), Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            return projected::link(self.host, native, touch, self.driver);
+        }
         if PushHost::free(self, owner)? {
             return Ok(());
         }
@@ -705,6 +770,23 @@ impl PushHost for Host<'_, '_> {
         owner: CollisionOwner,
         displacement: Vec3,
     ) -> Result<(), Self::Error> {
+        if let Some(native) = projected::native(self.host, owner) {
+            let (_, entity) =
+                projected::client(self.host, native).ok_or(ClientCommandError::Inactive)?;
+            let rules = self.push_rules()?;
+            return physics::push_entity(
+                &mut projected::Passenger {
+                    host: self.host,
+                    driver: self.driver,
+                    native,
+                    entity,
+                    rules,
+                },
+                entity,
+                displacement,
+            )
+            .map(|_| ());
+        }
         let reference = self.reference(owner)?;
         let entity = match self.current_owner(owner)? {
             Some(entity) => entity,
@@ -828,9 +910,8 @@ impl PushHost for Host<'_, '_> {
     }
 }
 
-impl MotionHost for Host<'_, '_> {
+impl qa_session::physics::DisplacementHost for Host<'_, '_> {
     type Error = ClientCommandError;
-
     fn entities(&mut self) -> &mut EntityTable {
         &mut self.host.runtime.server.entities
     }
@@ -839,50 +920,13 @@ impl MotionHost for Host<'_, '_> {
             vm.motion_state(context, native)
         })
     }
-    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error> {
-        self.edit(entity, |vm, services, context, native| {
-            vm.prepare_motion(&mut services.server.entities, context, native)
-        })
-    }
-    fn check_velocity(&mut self, entity: EntityId, maximum: f32) -> Result<(), Self::Error> {
-        self.edit(entity, |vm, services, context, native| {
-            check_velocity(vm, services, context, native, entity, maximum)
-        })
-    }
-    fn write_motion(
+    fn write_origin(
         &mut self,
         entity: EntityId,
-        field: MotionWrite,
+        axis: usize,
         value: f32,
     ) -> Result<(), Self::Error> {
-        self.edit(entity, |vm, services, context, native| {
-            let entities = &mut services.server.entities;
-            let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
-            match field {
-                MotionWrite::Angles(axis) => entities.columns.angles[slot].0[axis] = value,
-                MotionWrite::AngularVelocity(axis) => {
-                    entities.columns.angular_velocity[slot]
-                        .as_mut()
-                        .ok_or(CallError::Memory)?
-                        .0[axis] = value;
-                }
-                MotionWrite::Origin(axis) => entities.columns.position[slot].0[axis] = value,
-                MotionWrite::Velocity(axis) => entities.columns.velocity[slot].0[axis] = value,
-            }
-            vm.write_motion(entities, context, native, field)?;
-            if matches!(field, MotionWrite::Origin(_) | MotionWrite::Velocity(_)) {
-                vm.refresh_client_pose(services, context, native, entity)?;
-            }
-            Ok(())
-        })
-    }
-    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error> {
-        self.write_field(entity, MotionField::Flags(flags))
-    }
-    fn gravity_scale(&mut self, entity: EntityId) -> Result<Option<f32>, Self::Error> {
-        self.edit(entity, |vm, _, context, native| {
-            vm.motion_gravity(context, native)
-        })
+        MotionHost::write_motion(self, entity, MotionWrite::Origin(axis), value)
     }
     fn trace(
         &mut self,
@@ -937,6 +981,54 @@ impl MotionHost for Host<'_, '_> {
             self.driver,
         )?;
         self.current()
+    }
+}
+
+impl MotionHost for Host<'_, '_> {
+    fn write_motion(
+        &mut self,
+        entity: EntityId,
+        field: MotionWrite,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        self.edit(entity, |vm, services, context, native| {
+            let entities = &mut services.server.entities;
+            let slot = entities.resolve(entity).ok_or(CallError::Entity)?;
+            match field {
+                MotionWrite::Angles(axis) => entities.columns.angles[slot].0[axis] = value,
+                MotionWrite::AngularVelocity(axis) => {
+                    entities.columns.angular_velocity[slot]
+                        .as_mut()
+                        .ok_or(CallError::Memory)?
+                        .0[axis] = value;
+                }
+                MotionWrite::Origin(axis) => entities.columns.position[slot].0[axis] = value,
+                MotionWrite::Velocity(axis) => entities.columns.velocity[slot].0[axis] = value,
+            }
+            vm.write_motion(entities, context, native, field)?;
+            if matches!(field, MotionWrite::Origin(_) | MotionWrite::Velocity(_)) {
+                vm.refresh_client_pose(services, context, native, entity)?;
+            }
+            Ok(())
+        })
+    }
+    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error> {
+        self.edit(entity, |vm, services, context, native| {
+            vm.prepare_motion(&mut services.server.entities, context, native)
+        })
+    }
+    fn check_velocity(&mut self, entity: EntityId, maximum: f32) -> Result<(), Self::Error> {
+        self.edit(entity, |vm, services, context, native| {
+            check_velocity(vm, services, context, native, entity, maximum)
+        })
+    }
+    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error> {
+        self.write_field(entity, MotionField::Flags(flags))
+    }
+    fn gravity_scale(&mut self, entity: EntityId) -> Result<Option<f32>, Self::Error> {
+        self.edit(entity, |vm, _, context, native| {
+            vm.motion_gravity(context, native)
+        })
     }
     fn ground(
         &mut self,

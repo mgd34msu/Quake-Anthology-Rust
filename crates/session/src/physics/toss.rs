@@ -35,20 +35,16 @@ pub struct MotionTrace {
 /// Each method ends its entity/VM borrows before returning. Relink performs
 /// trigger callbacks; impact then performs both current solid/touch checks,
 /// including the target's touch when a trigger has removed the moving entity.
-pub trait MotionHost {
+pub trait DisplacementHost {
     type Error: From<PhysicsError>;
     fn entities(&mut self) -> &mut EntityTable;
     fn state(&mut self, entity: EntityId) -> Result<MotionState, Self::Error>;
-    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error>;
-    fn check_velocity(&mut self, entity: EntityId, max: f32) -> Result<(), Self::Error>;
-    fn write_motion(
+    fn write_origin(
         &mut self,
         entity: EntityId,
-        field: MotionWrite,
+        axis: usize,
         value: f32,
     ) -> Result<(), Self::Error>;
-    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error>;
-    fn gravity_scale(&mut self, entity: EntityId) -> Result<Option<f32>, Self::Error>;
     fn trace(
         &mut self,
         entity: EntityId,
@@ -61,6 +57,19 @@ pub trait MotionHost {
         entity: Option<EntityId>,
         trace: &MotionTrace,
     ) -> Result<Option<EntityId>, Self::Error>;
+}
+
+pub trait MotionHost: DisplacementHost {
+    fn write_motion(
+        &mut self,
+        entity: EntityId,
+        field: MotionWrite,
+        value: f32,
+    ) -> Result<(), Self::Error>;
+    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error>;
+    fn check_velocity(&mut self, entity: EntityId, max: f32) -> Result<(), Self::Error>;
+    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error>;
+    fn gravity_scale(&mut self, entity: EntityId) -> Result<Option<f32>, Self::Error>;
     fn ground(
         &mut self,
         entity: EntityId,
@@ -181,7 +190,7 @@ pub fn toss<H: MotionHost>(
 
 /// Shared native displacement: trace, scalar pose stores, trigger relink, then
 /// impact. The returned lifetime may differ after either callback boundary.
-pub fn push_entity<H: MotionHost>(
+pub fn push_entity<H: DisplacementHost>(
     host: &mut H,
     entity: EntityId,
     displacement: Vec3,
@@ -204,7 +213,7 @@ pub fn push_entity<H: MotionHost>(
     };
     let trace = host.trace(entity, end, kind)?;
     for axis in 0..3 {
-        host.write_motion(entity, MotionWrite::Origin(axis), trace.trace.end.0[axis])?;
+        host.write_origin(entity, axis, trace.trace.end.0[axis])?;
     }
     let mut current = host.relink(entity)?;
     if trace.trace.entity.is_some() {

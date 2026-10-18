@@ -163,6 +163,38 @@ impl Vm {
             .ok_or(crate::services::CallError::Entity)?
             .bind_client(entities, native, entity)
     }
+    pub fn entity_binding(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+    ) -> Option<qa_core::primitives::EntityId> {
+        self.projection
+            .as_ref()?
+            .entities
+            .binding(entities, native)
+            .ok()?
+    }
+    pub fn transport_entity(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        entity: qa_core::primitives::EntityId,
+        position: qa_core::primitives::Vec3,
+        relink: bool,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .as_mut()
+            .ok_or(crate::services::CallError::Entity)?
+            .transport(
+                &mut self.memory,
+                services,
+                context,
+                entity,
+                position,
+                None,
+                relink,
+            )
+    }
     pub fn publish_entities(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,

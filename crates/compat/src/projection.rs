@@ -82,19 +82,92 @@ impl Projection {
         }
         let table = self.entities.boundary(memory, context)?;
         services.sync_attachment_positions(context.module, |services, entity, native, position| {
-            self.entities
-                .write_position(memory, services.server, context, entity, position)?;
-            self.values.write_position(
+            self.write_position(
                 memory,
-                table,
-                &self.entities,
+                services,
                 context,
-                services.server,
+                table,
+                entity,
                 native,
-                pmove.as_deref_mut(),
                 position,
+                pmove.as_deref_mut(),
             )
         })
+    }
+
+    fn write_position(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        table: crate::entities::Entities,
+        entity: EntityId,
+        native: NativeEntity,
+        position: qa_core::primitives::Vec3,
+        pmove: Option<&mut crate::pmove::Pmove>,
+    ) -> Result<(), CallError> {
+        self.entities
+            .write_position(memory, services.server, context, entity, position)?;
+        if let Some(client) = self.values.write_position(
+            memory,
+            table,
+            &self.entities,
+            context,
+            services.server,
+            native,
+            pmove,
+            position,
+        )? {
+            services.server.clients[client.0 as usize]
+                .player
+                .body
+                .position = position;
+        }
+        Ok(())
+    }
+
+    pub fn transport(
+        &mut self,
+        memory: &mut ModuleMemory<'_>,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        entity: EntityId,
+        position: qa_core::primitives::Vec3,
+        pmove: Option<&mut crate::pmove::Pmove>,
+        relink: bool,
+    ) -> Result<(), CallError> {
+        let slot = services
+            .server
+            .entities
+            .resolve(entity)
+            .ok_or(CallError::Entity)?;
+        let native =
+            services.server.entities.columns.native_entity[slot].ok_or(CallError::Entity)?;
+        if native.module != context.module
+            || self.entities.binding(&services.server.entities, native)? != Some(entity)
+        {
+            return Err(CallError::Entity);
+        }
+        let table = self.entities.boundary(memory, context)?;
+        let address = crate::entities::native_address(
+            table,
+            context.module,
+            &services.server.entities,
+            entity,
+        )
+        .ok_or(CallError::Entity)?;
+        services
+            .server
+            .entities
+            .columns
+            .transport_position(slot, position);
+        self.write_position(
+            memory, services, context, table, entity, native, position, pmove,
+        )?;
+        if relink {
+            self.entities.link(services, memory, context, address)?;
+        }
+        Ok(())
     }
     /// The caller lends native bytes only after parking its owned child.
     /// Failed exports do not enter this successful-return publication phase.

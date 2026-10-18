@@ -387,9 +387,9 @@ impl PlayerValues {
         native: NativeEntity,
         mut pmove: Option<&mut crate::pmove::Pmove>,
         position: Vec3,
-    ) -> Result<(), CallError> {
+    ) -> Result<Option<ClientId>, CallError> {
         let Some(client) = server.client_for_native(native) else {
-            return Ok(());
+            return Ok(None);
         };
         let entity = server.clients[client.0 as usize].entity;
         let Some((pointer, _)) = self.pointer(
@@ -401,7 +401,7 @@ impl PlayerValues {
             entity,
         )?
         else {
-            return Ok(());
+            return Ok(Some(client));
         };
         match self.address {
             PlayerAddress::EntityClient(_) => pmove
@@ -420,7 +420,8 @@ impl PlayerValues {
                 }
                 Ok(())
             }
-        }
+        }?;
+        Ok(Some(client))
     }
     pub fn observe_clock(&self, clock: ClockObservation) -> Result<ClockObservation, CallError> {
         if !clock.is_valid() {

@@ -2213,6 +2213,36 @@ fn owned_native_export_imports_public_player_memory_only_after_success() {
             Vec3([21.0, 32.0, 43.0])
         );
         assert!(f.server.entities.detach(subject));
+        // An external pusher uses this same parked public-view writer without
+        // running the module's locomotion/export code a second time.
+        let transported = Vec3([34.0, 56.0, 78.0]);
+        {
+            let mut memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+            for offset in [24, 92] {
+                memory
+                    .write_vec3(native_entities + offset, Vec3([30.0, 50.0, 70.0]))
+                    .unwrap();
+            }
+        }
+        vm.transport_entity(&mut f.engine(), context(), subject, transported, false)
+            .unwrap();
+        assert_eq!(f.server.clients[1].player.body.position, transported);
+        {
+            let memory = qa_compat::memory::process_memory(&mut vm.process).unwrap();
+            assert_eq!(
+                memory.read_vec3(native_entities + 488).unwrap(),
+                transported
+            );
+            assert_eq!(memory.read_vec3(native_players + 20).unwrap(), transported);
+            assert_eq!(
+                memory.read_vec3(native_entities + 24).unwrap(),
+                Vec3([43.0, 74.0, 105.0])
+            );
+            assert_eq!(
+                memory.read_vec3(native_entities + 92).unwrap(),
+                Vec3([43.0, 74.0, 105.0])
+            );
+        }
         assert!(
             f.server
                 .entities

@@ -149,7 +149,7 @@ impl Host {
     }
 }
 
-impl MotionHost for Host {
+impl qa_session::physics::DisplacementHost for Host {
     type Error = PhysicsError;
     fn entities(&mut self) -> &mut EntityTable {
         &mut self.entities
@@ -158,72 +158,13 @@ impl MotionHost for Host {
         self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
         Ok(self.state)
     }
-    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error> {
-        self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        self.events.push(Event::Prepare);
-        Ok(())
-    }
-    fn check_velocity(&mut self, entity: EntityId, max: f32) -> Result<(), Self::Error> {
-        self.events.push(Event::Check);
-        let events = &mut self.events;
-        check_velocity::<PhysicsError>(&mut self.entities, entity, max, |entities, field, _| {
-            let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-            let value = match field {
-                MotionWrite::Velocity(axis) => entities.columns.velocity[slot].0[axis],
-                MotionWrite::Origin(axis) => entities.columns.position[slot].0[axis],
-                _ => unreachable!(),
-            };
-            events.push(Event::Write(field, value));
-            Ok(())
-        })?;
-        Ok(())
-    }
-    fn write_motion(
+    fn write_origin(
         &mut self,
         entity: EntityId,
-        field: MotionWrite,
+        axis: usize,
         value: f32,
     ) -> Result<(), Self::Error> {
-        let slot = self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        match field {
-            MotionWrite::Angles(axis) => self.entities.columns.angles[slot].0[axis] = value,
-            MotionWrite::AngularVelocity(axis) => {
-                self.entities.columns.angular_velocity[slot]
-                    .as_mut()
-                    .ok_or(PhysicsError::AngularVelocity)?
-                    .0[axis] = value
-            }
-            MotionWrite::Origin(axis) => {
-                self.entities.columns.position[slot].0[axis] = value;
-                if axis == 2
-                    && let Some(velocity) = self.origin_velocity.take()
-                {
-                    self.entities.columns.velocity[slot] = velocity;
-                }
-            }
-            MotionWrite::Velocity(axis) => {
-                self.entities.columns.velocity[slot].0[axis] = value;
-                if self.shifted_clip && axis == 0 {
-                    // A native shifted vector overlaps the next scalar input.
-                    self.entities.columns.velocity[slot].0[1] = value;
-                }
-            }
-        }
-        self.events.push(Event::Write(field, value));
-        if self.remove_after_write == Some(field) {
-            assert!(self.entities.release(entity, ThinkTime::Seconds(1.0)));
-        }
-        Ok(())
-    }
-    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error> {
-        self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
-        self.state.flags = Some(flags);
-        self.events.push(Event::Flags(flags));
-        Ok(())
-    }
-    fn gravity_scale(&mut self, _: EntityId) -> Result<Option<f32>, Self::Error> {
-        self.events.push(Event::Gravity);
-        Ok(self.scale)
+        MotionHost::write_motion(self, entity, MotionWrite::Origin(axis), value)
     }
     fn trace(
         &mut self,
@@ -298,6 +239,76 @@ impl MotionHost for Host {
         }
         Ok(entity)
     }
+}
+
+impl MotionHost for Host {
+    fn write_motion(
+        &mut self,
+        entity: EntityId,
+        field: MotionWrite,
+        value: f32,
+    ) -> Result<(), Self::Error> {
+        let slot = self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        match field {
+            MotionWrite::Angles(axis) => self.entities.columns.angles[slot].0[axis] = value,
+            MotionWrite::AngularVelocity(axis) => {
+                self.entities.columns.angular_velocity[slot]
+                    .as_mut()
+                    .ok_or(PhysicsError::AngularVelocity)?
+                    .0[axis] = value
+            }
+            MotionWrite::Origin(axis) => {
+                self.entities.columns.position[slot].0[axis] = value;
+                if axis == 2
+                    && let Some(velocity) = self.origin_velocity.take()
+                {
+                    self.entities.columns.velocity[slot] = velocity;
+                }
+            }
+            MotionWrite::Velocity(axis) => {
+                self.entities.columns.velocity[slot].0[axis] = value;
+                if self.shifted_clip && axis == 0 {
+                    // A native shifted vector overlaps the next scalar input.
+                    self.entities.columns.velocity[slot].0[1] = value;
+                }
+            }
+        }
+        self.events.push(Event::Write(field, value));
+        if self.remove_after_write == Some(field) {
+            assert!(self.entities.release(entity, ThinkTime::Seconds(1.0)));
+        }
+        Ok(())
+    }
+    fn prepare_motion(&mut self, entity: EntityId) -> Result<(), Self::Error> {
+        self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        self.events.push(Event::Prepare);
+        Ok(())
+    }
+    fn check_velocity(&mut self, entity: EntityId, max: f32) -> Result<(), Self::Error> {
+        self.events.push(Event::Check);
+        let events = &mut self.events;
+        check_velocity::<PhysicsError>(&mut self.entities, entity, max, |entities, field, _| {
+            let slot = entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+            let value = match field {
+                MotionWrite::Velocity(axis) => entities.columns.velocity[slot].0[axis],
+                MotionWrite::Origin(axis) => entities.columns.position[slot].0[axis],
+                _ => unreachable!(),
+            };
+            events.push(Event::Write(field, value));
+            Ok(())
+        })?;
+        Ok(())
+    }
+    fn write_flags(&mut self, entity: EntityId, flags: u32) -> Result<(), Self::Error> {
+        self.entities.resolve(entity).ok_or(PhysicsError::Entity)?;
+        self.state.flags = Some(flags);
+        self.events.push(Event::Flags(flags));
+        Ok(())
+    }
+    fn gravity_scale(&mut self, _: EntityId) -> Result<Option<f32>, Self::Error> {
+        self.events.push(Event::Gravity);
+        Ok(self.scale)
+    }
     fn ground(&mut self, _: EntityId, ground: Option<EntityReference>) -> Result<(), Self::Error> {
         self.events.push(Event::Ground(ground));
         Ok(())
@@ -367,7 +378,8 @@ impl ClientHost for Host {
         Ok(self.contents.pop_front().unwrap_or(-1))
     }
     fn trace_point(&mut self, entity: EntityId, _: Vec3, end: Vec3) -> Result<Trace, Self::Error> {
-        MotionHost::trace(self, entity, end, QuakeTraceKind::IgnoreBoxes).map(|trace| trace.trace)
+        qa_session::physics::DisplacementHost::trace(self, entity, end, QuakeTraceKind::IgnoreBoxes)
+            .map(|trace| trace.trace)
     }
     fn tuning(&mut self, _: EntityId) -> Result<qa_movement::ControlTuning, Self::Error> {
         Ok(qa_movement::ControlTuning {

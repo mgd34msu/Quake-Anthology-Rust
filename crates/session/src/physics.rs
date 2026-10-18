@@ -22,8 +22,8 @@ pub use push::{PushFrame, PushHost, PushNumber, PushUndo, push_frame};
 pub use step::{MotionSweep, step_fall, sweep_motion};
 pub use support::{SupportQueries, check_bottom};
 pub use toss::{
-    MotionFrame, MotionHost, MotionState, MotionTrace, WaterTransition, push_entity, toss,
-    water_transition,
+    DisplacementHost, MotionFrame, MotionHost, MotionState, MotionTrace, WaterTransition,
+    push_entity, toss, water_transition,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

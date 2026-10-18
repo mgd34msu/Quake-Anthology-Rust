@@ -1004,6 +1004,32 @@ impl Vm {
             .bind_client(entities, native, entity)
             .map_err(Error::Service)
     }
+    pub fn transport_entity(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        context: CallContext,
+        entity: qa_core::primitives::EntityId,
+        position: qa_core::primitives::Vec3,
+        relink: bool,
+    ) -> Result<(), Error> {
+        if self.is_active() {
+            return Err(Error::Export);
+        }
+        let mut memory = process_memory(&mut self.process)?;
+        self.projection
+            .as_mut()
+            .ok_or(Error::Export)?
+            .transport(
+                &mut memory,
+                services,
+                context,
+                entity,
+                position,
+                self.pmove.as_mut(),
+                relink,
+            )
+            .map_err(Error::Service)
+    }
     pub fn entities(&mut self) -> Result<Entities, Error> {
         let layout = &self.projection.as_ref().ok_or(Error::Export)?.entities;
         let memory = process_memory(&mut self.process).map_err(|error| match error {
