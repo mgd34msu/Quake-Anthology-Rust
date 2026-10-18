@@ -482,9 +482,23 @@ fn media_host_kind(pure: bool, local_game: bool) -> MediaHost {
     }
     let (mut runtime, mut requests, old) = media_runtime(std::mem::take(&mut fixture.vfs), pure);
     if local_game {
+        let mut quakec = Vec::new();
+        let mut q2 = Vec::new();
+        let mut q3 = Vec::new();
+        qa_app::modules::complete_stock_server(
+            runtime.vfs.read_view(None),
+            &qa_console::cvars::Cvars::new().unwrap(),
+            Some(RuleSetId::Quake3),
+            qa_core::primitives::Q3StatLayout::BASE,
+            &mut quakec,
+            &mut q2,
+            &mut q3,
+        )
+        .unwrap();
+        assert!(quakec.is_empty() && q2.is_empty());
         load_q3(
             &mut runtime,
-            &[Q3Spec::parse("game:vm/qagame.qvm").unwrap()],
+            &q3,
             &mut requests,
             TickRate::fixed(50).unwrap(),
             None,

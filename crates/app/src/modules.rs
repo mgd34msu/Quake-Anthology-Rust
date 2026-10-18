@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 mod load;
 pub use load::{
-    Q2Clients, Q2Spec, Q3Image, Q3Role, Q3Spec, QuakeCSpec, complete_q3_clients, load_q2, load_q3,
-    load_quakec,
+    Q2Clients, Q2Spec, Q3Image, Q3Role, Q3Spec, QuakeCSpec, complete_q3_clients,
+    complete_stock_server, load_q2, load_q3, load_quakec,
 };
 mod clients;
 mod contacts;

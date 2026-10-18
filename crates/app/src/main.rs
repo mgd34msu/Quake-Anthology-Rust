@@ -70,10 +70,10 @@ fn run() -> Result<(), String> {
     let mut seat_presentations = [None; SeatId::COUNT];
     let mut trace_rules = None;
     let mut client_module = None;
+    let mut server_rules = None;
+    let mut auto_modules = true;
     let mut seat_policies = [None; SeatId::COUNT];
-    // The built-in walk-through host has no native module/sign-on yet. Its
-    // explicit transport default is independent of map and movement identity.
-    let mut local_protocol = qa_network::commands::packet::Protocol::QuakeWorld28;
+    let mut local_protocol = None;
     let mut seat_protocols = [None; SeatId::COUNT];
     let mut seat_game_modules = [None; SeatId::COUNT];
     let mut seat_count = 1;
@@ -96,6 +96,13 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--manual-modules" => auto_modules = false,
+            "--server-rules" => {
+                server_rules = Some(
+                    RuleSetId::parse(&args.next().ok_or("--server-rules needs q1/qw/q2/q2rr/q3")?)
+                        .ok_or("unknown SERVER rules")?,
+                );
+            }
             "--record-journal" | "--play-journal" => {
                 if journal.is_some() {
                     return Err("select one journal operation".into());
@@ -257,12 +264,14 @@ fn run() -> Result<(), String> {
                 insert_seat_value(&mut seat_game_modules, &mut seat_count, seat, module)?;
             }
             "--local-protocol" => {
-                local_protocol = qa_network::commands::packet::Protocol::parse(
-                    &args
-                        .next()
-                        .ok_or("--local-protocol needs 15/28/34/1038/68")?,
-                )
-                .ok_or("unsupported local protocol")?;
+                local_protocol = Some(
+                    qa_network::commands::packet::Protocol::parse(
+                        &args
+                            .next()
+                            .ok_or("--local-protocol needs 15/28/34/1038/68")?,
+                    )
+                    .ok_or("unsupported local protocol")?,
+                );
             }
             "--seat-protocol" => {
                 let value = args
@@ -460,6 +469,19 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let stock_server_rules = server_rules.or_else(|| {
+        staged_map
+            .as_ref()
+            .and_then(|(input, _)| input.client_rules)
+    });
+    let stock_q3_stats = if staged_map
+        .as_ref()
+        .is_some_and(|(input, _)| input.profile_product(RuleSetId::Quake3) == "q3a/missionpack")
+    {
+        qa_core::primitives::Q3StatLayout::TEAM_ARENA
+    } else {
+        qa_core::primitives::Q3StatLayout::BASE
+    };
     let names = staged_map
         .as_ref()
         .map(|(input, _)| input.catalog_names())
@@ -644,7 +666,9 @@ fn run() -> Result<(), String> {
             let rules = policy.movement;
             let traces = policy.trace;
             let spawn = loaded.spawns[index];
-            let protocol = seat_protocols[index].unwrap_or(local_protocol);
+            let protocol = seat_protocols[index]
+                .or(local_protocol)
+                .unwrap_or_else(|| qa_network::commands::packet::Protocol::native(policy.client));
             let client = runtime.connect_local(seat, spawn, policy, protocol, index as u32)?;
             println!(
                 "{{\"event\":\"local_channel\",\"seat\":{index},\"client\":{},\"protocol\":{},\"native_signon\":false}}",
@@ -678,6 +702,17 @@ fn run() -> Result<(), String> {
         loaded_world = Some(loaded.render);
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
+    if auto_modules && map_path.is_some() {
+        qa_app::modules::complete_stock_server(
+            runtime.vfs.read_view(None),
+            &console.cvars,
+            stock_server_rules,
+            stock_q3_stats,
+            &mut quakec_modules,
+            &mut q2_modules,
+            &mut q3_modules,
+        )?;
+    }
     let mut module_requests = qa_app::modules::load_quakec(
         &mut runtime,
         &quakec_modules,
@@ -694,13 +729,15 @@ fn run() -> Result<(), String> {
     } else {
         Vec::new()
     };
-    if !q3_modules.is_empty() {
+    if auto_modules {
         qa_app::modules::complete_q3_clients(
             &runtime,
             &console.cvars,
             &mut q3_modules,
             &local_clients,
         )?;
+    }
+    if !q3_modules.is_empty() {
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
         qa_app::modules::load_q3(
             &mut runtime,
