@@ -159,7 +159,7 @@ fn seat(
         }
         runtime
             .input
-            .unbind_all(EventTime::default(), &mut ColdTarget);
+            .unbind_all(SeatId::FIRST, EventTime::default(), &mut ColdTarget);
         for row in rows {
             let Some(control) = row.get("input").and_then(control) else {
                 report.unsupported += 1;
@@ -194,7 +194,13 @@ fn seat(
             if let Some(command) = command {
                 if runtime
                     .input
-                    .bind_text(control, &command, EventTime::default(), &mut ColdTarget)
+                    .bind_text(
+                        SeatId::FIRST,
+                        control,
+                        &command,
+                        EventTime::default(),
+                        &mut ColdTarget,
+                    )
                     .is_ok()
                 {
                     report.bindings += 1;

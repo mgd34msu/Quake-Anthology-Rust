@@ -250,6 +250,7 @@ fn custom_button_registration_and_quoted_clauses_share_command_lookup() {
     // Bind text itself stays byte-exact, including the inner quotes.
     host.input
         .bind_text(
+            SeatId::FIRST,
             26,
             "+CuStOm; echo \"a;b\"; +jump",
             EventTime(0),
@@ -336,7 +337,7 @@ fn full_bind_release_reports_existing_bounded_command_error() {
         "{}",
         host.output
     );
-    assert!(host.input.binding(26).is_none());
+    assert!(host.input.binding(SeatId::FIRST, 26).is_none());
     assert_eq!(host.rejected, 1);
     assert_eq!(frame(&mut host, 20)[0].movement[0], 0.0);
     assert_eq!(frame(&mut host, 40)[0].movement[0], 0.0);
@@ -423,7 +424,10 @@ fn rejected_rebind_release_clears_old_action_without_acquiring_held_replacement(
         .unwrap();
     console.execute_frame(&mut host);
     assert_eq!(host.rejected, 1);
-    assert_eq!(host.input.binding(26).unwrap().text(), "+jump");
+    assert_eq!(
+        host.input.binding(SeatId::FIRST, 26).unwrap().text(),
+        "+jump"
+    );
     assert_eq!(frame(&mut host, 40)[0].movement[0], 100.0);
     key(
         &mut console,
@@ -488,7 +492,7 @@ fn rejected_unbind_release_discards_old_press_waiting_behind_the_unbind() {
         .unwrap();
     console.execute_frame(&mut host);
     assert_eq!(host.rejected, 1);
-    assert!(host.input.binding(26).is_none());
+    assert!(host.input.binding(SeatId::FIRST, 26).is_none());
     assert_eq!(frame(&mut host, 20)[0].movement[0], 0.0);
     assert_eq!(frame(&mut host, 40)[0].movement[0], 0.0);
 }
@@ -587,4 +591,53 @@ fn rejected_alias_expansion_closes_an_already_executed_press() {
     );
     assert_eq!(frame(&mut host, 40)[0].movement[0], 100.0);
     assert_eq!(frame(&mut host, 60)[0].movement[0], 0.0);
+}
+
+#[test]
+fn seat_bindings_build_independent_commands_and_rebinding_releases_only_its_seat() {
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut host = Capture::default();
+    let first = Context::default();
+    let second = Context {
+        seat: SeatId::ALL[1],
+        ..first
+    };
+    for (text, context) in [("bind w +forward", first), ("bind w +back", second)] {
+        console.append_line(text, context).unwrap();
+    }
+    console.execute_frame(&mut host);
+    assert!(host.input.assign(DeviceId::Keyboard(1), second.seat));
+    host.input.seed(EventTime(0));
+    for device in [DeviceId::Keyboard(0), DeviceId::Keyboard(1)] {
+        key(&mut console, &mut host, device, 26, 0, true, false);
+    }
+    console.execute_frame(&mut host);
+    let commands = frame(&mut host, 20);
+    assert!(
+        commands[0].movement[0] > 0.0,
+        "seat zero must retain +forward"
+    );
+    assert!(commands[1].movement[0] < 0.0, "seat one must use +back");
+    console
+        .append_line(
+            "unbindall",
+            Context {
+                event_time: Some(EventTime::from_milliseconds(20)),
+                ..first
+            },
+        )
+        .unwrap();
+    console.execute_frame(&mut host);
+    let commands = frame(&mut host, 40);
+    assert_eq!(commands[0].movement[0], 0.0);
+    assert!(
+        commands[1].movement[0] < 0.0,
+        "unbinding seat zero must not release seat one"
+    );
+    for (context, expected) in [(first, "not bound"), (second, "+back")] {
+        host.output.clear();
+        console.append_line("bind w", context).unwrap();
+        console.execute_frame(&mut host);
+        assert!(host.output.contains(expected), "{}", host.output);
+    }
 }

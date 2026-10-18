@@ -21,16 +21,17 @@ impl EngineServices<'_> {
         control(key).is_some_and(|control| self.input.is_down(seat, control))
     }
 
-    pub(super) fn key_binding(&self, key: i32) -> &[u8] {
+    pub(super) fn key_binding(&self, seat: SeatId, key: i32) -> &[u8] {
         control(key)
-            .and_then(|control| self.input.binding(control))
+            .and_then(|control| self.input.binding(seat, control))
             .map_or(&[], qa_input::Binding::bytes)
     }
 
-    pub(super) fn key_for_binding(&self, text: Option<&[u8]>) -> i32 {
+    pub(super) fn key_for_binding(&self, seat: SeatId, text: Option<&[u8]>) -> i32 {
         let Some(text) = text else { return -1 };
         for key in 0..=u8::MAX {
-            if let Some(binding) = keys::from_native(key).and_then(|key| self.input.binding(key))
+            if let Some(binding) =
+                keys::from_native(key).and_then(|key| self.input.binding(seat, key))
                 && compare_folded(binding.bytes(), text).is_eq()
             {
                 return i32::from(key);
@@ -51,7 +52,14 @@ impl EngineServices<'_> {
         };
         let mut output = BindOutput::new(self.commands, context);
         self.input
-            .bind_bytes_owned(control, text, context.producer, time, &mut output)
+            .bind_bytes_owned(
+                context.seat,
+                control,
+                text,
+                context.producer,
+                time,
+                &mut output,
+            )
             .map_err(|_| CallError::Capacity)?;
         let outcome = output.outcome();
         self.input_outcome(outcome);

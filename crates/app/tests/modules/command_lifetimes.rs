@@ -437,7 +437,7 @@ pub(super) fn queued_binding_keeps_alias_producer_and_retires_with_it(
     assert_eq!(text(&host, "lifetime_bound"), Some("0"));
     assert_eq!(text(&host, "lifetime_peer_progress"), Some("1"));
     assert_eq!(text(&host, "lifetime_human_progress"), Some("1"));
-    assert!(host.runtime.input.binding(26).is_none());
+    assert!(host.runtime.input.binding(SeatId::FIRST, 26).is_none());
     assert!(!host.runtime.quit);
 }
 
@@ -496,7 +496,7 @@ pub(super) fn manual_hold_retirement_preserves_human_press(
     let held = frame_with(&mut host, vec![]);
     assert!(held.commands[0].movement[0] > 0.0);
     assert_eq!(text(&host, "lifetime_peer_progress"), Some("1"));
-    assert!(host.runtime.input.binding(26).is_some());
+    assert!(host.runtime.input.binding(SeatId::FIRST, 26).is_some());
     release_human_forward(&mut host);
     assert!(!host.runtime.quit);
 }
@@ -530,8 +530,8 @@ pub(super) fn purged_keyup_cannot_leave_module_button_held(
     invoke(&mut host, B, 1).unwrap();
     let human_held = frame_with(&mut host, vec![]);
     assert!(human_held.commands[0].movement[0] > 0.0);
-    assert!(host.runtime.input.binding(14).is_none());
-    assert!(host.runtime.input.binding(26).is_some());
+    assert!(host.runtime.input.binding(SeatId::FIRST, 14).is_none());
+    assert!(host.runtime.input.binding(SeatId::FIRST, 26).is_some());
     assert_eq!(text(&host, "lifetime_peer_progress"), Some("1"));
     release_human_forward(&mut host);
     assert!(!host.runtime.quit);
@@ -552,7 +552,7 @@ pub(super) fn stale_empty_buffer_retires_holds_before_the_next_frame(
     assert_eq!(host.module_state(A), Some(State::Failed));
     assert_eq!(host.module_state(B), Some(State::Running));
     assert!(held.commands[0].movement[0] > 0.0);
-    assert!(host.runtime.input.binding(26).is_some());
+    assert!(host.runtime.input.binding(SeatId::FIRST, 26).is_some());
     release_human_forward(&mut host);
     assert!(!host.runtime.quit);
 }

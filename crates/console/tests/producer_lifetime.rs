@@ -653,8 +653,14 @@ fn physical_bindings_keep_the_module_alias_owner_until_exact_retirement() {
         .append("alias route \"echo module\"; bind w route\n", context(a))
         .unwrap();
     console.execute_frame(&mut host);
-    assert_eq!(host.input.binding(26).unwrap().producer(), Some(a));
-    assert_eq!(host.input.binding(20).unwrap().producer(), None);
+    assert_eq!(
+        host.input.binding(SeatId::FIRST, 26).unwrap().producer(),
+        Some(a)
+    );
+    assert_eq!(
+        host.input.binding(SeatId::FIRST, 20).unwrap().producer(),
+        None
+    );
     key(&mut console, &mut host, 26, true);
     console.execute_frame(&mut host);
     key(&mut console, &mut host, 26, false);
@@ -669,8 +675,8 @@ fn physical_bindings_keep_the_module_alias_owner_until_exact_retirement() {
     host.input.retire_bindings(a, EventTime(21), &mut target);
     assert_eq!(target.outcome(), (0, Ok(())));
     console.discard_producer(&mut host, a).unwrap();
-    assert!(host.input.binding(26).is_none());
-    assert!(host.input.binding(20).is_some());
+    assert!(host.input.binding(SeatId::FIRST, 26).is_none());
+    assert!(host.input.binding(SeatId::FIRST, 20).is_some());
     console.execute_frame(&mut host);
     key(&mut console, &mut host, 26, false);
     key(&mut console, &mut host, 26, true);
@@ -696,7 +702,14 @@ fn replacing_a_held_binding_releases_with_the_acquired_producer() {
     // This replacement target belongs to B, but the old acquisition belongs to A.
     let mut target = BindOutput::new(buffer, context(b));
     host.input
-        .bind_bytes_owned(10, b"+back", Some(b), EventTime(23), &mut target)
+        .bind_bytes_owned(
+            SeatId::FIRST,
+            10,
+            b"+back",
+            Some(b),
+            EventTime(23),
+            &mut target,
+        )
         .unwrap();
     assert_eq!(target.outcome(), (0, Ok(())));
     let (_, buffer, _) = console.module_parts();
@@ -714,7 +727,10 @@ fn replacing_a_held_binding_releases_with_the_acquired_producer() {
         },
     );
     assert!(buffer.is_empty());
-    assert_eq!(host.input.binding(10).unwrap().producer(), Some(b));
+    assert_eq!(
+        host.input.binding(SeatId::FIRST, 10).unwrap().producer(),
+        Some(b)
+    );
 }
 
 #[test]
@@ -744,7 +760,7 @@ fn retiring_an_old_instance_keeps_the_replacement_binding_and_alias() {
     key(&mut console, &mut host, 26, true);
     console.execute_frame(&mut host);
     assert_eq!(
-        host.input.binding(26).unwrap().producer(),
+        host.input.binding(SeatId::FIRST, 26).unwrap().producer(),
         Some(replacement)
     );
     assert_eq!(host.output, b"new \n");
@@ -809,7 +825,7 @@ fn stale_manual_forward_wait_releases_only_its_producer_actions_and_bindings() {
     assert_eq!(released.movement[0], 0.0);
     assert!(released.movement[1] < 0.0);
     assert!(released.movement[2] > 0.0);
-    assert!(host.input.binding(26).is_none());
+    assert!(host.input.binding(SeatId::FIRST, 26).is_none());
     assert_eq!(host.output, b"healthy \n");
     assert_eq!(host.rejected, 0);
 }
@@ -847,7 +863,7 @@ fn saturated_release_admission_is_counted_after_complete_input_and_alias_cleanup
     console.append(&"x".repeat(CAPACITY - 1), human).unwrap();
     assert!(console.discard_producer(&mut host, a).is_err());
     assert_eq!(host.rejected, 1);
-    assert!(host.input.binding(10).is_none());
+    assert!(host.input.binding(SeatId::FIRST, 10).is_none());
     // Consume the unrelated too-long human line before checking alias cleanup.
     let (_, buffer, _) = console.module_parts();
     let mut text = FixedText::<65536>::default();

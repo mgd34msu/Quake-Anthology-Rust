@@ -839,7 +839,7 @@ impl<H: Host> Console<H> {
         }
         let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
         if args.len() == 2 {
-            if let Some(binding) = host.input().binding(control) {
+            if let Some(binding) = host.input().binding(context.seat, control) {
                 let mut value = FixedText::<1088>::default();
                 let _ = write!(value, "\"{}\" = \"", args.get(1));
                 let _ = value.append_bytes(binding.bytes());
@@ -854,10 +854,12 @@ impl<H: Host> Console<H> {
         let time = context.event_time.unwrap_or_else(|| host.input_time());
         let mut output = BindOutput::new(&mut self.buffer, context);
         if self.joined.as_bytes().is_empty() {
-            host.input().bind(control, None, time, &mut output);
+            host.input()
+                .bind(context.seat, control, None, time, &mut output);
         } else {
             host.input()
                 .bind_bytes_owned(
+                    context.seat,
                     control,
                     self.joined.as_bytes(),
                     context.producer,
@@ -880,7 +882,8 @@ impl<H: Host> Console<H> {
         let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
         let time = context.event_time.unwrap_or_else(|| host.input_time());
         let mut output = BindOutput::new(&mut self.buffer, context);
-        host.input().bind(control, None, time, &mut output);
+        host.input()
+            .bind(context.seat, control, None, time, &mut output);
         output.finish(host)
     }
     fn unbind_all(
@@ -891,7 +894,7 @@ impl<H: Host> Console<H> {
     ) -> Result<(), CommandError> {
         let time = context.event_time.unwrap_or_else(|| host.input_time());
         let mut output = BindOutput::new(&mut self.buffer, context);
-        host.input().unbind_all(time, &mut output);
+        host.input().unbind_all(context.seat, time, &mut output);
         output.finish(host)
     }
 
@@ -899,12 +902,12 @@ impl<H: Host> Console<H> {
         &mut self,
         host: &mut H,
         _: &Arguments<'_>,
-        _: Context,
+        context: Context,
     ) -> Result<(), CommandError> {
         // Copy one fixed line at a time to end the input borrow before print.
         for control in 0..1024 {
             let mut line = FixedText::<1088>::default();
-            if let Some(binding) = host.input().binding(control) {
+            if let Some(binding) = host.input().binding(context.seat, control) {
                 if keys::normalize(control) != control {
                     continue;
                 }

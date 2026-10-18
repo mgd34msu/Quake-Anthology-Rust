@@ -1323,7 +1323,8 @@ pub struct EngineCallTable {
         ModuleId,
         qa_core::sys_events::EventTime,
     ) -> Result<(), CallError>,
-    pub key_binding: for<'a> fn(&'a EngineServices<'_>, i32) -> &'a [u8],
+    pub key_binding:
+        for<'a> fn(&'a EngineServices<'_>, qa_core::sys_events::SeatId, i32) -> &'a [u8],
     pub set_key_binding: fn(
         &mut EngineServices<'_>,
         i32,
@@ -1331,7 +1332,7 @@ pub struct EngineCallTable {
         Context,
         qa_core::sys_events::EventTime,
     ) -> Result<(), CallError>,
-    pub key_for_binding: fn(&EngineServices<'_>, Option<&[u8]>) -> i32,
+    pub key_for_binding: fn(&EngineServices<'_>, qa_core::sys_events::SeatId, Option<&[u8]>) -> i32,
     pub key_name: fn(i32, &mut qa_core::text::FixedText<32>) -> Result<(), CallError>,
     pub clear_keys: fn(
         &mut EngineServices<'_>,
@@ -1568,9 +1569,9 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     key_down: |s, seat, key| s.key_down(seat, key),
     key_catchers: |s, seat| s.input.key_catchers(seat),
     set_key_catchers: |s, seat, mask, module, time| s.set_key_catchers(seat, mask, module, time),
-    key_binding: |s, key| s.key_binding(key),
+    key_binding: |s, seat, key| s.key_binding(seat, key),
     set_key_binding: |s, key, text, context, time| s.set_key_binding(key, text, context, time),
-    key_for_binding: |s, text| s.key_for_binding(text),
+    key_for_binding: |s, seat, text| s.key_for_binding(seat, text),
     key_name: input::key_name,
     clear_keys: |s, seat, context, time| s.clear_keys(seat, context, time),
     overstrike: |s| {

@@ -171,12 +171,14 @@ impl RoutedInput {
     }
     pub fn bind(
         &mut self,
+        seat: SeatId,
         control: u16,
         binding: Option<qa_input::Binding>,
         time: EventTime,
         target: &mut impl qa_input::Target,
     ) -> bool {
         let result = self.input.bind(
+            seat,
             control,
             binding,
             time,
@@ -190,12 +192,14 @@ impl RoutedInput {
     }
     pub fn bind_text(
         &mut self,
+        seat: SeatId,
         control: u16,
         text: &str,
         time: EventTime,
         target: &mut impl qa_input::Target,
     ) -> Result<(), qa_input::BindError> {
         let result = self.input.bind_text(
+            seat,
             control,
             text,
             time,

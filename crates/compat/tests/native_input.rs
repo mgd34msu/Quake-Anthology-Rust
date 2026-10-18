@@ -410,7 +410,9 @@ fn key_queries_clear_and_editor_modes_use_the_same_seat_and_command_owners() {
     let b = SeatId::ALL[1];
     assert!(f.host.input.assign(DeviceId::Keyboard(1), b));
     text(&mut m, 128, b"echo raw\xff");
-    f.call(&Q3_UI, mode, &mut m, 35, &[97, 128], a).unwrap();
+    for seat in [a, b] {
+        f.call(&Q3_UI, mode, &mut m, 35, &[97, 128], seat).unwrap();
+    }
     f.key(DeviceId::Keyboard(0), 4, true);
     f.key(DeviceId::Keyboard(1), 4, true);
     for seat in [a, b] {
@@ -513,7 +515,10 @@ fn qvm_executes_the_numbered_ui_imports_and_caches_input_export_capabilities() {
     };
     assert_eq!(vm.call(&mut calls, [0; 10], 1000, false), Ok(1));
     assert_eq!(unknown.calls, 0);
-    assert_eq!(f.host.input.binding(4).unwrap().bytes(), b"echo qvm");
+    assert_eq!(
+        f.host.input.binding(SeatId::FIRST, 4).unwrap().bytes(),
+        b"echo qvm"
+    );
     let ui = Q3_UI.input_exports().unwrap();
     let cg = Q3_CLIENT.input_exports().unwrap();
     assert_eq!(
@@ -688,7 +693,10 @@ fn qvm_import_uses_captured_scalar_arguments_and_current_guest_string_bytes() {
         .unwrap()
     };
     assert!(matches!(step, ImportStep::Return(0)));
-    assert_eq!(f.host.input.binding(4).unwrap().bytes(), b"echo new");
+    assert_eq!(
+        f.host.input.binding(SeatId::FIRST, 4).unwrap().bytes(),
+        b"echo new"
+    );
     assert_eq!(vm.resume(&mut run, 0), Ok(Step::Returned(0)));
     assert_eq!(unknown.calls, 0);
 }
@@ -1187,3 +1195,87 @@ fn cgame_send_client_command_keeps_raw_text_and_returns_void_on_bounded_rejectio
 
 #[path = "support/mark_fragments.rs"]
 mod mark_fragments;
+
+#[test]
+fn binding_imports_keep_each_seats_values_and_native_search_order_separate() {
+    for (mode, base) in modes() {
+        let mut f = Fixture::new();
+        let mut memory = ModuleMemory::load(base, 8192, &[]).unwrap();
+        for (seat, value) in [
+            (SeatId::FIRST, b"echo first".as_slice()),
+            (SeatId::ALL[1], b"echo second".as_slice()),
+        ] {
+            text(&mut memory, base + 128, value);
+            f.call(&Q3_UI, mode, &mut memory, 35, &[97, base + 128], seat)
+                .unwrap();
+        }
+        for (seat, expected, foreign) in [
+            (
+                SeatId::FIRST,
+                b"echo first".as_slice(),
+                b"echo second".as_slice(),
+            ),
+            (
+                SeatId::ALL[1],
+                b"echo second".as_slice(),
+                b"echo first".as_slice(),
+            ),
+        ] {
+            f.call(&Q3_UI, mode, &mut memory, 34, &[97, base + 512, 64], seat)
+                .unwrap();
+            assert_eq!(memory.cstring(base + 512).unwrap(), expected);
+            text(&mut memory, base + 128, expected);
+            assert_eq!(
+                f.call(&Q3_CLIENT, mode, &mut memory, 63, &[base + 128], seat),
+                Ok(97)
+            );
+            text(&mut memory, base + 128, foreign);
+            assert_eq!(
+                f.call(&Q3_CLIENT, mode, &mut memory, 63, &[base + 128], seat),
+                Ok(u64::from(u32::MAX))
+            );
+        }
+        text(&mut memory, base + 128, b"");
+        f.call(
+            &Q3_UI,
+            mode,
+            &mut memory,
+            35,
+            &[97, base + 128],
+            SeatId::FIRST,
+        )
+        .unwrap();
+        assert_eq!(
+            f.call(
+                &Q3_CLIENT,
+                mode,
+                &mut memory,
+                63,
+                &[base + 128],
+                SeatId::FIRST
+            ),
+            Ok(97)
+        );
+        assert_eq!(
+            f.call(
+                &Q3_CLIENT,
+                mode,
+                &mut memory,
+                63,
+                &[base + 128],
+                SeatId::ALL[1]
+            ),
+            Ok(u64::from(u32::MAX))
+        );
+        f.call(
+            &Q3_UI,
+            mode,
+            &mut memory,
+            34,
+            &[97, base + 512, 64],
+            SeatId::ALL[1],
+        )
+        .unwrap();
+        assert_eq!(memory.cstring(base + 512).unwrap(), b"echo second");
+    }
+}

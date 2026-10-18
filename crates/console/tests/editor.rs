@@ -239,7 +239,7 @@ fn raw_alias_and_bind_commands_share_byte_storage_and_listing() {
     console.execute_frame(&mut host);
     assert_eq!(
         host.input
-            .binding(qa_input::keys::parse("a").unwrap())
+            .binding(SeatId::FIRST, qa_input::keys::parse("a").unwrap())
             .unwrap()
             .bytes(),
         b"echo binding\x80"

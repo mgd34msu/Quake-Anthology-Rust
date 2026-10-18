@@ -163,7 +163,7 @@ fn rebind_keeps_both_modifier_holds_until_their_physical_releases() {
         frame(&mut input, 2)[0].buttons,
         buttons::ANY | buttons::CROUCH
     );
-    assert!(input.bind(224, None, EventTime(2_000_000), &mut sink));
+    assert!(input.bind(SeatId::FIRST, 224, None, EventTime(2_000_000), &mut sink));
     key(&mut input, &mut sink, 3, 224, true, true);
     key(&mut input, &mut sink, 3, 228, true, true);
     assert!(!input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
@@ -237,6 +237,7 @@ fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input.bind(
+        SeatId::FIRST,
         82,
         Some(Binding::for_action(Action::Forward)),
         EventTime(0),
@@ -260,7 +261,7 @@ fn command_edges_and_focus_loss_do_not_stick() {
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
-        .bind_text(10, "+edge", EventTime(0), &mut sink)
+        .bind_text(SeatId::FIRST, 10, "+edge", EventTime(0), &mut sink)
         .unwrap();
     key(&mut input, &mut sink, 1, 10, true, false);
     key(&mut input, &mut sink, 2, 10, true, true);
@@ -271,6 +272,7 @@ fn command_edges_and_focus_loss_do_not_stick() {
     );
     key(&mut input, &mut sink, 4, 26, true, false);
     assert!(input.bind(
+        SeatId::FIRST,
         26,
         Some(Binding::for_action(Action::Back)),
         EventTime(4_000_000),
@@ -291,6 +293,7 @@ fn command_edges_and_focus_loss_do_not_stick() {
     assert_eq!(frame(&mut input, 10)[0].movement, [0.0; 3]);
     assert_eq!(frame(&mut input, 15)[0].buttons, 0);
     assert!(input.bind(
+        SeatId::FIRST,
         26,
         Some(Binding::for_action(Action::Back)),
         EventTime(15_000_000),

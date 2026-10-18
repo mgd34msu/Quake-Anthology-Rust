@@ -105,7 +105,7 @@ fn current_physical_state_and_acquired_release_precede_routing() {
     let mut input = Input::load();
     let mut sink = Sink::default();
     input
-        .bind_text(26, "+edge", EventTime(0), &mut sink)
+        .bind_text(SeatId::FIRST, 26, "+edge", EventTime(0), &mut sink)
         .unwrap();
     let device = DeviceId::Keyboard(17);
     let mut calls = 0;
@@ -174,7 +174,7 @@ fn pending_press_cannot_acquire_replacement_after_rebind_or_clear_states() {
         let mut input = Input::load();
         let mut sink = Sink::default();
         input
-            .bind_text(26, "+edge", EventTime(0), &mut sink)
+            .bind_text(SeatId::FIRST, 26, "+edge", EventTime(0), &mut sink)
             .unwrap();
         route(
             &mut input,
@@ -186,6 +186,7 @@ fn pending_press_cannot_acquire_replacement_after_rebind_or_clear_states() {
                 } else {
                     input
                         .bind_text(
+                            SeatId::FIRST,
                             26,
                             "+edge; echo replacement",
                             EventTime::from_milliseconds(10),
@@ -224,10 +225,12 @@ fn native_clear_orders_keys_and_releases_all_holders_before_each_zero_time_callb
     let other = DeviceId::Keyboard(22);
     assert!(input.assign(extra, first));
     assert!(input.assign(other, second));
-    for control in [4, 30, 224, 905, 70] {
-        input
-            .bind_text(control, "+edge", EventTime(0), &mut sink)
-            .unwrap();
+    for seat in [first, second] {
+        for control in [4, 30, 224, 905, 70] {
+            input
+                .bind_text(seat, control, "+edge", EventTime(0), &mut sink)
+                .unwrap();
+        }
     }
     for (device, control) in [
         (keyboard, 4),
@@ -304,7 +307,13 @@ fn native_clear_reentry_skips_released_keys_and_releases_a_caught_current_bindin
     let mut sink = Sink::default();
     for control in [4, 30] {
         input
-            .bind_text(control, "+edge; raw tail", EventTime(0), &mut sink)
+            .bind_text(
+                SeatId::FIRST,
+                control,
+                "+edge; raw tail",
+                EventTime(0),
+                &mut sink,
+            )
             .unwrap();
     }
     assert!(sink.router.console.register("raw", raw));
@@ -365,7 +374,7 @@ fn native_clear_suppresses_console_key_ups_and_their_unacquired_bindings() {
     for native in [b'`', b'~'] {
         let control = keys::from_native(native).unwrap();
         input
-            .bind_text(control, "+edge", EventTime(0), &mut sink)
+            .bind_text(SeatId::FIRST, control, "+edge", EventTime(0), &mut sink)
             .unwrap();
         route(
             &mut input,
@@ -393,7 +402,13 @@ fn native_clear_forces_one_canonical_binding_only_without_an_acquired_alias() {
         let mut sink = Sink::default();
         assert!(sink.router.console.register("raw", raw));
         input
-            .bind_text(224, "+edge; raw tail", EventTime(0), &mut sink)
+            .bind_text(
+                SeatId::FIRST,
+                224,
+                "+edge; raw tail",
+                EventTime(0),
+                &mut sink,
+            )
             .unwrap();
         for control in [224, 228] {
             route(
@@ -437,10 +452,22 @@ fn native_clear_forces_one_canonical_binding_only_without_an_acquired_alias() {
     let mut sink = Sink::default();
     assert!(sink.router.console.register("raw", raw));
     input
-        .bind_text(224, "+edge; raw canonical", EventTime(0), &mut sink)
+        .bind_text(
+            SeatId::FIRST,
+            224,
+            "+edge; raw canonical",
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     input
-        .bind_text(905, "+edge; raw alias", EventTime(0), &mut sink)
+        .bind_text(
+            SeatId::FIRST,
+            905,
+            "+edge; raw alias",
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     route(
         &mut input,
@@ -461,7 +488,7 @@ fn unrelated_unchanged_and_rejected_binding_changes_keep_pending_press() {
         let mut input = Input::load();
         let mut sink = Sink::default();
         input
-            .bind_text(26, "+edge", EventTime(0), &mut sink)
+            .bind_text(SeatId::FIRST, 26, "+edge", EventTime(0), &mut sink)
             .unwrap();
         route(
             &mut input,
@@ -469,11 +496,15 @@ fn unrelated_unchanged_and_rejected_binding_changes_keep_pending_press() {
             &mut sink,
             |input, _, sink| {
                 match change {
-                    0 => input.bind_text(22, "+edge", EventTime(0), sink).unwrap(),
-                    1 => input.bind_text(26, "+edge", EventTime(0), sink).unwrap(),
+                    0 => input
+                        .bind_text(SeatId::FIRST, 22, "+edge", EventTime(0), sink)
+                        .unwrap(),
+                    1 => input
+                        .bind_text(SeatId::FIRST, 26, "+edge", EventTime(0), sink)
+                        .unwrap(),
                     _ => assert!(
                         input
-                            .bind_bytes(26, &[b'x'; 1025], EventTime(0), sink)
+                            .bind_bytes(SeatId::FIRST, 26, &[b'x'; 1025], EventTime(0), sink)
                             .is_err()
                     ),
                 }
@@ -494,7 +525,7 @@ fn caught_press_and_repeat_never_acquire_until_fresh_down() {
     let mut input = Input::load();
     let mut sink = Sink::default();
     input
-        .bind_text(26, "+edge", EventTime(0), &mut sink)
+        .bind_text(SeatId::FIRST, 26, "+edge", EventTime(0), &mut sink)
         .unwrap();
     route(
         &mut input,
@@ -624,10 +655,12 @@ fn capture_then_focus_release_current_holds_in_device_and_control_order() {
     let mut input = Input::load();
     let mut sink = Sink::default();
     assert!(input.assign(DeviceId::Keyboard(9), SeatId::ALL[1]));
-    for control in [26, 27, 513] {
-        input
-            .bind_text(control, "+edge", EventTime(0), &mut sink)
-            .unwrap();
+    for seat in [SeatId::FIRST, SeatId::ALL[1]] {
+        for control in [26, 27, 513] {
+            input
+                .bind_text(seat, control, "+edge", EventTime(0), &mut sink)
+                .unwrap();
+        }
     }
     for (device, control) in [
         (DeviceId::Keyboard(0), 26),
@@ -715,9 +748,11 @@ fn seat_clear_and_owned_catchers_preserve_other_devices_and_owners() {
     let mut sink = Sink::default();
     let second = SeatId::ALL[1];
     assert!(input.assign(DeviceId::Keyboard(22), second));
-    input
-        .bind_text(224, "+edge", EventTime(0), &mut sink)
-        .unwrap();
+    for seat in [SeatId::FIRST, second] {
+        input
+            .bind_text(seat, 224, "+edge", EventTime(0), &mut sink)
+            .unwrap();
+    }
     for device in [DeviceId::Keyboard(0), DeviceId::Keyboard(22)] {
         input.dispatch(key(1, device, 228, true, false), &mut sink);
     }
@@ -767,8 +802,10 @@ fn native_raw_binding_uses_existing_console_and_preserves_empty_vs_absent() {
     let mut sink = Sink::default();
     assert!(sink.router.console.register("raw", raw));
     let text = b"raw \"a\xff;b\"; +edge";
-    input.bind_bytes(26, text, EventTime(0), &mut sink).unwrap();
-    assert_eq!(input.binding(26).unwrap().bytes(), text);
+    input
+        .bind_bytes(SeatId::FIRST, 26, text, EventTime(0), &mut sink)
+        .unwrap();
+    assert_eq!(input.binding(SeatId::FIRST, 26).unwrap().bytes(), text);
     input.dispatch(key(10, DeviceId::Keyboard(0), 26, true, false), &mut sink);
     input.dispatch(key(20, DeviceId::Keyboard(0), 26, false, false), &mut sink);
     sink.router.execute(&mut input);
@@ -778,10 +815,14 @@ fn native_raw_binding_uses_existing_console_and_preserves_empty_vs_absent() {
         (sink.router.host.presses, sink.router.host.releases),
         (1, 1)
     );
-    input.bind_bytes(26, b"", EventTime(0), &mut sink).unwrap();
-    assert_eq!(input.binding(26).unwrap().bytes(), b"");
-    input.bind_text(26, "", EventTime(0), &mut sink).unwrap();
-    assert!(input.binding(26).is_none());
+    input
+        .bind_bytes(SeatId::FIRST, 26, b"", EventTime(0), &mut sink)
+        .unwrap();
+    assert_eq!(input.binding(SeatId::FIRST, 26).unwrap().bytes(), b"");
+    input
+        .bind_text(SeatId::FIRST, 26, "", EventTime(0), &mut sink)
+        .unwrap();
+    assert!(input.binding(SeatId::FIRST, 26).is_none());
 }
 
 #[test]
@@ -835,7 +876,10 @@ fn scoped_alias_binding_keeps_its_definition_owner_at_the_physical_press() {
         sink.router.execute(&mut input);
     }
     for (control, owner) in [(26, owners[0]), (22, owners[1])] {
-        assert_eq!(input.binding(control).unwrap().producer(), Some(owner));
+        assert_eq!(
+            input.binding(SeatId::FIRST, control).unwrap().producer(),
+            Some(owner)
+        );
         input.dispatch(
             key(10, DeviceId::Keyboard(0), control, true, false),
             &mut sink,
@@ -862,12 +906,20 @@ fn identical_bytes_with_a_new_owner_release_the_acquired_old_definition_once() {
     let new = producer(7, 2);
     sink.router.host.producers = [Some(old), Some(new)];
     input
-        .bind_bytes_owned(26, b"+edge", Some(old), EventTime(0), &mut sink)
+        .bind_bytes_owned(
+            SeatId::FIRST,
+            26,
+            b"+edge",
+            Some(old),
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     input.dispatch(key(10, DeviceId::Keyboard(0), 26, true, false), &mut sink);
     sink.router.execute(&mut input);
     input
         .bind_bytes_owned(
+            SeatId::FIRST,
             26,
             b"+edge",
             Some(new),
@@ -876,7 +928,10 @@ fn identical_bytes_with_a_new_owner_release_the_acquired_old_definition_once() {
         )
         .unwrap();
     assert_eq!(sink.last_producer, Some(old));
-    assert_eq!(input.binding(26).unwrap().producer(), Some(new));
+    assert_eq!(
+        input.binding(SeatId::FIRST, 26).unwrap().producer(),
+        Some(new)
+    );
     sink.router.execute(&mut input);
     assert_eq!(sink.router.host.last_context.unwrap().producer, Some(old));
     assert_eq!(
@@ -895,9 +950,15 @@ fn identical_bytes_with_a_new_owner_release_the_acquired_old_definition_once() {
     assert_eq!(sink.release_lines, 1);
     // A human replacement of identical bytes must also replace ownership.
     input
-        .bind_bytes(26, b"+edge", EventTime::from_milliseconds(24), &mut sink)
+        .bind_bytes(
+            SeatId::FIRST,
+            26,
+            b"+edge",
+            EventTime::from_milliseconds(24),
+            &mut sink,
+        )
         .unwrap();
-    assert_eq!(input.binding(26).unwrap().producer(), None);
+    assert_eq!(input.binding(SeatId::FIRST, 26).unwrap().producer(), None);
     assert_eq!(sink.last_producer, Some(new));
 }
 
@@ -915,23 +976,36 @@ fn retirement_is_exact_in_generation_and_retention_preserves_human_and_other_own
         (11, None),
     ] {
         input
-            .bind_bytes_owned(control, b"+edge", owner, EventTime(0), &mut sink)
+            .bind_bytes_owned(
+                SeatId::FIRST,
+                control,
+                b"+edge",
+                owner,
+                EventTime(0),
+                &mut sink,
+            )
             .unwrap();
     }
     input.dispatch(key(10, DeviceId::Keyboard(17), 26, true, false), &mut sink);
     input.retire_bindings(reused, EventTime::from_milliseconds(20), &mut sink);
-    assert!(input.binding(22).is_none());
-    assert_eq!(input.binding(26).unwrap().producer(), Some(old));
+    assert!(input.binding(SeatId::FIRST, 22).is_none());
+    assert_eq!(
+        input.binding(SeatId::FIRST, 26).unwrap().producer(),
+        Some(old)
+    );
     assert_eq!(sink.release_lines, 0);
     input.retain_bindings(
         |owner| owner == other,
         EventTime::from_milliseconds(30),
         &mut sink,
     );
-    assert!(input.binding(26).is_none());
-    assert!(input.binding(22).is_none());
-    assert_eq!(input.binding(10).unwrap().producer(), Some(other));
-    assert_eq!(input.binding(11).unwrap().producer(), None);
+    assert!(input.binding(SeatId::FIRST, 26).is_none());
+    assert!(input.binding(SeatId::FIRST, 22).is_none());
+    assert_eq!(
+        input.binding(SeatId::FIRST, 10).unwrap().producer(),
+        Some(other)
+    );
+    assert_eq!(input.binding(SeatId::FIRST, 11).unwrap().producer(), None);
     assert_eq!((sink.release_lines, sink.last_producer), (1, Some(old)));
     assert!(input.is_down(SeatId::FIRST, 26));
     input.dispatch(key(40, DeviceId::Keyboard(17), 26, false, false), &mut sink);
@@ -947,10 +1021,17 @@ fn retirement_cancels_a_dead_owned_hold_without_clearing_a_human_holder() {
     sink.router.host.producers = [Some(owner), None];
     input.seed(EventTime(0));
     input
-        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .bind_bytes_owned(
+            SeatId::FIRST,
+            26,
+            b"+forward",
+            Some(owner),
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     input
-        .bind_bytes(10, b"+forward", EventTime(0), &mut sink)
+        .bind_bytes(SeatId::FIRST, 10, b"+forward", EventTime(0), &mut sink)
         .unwrap();
     for (device, control) in [(DeviceId::Keyboard(17), 26), (DeviceId::Keyboard(18), 10)] {
         input.dispatch(key(10, device, control, true, false), &mut sink);
@@ -1038,7 +1119,14 @@ fn retirement_clears_an_owned_action_when_key_up_release_is_still_queued() {
     sink.router.host.producers = [Some(owner), None];
     input.seed(EventTime(0));
     input
-        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .bind_bytes_owned(
+            SeatId::FIRST,
+            26,
+            b"+forward",
+            Some(owner),
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     input.dispatch(key(10, DeviceId::Keyboard(17), 26, true, false), &mut sink);
     sink.router.execute(&mut input);
@@ -1130,7 +1218,14 @@ fn rejected_owned_release_preserves_a_human_holder_on_the_same_key() {
     sink.router.host.producers = [Some(owner), None];
     input.seed(EventTime(0));
     input
-        .bind_bytes_owned(26, b"+forward", Some(owner), EventTime(0), &mut sink)
+        .bind_bytes_owned(
+            SeatId::FIRST,
+            26,
+            b"+forward",
+            Some(owner),
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     input.dispatch(key(0, DeviceId::Keyboard(17), 26, true, false), &mut sink);
     let source = KeySource {
@@ -1157,7 +1252,7 @@ fn rejected_owned_release_preserves_a_human_holder_on_the_same_key() {
         .append(&" ".repeat(65530), Context::default())
         .unwrap();
     input.retire_bindings(owner, EventTime::from_milliseconds(20), &mut sink);
-    assert!(input.binding(26).is_none());
+    assert!(input.binding(SeatId::FIRST, 26).is_none());
     assert_eq!(sink.release_lines, 1);
     assert!(input.is_down(SeatId::FIRST, 26));
     assert_eq!(

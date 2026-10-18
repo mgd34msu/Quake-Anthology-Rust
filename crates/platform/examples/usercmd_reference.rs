@@ -178,7 +178,7 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("removed device assignment".into());
             }
         }
-        if phase == 6 && !input.bind(224, None, time, &mut sink) {
+        if phase == 6 && !input.bind(SeatId::FIRST, 224, None, time, &mut sink) {
             return Err("held modifier replacement".into());
         }
         if phase == 7 {

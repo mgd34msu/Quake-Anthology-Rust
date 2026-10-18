@@ -30,7 +30,7 @@ pub(super) fn get_key(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> 
     } else {
         Some(c.memory.cstring(c.pointer(0)?)?)
     };
-    Ok((ENGINE_CALLS.key_for_binding)(c.services, text) as u32 as u64)
+    Ok((ENGINE_CALLS.key_for_binding)(c.services, c.context.console.seat, text) as u32 as u64)
 }
 pub(super) fn binding(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let key = c.arg(0)? as u32 as i32;
@@ -40,7 +40,7 @@ pub(super) fn binding(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> 
         return Err(CallError::Memory);
     }
     c.memory.read(output, length)?;
-    let text = (ENGINE_CALLS.key_binding)(c.services, key);
+    let text = (ENGINE_CALLS.key_binding)(c.services, c.context.console.seat, key);
     c.memory.write_string(output, length, text)?;
     Ok(0)
 }

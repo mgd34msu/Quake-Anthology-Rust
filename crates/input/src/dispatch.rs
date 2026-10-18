@@ -566,8 +566,8 @@ impl Input {
         };
         if transition {
             if down {
-                let producer = self.bindings[usize::from(keys::normalize(control))]
-                    .as_ref()
+                let producer = Self::binding_index(seat, control)
+                    .and_then(|index| self.bindings[index].as_ref())
                     .and_then(Binding::producer);
                 device.acquired[usize::from(control)] = BindingHold::Pending(producer);
             } else if matches!(
@@ -604,7 +604,7 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) {
-        if let Some(binding) = &self.bindings[usize::from(keys::normalize(source.control))] {
+        if let Some(binding) = self.binding(seat, source.control) {
             let mut button_seen = false;
             for part in &binding.parts[..binding.count] {
                 button_seen |= part.button;

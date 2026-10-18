@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policies = [input.elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT];
     input.seed(EventTime(0));
     input
-        .bind_text(82, "+forward", EventTime(0), &mut Sink)
+        .bind_text(SeatId::FIRST, 82, "+forward", EventTime(0), &mut Sink)
         .map_err(|e| format!("{e:?}"))?;
     for name in text.lines() {
         let value = keys::parse(name)

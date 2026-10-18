@@ -439,7 +439,7 @@ impl Input {
 
     pub fn load() -> Self {
         let mut input = Self {
-            bindings: (0..CONTROLS).map(|_| None).collect(),
+            bindings: (0..CONTROLS * SeatId::COUNT).map(|_| None).collect(),
             devices: vec![Device::default(); MAX_INPUT_DEVICES].into_boxed_slice(),
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
@@ -459,7 +459,11 @@ impl Input {
             (513, Action::Attack),
             (544, Action::Jump),
         ] {
-            input.bindings[control] = Some(Binding::for_action(action));
+            for seat in SeatId::ALL {
+                if let Some(index) = Self::binding_index(seat, control as u16) {
+                    input.bindings[index] = Some(Binding::for_action(action));
+                }
+            }
         }
         input
     }
@@ -622,28 +626,39 @@ impl Input {
         );
         Some((previous, state.angles.0[0]))
     }
-    pub fn binding(&self, control: u16) -> Option<&Binding> {
-        self.bindings
-            .get(keys::normalize(control) as usize)
-            .and_then(Option::as_ref)
+    fn binding_range(seat: SeatId) -> std::ops::Range<usize> {
+        let first = seat.index() * CONTROLS;
+        first..first + CONTROLS
     }
-    pub fn bindings(&self) -> impl Iterator<Item = (u16, &Binding)> {
+    fn binding_index(seat: SeatId, control: u16) -> Option<usize> {
+        let control = usize::from(keys::normalize(control));
+        (control < CONTROLS).then_some(Self::binding_range(seat).start + control)
+    }
+    pub fn binding(&self, seat: SeatId, control: u16) -> Option<&Binding> {
         self.bindings
+            .get(Self::binding_index(seat, control)?)?
+            .as_ref()
+    }
+    pub fn bindings(&self, seat: SeatId) -> impl Iterator<Item = (u16, &Binding)> {
+        self.bindings[Self::binding_range(seat)]
             .iter()
             .enumerate()
-            .filter_map(|(i, b)| b.as_ref().map(|b| (i as u16, b)))
+            .filter_map(|(control, binding)| {
+                binding.as_ref().map(|binding| (control as u16, binding))
+            })
     }
     pub fn bind_text(
         &mut self,
+        seat: SeatId,
         control: u16,
         text: &str,
         time: EventTime,
         target: &mut impl Target,
     ) -> Result<(), BindError> {
         if !text.is_empty() {
-            return self.bind_bytes(control, text.as_bytes(), time, target);
+            return self.bind_bytes(seat, control, text.as_bytes(), time, target);
         }
-        if self.bind(control, None, time, target) {
+        if self.bind(seat, control, None, time, target) {
             Ok(())
         } else {
             Err(BindError::Control)
@@ -653,15 +668,17 @@ impl Input {
     /// an unbound control. Human bind_text keeps its empty-to-unbound behavior.
     pub fn bind_bytes(
         &mut self,
+        seat: SeatId,
         control: u16,
         text: &[u8],
         time: EventTime,
         target: &mut impl Target,
     ) -> Result<(), BindError> {
-        self.bind_bytes_owned(control, text, None, time, target)
+        self.bind_bytes_owned(seat, control, text, None, time, target)
     }
     pub fn bind_bytes_owned(
         &mut self,
+        seat: SeatId,
         control: u16,
         text: &[u8],
         producer: Option<CommandProducer>,
@@ -669,14 +686,14 @@ impl Input {
         target: &mut impl Target,
     ) -> Result<(), BindError> {
         if self
-            .binding(control)
+            .binding(seat, control)
             .is_some_and(|binding| binding.bytes() == text && binding.producer == producer)
         {
             return Ok(());
         }
         let mut binding = Binding::parse_bytes(text)?;
         binding.producer = producer;
-        if self.bind(control, Some(binding), time, target) {
+        if self.bind(seat, control, Some(binding), time, target) {
             Ok(())
         } else {
             Err(BindError::Control)
@@ -684,18 +701,22 @@ impl Input {
     }
     pub fn bind(
         &mut self,
+        seat: SeatId,
         control: u16,
         binding: Option<Binding>,
         time: EventTime,
         target: &mut impl Target,
     ) -> bool {
         let control = keys::normalize(control);
-        if control as usize >= CONTROLS {
+        let Some(binding_index) = Self::binding_index(seat, control) else {
             return false;
-        }
+        };
         // Release the acquired old binding before replacement, while retaining
         // physical hold state. Repeats cannot acquire the new binding until up.
         for index in 0..self.devices.len() {
+            if self.devices[index].seat != Some(seat) {
+                continue;
+            }
             // Only modifiers have two physical controls for one config name.
             for physical in keys::physical_controls(control) {
                 if self.devices[index].held[usize::from(physical)]
@@ -706,13 +727,13 @@ impl Input {
                 }
             }
         }
-        self.bindings[control as usize] = binding;
+        self.bindings[binding_index] = binding;
         true
     }
-    pub fn unbind_all(&mut self, time: EventTime, target: &mut impl Target) {
+    pub fn unbind_all(&mut self, seat: SeatId, time: EventTime, target: &mut impl Target) {
         for control in 0..CONTROLS {
-            if self.bindings[control].is_some() {
-                self.bind(control as u16, None, time, target);
+            if self.binding(seat, control as u16).is_some() {
+                self.bind(seat, control as u16, None, time, target);
             }
         }
     }
@@ -724,15 +745,16 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) {
-        for control in 0..CONTROLS {
-            let remove = self.bindings[control]
-                .as_ref()
-                .and_then(Binding::producer)
-                .is_some_and(|producer| !retained(producer));
-            if !remove {
-                continue;
+        for seat in SeatId::ALL {
+            for control in 0..CONTROLS {
+                let remove = self
+                    .binding(seat, control as u16)
+                    .and_then(Binding::producer)
+                    .is_some_and(|producer| !retained(producer));
+                if remove {
+                    self.bind(seat, control as u16, None, time, target);
+                }
             }
-            self.bind(control as u16, None, time, target);
         }
         // Queued releases can be pruned after their physical key is already up.
         // Action ownership, rather than physical state, identifies these holds.

@@ -60,11 +60,23 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
-        .bind_text(10, "+edge; echo \"a;b\"; +jump", EventTime(0), &mut sink)
+        .bind_text(
+            SeatId::FIRST,
+            10,
+            "+edge; echo \"a;b\"; +jump",
+            EventTime(0),
+            &mut sink,
+        )
         .unwrap();
     assert!(
         input
-            .bind_text(10, &"x".repeat(1025), EventTime(0), &mut sink)
+            .bind_text(
+                SeatId::FIRST,
+                10,
+                &"x".repeat(1025),
+                EventTime(0),
+                &mut sink
+            )
             .is_err()
     );
     for (ms, down, repeat) in [(10, true, false), (15, true, true), (20, false, false)] {
@@ -110,10 +122,10 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
-        .bind_text(224, "+forward", EventTime(0), &mut sink)
+        .bind_text(SeatId::FIRST, 224, "+forward", EventTime(0), &mut sink)
         .unwrap();
     input
-        .bind_text(576, "+edge", EventTime(0), &mut sink)
+        .bind_text(SeatId::FIRST, 576, "+edge", EventTime(0), &mut sink)
         .unwrap();
     for (ms, code, down) in [(0, 224, true), (10, 228, true), (20, 224, false)] {
         input.dispatch(
