@@ -96,6 +96,15 @@ impl<'vfs> ReadView<'vfs> {
                 .is_none_or(|view| self.vfs.accepts_search(view) && view.admits(mount, &[], false))
         })
     }
+    /// Physical candidates admitted for reads, before resolving duplicate names.
+    pub fn files(self) -> impl Iterator<Item = (FileRef, &'vfs [u8])> {
+        self.vfs.files().filter(move |(file, name)| {
+            self.search.is_none_or(|view| {
+                self.vfs.accepts_search(view)
+                    && view.admits(&self.vfs.mounts[file.entry.mount], name, true)
+            })
+        })
+    }
     /// Retain the same selection after checking its VFS owner at this boundary.
     pub fn retain(self) -> Result<SearchView, VfsError> {
         match self.search {

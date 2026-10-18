@@ -25,6 +25,8 @@ use std::sync::Arc;
 const MAX_GLYPHS: usize = 2048;
 #[derive(Clone, Copy)]
 pub struct HudView<'a> {
+    pub seat: Option<qa_core::sys_events::SeatId>,
+    pub file_source: Option<qa_core::primitives::FileSearchId>,
     pub hud: &'a HudState,
     pub texts: &'a TextStore,
     pub configs: &'a ConfigStrings,
@@ -131,22 +133,16 @@ pub struct HudAssets {
 pub(crate) enum HudUpdate {
     Replace(HudAssets),
     Resources {
-        rules: RuleSetId,
+        files: qa_content::vfs::FileSearch,
         profile: ModelProfile,
         font: Option<Arc<FontAssets>>,
         pictures: Option<pictures::Pictures>,
     },
 }
 impl HudUpdate {
-    pub(crate) fn rules(&self) -> RuleSetId {
-        match self {
-            Self::Replace(hud) => hud.rules,
-            Self::Resources { rules, .. } => *rules,
-        }
-    }
     pub(crate) fn registrations(
         &self,
-    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+    ) -> impl Iterator<Item = super::GraphicRegistration<'_>> + Clone {
         let whole = match self {
             Self::Replace(hud) => Some(hud),
             _ => None,
@@ -154,24 +150,33 @@ impl HudUpdate {
         let resources = match self {
             Self::Resources {
                 profile,
+                files,
                 font,
                 pictures,
                 ..
-            } => Some((*profile, font, pictures)),
+            } => Some((*profile, files, font, pictures)),
             _ => None,
         };
         whole
             .into_iter()
             .flat_map(|hud| {
                 hud.registrations()
-                    .map(move |receipt| (hud.profile(), receipt))
+                    .map(move |receipt| hud.font.registered(receipt))
             })
-            .chain(resources.into_iter().flat_map(|(profile, font, pictures)| {
-                font.iter()
-                    .filter_map(|font| font.registration.as_ref())
-                    .chain(pictures.iter().flat_map(pictures::Pictures::registrations))
-                    .map(move |receipt| (profile, receipt))
-            }))
+            .chain(
+                resources
+                    .into_iter()
+                    .flat_map(|(profile, files, font, pictures)| {
+                        font.iter()
+                            .filter_map(|font| font.registration.as_ref())
+                            .chain(pictures.iter().flat_map(pictures::Pictures::registrations))
+                            .map(move |receipt| super::GraphicRegistration {
+                                profile,
+                                files,
+                                registration: receipt,
+                            })
+                    }),
+            )
     }
     pub(crate) fn commit(self, target: &mut Option<HudAssets>) {
         match self {
@@ -191,6 +196,19 @@ impl HudUpdate {
     }
 }
 impl HudAssets {
+    pub(crate) fn font(&self) -> &FontAssets {
+        &self.font
+    }
+
+    pub fn file_search(&self) -> &qa_content::vfs::SearchView {
+        self.font.files.view()
+    }
+    pub fn font_source(&self) -> Option<qa_core::primitives::FileSearchId> {
+        self.font.files.id()
+    }
+    pub fn font_assets(&self) -> Arc<FontAssets> {
+        Arc::clone(&self.font)
+    }
     pub(crate) fn downloaded(
         &self,
         vfs: &qa_content::vfs::Vfs,
@@ -211,7 +229,7 @@ impl HudAssets {
         )?;
         Ok(
             (font.is_some() || pictures.is_some()).then_some(HudUpdate::Resources {
-                rules: self.rules,
+                files: self.font.files.clone(),
                 profile: self.profile(),
                 font,
                 pictures,

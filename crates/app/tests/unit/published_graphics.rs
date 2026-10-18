@@ -64,6 +64,7 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
     scene.console = Some(console);
     scene.hud[rules as usize] = Some(hud::HudAssets::from_font(rules, font, 64).unwrap());
     let mut runtime = Runtime::load(1, []).unwrap();
+    runtime.vfs = std::mem::take(&mut files.vfs);
     let client = runtime
         .connect_local(
             SeatId::FIRST,
@@ -83,7 +84,6 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
             0,
         )
         .unwrap();
-    runtime.vfs = std::mem::take(&mut files.vfs);
     runtime.scene = Some(scene);
     runtime.model_assets = Some(owner);
     // Keep the native channel and ACKs while this fixture supplies SERVER bytes.
@@ -118,7 +118,7 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
         .ensure_owner(
             ShaderOwner::Engine,
             profile,
-            None,
+            &host.runtime.vfs.bind_search(None).unwrap(),
             owner.assets(),
             owner.shader_occurrence_budget(),
             None,
@@ -224,7 +224,7 @@ fn queued_fonts_and_backgrounds_commit_together_with_the_shared_hud_owner() {
             .scene
             .as_ref()
             .unwrap()
-            .hud_font(rules)
+            .hud_font(rules, None, None)
             .unwrap();
         let prefix = host
             .runtime
@@ -263,14 +263,14 @@ fn queued_fonts_and_backgrounds_commit_together_with_the_shared_hud_owner() {
                 .scene
                 .as_ref()
                 .unwrap()
-                .hud_font(rules)
+                .hud_font(rules, None, None)
                 .unwrap()
         ));
         assert_eq!(paint(&mut host, &mut source, rules).1, before);
         source.reject = false;
         command(&mut host, &mut source, "retrydownload\n");
         let scene = host.runtime.scene.as_ref().unwrap();
-        let font = scene.hud_font(rules).unwrap();
+        let font = scene.hud_font(rules, None, None).unwrap();
         assert!(font.native);
         assert!(!Arc::ptr_eq(&old, &font));
         assert!(Arc::ptr_eq(
@@ -324,7 +324,10 @@ fn queued_fonts_and_backgrounds_commit_together_with_the_shared_hud_owner() {
         source.reject = false;
         command(&mut host, &mut source, "retrydownload\n");
         let scene = host.runtime.scene.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&font, &scene.hud_font(rules).unwrap()));
+        assert!(Arc::ptr_eq(
+            &font,
+            &scene.hud_font(rules, None, None).unwrap()
+        ));
         assert!(Arc::ptr_eq(
             &font,
             &scene.hud[rules as usize].as_ref().unwrap().font

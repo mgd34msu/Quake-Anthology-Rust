@@ -1,6 +1,6 @@
 //! Renderer lifetime contexts shared by CLIENT UI and cgame, independent of the frontend.
 use crate::model_assets::{ModelProfile, RendererAdmission, ShaderResource};
-use qa_content::vfs::SearchView;
+use qa_content::vfs::{FileSearch, SearchView};
 use qa_core::primitives::{ClientId, EntityId, IndexSpan, NameId, Vec3};
 use qa_render::shader::{
     context::{ShaderContext, ShaderContextAppend, ShaderNodeId},
@@ -32,7 +32,7 @@ impl ResourceAdmission {
 }
 struct Context {
     owner: Owner,
-    search: SearchView,
+    files: FileSearch,
     profile: ModelProfile,
     generation: u64,
     users: usize,
@@ -44,7 +44,7 @@ struct Context {
 }
 impl Context {
     fn matches(&self, owner: Owner, profile: ModelProfile, search: &SearchView) -> bool {
-        self.owner == owner && self.profile == profile && self.search.same_selection(search)
+        self.owner == owner && self.profile == profile && self.files.view().same_selection(search)
     }
 }
 pub(crate) struct Contexts {
@@ -96,12 +96,12 @@ impl Contexts {
         previous: Option<Handle>,
         owner: Owner,
         profile: ModelProfile,
-        search: Option<&SearchView>,
+        files: &FileSearch,
         assets: &qa_render::Assets,
         budget: (usize, usize),
         reset: Option<u64>,
     ) -> Result<Handle, String> {
-        let search = search.unwrap_or(&self.default).clone();
+        let search = files.view();
         if let Some(handle) = previous
             && self.get(handle).is_some_and(|context| {
                 context.matches(owner, profile, &search) && context.reset == Some(reset)
@@ -179,7 +179,7 @@ impl Contexts {
         self.release(previous);
         self.slots[slot] = Some(Context {
             owner,
-            search,
+            files: files.clone(),
             profile,
             generation: self.generation,
             users: 1,
@@ -198,12 +198,12 @@ impl Contexts {
         &mut self,
         owner: Owner,
         profile: ModelProfile,
-        search: Option<&SearchView>,
+        files: &FileSearch,
         assets: &qa_render::Assets,
         budget: (usize, usize),
         reset: Option<u64>,
     ) -> Result<Handle, String> {
-        let search = search.unwrap_or(&self.default).clone();
+        let search = files.view();
         let existing = self.find(owner, profile, Some(&search));
         if let Some(handle) = existing
             && self
@@ -220,14 +220,14 @@ impl Contexts {
                     .ok_or("renderer context slots")?,
             )?;
         }
-        let handle = self.bind(None, owner, profile, Some(&search), assets, budget, reset)?;
+        let handle = self.bind(None, owner, profile, files, assets, budget, reset)?;
         self.release(Some(handle));
         Ok(handle)
     }
     pub(crate) fn replay_graphics<'r>(
         &mut self,
         handle: Handle,
-        registrations: impl Iterator<Item = &'r qa_render::ShaderRegistration> + Clone,
+        registrations: impl Iterator<Item = crate::renderer::GraphicRegistration<'r>> + Clone,
     ) -> Result<(), String> {
         let context = self
             .slots
@@ -235,18 +235,14 @@ impl Contexts {
             .and_then(Option::as_mut)
             .filter(|context| context.generation == handle.generation)
             .ok_or("stale renderer context")?;
-        if !context.search.same_selection(&self.default) {
-            return Ok(());
-        }
+        let profile = context.profile;
+        let files = context.files.clone();
+        let selected =
+            registrations.filter(move |registration| registration.matches(profile, &files));
         stage_entries(
             context,
             (0, 0),
-            registrations.map(|registration| {
-                (
-                    Some(ShaderResource::Graphic(registration.key)),
-                    std::slice::from_ref(registration),
-                )
-            }),
+            selected.map(crate::renderer::GraphicRegistration::entry),
         )?
         .commit();
         Ok(())
@@ -258,10 +254,20 @@ impl Contexts {
         search: Option<&SearchView>,
     ) -> Option<Handle> {
         let search = search.unwrap_or(&self.default);
+        self.find_source(owner, profile, |files| files.view().same_selection(search))
+    }
+    fn find_source(
+        &self,
+        owner: Owner,
+        profile: ModelProfile,
+        selected: impl Fn(&FileSearch) -> bool,
+    ) -> Option<Handle> {
         let (slot, context) = self.slots.iter().enumerate().find_map(|(slot, entry)| {
             entry
                 .as_ref()
-                .filter(|context| context.matches(owner, profile, search))
+                .filter(|context| {
+                    context.owner == owner && context.profile == profile && selected(&context.files)
+                })
                 .map(|context| (slot, context))
         })?;
         Some(Handle {
@@ -276,7 +282,7 @@ impl Contexts {
             .filter(|context| context.generation == handle.generation)
     }
     pub(crate) fn search(&self, handle: Handle) -> Option<&SearchView> {
-        Some(&self.get(handle)?.search)
+        Some(self.get(handle)?.files.view())
     }
     pub(super) fn matches_search(&self, handle: Handle, search: Option<&SearchView>) -> bool {
         self.search(handle)
@@ -423,30 +429,24 @@ impl Contexts {
     }
     pub(crate) fn stage_graphics<'a, 'r>(
         &'a mut self,
-        registrations: impl Iterator<Item = (ModelProfile, &'r qa_render::ShaderRegistration)> + Clone,
+        registrations: impl Iterator<Item = crate::renderer::GraphicRegistration<'r>> + Clone,
     ) -> Result<Vec<Append<'a>>, String> {
-        let default = &self.default;
         self.slots
             .iter_mut()
             .flatten()
-            .filter(|context| context.search.same_selection(default))
             .filter_map(|context| {
                 let profile = context.profile;
+                let files = context.files.clone();
                 let selected = registrations
                     .clone()
-                    .filter(move |(owner, _)| *owner == profile);
+                    .filter(move |registration| registration.matches(profile, &files));
                 if selected.clone().next().is_none() {
                     return None;
                 }
                 Some(stage_entries(
                     context,
                     (0, 0),
-                    selected.map(|(_, registration)| {
-                        (
-                            Some(ShaderResource::Graphic(registration.key)),
-                            std::slice::from_ref(registration),
-                        )
-                    }),
+                    selected.map(crate::renderer::GraphicRegistration::entry),
                 ))
             })
             .collect()
@@ -641,8 +641,13 @@ impl NativeShaders for Contexts {
         let binding = context.shaders.node(target)?.shader;
         ResolvedShader::select(assets, source, binding, offset, target == reference.node)
     }
-    fn context(&self, owner: Owner, profile: ModelProfile) -> Option<ShaderContextId> {
-        self.find(owner, profile, None)
+    fn context(
+        &self,
+        owner: Owner,
+        profile: ModelProfile,
+        source: Option<qa_core::primitives::FileSearchId>,
+    ) -> Option<ShaderContextId> {
+        self.find_source(owner, profile, |files| files.id() == source)
     }
     fn resource_nodes(
         &self,

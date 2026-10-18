@@ -40,6 +40,7 @@ fn assets(rules: RuleSetId, width: u32) -> (ModelAssets, HudAssets) {
         RuleSetId::Quake2,
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2),
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     assert!(font.native);
@@ -58,6 +59,8 @@ fn view<'a>(
     layout: ConfigLayout,
 ) -> HudView<'a> {
     HudView {
+        seat: None,
+        file_source: None,
         hud,
         texts,
         configs,
@@ -484,6 +487,7 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
         RuleSetId::Quake2,
         settings,
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     let mut assets =

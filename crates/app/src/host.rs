@@ -624,16 +624,17 @@ impl FrameHost {
             .ok_or("missing graphics assets")?;
         let registrations = console
             .registrations()
-            .map(|registration| (console.profile(), registration))
+            .map(|registration| console.font().registered(registration))
             .chain(huds.iter().flatten().flat_map(|hud| {
                 hud.registrations()
-                    .map(move |registration| (hud.profile(), registration))
+                    .map(move |registration| hud.font().registered(registration))
             }));
-        for (profile, _) in registrations.clone() {
+        for registration in registrations.clone() {
+            let profile = registration.profile;
             self.renderer_contexts.ensure_owner(
                 qa_render::shader::registration::ShaderOwner::Engine,
                 profile,
-                None,
+                registration.files,
                 owner.assets(),
                 owner.shader_occurrence_budget(),
                 None,
@@ -651,21 +652,32 @@ impl FrameHost {
         let Some(owner) = self.runtime.model_assets.as_ref() else {
             return Ok(());
         };
-        for profile in scene.graphic_profiles() {
+        for (profile, files) in scene.graphic_sources() {
             let handle = self.renderer_contexts.ensure_owner(
                 qa_render::shader::registration::ShaderOwner::Engine,
                 profile,
-                None,
+                files,
                 owner.assets(),
                 owner.shader_occurrence_budget(),
                 None,
             )?;
-            scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+            scene.replay_graphics(&mut self.renderer_contexts, handle)?;
             for authority in owners.iter().flatten().copied() {
                 let qa_render::shader::registration::ShaderOwner::Client(client, _) = authority
                 else {
                     continue;
                 };
+                if self
+                    .runtime
+                    .client_resources
+                    .get(client.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|resources| {
+                        !resources.state.file_search().same_selection(files.view())
+                    })
+                {
+                    continue;
+                }
                 let selected = self
                     .runtime
                     .client_resources
@@ -677,6 +689,7 @@ impl FrameHost {
                         &self.renderer_contexts,
                         authority,
                         profile,
+                        files.id(),
                     )
                     .is_none()
                 {
@@ -694,12 +707,12 @@ impl FrameHost {
                 let handle = self.renderer_contexts.ensure_owner(
                     authority,
                     profile,
-                    None,
+                    files,
                     owner.assets(),
                     owner.shader_occurrence_budget(),
                     reset.flatten().flatten(),
                 )?;
-                scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+                scene.replay_graphics(&mut self.renderer_contexts, handle)?;
             }
         }
         Ok(())
@@ -1004,11 +1017,11 @@ impl FrameHost {
                     {
                         return Err("video restart resource prefix".into());
                     }
-                    for (profile, _) in staged.graphic_registrations() {
+                    for registration in staged.graphic_registrations() {
                         self.renderer_contexts.ensure_owner(
                             qa_render::shader::registration::ShaderOwner::Engine,
-                            profile,
-                            None,
+                            registration.profile,
+                            registration.files,
                             owner.assets(),
                             owner.shader_occurrence_budget(),
                             None,
@@ -2161,6 +2174,8 @@ impl FrameHost {
                 .as_ref()?;
             let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
             Some(crate::renderer::hud::HudView {
+                seat: SeatId::new(seat as u8),
+                file_source: resources.state.file_source(),
                 hud: &row.hud,
                 texts: &self.runtime.server.events.texts,
                 configs: &resources.state.configs,
@@ -2377,15 +2392,22 @@ impl FrameHost {
                 self.reject_client_startup(client, format_args!("{reason}"));
                 continue;
             }
-            if !resources.state.q3_media_ready(
-                self.runtime.scene.as_ref().is_some_and(|scene| {
-                    scene.has_hud(self.runtime.server.clients[slot].client_rules)
-                }),
-            ) || self
-                .runtime
-                .model_assets
-                .as_ref()
-                .is_none_or(|assets| assets.initial_registration())
+            if !resources
+                .state
+                .q3_media_ready(self.runtime.scene.as_ref().is_some_and(|scene| {
+                    scene.has_hud(
+                        self.runtime.server.clients[slot].client_rules,
+                        self.runtime.snapshots[slot]
+                            .as_ref()
+                            .and_then(|binding| binding.seat()),
+                        resources.state.file_source(),
+                    )
+                }))
+                || self
+                    .runtime
+                    .model_assets
+                    .as_ref()
+                    .is_none_or(|assets| assets.initial_registration())
                 || self.runtime.scene.is_none()
                 || self
                     .runtime

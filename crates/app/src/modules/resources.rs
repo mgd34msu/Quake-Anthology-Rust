@@ -393,7 +393,7 @@ impl FrameHost {
         let Some(scene) = self.runtime.scene.as_mut() else {
             return false;
         };
-        if scene.has_hud(rules) {
+        if scene.has_hud(rules, Some(seat), resources.state.file_source()) {
             if let Some(resources) = self.runtime.client_resources[slot].as_mut() {
                 resources.state.take_hud_attempt();
             }
@@ -435,7 +435,7 @@ impl FrameHost {
                 .model_assets
                 .as_mut()
                 .ok_or("missing model assets")?;
-            let reuse_font = scene.hud_font(rules);
+            let reuse_font = scene.hud_font(rules, Some(seat), resources.state.file_source());
             let contexts = &mut self.renderer_contexts;
             let client_profile = resources.state.models.profile();
             let reset = resources.state.completed_presentation_reset().flatten();
@@ -447,12 +447,13 @@ impl FrameHost {
                     .compile(ui_fullscreen),
                 width,
                 reuse_font,
+                Some(resources.state.file_search()),
                 |view, candidate| {
                     let profile = candidate.profile();
                     contexts.ensure_owner(
                         qa_render::shader::registration::ShaderOwner::Engine,
                         profile,
-                        None,
+                        resources.state.files(),
                         view.assets,
                         (0, 0),
                         None,
@@ -461,18 +462,19 @@ impl FrameHost {
                         contexts.ensure_owner(
                             qa_render::shader::registration::ShaderOwner::Client(client, lifetime),
                             profile,
-                            None,
+                            resources.state.files(),
                             view.assets,
                             (0, 0),
                             reset,
                         )?;
                     }
+                    let font = candidate.font();
                     let graphs = contexts.stage_graphics(
                         candidate
                             .registrations()
-                            .map(move |registration| (profile, registration)),
+                            .map(move |registration| font.registered(registration)),
                     )?;
-                    let scene = scene.stage_hud(candidate)?;
+                    let scene = scene.stage_hud(candidate, Some(seat))?;
                     Ok((scene, graphs))
                 },
                 |assets, append| {

@@ -834,6 +834,10 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                     .text
                     .is_empty()
             );
+            // Optional fixed media is prepared before publication. Native
+            // literal aliases must reuse that completed registration state.
+            let reads = host.runtime.sound_assets.as_ref().unwrap().reads;
+            let rejected = resources.state.rejected;
             for milliseconds in [0, 100, 200, 300, 400] {
                 tick(&mut host, milliseconds);
             }
@@ -881,8 +885,8 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                     .is_empty(),
                 "the absent default PCM must not claim a CLIENT sound ordinal"
             );
-            assert_eq!(host.runtime.sound_assets.as_ref().unwrap().reads, 0);
-            assert_eq!(resources.rejected, 0, "{rules:?} -> {protocol:?}");
+            assert_eq!(host.runtime.sound_assets.as_ref().unwrap().reads, reads);
+            assert_eq!(resources.rejected, rejected, "{rules:?} -> {protocol:?}");
             assert_eq!(host.runtime.network.command_errors, 0);
             assert_eq!(host.module_counts(module).unwrap().traps, 0);
         }

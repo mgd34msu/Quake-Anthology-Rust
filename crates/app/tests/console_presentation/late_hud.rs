@@ -61,6 +61,8 @@ fn draw_hud(
         &mut frame,
         owner.assets(),
         HudView {
+            seat: None,
+            file_source: None,
             hud: &hud,
             texts: &texts,
             configs: &configs,
@@ -140,7 +142,8 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
         qa_render::material::ShaderCompilePolicy::default(),
         160,
         None,
-        |_, candidate| scene.stage_hud(candidate),
+        None,
+        |_, candidate| scene.stage_hud(candidate, None),
         |assets, staged| {
             assert!(assets.counts().palettes > initial.palettes);
             let mut invalid = staged.limits();
@@ -151,7 +154,7 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
     );
     assert!(rejected.is_err());
     drop(rejected);
-    assert!(!scene.has_hud(RuleSetId::Quake));
+    assert!(!scene.has_hud(RuleSetId::Quake, None, None));
     assert!(scene.asset_stage_ready());
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(cpu.admitted_assets(), Some(initial));
@@ -165,7 +168,8 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
             qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
-            |_, candidate| scene.stage_hud(candidate),
+            None,
+            |_, candidate| scene.stage_hud(candidate, None),
             |assets, staged| {
                 cpu.prepare_assets(assets, Some(staged.limits()))
                     .map_err(str::to_owned)
@@ -263,9 +267,9 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
         .unwrap();
     owner.end_initial_registration();
     let before = owner.assets().counts();
-    let reuse = scene.hud_font(RuleSetId::Quake).unwrap();
+    let reuse = scene.hud_font(RuleSetId::Quake, None, None).unwrap();
     assert_eq!(reuse.registration.unwrap().shader, font_material);
-    assert!(scene.hud_font(RuleSetId::Quake3).is_none());
+    assert!(scene.hud_font(RuleSetId::Quake3, None, None).is_none());
     vfs.take_lookup_count();
     let (staged, _) = owner
         .prepare_hud(
@@ -275,7 +279,8 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
             qa_render::material::ShaderCompilePolicy::default(),
             160,
             Some(reuse),
-            |_, candidate| scene.stage_hud(candidate),
+            None,
+            |_, candidate| scene.stage_hud(candidate, None),
             |assets, staged| renderer.prepare_assets(assets, Some(staged.limits())),
         )
         .unwrap();
@@ -291,14 +296,15 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
             qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
-            |_, candidate| scene.stage_hud(candidate),
+            None,
+            |_, candidate| scene.stage_hud(candidate, None),
             |assets, staged| renderer.prepare_assets(assets, Some(staged.limits())),
         )
         .unwrap();
     assert_eq!(staged.limits(), reserved);
     staged.commit();
-    assert!(scene.has_hud(RuleSetId::Quake));
-    assert!(scene.has_hud(RuleSetId::Quake3));
+    assert!(scene.has_hud(RuleSetId::Quake, None, None));
+    assert!(scene.has_hud(RuleSetId::Quake3, None, None));
     let mut cpu = CpuBackend::load_with_assets(160, 120, owner.assets()).unwrap();
     assert_eq!(
         draw_hud(&mut scene, &owner, &mut cpu, RuleSetId::Quake, reserved).glyphs,
@@ -345,9 +351,12 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
             qa_render::material::ShaderCompilePolicy::default(),
             160,
             None,
+            None,
             |_, candidate| {
                 let profile = candidate.profile();
-                scene.stage_hud(candidate).map(|staged| (staged, profile))
+                scene
+                    .stage_hud(candidate, None)
+                    .map(|staged| (staged, profile))
             },
             |assets, (staged, _)| {
                 cpu.prepare_assets(assets, Some(staged.limits()))
@@ -364,7 +373,7 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
     expected.shader_bindings += 2;
     assert_eq!(owner.assets().counts(), expected);
     assert_eq!(cpu.admitted_assets(), Some(expected));
-    assert!(scene.has_hud(RuleSetId::Quake3));
+    assert!(scene.has_hud(RuleSetId::Quake3, None, None));
     let receipt = *owner
         .catalog()
         .shader_outcome(
@@ -416,6 +425,7 @@ fn optional_missing_font_commits_once_and_busy_lists_prevent_cold_work() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     assert_eq!(cached.profile, profile);

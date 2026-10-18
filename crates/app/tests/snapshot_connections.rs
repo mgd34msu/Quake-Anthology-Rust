@@ -991,7 +991,14 @@ fn queued_netquake_model_transitions_reach_builtin_sync_after_pending_registrati
     let palette = assets_support::palette(&mut assets);
     let request = ModelRequest::native("progs/sync.mdl", RuleSetId::Quake, Some(palette));
     let profile = request.profile();
-    let owner = ModelAssets::load(&fixture.vfs, assets, [request], [], Default::default()).unwrap();
+    for mount in fixture.vfs.mounts() {
+        host.runtime
+            .vfs
+            .mount_directory(&mount.path, mount.priority)
+            .unwrap();
+    }
+    let owner =
+        ModelAssets::load(&host.runtime.vfs, assets, [request], [], Default::default()).unwrap();
     let backend = asset_frames::Source::load(owner.assets());
     host.runtime.model_assets = Some(owner);
     host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
@@ -3785,14 +3792,11 @@ fn queued_native_client_loads_its_late_hud_role_and_draws_through_the_shared_fro
     host.runtime.server.clients[remote.0 as usize].client_rules = RuleSetId::Quake3;
     let old_server = host.runtime.collision.as_ref().unwrap().geometry;
     let old_local = host.local_worlds[0];
-    assert!(
-        !host
-            .runtime
-            .scene
-            .as_ref()
-            .unwrap()
-            .has_hud(RuleSetId::Quake3)
-    );
+    assert!(!host.runtime.scene.as_ref().unwrap().has_hud(
+        RuleSetId::Quake3,
+        Some(SeatId::new(1).unwrap()),
+        None
+    ));
     let mut payload = nq_server_info(b"late HUD", &[b"maps/ready.bsp"], &[]);
     payload.extend([5, 6, 0, 25, 1]);
     payload.extend(nq_admission_snapshot(&[]));
@@ -3838,13 +3842,11 @@ fn queued_native_client_loads_its_late_hud_role_and_draws_through_the_shared_fro
     host.register_client_model_assets(Some(&mut backend));
     assert!(host.runtime.vfs.take_lookup_count() > 0);
     assert!(backend.backend.attempts > 0);
-    assert!(
-        host.runtime
-            .scene
-            .as_ref()
-            .unwrap()
-            .has_hud(RuleSetId::Quake3)
-    );
+    assert!(host.runtime.scene.as_ref().unwrap().has_hud(
+        RuleSetId::Quake3,
+        Some(SeatId::new(1).unwrap()),
+        None
+    ));
     assert_eq!(
         host.runtime.collision.as_ref().unwrap().geometry,
         old_server
@@ -3972,14 +3974,11 @@ fn queued_client_hud_backend_failure_waits_for_a_new_header_before_retrying() {
     assert!(host.runtime.vfs.take_lookup_count() > 0);
     let attempts = backend.backend.attempts;
     assert!(attempts > 0);
-    assert!(
-        !host
-            .runtime
-            .scene
-            .as_ref()
-            .unwrap()
-            .has_hud(RuleSetId::Quake3)
-    );
+    assert!(!host.runtime.scene.as_ref().unwrap().has_hud(
+        RuleSetId::Quake3,
+        Some(SeatId::new(1).unwrap()),
+        None
+    ));
     assert_eq!(
         host.runtime
             .model_assets
@@ -4016,13 +4015,11 @@ fn queued_client_hud_backend_failure_waits_for_a_new_header_before_retrying() {
     host.register_client_model_assets(Some(&mut backend));
     assert!(host.runtime.vfs.take_lookup_count() > 0);
     assert!(backend.backend.attempts > attempts);
-    assert!(
-        host.runtime
-            .scene
-            .as_ref()
-            .unwrap()
-            .has_hud(RuleSetId::Quake3)
-    );
+    assert!(host.runtime.scene.as_ref().unwrap().has_hud(
+        RuleSetId::Quake3,
+        Some(SeatId::new(1).unwrap()),
+        None
+    ));
     assert_eq!(
         backend.backend.cpu.admitted_assets(),
         Some(

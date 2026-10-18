@@ -448,6 +448,39 @@ fn apply_presentation(
         refdef.palette_transform = None;
     }
 }
+#[derive(Clone, Copy)]
+pub(crate) struct GraphicRegistration<'a> {
+    pub profile: ModelProfile,
+    pub files: &'a qa_content::vfs::FileSearch,
+    pub registration: &'a qa_render::ShaderRegistration,
+}
+impl<'a> GraphicRegistration<'a> {
+    pub fn matches(self, profile: ModelProfile, files: &qa_content::vfs::FileSearch) -> bool {
+        self.profile == profile && self.files.view().same_selection(files.view())
+    }
+    pub fn entry(
+        self,
+    ) -> (
+        Option<crate::model_assets::ShaderResource>,
+        &'a [qa_render::ShaderRegistration],
+    ) {
+        (
+            Some(crate::model_assets::ShaderResource::Graphic(
+                self.registration.key,
+            )),
+            std::slice::from_ref(self.registration),
+        )
+    }
+}
+
+const HUD_DEFAULTS: usize = qa_core::primitives::RuleSetId::ALL.len();
+const HUD_SLOTS: usize = HUD_DEFAULTS + SeatId::COUNT;
+type HudTable = [Option<hud::HudAssets>; HUD_SLOTS];
+
+fn hud_slot(rules: qa_core::primitives::RuleSetId, seat: Option<SeatId>) -> usize {
+    seat.map_or(rules as usize, |seat| HUD_DEFAULTS + seat.index())
+}
+
 /// The session owns one front end and its view scratch across module dispatch
 /// and built-in client composition.
 pub struct SceneComposer {
@@ -462,7 +495,7 @@ pub struct SceneComposer {
     beam: qa_render::ShaderBindingId,
     beam_alpha: qa_render::ShaderBindingId,
     console: Option<console::ConsoleAssets>,
-    hud: [Option<hud::HudAssets>; 5],
+    hud: HudTable,
     ui_commands: usize,
 }
 
@@ -488,8 +521,8 @@ impl SceneWorldAppend<'_> {
 /// A cold HUD candidate occupies the existing role slot only on commit.
 pub struct SceneHudAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
-    target: &'a mut [Option<hud::HudAssets>; 5],
-    candidates: Vec<hud::HudUpdate>,
+    target: &'a mut HudTable,
+    candidates: Vec<(usize, hud::HudUpdate)>,
     console: Option<(&'a mut console::ConsoleAssets, console::ConsoleUpdate)>,
     ui_commands: &'a mut usize,
     reserved_ui_commands: usize,
@@ -498,12 +531,10 @@ impl SceneHudAppend<'_> {
     pub fn limits(&self) -> Limits {
         self.frontend.limits()
     }
-    pub(crate) fn registrations(
-        &self,
-    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+    pub(crate) fn registrations(&self) -> impl Iterator<Item = GraphicRegistration<'_>> + Clone {
         self.candidates
             .iter()
-            .flat_map(hud::HudUpdate::registrations)
+            .flat_map(|(_, update)| update.registrations())
             .chain(
                 self.console
                     .iter()
@@ -515,8 +546,7 @@ impl SceneHudAppend<'_> {
         if let Some((console, update)) = self.console {
             update.commit(console);
         }
-        for candidate in self.candidates {
-            let slot = candidate.rules() as usize;
+        for (slot, candidate) in self.candidates {
             candidate.commit(&mut self.target[slot]);
         }
         *self.ui_commands = self.reserved_ui_commands;
@@ -525,7 +555,7 @@ impl SceneHudAppend<'_> {
 
 pub(crate) struct VideoGraphics {
     console: Option<console::ConsoleAssets>,
-    hud: [Option<hud::HudAssets>; 5],
+    hud: HudTable,
 }
 
 /// Replacement UI and capacity remain private until the video candidate commits.
@@ -533,7 +563,7 @@ pub(crate) struct SceneVideoAppend<'a> {
     frontend: qa_render::scene::FrontEndCapacity<'a>,
     kind: &'a mut Kind,
     console: &'a mut Option<console::ConsoleAssets>,
-    hud: &'a mut [Option<hud::HudAssets>; 5],
+    hud: &'a mut HudTable,
     graphics: VideoGraphics,
     ui_commands: &'a mut usize,
     reserved_ui_commands: usize,
@@ -544,7 +574,7 @@ impl SceneVideoAppend<'_> {
     }
     pub(crate) fn graphic_registrations(
         &self,
-    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+    ) -> impl Iterator<Item = GraphicRegistration<'_>> + Clone {
         graphic_registrations(&self.graphics.console, &self.graphics.hud)
     }
     pub(crate) fn commit(self, kind: Kind) {
@@ -558,18 +588,18 @@ impl SceneVideoAppend<'_> {
 
 fn graphic_registrations<'a>(
     console: &'a Option<console::ConsoleAssets>,
-    hud: &'a [Option<hud::HudAssets>; 5],
-) -> impl Iterator<Item = (ModelProfile, &'a qa_render::ShaderRegistration)> + Clone {
+    hud: &'a HudTable,
+) -> impl Iterator<Item = GraphicRegistration<'a>> + Clone {
     console
         .iter()
         .flat_map(|console| {
             console
                 .registrations()
-                .map(move |registration| (console.profile(), registration))
+                .map(move |registration| console.font().registered(registration))
         })
         .chain(hud.iter().flatten().flat_map(|hud| {
             hud.registrations()
-                .map(move |registration| (hud.profile(), registration))
+                .map(move |registration| hud.font().registered(registration))
         }))
 }
 
@@ -668,17 +698,62 @@ impl SceneComposer {
         self.frame.is_none() && self.frontend.stage_capacity(self.frontend.limits()).is_ok()
     }
 
-    pub fn has_hud(&self, rules: qa_core::primitives::RuleSetId) -> bool {
-        self.hud[rules as usize].is_some()
+    fn hud_index(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+        seat: Option<SeatId>,
+        source: Option<qa_core::primitives::FileSearchId>,
+    ) -> Option<usize> {
+        [
+            seat.map(|seat| hud_slot(rules, Some(seat))),
+            Some(hud_slot(rules, None)),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|&slot| {
+            self.hud[slot]
+                .as_ref()
+                .is_some_and(|hud| hud.rules() == rules && hud.font_source() == source)
+        })
+    }
+    pub fn has_hud(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+        seat: Option<SeatId>,
+        source: Option<qa_core::primitives::FileSearchId>,
+    ) -> bool {
+        self.hud_index(rules, seat, source).is_some()
     }
     pub fn hud_font(
         &self,
         rules: qa_core::primitives::RuleSetId,
+        seat: Option<SeatId>,
+        source: Option<qa_core::primitives::FileSearchId>,
     ) -> Option<std::sync::Arc<console::FontAssets>> {
-        self.console.as_ref()?.font_for(rules)
+        self.hud_index(rules, seat, source)
+            .and_then(|slot| self.hud[slot].as_ref().map(|hud| hud.font_assets()))
+            .or_else(|| {
+                self.console
+                    .as_ref()?
+                    .font_for(rules)
+                    .filter(|font| font.files.id() == source)
+            })
     }
     pub(crate) fn graphics_owners(&mut self, owners: [Option<ShaderOwner>; SeatId::COUNT]) {
         self.graphics_owners = owners;
+    }
+    pub(crate) fn graphic_sources(
+        &self,
+    ) -> impl Iterator<Item = (ModelProfile, &qa_content::vfs::FileSearch)> + Clone {
+        self.console
+            .iter()
+            .map(|console| (console.profile(), &console.font().files))
+            .chain(
+                self.hud
+                    .iter()
+                    .flatten()
+                    .map(|hud| (hud.profile(), &hud.font().files)),
+            )
     }
     pub(crate) fn graphic_profiles(&self) -> impl Iterator<Item = ModelProfile> + Clone {
         self.console
@@ -699,21 +774,15 @@ impl SceneComposer {
     }
     pub(crate) fn graphic_registrations(
         &self,
-    ) -> impl Iterator<Item = (ModelProfile, &qa_render::ShaderRegistration)> + Clone {
+    ) -> impl Iterator<Item = GraphicRegistration<'_>> + Clone {
         graphic_registrations(&self.console, &self.hud)
     }
     pub(crate) fn replay_graphics(
         &self,
         contexts: &mut crate::modules::renderer_contexts::Contexts,
         handle: qa_render::shader::reference::ShaderContextId,
-        profile: ModelProfile,
     ) -> Result<(), String> {
-        contexts.replay_graphics(
-            handle,
-            self.graphic_registrations()
-                .filter(move |(owner, _)| *owner == profile)
-                .map(|(_, registration)| registration),
-        )
+        contexts.replay_graphics(handle, self.graphic_registrations())
     }
     pub fn append_hud(
         &mut self,
@@ -724,12 +793,13 @@ impl SceneComposer {
         native: &dyn NativeShaders,
         owner: ShaderOwner,
     ) -> hud::HudStats {
-        match self.hud[view.rules as usize].as_mut() {
+        let slot = self.hud_index(view.rules, view.seat, view.file_source);
+        match slot.and_then(|slot| self.hud[slot].as_mut()) {
             Some(hud) => {
                 let profile = hud.profile();
                 let context = native
-                    .context(owner, profile)
-                    .or_else(|| native.context(ShaderOwner::Engine, profile));
+                    .context(owner, profile, hud.font_source())
+                    .or_else(|| native.context(ShaderOwner::Engine, profile, hud.font_source()));
                 hud.append(frame, assets, view, refdef, ShaderView { native, context })
             }
             None => hud::HudStats {
@@ -757,9 +827,13 @@ impl SceneComposer {
             .map_or_else(Default::default, |console| {
                 let profile = console.profile();
                 let owner = authority
-                    .filter(|&owner| native.context(owner, profile).is_some())
+                    .filter(|&owner| {
+                        native
+                            .context(owner, profile, console.font().files.id())
+                            .is_some()
+                    })
                     .unwrap_or(ShaderOwner::Engine);
-                let context = native.context(owner, profile);
+                let context = native.context(owner, profile, console.font().files.id());
                 console.append(
                     frame,
                     assets,
@@ -772,7 +846,11 @@ impl SceneComposer {
             })
     }
 
-    pub fn stage_hud(&mut self, candidate: hud::HudAssets) -> Result<SceneHudAppend<'_>, String> {
+    pub fn stage_hud(
+        &mut self,
+        candidate: hud::HudAssets,
+        seat: Option<SeatId>,
+    ) -> Result<SceneHudAppend<'_>, String> {
         if self.frame.is_some() {
             return Err("scene frame is active".to_owned());
         }
@@ -785,7 +863,10 @@ impl SceneComposer {
         Ok(SceneHudAppend {
             frontend,
             target: &mut self.hud,
-            candidates: vec![hud::HudUpdate::Replace(candidate)],
+            candidates: vec![(
+                hud_slot(candidate.rules(), seat),
+                hud::HudUpdate::Replace(candidate),
+            )],
             console: None,
             ui_commands: &mut self.ui_commands,
             reserved_ui_commands,
@@ -806,12 +887,17 @@ impl SceneComposer {
             .transpose()?
             .flatten();
         let mut candidates = Vec::new();
-        for hud in self.hud.iter().flatten() {
+        for (slot, hud) in self
+            .hud
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, hud)| hud.as_ref().map(|hud| (slot, hud)))
+        {
             let font = console
                 .as_ref()
-                .and_then(|update| update.font_for(hud.profile()));
+                .and_then(|update| update.font_for(hud.profile(), &hud.font().files));
             if let Some(candidate) = hud.downloaded(vfs, owner, path, font)? {
-                candidates.push(candidate);
+                candidates.push((slot, candidate));
             }
         }
         if candidates.is_empty() && console.is_none() && !models_changed {
@@ -876,7 +962,10 @@ impl SceneComposer {
             let font = console
                 .as_ref()
                 .and_then(|console| console.font_for(profile.rules))
-                .filter(|font| font.profile == profile)
+                .filter(|font| {
+                    font.profile == profile
+                        && font.files.view().same_selection(previous.file_search())
+                })
                 .map_or_else(
                     || {
                         console::FontAssets::load(
@@ -885,6 +974,7 @@ impl SceneComposer {
                             profile.rules,
                             profile.image_settings,
                             profile.finish.compile(ui_fullscreen),
+                            Some(previous.file_search()),
                         )
                     },
                     Ok,
@@ -1162,7 +1252,7 @@ impl Renderer {
         worlds: Vec<LoadedWorld>,
         bands: Option<RasterBands>,
         console: console::ConsoleAssets,
-        hud: [Option<hud::HudAssets>; 5],
+        hud: [Option<hud::HudAssets>; HUD_DEFAULTS],
         mut effects: qa_render::effects::Effects,
         model_choices: usize,
     ) -> Result<(Self, SceneComposer), String> {
@@ -1187,7 +1277,9 @@ impl Renderer {
         let (mut scene, limits) = SceneComposer::load(limits, assets, worlds)?;
         scene.kind = kind;
         scene.console = Some(console);
-        scene.hud = hud;
+        for (target, source) in scene.hud.iter_mut().zip(hud) {
+            *target = source;
+        }
         scene.ui_commands = ui_commands;
         let backend = Backend::load(context, width, height, assets, limits, bands)?;
         effects.resize_target(width, height);

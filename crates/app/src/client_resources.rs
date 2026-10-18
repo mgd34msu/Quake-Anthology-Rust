@@ -841,6 +841,9 @@ impl qa_compat::services::ClientConnection for ClientConnectionView<'_> {
     }
 }
 impl ResourceState {
+    pub(crate) fn files(&self) -> &qa_content::vfs::FileSearch {
+        &self.files
+    }
     pub fn file_search(&self) -> &qa_content::vfs::SearchView {
         self.files.view()
     }

@@ -1460,10 +1460,15 @@ impl FrameHost {
                     !resources.state.world_ready()
                         || resources.startup.q3().is_some()
                             && (!resources.state.q3_media_ready(
-                                self.runtime
-                                    .scene
-                                    .as_ref()
-                                    .is_some_and(|scene| scene.has_hud(client.client_rules)),
+                                self.runtime.scene.as_ref().is_some_and(|scene| {
+                                    scene.has_hud(
+                                        client.client_rules,
+                                        self.runtime.snapshots[id.0 as usize]
+                                            .as_ref()
+                                            .and_then(|binding| binding.seat()),
+                                        resources.state.file_source(),
+                                    )
+                                }),
                             ) || resources.state.q3_requirement().is_some())
                 })
         {
@@ -1579,7 +1584,11 @@ impl FrameHost {
             previous,
             owner,
             profile,
-            Some(&search),
+            &self
+                .runtime
+                .vfs
+                .bind_search(Some(&search))
+                .map_err(|error| format!("renderer files: {error}"))?,
             assets.assets(),
             assets.shader_occurrence_budget(),
             reset,
@@ -1589,7 +1598,7 @@ impl FrameHost {
             .ok_or("missing renderer module")?
             .renderer_context = Some(handle);
         if let Some(scene) = self.runtime.scene.as_ref() {
-            scene.replay_graphics(&mut self.renderer_contexts, handle, profile)?;
+            scene.replay_graphics(&mut self.renderer_contexts, handle)?;
         }
         if let Some((world, selected)) = world {
             let admission = assets.world_admission(world, profile, selected, Some(&search))?;

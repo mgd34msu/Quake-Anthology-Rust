@@ -183,7 +183,12 @@ pub trait NativeShaders {
     fn resolve(&self, _reference: NativeShaderRef, _assets: &Assets) -> Option<ResolvedShader> {
         None
     }
-    fn context(&self, _owner: ShaderOwner, _profile: ModelProfile) -> Option<ShaderContextId> {
+    fn context(
+        &self,
+        _owner: ShaderOwner,
+        _profile: ModelProfile,
+        _source: Option<qa_core::primitives::FileSearchId>,
+    ) -> Option<ShaderContextId> {
         None
     }
     fn resource_nodes(

@@ -47,6 +47,7 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
         RuleSetId::Quake2Rerelease,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     assert!(font.native);
@@ -324,6 +325,7 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
             rules,
             settings,
             qa_render::material::ShaderCompilePolicy::default(),
+            None,
         )
         .unwrap();
         let console_font = console.font_assets().registration.unwrap().shader;
@@ -449,6 +451,7 @@ fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
         RuleSetId::Quake3,
         ImageSettings::native(RuleSetId::Quake3),
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     assert!(!cached.native);
@@ -752,7 +755,7 @@ fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent()
     host.bind_client_model_assets([]);
     let context = host
         .native_shaders()
-        .context(ShaderOwner::Engine, profile)
+        .context(ShaderOwner::Engine, profile, None)
         .unwrap();
     let assets = host.runtime.model_assets.as_ref().unwrap().assets();
     let key = assets.find_name("pics/conback").unwrap();
@@ -829,6 +832,8 @@ fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent()
             &mut frame,
             assets,
             HudView {
+                seat: None,
+                file_source: None,
                 hud: &hud_state,
                 texts: &texts,
                 configs: &configs,

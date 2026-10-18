@@ -1043,6 +1043,7 @@ fn run() -> Result<(), String> {
                 rules,
                 qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
                 compile_policy,
+                None,
             )?
         };
         hud_assets[rules as usize] = Some(qa_app::renderer::hud::HudAssets::load(

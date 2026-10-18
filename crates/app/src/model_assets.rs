@@ -2621,11 +2621,12 @@ impl ModelAssets {
         rules: RuleSetId,
         settings: ImageSettings,
         finish: MaterialFinishPolicy,
+        search: &SearchView,
     ) -> Result<ModelProfile, String> {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let palette = match crate::render_settings::palette_resource(
-            vfs.read_view(None),
+            vfs.read_view(Some(search)),
             &mut self.assets,
             rules,
             &mut self.palettes,
@@ -2642,13 +2643,8 @@ impl ModelAssets {
             image_settings: settings,
             finish,
         };
-        if !self
-            .catalog
-            .profiles
-            .iter()
-            .any(|entry| entry.profile == profile)
-        {
-            if let Some(blend) = self.append_profile(profile)? {
+        if image_profile_index(&self.catalog.profiles, profile, search).is_none() {
+            if let Some(blend) = self.append_image_policy(profile, search.clone())? {
                 self.assets.install_palette_translucency(blend);
             }
         }
@@ -2660,6 +2656,7 @@ impl ModelAssets {
         profile: ModelProfile,
         name: &str,
         ui_fullscreen: bool,
+        search: &SearchView,
     ) -> Result<ShaderRegistration, String> {
         self.admit_shader_profile(
             vfs,
@@ -2669,7 +2666,7 @@ impl ModelAssets {
             ShaderLighting::TwoDimensional,
             self.image_transaction_active.map(|_| profile),
             ui_fullscreen,
-            None,
+            Some(search),
         )
         .map_err(|error| format!("graphic shader: {error:?}"))?;
         self.catalog
@@ -2678,7 +2675,7 @@ impl ModelAssets {
                 profile,
                 ShaderLighting::TwoDimensional,
                 RegistrationVariant::Guard(ui_fullscreen),
-                None,
+                Some(search),
             )
             .map(|(registration, _)| *registration)
             .ok_or_else(|| "graphic shader unavailable".into())
@@ -2687,25 +2684,24 @@ impl ModelAssets {
         &mut self,
         vfs: &Vfs,
         profile: ModelProfile,
+        search: &SearchView,
         compile: impl FnOnce(&mut Images<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
-        let index = image_profile_index(
-            &self.catalog.profiles,
-            profile,
-            &self.catalog.registration_vfs,
-        )
-        .ok_or("graphic profile unavailable")?;
+        let index = image_profile_index(&self.catalog.profiles, profile, search)
+            .ok_or("graphic profile unavailable")?;
         with_image_owner(&mut self.catalog.profiles, index, |images| {
             images.with_images(vfs, &mut self.assets, compile)
         })
     }
-    pub(crate) fn graphic_default(&self, profile: ModelProfile) -> Option<ShaderBindingId> {
-        self.catalog
-            .profiles
-            .iter()
-            .find(|entry| entry.profile == profile)?
+    pub(crate) fn graphic_default(
+        &self,
+        profile: ModelProfile,
+        search: &SearchView,
+    ) -> Option<ShaderBindingId> {
+        let index = image_profile_index(&self.catalog.profiles, profile, search)?;
+        self.catalog.profiles[index]
             .native_default
             .map(|(id, _)| id)
     }
@@ -3918,6 +3914,7 @@ impl ModelAssets {
         compile_policy: ShaderCompilePolicy,
         width: u32,
         reuse_font: Option<std::sync::Arc<crate::renderer::console::FontAssets>>,
+        search: Option<&SearchView>,
         stage: impl FnOnce(ModelView<'_>, crate::renderer::hud::HudAssets) -> Result<T, String>,
         prepare: impl FnOnce(&Assets, &T) -> Result<(), String>,
     ) -> Result<(T, AssetCounts), String> {
@@ -3926,13 +3923,19 @@ impl ModelAssets {
         if self.initial_registration || self.catalog.admitted_assets != Some(self.assets.counts()) {
             return Err("HUD registration requires a published resource prefix".to_owned());
         }
+        let files = vfs
+            .bind_search(search)
+            .map_err(|error| format!("HUD files: {error}"))?;
         let mut checkpoint = ProfileCheckpoint::capture(self)?;
-        if let Some(request) = crate::renderer::console::FontAssets::registration_request(rules) {
+        if let Some(request) =
+            crate::renderer::console::FontAssets::registration_request(rules, Some(files.view()))
+        {
             checkpoint.registration.capture_target(self, &request)?;
         }
         let result = (|| {
             let font = match reuse_font.filter(|font| {
-                font.profile.source_rules == rules
+                font.files.view().same_selection(files.view())
+                    && font.profile.source_rules == rules
                     && font.profile.rules == rules
                     && font.profile.image_settings == settings
                     && font.profile.finish == compile_policy.finish
@@ -3945,6 +3948,7 @@ impl ModelAssets {
                     rules,
                     settings,
                     compile_policy,
+                    Some(files.view()),
                 )?,
             };
             let candidate = crate::renderer::hud::HudAssets::load(vfs, self, rules, font, width)?;

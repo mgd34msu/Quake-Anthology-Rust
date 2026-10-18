@@ -1366,6 +1366,13 @@ fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners
         [mounts[0]]
     );
     assert_eq!(vfs.read_view(None).mounts().count(), 2);
+    assert_eq!(
+        vfs.read_view(Some(restored.view()))
+            .files()
+            .map(|(_, path)| path.to_vec())
+            .collect::<Vec<_>>(),
+        [b"same.txt".to_vec()]
+    );
     let foreign = Vfs::default();
     assert!(foreign.file_search(Some(low_id)).is_err());
     assert!(foreign.bind_search(Some(restored.view())).is_err());
@@ -1377,6 +1384,7 @@ fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners
         vfs.read_view(Some(foreign_bound.view())).mounts().count(),
         0
     );
+    assert_eq!(vfs.read_view(Some(foreign_bound.view())).files().count(), 0);
     vfs.unmount(mounts[0]);
     assert_eq!(vfs.read_view(Some(restored.view())).mounts().count(), 0);
 

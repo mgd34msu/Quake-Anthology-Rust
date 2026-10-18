@@ -100,7 +100,7 @@ fn native_contexts_and_public_requests_isolate_sources_including_warm_hits_and_e
             .ensure_owner(
                 owner,
                 profile,
-                Some(search),
+                &files.vfs.bind_search(Some(search)).unwrap(),
                 models.assets(),
                 models.shader_occurrence_budget(),
                 None,
@@ -169,7 +169,7 @@ fn native_contexts_and_public_requests_isolate_sources_including_warm_hits_and_e
             .ensure_owner(
                 owner,
                 profile,
-                Some(&equivalent_red),
+                &files.vfs.bind_search(Some(&equivalent_red)).unwrap(),
                 models.assets(),
                 models.shader_occurrence_budget(),
                 None
@@ -178,7 +178,7 @@ fn native_contexts_and_public_requests_isolate_sources_including_warm_hits_and_e
         retained[0].0.context
     );
     assert_eq!(
-        NativeShaders::context(&contexts, owner, profile),
+        NativeShaders::context(&contexts, owner, profile, None),
         Some(retained[2].0.context)
     );
     assert_ne!(retained[0].0.context, retained[1].0.context);
@@ -209,14 +209,17 @@ fn native_contexts_and_public_requests_isolate_sources_including_warm_hits_and_e
     let native = NativeShaders::source(&contexts, retained[2].0)
         .copied()
         .unwrap();
-    for append in contexts
-        .stage_graphics(std::iter::once((profile, &native)))
-        .unwrap()
-    {
+    let default_files = files.vfs.bind_search(None).unwrap();
+    let graphic = crate::renderer::GraphicRegistration {
+        profile,
+        files: &default_files,
+        registration: &native,
+    };
+    for append in contexts.stage_graphics(std::iter::once(graphic)).unwrap() {
         append.commit();
     }
     contexts
-        .replay_graphics(retained[0].0.context, std::iter::once(&native))
+        .replay_graphics(retained[0].0.context, std::iter::once(graphic))
         .unwrap();
     for (reference, expected) in &retained {
         assert_eq!(
@@ -245,4 +248,220 @@ fn native_contexts_and_public_requests_isolate_sources_including_warm_hits_and_e
             .is_err()
     );
     assert_eq!(models.assets().counts(), published);
+}
+
+#[test]
+fn same_rule_client_huds_keep_source_pixels_and_rejected_replacement_keeps_old_slot() {
+    use crate::renderer::{SceneComposer, hud::HudView};
+    use qa_core::{
+        configstrings::ConfigStrings,
+        events::TextStore,
+        primitives::{HudLine, HudState, ThinkTime},
+        sys_events::{EventTime, SeatId},
+    };
+    use qa_render::{
+        Refdef, Viewport,
+        material::{ShaderCompilePolicy, resources::ImageSettings},
+    };
+    let colors = [[211, 0, 0, 255], [0, 0, 211, 255]];
+    let font_files = |color| {
+        [(
+            "gfx/2d/bigchars.tga",
+            support::tga(128, 128, &vec![color; 128 * 128]),
+        )]
+    };
+    let mut files = support::Fixture::new(&font_files(colors[0]));
+    let other = support::Fixture::new(&font_files(colors[1]));
+    let first = files.vfs.mounts().next().unwrap().id;
+    let path = other.vfs.mounts().next().unwrap().path.clone();
+    let second = files.vfs.mount_directory(&path, 10).unwrap();
+    let searches = [first, second].map(|mount| files.vfs.search_view([mount]).unwrap());
+    let sources = searches
+        .each_ref()
+        .map(|view| files.vfs.bind_search(Some(view)).unwrap());
+    let profile = ModelRequest::native("", RuleSetId::Quake3, None).profile();
+    let mut models = ModelAssets::new(
+        &files.vfs,
+        Assets::load().unwrap(),
+        [profile],
+        [],
+        Default::default(),
+    )
+    .unwrap();
+    let (mut scene, limits) =
+        SceneComposer::load(Default::default(), models.assets_mut(), vec![]).unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        32,
+        16,
+        models.assets(),
+        CpuLimits {
+            scene: limits,
+            cache_bytes: 1_048_576,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    models
+        .publish_admission(cpu.admitted_assets().unwrap())
+        .unwrap();
+    models.end_initial_registration();
+    let mut contexts = Contexts::load(files.vfs.default_view(), 0);
+    let lifetime = EntityId {
+        slot: 1,
+        generation: 1,
+    };
+    for seat in 0..2 {
+        let id = SeatId::new(seat as u8).unwrap();
+        let reuse = scene.hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), sources[0].id());
+        let (append, _) = models
+            .prepare_hud(
+                &files.vfs,
+                RuleSetId::Quake3,
+                ImageSettings::native(RuleSetId::Quake3),
+                ShaderCompilePolicy::default(),
+                32,
+                reuse,
+                Some(&searches[seat]),
+                |view, candidate| {
+                    let authority = Owner::Client(ClientId(seat as u32), lifetime);
+                    contexts.ensure_owner(
+                        authority,
+                        candidate.profile(),
+                        &candidate.font().files,
+                        view.assets,
+                        (0, 0),
+                        None,
+                    )?;
+                    let font = candidate.font();
+                    let appends = contexts.stage_graphics(
+                        candidate
+                            .registrations()
+                            .map(move |registration| font.registered(registration)),
+                    )?;
+                    Ok((scene.stage_hud(candidate, Some(id))?, appends))
+                },
+                |assets, (append, _)| {
+                    cpu.prepare_assets(assets, Some(append.limits()))
+                        .map_err(str::to_owned)
+                },
+            )
+            .unwrap();
+        for graph in append.1 {
+            graph.commit();
+        }
+        append.0.commit();
+    }
+    let before = models.assets().counts();
+    let rejected = models.prepare_hud(
+        &files.vfs,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        ShaderCompilePolicy::default(),
+        32,
+        None,
+        Some(&searches[1]),
+        |_, candidate| scene.stage_hud(candidate, Some(SeatId::FIRST)),
+        |_, _| Err("backend rejects slot replacement".to_owned()),
+    );
+    assert!(rejected.is_err());
+    drop(rejected);
+    assert_eq!(models.assets().counts(), before);
+    assert!(scene.has_hud(RuleSetId::Quake3, Some(SeatId::FIRST), sources[0].id()));
+    assert!(!scene.has_hud(RuleSetId::Quake3, Some(SeatId::FIRST), sources[1].id()));
+    // Video recreation must reload each slot from its own view, even with
+    // matching native profiles and a higher-priority conflicting font.
+    let refresh = crate::model_assets::ImageRefresh::default();
+    let graphics = scene
+        .load_video_graphics(&files.vfs, &mut models, &refresh, false, 32, 16)
+        .unwrap();
+    let append = scene
+        .stage_video_graphics(
+            models.assets(),
+            graphics,
+            &refresh,
+            models.catalog().max_choice_nodes(),
+        )
+        .unwrap();
+    let graphs = contexts
+        .stage_graphics(append.graphic_registrations())
+        .unwrap();
+    cpu.prepare_assets(models.assets(), Some(append.limits()))
+        .unwrap();
+    for graph in graphs {
+        graph.commit();
+    }
+    append.commit(crate::renderer::Kind::Cpu);
+    let values = qa_ui::values::ValueLayout::load(&[]).unwrap();
+    let mut hud = HudState::with_capacity(0, 0, 0, values.capacity());
+    let mut texts = TextStore::load(1, 32).unwrap();
+    hud.notify[0] = Some(HudLine {
+        text: texts.insert(b"A\n").unwrap(),
+        started_at: 0.9,
+        until: 2.0,
+    });
+    let layout = qa_network::commands::packet::Protocol::Quake3_68.resource_layout();
+    let configs =
+        ConfigStrings::load((0..layout.count).map(|index| layout.capacity(index).unwrap()))
+            .unwrap();
+    let localization = qa_content::localization::Catalog::default();
+    let mut front = FrontEnd::load(scene.limits()).unwrap();
+    files.vfs.take_lookup_count();
+    let mut frame = front.begin_frame([3, 5, 7, 255]).unwrap();
+    for seat in 0..2 {
+        let view = HudView {
+            seat: SeatId::new(seat as u8),
+            file_source: sources[seat].id(),
+            hud: &hud,
+            texts: &texts,
+            configs: &configs,
+            layout,
+            values: &values,
+            localization: &localization,
+            rules: RuleSetId::Quake3,
+            time: EventTime::from_milliseconds(1000),
+            style_time: ThinkTime::Milliseconds(1000),
+            server_frame: 0,
+            client: ClientId(seat as u32),
+            client_lifetime: lifetime,
+            style_interpolation: 0,
+            show_text: true,
+        };
+        let stats = scene.append_hud(
+            &mut frame,
+            models.assets(),
+            view,
+            Refdef {
+                viewport: Viewport {
+                    x: seat as u32 * 16,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                ..Default::default()
+            },
+            &contexts,
+            Owner::Client(ClientId(seat as u32), lifetime),
+        );
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.glyphs, 1);
+    }
+    frame.resolve_draw_shaders(models.assets(), &contexts);
+    let packet = frame.finish();
+    assert_eq!(packet.rejected, 0);
+    assert_eq!(cpu.render(&packet, models.assets()).rejected, 0);
+    for seat in 0..2 {
+        let painted: Vec<_> = cpu
+            .pixels()
+            .chunks_exact(32)
+            .flat_map(|row| row[seat * 16..seat * 16 + 16].iter().copied())
+            .filter(|color| *color != u32::from_le_bytes([3, 5, 7, 255]))
+            .collect();
+        assert!(!painted.is_empty());
+        assert!(
+            painted
+                .iter()
+                .all(|color| *color == u32::from_le_bytes(colors[seat]))
+        );
+    }
+    assert_eq!(files.vfs.take_lookup_count(), 0);
 }

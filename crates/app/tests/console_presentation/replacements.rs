@@ -54,6 +54,7 @@ fn replacement_only_rerelease_font_uses_native_identity_indexed_palette_and_frac
         RuleSetId::Quake2Rerelease,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
         Default::default(),
+        None,
     )
     .unwrap();
     assert!(font.native);
@@ -79,6 +80,7 @@ fn replacement_only_rerelease_font_uses_native_identity_indexed_palette_and_frac
         RuleSetId::Quake2Rerelease,
         ImageSettings::native(RuleSetId::Quake2Rerelease),
         Default::default(),
+        None,
     )
     .unwrap();
     assert_eq!(cached.registration, font.registration);
@@ -109,6 +111,7 @@ fn rerelease_font_mask_zero_keeps_binary_pcx_despite_present_truecolor_replaceme
         RuleSetId::Quake2Rerelease,
         settings,
         Default::default(),
+        None,
     )
     .unwrap();
     assert!(font.native);
@@ -147,6 +150,7 @@ fn rerelease_hud_discovers_replacement_only_picture_and_keeps_original_logical_e
                 ..ImageSettings::native(RuleSetId::Quake2Rerelease)
             },
             Default::default(),
+            None,
         )
         .unwrap();
         let mut hud =
@@ -173,6 +177,8 @@ fn rerelease_hud_discovers_replacement_only_picture_and_keeps_original_logical_e
                 &mut frame,
                 owner.assets(),
                 HudView {
+                    seat: None,
+                    file_source: None,
                     hud: &state,
                     texts: &texts,
                     configs: &configs,

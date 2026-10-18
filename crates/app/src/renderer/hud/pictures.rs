@@ -40,12 +40,13 @@ impl Pictures {
             return Ok(result);
         };
         let mut paths: Vec<_> = vfs
+            .read_view(Some(font.files.view()))
             .files()
             .filter_map(|(_, path)| picture_path(path))
             .collect();
         paths.sort_unstable();
         paths.dedup();
-        owner.graphic_images(vfs, font.profile, |images| {
+        owner.graphic_images(vfs, font.profile, font.files.view(), |images| {
             for path in paths {
                 match load_picture(images, palette, &path) {
                     Ok(shader) => result.register_receipt(images.assets, &path, shader)?,
@@ -80,7 +81,7 @@ impl Pictures {
             return Ok(None);
         }
         let mut candidate = self.clone();
-        owner.graphic_images(vfs, font.profile, |images| {
+        owner.graphic_images(vfs, font.profile, font.files.view(), |images| {
             let shader = load_picture(images, palette, &path)?;
             candidate.register_receipt(images.assets, &path, shader)
         })?;

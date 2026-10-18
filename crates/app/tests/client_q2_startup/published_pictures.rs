@@ -27,6 +27,8 @@ fn paint(host: &mut FrameHost, source: &mut Source) -> (HudStats, Vec<Draw2d>, V
         &mut frame,
         owner.assets(),
         HudView {
+            seat: Some(SeatId::FIRST),
+            file_source: resources.file_source(),
             hud: &hud,
             texts: &texts,
             configs: &resources.configs,
@@ -87,7 +89,13 @@ fn verify(protocol: Protocol) {
     );
     source.hud_target = true;
     step(&mut host, &mut source);
-    assert!(host.runtime.scene.as_ref().unwrap().has_hud(rules));
+    assert!(
+        host.runtime
+            .scene
+            .as_ref()
+            .unwrap()
+            .has_hud(rules, Some(SeatId::FIRST), None)
+    );
     let statusbar = layout(&host, 0).statusbar().unwrap();
     send(
         &mut host,
@@ -129,7 +137,7 @@ fn verify(protocol: Protocol) {
         .filter_map(|profile| {
             let context = host
                 .native_shaders()
-                .context(ShaderOwner::Engine, profile)?;
+                .context(ShaderOwner::Engine, profile, None)?;
             let node = *host
                 .native_shaders()
                 .resource_nodes(context, ShaderResource::Graphic(font))?
@@ -149,7 +157,7 @@ fn verify(protocol: Protocol) {
     let client = ShaderOwner::Client(ClientId(0), host.runtime.server.clients[0].entity);
     let (authority, context) = host
         .native_shaders()
-        .context(client, profile)
+        .context(client, profile, None)
         .map_or((ShaderOwner::Engine, engine_context), |context| {
             (client, context)
         });
@@ -251,7 +259,7 @@ fn verify(protocol: Protocol) {
         old_keep
     );
     assert_eq!(
-        host.native_shaders().context(authority, profile),
+        host.native_shaders().context(authority, profile, None),
         Some(context)
     );
     assert_eq!(

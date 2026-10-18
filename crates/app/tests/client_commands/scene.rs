@@ -1472,7 +1472,7 @@ pub(super) fn ownership() {
     );
     let lifetime = host.runtime.server.clients[ids[0].0 as usize].entity;
     let owner = ShaderOwner::Client(ids[0], lifetime);
-    let context = host.native_shaders().context(owner, profile).unwrap();
+    let context = host.native_shaders().context(owner, profile, None).unwrap();
     let font_nodes = host
         .native_shaders()
         .resource_nodes(context, ShaderResource::Graphic(font_registration.key))
@@ -1489,7 +1489,7 @@ pub(super) fn ownership() {
     let peer_lifetime = host.runtime.server.clients[ids[1].0 as usize].entity;
     let peer_context = host
         .native_shaders()
-        .context(ShaderOwner::Client(ids[1], peer_lifetime), profile)
+        .context(ShaderOwner::Client(ids[1], peer_lifetime), profile, None)
         .unwrap();
     assert_ne!(context, peer_context);
 
@@ -2504,6 +2504,7 @@ pub(super) fn remaps(native: bool) {
         RuleSetId::Quake3,
         profile.image_settings,
         qa_render::material::ShaderCompilePolicy::default(),
+        None,
     )
     .unwrap();
     assert!(font.native);
@@ -2522,7 +2523,7 @@ pub(super) fn remaps(native: bool) {
     );
     let (mut scene, _) =
         SceneComposer::load(Default::default(), owner.assets_mut(), vec![]).unwrap();
-    let staged = scene.stage_hud(hud).unwrap();
+    let staged = scene.stage_hud(hud, None).unwrap();
     let limits = staged.limits();
     staged.commit();
     let mut backend = Backend {
@@ -2565,7 +2566,7 @@ pub(super) fn remaps(native: bool) {
     let lifetime = host.runtime.server.clients[clients[0].0 as usize].entity;
     let context = host
         .native_shaders()
-        .context(ShaderOwner::Client(clients[0], lifetime), profile)
+        .context(ShaderOwner::Client(clients[0], lifetime), profile, None)
         .unwrap();
     let source_ref = ShaderRef::Native(qa_render::shader::reference::NativeShaderRef {
         context,
@@ -2758,6 +2759,8 @@ pub(super) fn remaps(native: bool) {
         &mut font_frame,
         assets,
         HudView {
+            seat: None,
+            file_source: None,
             hud: &hud_state,
             texts: &texts,
             configs: &configs,

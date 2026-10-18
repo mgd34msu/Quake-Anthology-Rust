@@ -2,7 +2,7 @@
 use super::text::BitmapFont;
 use crate::model_assets::{ModelAssets, ModelProfile};
 use qa_console::presentation::{ConsoleView, Layout, Style};
-use qa_content::vfs::Vfs;
+use qa_content::vfs::{FileSearch, SearchView, Vfs};
 use qa_core::primitives::RuleSetId;
 use qa_render::{
     Assets, CpuPresentation, Draw2d, Frame, PaletteId, Refdef, ShaderBinding, ShaderBindingId,
@@ -44,25 +44,36 @@ pub struct ConsoleAssets {
     legacy_gl_alpha: bool,
 }
 pub(super) struct ConsoleUpdate {
+    files: FileSearch,
     profile: ModelProfile,
     font: Option<Arc<FontAssets>>,
     background: Option<ShaderRegistration>,
 }
 impl ConsoleUpdate {
-    pub(super) fn font_for(&self, profile: ModelProfile) -> Option<Arc<FontAssets>> {
+    pub(super) fn font_for(
+        &self,
+        profile: ModelProfile,
+        files: &FileSearch,
+    ) -> Option<Arc<FontAssets>> {
         self.font
             .as_ref()
-            .filter(|font| font.profile == profile)
+            .filter(|font| {
+                font.profile == profile && font.files.view().same_selection(files.view())
+            })
             .map(Arc::clone)
     }
     pub(super) fn registrations(
         &self,
-    ) -> impl Iterator<Item = (ModelProfile, &ShaderRegistration)> + Clone {
+    ) -> impl Iterator<Item = super::GraphicRegistration<'_>> + Clone {
         self.font
             .iter()
             .filter_map(|font| font.registration.as_ref())
             .chain(self.background.iter())
-            .map(|registration| (self.profile, registration))
+            .map(|registration| super::GraphicRegistration {
+                profile: self.profile,
+                files: &self.files,
+                registration,
+            })
     }
     pub(super) fn commit(self, target: &mut ConsoleAssets) {
         if let Some(font) = self.font {
@@ -74,6 +85,10 @@ impl ConsoleUpdate {
     }
 }
 impl ConsoleAssets {
+    pub(crate) fn font(&self) -> &FontAssets {
+        &self.font
+    }
+
     pub(super) fn downloaded(
         &self,
         vfs: &Vfs,
@@ -84,17 +99,21 @@ impl ConsoleAssets {
             return Ok(None);
         }
         let font = self.font.downloaded(vfs, owner, path)?;
-        let background =
-            if self.background.is_none() && published_image(path, background_path(self.rules)) {
-                let palette = self.palette.ok_or("native console palette unavailable")?;
-                Some(owner.graphic_images(vfs, self.profile(), |images| {
+        let background = if self.background.is_none()
+            && published_image(path, background_path(self.rules))
+        {
+            let palette = self.palette.ok_or("native console palette unavailable")?;
+            Some(
+                owner.graphic_images(vfs, self.profile(), self.font.files.view(), |images| {
                     register_background(images, self.rules, palette)
-                })?)
-            } else {
-                None
-            };
+                })?,
+            )
+        } else {
+            None
+        };
         Ok(
             (font.is_some() || background.is_some()).then_some(ConsoleUpdate {
+                files: self.font.files.clone(),
                 profile: self.profile(),
                 font,
                 background,
@@ -134,7 +153,7 @@ impl ConsoleAssets {
             },
         )
         .map_err(str::to_owned)?;
-        let font = FontAssets::load(vfs, owner, rules, settings, compile_policy)?;
+        let font = FontAssets::load(vfs, owner, rules, settings, compile_policy, None)?;
         let palette = font.palette;
         let mut console = Self {
             rules,
@@ -156,15 +175,27 @@ impl ConsoleAssets {
             install(
                 &mut console.white,
                 "white",
-                owner.graphic_shader(vfs, font.profile, "white", compile_policy.ui_fullscreen),
+                owner.graphic_shader(
+                    vfs,
+                    font.profile,
+                    "white",
+                    compile_policy.ui_fullscreen,
+                    font.files.view(),
+                ),
             );
             install(
                 &mut console.background,
                 "console",
-                owner.graphic_shader(vfs, font.profile, "console", compile_policy.ui_fullscreen),
+                owner.graphic_shader(
+                    vfs,
+                    font.profile,
+                    "console",
+                    compile_policy.ui_fullscreen,
+                    font.files.view(),
+                ),
             );
         } else if let Some(palette) = palette {
-            let result = owner.graphic_images(vfs, font.profile, |images| {
+            let result = owner.graphic_images(vfs, font.profile, font.files.view(), |images| {
                 register_background(images, rules, palette)
             });
             install(&mut console.background, "background", result);
@@ -338,6 +369,7 @@ fn install(
 }
 /// One retained font registration is shared by console and HUD owners.
 pub struct FontAssets {
+    pub(crate) files: FileSearch,
     pub(crate) compile_policy: qa_render::material::ShaderCompilePolicy,
     pub profile: ModelProfile,
     pub registration: Option<ShaderRegistration>,
@@ -347,6 +379,17 @@ pub struct FontAssets {
     native_default: Option<ShaderBindingId>,
 }
 impl FontAssets {
+    pub(crate) fn registered<'a>(
+        &'a self,
+        registration: &'a ShaderRegistration,
+    ) -> super::GraphicRegistration<'a> {
+        super::GraphicRegistration {
+            profile: self.profile,
+            files: &self.files,
+            registration,
+        }
+    }
+
     pub(super) fn downloaded(
         &self,
         vfs: &Vfs,
@@ -365,6 +408,7 @@ impl FontAssets {
             self.profile.rules,
             self.profile.image_settings,
             self.compile_policy,
+            Some(self.files.view()),
         )?;
         if !font.native || font.profile != self.profile {
             return Err("downloaded font is unavailable under its retained profile".into());
@@ -373,9 +417,10 @@ impl FontAssets {
     }
     pub(crate) fn registration_request(
         rules: RuleSetId,
+        search: Option<&SearchView>,
     ) -> Option<qa_compat::services::RendererRequest<&'static [u8]>> {
         (rules == RuleSetId::Quake3).then_some(qa_compat::services::RendererRequest {
-            search: None,
+            search: search.cloned(),
             name: b"gfx/2d/bigchars",
             source: rules,
             kind: qa_compat::services::RendererRegistration::Shader {
@@ -392,17 +437,23 @@ impl FontAssets {
         rules: RuleSetId,
         settings: ImageSettings,
         compile_policy: qa_render::material::ShaderCompilePolicy,
+        search: Option<&SearchView>,
     ) -> Result<Arc<Self>, String> {
-        let profile = owner.graphics_profile(vfs, rules, settings, compile_policy.finish)?;
-        let result = if let Some(request) = Self::registration_request(rules) {
+        let files = vfs
+            .bind_search(search)
+            .map_err(|error| format!("font files: {error}"))?;
+        let profile =
+            owner.graphics_profile(vfs, rules, settings, compile_policy.finish, files.view())?;
+        let result = if let Some(request) = Self::registration_request(rules, Some(files.view())) {
             owner.graphic_shader(
                 vfs,
                 profile,
                 std::str::from_utf8(request.name).map_err(|_| "font registration name")?,
                 compile_policy.ui_fullscreen,
+                files.view(),
             )
         } else {
-            owner.graphic_images(vfs, profile, |images| {
+            owner.graphic_images(vfs, profile, files.view(), |images| {
                 register_font(images, rules, profile.palette)
             })
         };
@@ -415,7 +466,8 @@ impl FontAssets {
             palette: profile.palette,
             native: registration.is_some_and(|registration| registration.defaulted.is_none()),
             height: qa_gameplay::rules::presentation::text_rules(rules).glyph_height,
-            native_default: owner.graphic_default(profile),
+            native_default: owner.graphic_default(profile, files.view()),
+            files,
         }))
     }
     pub(crate) fn graphic(

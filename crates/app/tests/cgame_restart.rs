@@ -1961,7 +1961,7 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
         .scene
         .as_ref()
         .unwrap()
-        .hud_font(RuleSetId::Quake3)
+        .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
         .unwrap()
         .profile;
     let owners = ids.map(|client| {
@@ -1970,7 +1970,7 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
             host.runtime.server.clients[client.0 as usize].entity,
         )
     });
-    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile, None).unwrap());
     let peer_frames = ui_query(&mut host, ModuleId(4), 10).unwrap();
     let before = renderer_markers(&host).len();
     source.reject_reset = Some(ids[0]);
@@ -1983,7 +1983,7 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(host.module_state(ModuleId(3)), Some(State::Pending));
     assert_eq!(&renderer_markers(&host)[before..], b"cu");
     assert_eq!(
-        host.native_shaders().context(owners[1], profile),
+        host.native_shaders().context(owners[1], profile, None),
         Some(contexts[1])
     );
     queue_gamestate(&mut host, ids[0], "c", 33);
@@ -1998,11 +1998,11 @@ fn verify_renderer_lifecycle(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(ui_query(&mut host, ModuleId(3), 8), Ok(4));
     assert_eq!(ui_query(&mut host, ModuleId(4), 8), Ok(4));
     assert_ne!(
-        host.native_shaders().context(owners[0], profile),
+        host.native_shaders().context(owners[0], profile, None),
         Some(contexts[0])
     );
     assert_eq!(
-        host.native_shaders().context(owners[1], profile),
+        host.native_shaders().context(owners[1], profile, None),
         Some(contexts[1])
     );
     for module in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
@@ -2147,13 +2147,13 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
         .scene
         .as_ref()
         .unwrap()
-        .hud_font(RuleSetId::Quake3)
+        .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
         .unwrap();
     let profile = font.profile;
     let font_receipt = font.registration.unwrap();
     let owners =
         std::array::from_fn::<_, 2, _>(|seat| ShaderOwner::Client(ids[seat], lifetimes[seat]));
-    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile, None).unwrap());
     let handles = [
         ui_query(&mut host, ModuleId(3), 8).unwrap(),
         ui_query(&mut host, ModuleId(4), 8).unwrap(),
@@ -2277,11 +2277,11 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
     assert_eq!(renderer_markers(&host), old_markers);
     assert_eq!(source.reset_receipts, resets);
     assert_eq!(
-        host.native_shaders().context(owners[0], profile),
+        host.native_shaders().context(owners[0], profile, None),
         Some(contexts[0])
     );
     assert_eq!(
-        host.native_shaders().context(owners[1], profile),
+        host.native_shaders().context(owners[1], profile, None),
         Some(contexts[1])
     );
     assert_eq!(
@@ -2429,7 +2429,7 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
         .scene
         .as_ref()
         .unwrap()
-        .hud_font(RuleSetId::Quake3)
+        .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
         .unwrap();
     assert_eq!(current_font.profile, profile);
     let current_font_receipt = current_font.registration.unwrap();
@@ -2477,7 +2477,7 @@ fn verify_video_restart(module: Vec<u8>, ui: Vec<u8>) {
         );
         let renewed = host
             .native_shaders()
-            .context(owners[seat], profile)
+            .context(owners[seat], profile, None)
             .unwrap();
         assert_ne!(renewed, contexts[seat]);
         assert_eq!(old_refs[seat].source(host.native_shaders()), None);
@@ -2677,14 +2677,18 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         .scene
         .as_ref()
         .unwrap()
-        .hud_font(RuleSetId::Quake3)
+        .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
         .unwrap();
     let old_profile = font.profile;
     assert_eq!(old_profile.image_settings.picmip, 1);
     let lifetimes = ids.map(|id| host.runtime.server.clients[id.0 as usize].entity);
     let owners =
         std::array::from_fn::<_, 2, _>(|seat| ShaderOwner::Client(ids[seat], lifetimes[seat]));
-    let contexts = owners.map(|owner| host.native_shaders().context(owner, old_profile).unwrap());
+    let contexts = owners.map(|owner| {
+        host.native_shaders()
+            .context(owner, old_profile, None)
+            .unwrap()
+    });
     let handles = [
         ui_query(&mut host, ModuleId(3), 8).unwrap(),
         ui_query(&mut host, ModuleId(4), 8).unwrap(),
@@ -2922,7 +2926,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
             .scene
             .as_ref()
             .unwrap()
-            .hud_font(RuleSetId::Quake3)
+            .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
             .unwrap()
             .profile,
         old_profile
@@ -2939,7 +2943,8 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     );
     for seat in 0..2 {
         assert_eq!(
-            host.native_shaders().context(owners[seat], old_profile),
+            host.native_shaders()
+                .context(owners[seat], old_profile, None),
             Some(contexts[seat])
         );
         assert_eq!(image_body(&host, refs[seat]), old_body);
@@ -3006,7 +3011,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
             .scene
             .as_ref()
             .unwrap()
-            .hud_font(RuleSetId::Quake3)
+            .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
             .unwrap()
             .profile,
         old_profile
@@ -3025,7 +3030,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
     for seat in 0..2 {
         let context = host
             .native_shaders()
-            .context(owners[seat], old_profile)
+            .context(owners[seat], old_profile, None)
             .unwrap();
         assert_eq!(
             ui_query(&mut host, ModuleId(seat as u16 + 3), 8),
@@ -3143,7 +3148,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         .scene
         .as_ref()
         .unwrap()
-        .hud_font(RuleSetId::Quake3)
+        .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
         .unwrap();
     let profile = font.profile;
     let mut settings = old_profile.image_settings;
@@ -3177,7 +3182,7 @@ fn verify_video_image_restart(module: Vec<u8>, ui: Vec<u8>) {
         assert_eq!(query(&mut host, module, 6), Ok(handles[seat]));
         let renewed = host
             .native_shaders()
-            .context(owners[seat], profile)
+            .context(owners[seat], profile, None)
             .unwrap();
         assert_ne!(renewed, contexts[seat]);
         assert_eq!(refs[seat].source(host.native_shaders()), None);
@@ -3358,8 +3363,10 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
 
     let graphics = |host: &FrameHost| {
         let scene = host.runtime.scene.as_ref().unwrap();
-        assert!(scene.has_hud(RuleSetId::Quake3));
-        let font = scene.hud_font(RuleSetId::Quake3).unwrap();
+        assert!(scene.has_hud(RuleSetId::Quake3, Some(SeatId::FIRST), None));
+        let font = scene
+            .hud_font(RuleSetId::Quake3, Some(SeatId::FIRST), None)
+            .unwrap();
         let console = *host
             .runtime
             .model_assets
@@ -3410,7 +3417,7 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
         ShaderOwner::Client(ids[1], lifetimes[1]),
         ShaderOwner::Engine,
     ];
-    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile).unwrap());
+    let contexts = owners.map(|owner| host.native_shaders().context(owner, profile, None).unwrap());
     let handles = [
         ui_query(&mut host, ModuleId(3), 8).unwrap(),
         ui_query(&mut host, ModuleId(4), 8).unwrap(),
@@ -3487,7 +3494,7 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
         assert!(current.defaulted.is_none());
     }
     for (index, owner) in owners.into_iter().enumerate() {
-        let current = host.native_shaders().context(owner, profile).unwrap();
+        let current = host.native_shaders().context(owner, profile, None).unwrap();
         assert_ne!(current, contexts[index]);
         for receipt in current_receipts {
             let nodes = host
@@ -3518,7 +3525,7 @@ fn verify_video_format_restart(module: Vec<u8>, ui: Vec<u8>) {
         assert_eq!(refs[seat].source(host.native_shaders()), None);
         let renewed = host
             .native_shaders()
-            .context(owners[seat], profile)
+            .context(owners[seat], profile, None)
             .unwrap();
         let shader = ShaderRef::Native(NativeShaderRef {
             context: renewed,
