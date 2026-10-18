@@ -1783,6 +1783,11 @@ impl ConfigPublication {
     pub(crate) fn require_game_state(&mut self) {
         self.game_state_required = true;
     }
+    pub(crate) fn begin_native_connection(&mut self) {
+        self.require_game_state();
+        self.game_state = None;
+        self.pure.connected();
+    }
     pub(crate) fn restart_game_state(&mut self) {
         self.game_state = None;
         self.pure.reset();

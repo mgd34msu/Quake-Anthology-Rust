@@ -126,6 +126,8 @@ fn reset_of_an_active_peer_resends_once_until_the_new_gamestate_is_published() {
         verify(&mut state, "cp 10 -128 91 @ 99"),
         Decision::Authentic
     );
+    assert_eq!(state.movement(), Movement::EnterWorld);
+    state.entered_world();
     assert_eq!(state.movement(), Movement::Allowed);
     state.reset();
     assert_eq!(state.movement(), Movement::ResendGamestate);
@@ -135,6 +137,8 @@ fn reset_of_an_active_peer_resends_once_until_the_new_gamestate_is_published() {
         verify(&mut state, "cp 10 -128 91 @ 99"),
         Decision::Authentic
     );
+    assert_eq!(state.movement(), Movement::EnterWorld);
+    state.entered_world();
     assert_eq!(state.movement(), Movement::Allowed);
 }
 
@@ -160,4 +164,26 @@ fn disabled_intervals_keep_the_native_feed_epoch_but_new_feeds_replace_it() {
         verify(&mut state, "cp 23 -128 91 @ 100"),
         Decision::Authentic
     );
+}
+
+#[test]
+fn native_connection_enters_only_after_gamestate_and_a_successful_begin() {
+    use qa_network::{pure::Movement, snapshots::Q3_NOT_ACTIVE};
+    let mut state = Admission::default();
+    assert_eq!(state.movement(), Movement::Allowed);
+    assert_eq!(state.snapshot_flags(), 0);
+    state.connected();
+    assert_eq!(state.movement(), Movement::Wait);
+    assert_eq!(state.snapshot_flags(), Q3_NOT_ACTIVE);
+    state.configure(None, 99, 1);
+    for _ in 0..2 {
+        assert_eq!(state.movement(), Movement::EnterWorld);
+        assert_eq!(state.snapshot_flags(), Q3_NOT_ACTIVE);
+    }
+    state.entered_world();
+    assert_eq!(state.movement(), Movement::Allowed);
+    assert_eq!(state.snapshot_flags(), 0);
+    state.gamestate(99, 2);
+    assert_eq!(state.snapshot_flags(), Q3_NOT_ACTIVE);
+    assert_eq!(state.movement(), Movement::EnterWorld);
 }

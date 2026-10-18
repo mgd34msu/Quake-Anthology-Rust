@@ -583,6 +583,7 @@ impl EntityScratch {
         &'a self,
         sequence: u32,
         time: qa_core::primitives::ThinkTime,
+        flags: u8,
         words: &'a [u32; states::PLAYER_WORDS],
         count: usize,
     ) -> Result<ReceivedFrame<'a>, Error> {
@@ -592,7 +593,7 @@ impl EntityScratch {
                     sequence,
                     time,
                     command: 0,
-                    flags: 0,
+                    flags,
                     qw_peers: 0,
                     qw_dead: 0,
                     areas: &self.visibility.areas[..self.visibility.area_count],

@@ -72,10 +72,22 @@ pub struct Admission {
     policy: Option<Policy>,
     authentic: bool,
     received: bool,
-    active: bool,
+    phase: Phase,
     feed_epoch: Option<(u32, i32)>,
 }
+#[derive(Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Unmanaged,
+    Connected,
+    Primed,
+    Active,
+}
 impl Admission {
+    pub fn connected(&mut self) {
+        self.reset();
+        self.phase = Phase::Connected;
+    }
     pub fn configure(&mut self, policy: Option<Policy>, feed: u32, server_id: i32) {
         self.policy = policy;
         self.gamestate(feed, server_id);
@@ -85,7 +97,7 @@ impl Admission {
             self.feed_epoch = Some((feed, server_id));
         }
         self.reset();
-        self.active = false;
+        self.phase = Phase::Primed;
     }
     pub fn reset(&mut self) {
         self.authentic = false;
@@ -109,13 +121,28 @@ impl Admission {
         self.policy.is_none() || self.authentic
     }
     pub fn movement(&mut self) -> Movement {
-        if self.allows_movement() {
-            self.active = true;
-            Movement::Allowed
-        } else if self.active && !self.received {
+        if self.phase == Phase::Connected {
+            Movement::Wait
+        } else if self.allows_movement() {
+            if self.phase == Phase::Primed {
+                Movement::EnterWorld
+            } else {
+                Movement::Allowed
+            }
+        } else if self.phase == Phase::Active && !self.received {
             Movement::ResendGamestate
         } else {
             Movement::Wait
+        }
+    }
+    pub fn entered_world(&mut self) {
+        self.phase = Phase::Active;
+    }
+    pub fn snapshot_flags(&self) -> u8 {
+        if matches!(self.phase, Phase::Connected | Phase::Primed) {
+            crate::snapshots::Q3_NOT_ACTIVE
+        } else {
+            0
         }
     }
     pub fn received(&self) -> bool {
@@ -126,6 +153,7 @@ impl Admission {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Movement {
     Allowed,
+    EnterWorld,
     Wait,
     ResendGamestate,
 }

@@ -1152,6 +1152,7 @@ impl Runtime {
                         sequence,
                         time,
                         delta,
+                        publication.pure.snapshot_flags(),
                         &mut bytes,
                     ) else {
                         return false;

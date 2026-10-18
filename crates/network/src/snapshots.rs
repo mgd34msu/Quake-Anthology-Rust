@@ -12,6 +12,7 @@ pub use q2::{
 };
 
 pub const SLOTS: usize = 32;
+pub const Q3_NOT_ACTIVE: u8 = 2;
 
 /// Convert one native area byte to or from common 1=hidden polarity.
 /// The native protocol boundary supplies whether its bits mean visible.

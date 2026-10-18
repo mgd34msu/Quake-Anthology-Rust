@@ -518,6 +518,21 @@ impl FrameHost {
             command,
         })
     }
+    pub(crate) fn resolve_command_weapon(
+        &self,
+        mut command: UserCmd,
+        native_weapon: Option<u8>,
+    ) -> UserCmd {
+        if let Some(number) = native_weapon {
+            command.weapon = self
+                .runtime
+                .catalog
+                .registry
+                .native_weapon(RuleSetId::Quake3, u16::from(number));
+        }
+        command
+    }
+
     /// Called once for every command admitted by the native channel. Modules
     /// never share the engine's deferred movement pass with their ClientThink.
     pub(crate) fn received_command(

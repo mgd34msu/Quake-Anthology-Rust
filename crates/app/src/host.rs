@@ -3324,7 +3324,7 @@ impl FrameHost {
                             resources.startup.q3().is_some_and(|phase| {
                                 match phase {
                                     crate::client_resources::startup::Q3Phase::Active => false,
-                                    crate::client_resources::startup::Q3Phase::Primed => frame.flags & 2 != 0,
+                                    crate::client_resources::startup::Q3Phase::Primed => frame.flags & qa_network::snapshots::Q3_NOT_ACTIVE != 0,
                                     _ => true,
                                 }
                             })
@@ -3683,13 +3683,23 @@ impl FrameHost {
                         return std::ops::ControlFlow::Continue(());
                     }
                     match incoming {
-                    Incoming::MoveStart { output } => {
+                    Incoming::MoveStart { output, first, native_weapon, entered } => {
                         if output.is_none() || self.runtime.server.clients[id.0 as usize].output != output {
                             return std::ops::ControlFlow::Break(());
                         }
                         let publication = &mut self.runtime.config_publications[id.0 as usize];
                         match publication.pure.movement() {
                             qa_network::pure::Movement::Allowed => {},
+                            qa_network::pure::Movement::EnterWorld => {
+                                let first = self.resolve_command_weapon(first, Some(native_weapon));
+                                if let Err(error) = self.enter_q3_world(id, first, driver) {
+                                    let _ = self.runtime.server.events.console_formatted(format_args!("ClientBegin: {error:?}\n"));
+                                    self.disconnect_client_with_driver(id, driver);
+                                    disconnected = Some(id);
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                *entered = true;
+                            },
                             qa_network::pure::Movement::Wait => return std::ops::ControlFlow::Break(()),
                             qa_network::pure::Movement::ResendGamestate => {
                                 publication.restart_game_state();
@@ -3744,7 +3754,7 @@ impl FrameHost {
                         }
                     }
                     Incoming::Command {
-                        mut command,
+                        command,
                         native_weapon,
                         observation,
                         execution,
@@ -3753,12 +3763,7 @@ impl FrameHost {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                         {
-                            if let Some(number) = native_weapon {
-                                command.weapon = self.runtime.catalog.registry.native_weapon(
-                                    qa_core::primitives::RuleSetId::Quake3,
-                                    u16::from(number),
-                                );
-                            }
+                            let command = self.resolve_command_weapon(command, native_weapon);
                             self.received_command(id, command, execution, observation, driver);
                         }
                     }

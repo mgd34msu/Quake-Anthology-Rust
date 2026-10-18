@@ -333,7 +333,9 @@ impl ClientStartup {
         }
     }
     pub(crate) fn q3_snapshot(&mut self, flags: u8) {
-        if flags & 2 == 0 && matches!(self, Self::Quake3(Q3Phase::Primed)) {
+        if flags & qa_network::snapshots::Q3_NOT_ACTIVE == 0
+            && matches!(self, Self::Quake3(Q3Phase::Primed))
+        {
             *self = Self::Quake3(Q3Phase::Active);
         }
     }

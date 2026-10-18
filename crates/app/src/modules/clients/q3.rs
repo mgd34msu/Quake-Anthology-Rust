@@ -210,28 +210,72 @@ pub(super) fn connect(
         // Stock Q3 owns Pmove inside its module. The host must never add a
         // second move, including synchronous/bot Think deferred to RunFrame.
         host.runtime.server.clients[id.0 as usize].module_movement = true;
-        callback(
-            host,
-            module,
-            id,
-            ClientCallback::Begin,
-            CommandArgs::default(),
-            driver,
-        )
-        .map_err(|e| format!("ClientBegin: {e:?}"))?;
-        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 0);
-        if let Some(seat) = host.runtime.snapshots[id.0 as usize]
-            .as_ref()
-            .and_then(|b| b.seat())
-        {
-            host.runtime.input.set_view_angles(seat, Vec3::default());
+        let native_wire = !is_bot
+            && host.runtime.snapshots[id.0 as usize]
+                .as_ref()
+                .is_some_and(|binding| {
+                    binding.protocol == qa_network::commands::packet::Protocol::Quake3_68
+                });
+        if native_wire {
+            let publication = &mut host.runtime.config_publications[id.0 as usize];
+            publication.connection(module, qa_core::configstrings::ConfigLayout::QUAKE3);
+            publication.begin_native_connection();
+        } else {
+            begin(host, module, id, driver).map_err(|e| format!("ClientBegin: {e:?}"))?;
         }
+        host.runtime.native_numbers[id.0 as usize].set_native_clients(info.clients as u32, 0);
         Ok(number)
     })();
     if result.is_err() {
         host.disconnect_client_with_driver(id, driver);
     }
     result
+}
+
+fn begin(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    driver: &mut crate::modules::Driver<'_>,
+) -> Result<(), ClientCommandError> {
+    callback(
+        host,
+        module,
+        id,
+        ClientCallback::Begin,
+        CommandArgs::default(),
+        driver,
+    )?;
+    if let Some(seat) = host.runtime.snapshots[id.0 as usize]
+        .as_ref()
+        .and_then(|binding| binding.seat())
+    {
+        host.runtime.input.set_view_angles(seat, Vec3::default());
+    }
+    Ok(())
+}
+
+impl FrameHost {
+    pub(crate) fn enter_q3_world(
+        &mut self,
+        id: ClientId,
+        first: UserCmd,
+        driver: &mut crate::modules::Driver<'_>,
+    ) -> Result<(), ClientCommandError> {
+        let client = &mut self.runtime.server.clients[id.0 as usize];
+        client.command = first;
+        let module = client.module;
+        if self
+            .client_info(module)
+            .is_some_and(|info| info.rules == RuleSetId::Quake3)
+        {
+            begin(self, module, id, driver)?;
+        }
+        self.runtime.config_publications[id.0 as usize]
+            .pure
+            .entered_world();
+        Ok(())
+    }
 }
 
 pub(super) fn command(

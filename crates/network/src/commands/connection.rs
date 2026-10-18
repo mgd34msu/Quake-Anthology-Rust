@@ -375,10 +375,28 @@ impl Commands {
                 key,
                 |record| match record {
                     packet::Record::Move(movement) => {
-                        if let Move::Quake3 { delta, .. } = movement {
+                        let mut first = None;
+                        if let Move::Quake3 {
+                            delta, commands, ..
+                        } = movement
+                        {
                             self.delta_request = delta.then_some(message_acknowledged);
-                            if consume(Incoming::MoveStart { output }).is_break() {
+                            let command = from_q3_usercmd(commands[0], self.previous_time, None);
+                            first = Some(command);
+                            let mut entered = false;
+                            if consume(Incoming::MoveStart {
+                                output,
+                                first: command,
+                                native_weapon: commands[0].weapon,
+                                entered: &mut entered,
+                            })
+                            .is_break()
+                            {
                                 return Ok(ControlFlow::Break(()));
+                            }
+                            if entered {
+                                self.previous_time = commands[0].server_time;
+                                self.delta_request = None;
                             }
                         }
                         let batch = matches!(movement, Move::QuakeWorld { .. });
@@ -387,6 +405,7 @@ impl Commands {
                         }
                         let flow = self.decode_move(
                             movement,
+                            first,
                             server_time,
                             dropped,
                             message_acknowledged,
@@ -452,6 +471,7 @@ impl Commands {
     fn decode_move(
         &mut self,
         movement: Move,
+        first: Option<UserCmd>,
         server_time: i32,
         dropped: u32,
         message_acknowledged: u32,
@@ -577,11 +597,15 @@ impl Commands {
                 let observation = channel.snapshot_observation(message_acknowledged);
                 let final_time = commands[usize::from(count) - 1].server_time;
                 let mut accepted = 0;
-                for &native in &commands[..usize::from(count)] {
+                for (index, &native) in commands[..usize::from(count)].iter().enumerate() {
                     if native.server_time > final_time || native.server_time <= self.previous_time {
                         continue;
                     }
-                    let command = from_q3_usercmd(native, self.previous_time, None);
+                    let command = if index == 0 {
+                        first.ok_or(packet::Error::Context)?
+                    } else {
+                        from_q3_usercmd(native, self.previous_time, None)
+                    };
                     self.previous_time = native.server_time;
                     accepted += 1;
                     if consume(command, Some(native.weapon), observation).is_break() {

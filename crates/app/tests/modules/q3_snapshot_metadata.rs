@@ -240,11 +240,16 @@ fn fixture_program(vm: qa_compat::qvm::Vm) -> (Box<FrameHost>, ClientId) {
         .unwrap(),
     );
     host.initialize_modules(Phase::Server);
+    // These metadata fixtures have no cgame/media startup. Enter as a native
+    // bot, then attach its existing local snapshot connection for presentation.
+    // Q3 human first-move admission is covered by q3_clients.
+    host.runtime.server.clients[client.0 as usize].connection = Some(Connection::Bot);
     assert_eq!(
         host.connect_module_client(MODULE, client, b"\\name\\metadata")
             .unwrap(),
         0
     );
+    host.runtime.server.clients[client.0 as usize].connection = Some(Connection::Local);
     (host, client)
 }
 

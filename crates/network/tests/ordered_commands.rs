@@ -391,3 +391,57 @@ fn native_command_strings_keep_signed_terminators_and_continue_at_their_native_l
         (Ok(1), vec![Seen::Text(vec![b'x'; 1023]), Seen::Move(11)])
     );
 }
+
+#[test]
+fn q3_enter_world_seeds_the_first_command_before_filtering_and_clears_delta() {
+    for time in [0i32, 8, 1000] {
+        let mut native = [ZERO_Q3; 32];
+        native[0].server_time = time;
+        native[0].weapon = 7;
+        native[0].movement[0] = 11;
+        native[1] = native[0];
+        native[1].server_time = time + 1;
+        native[1].movement[0] = 12;
+        let movement = Move::Quake3 {
+            commands: native,
+            count: 2,
+            delta: true,
+        };
+        let mut bytes = [0; 1400];
+        let length = packet::write(&mut bytes, &movement, 7, Key::default()).unwrap();
+        let mut channel =
+            Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 16).unwrap();
+        let mut commands = Commands::load(Protocol::Quake3_68, 8192);
+        for enter in [true, false] {
+            let length = commands.stage(&bytes[..length]).unwrap();
+            let mut accepted = Vec::new();
+            let result = commands
+                .decode(length, 7, 16, &mut channel, None, |incoming| {
+                    match incoming {
+                        Incoming::MoveStart {
+                            first,
+                            native_weapon,
+                            entered,
+                            ..
+                        } => {
+                            assert_eq!(first.server_time_ms, time);
+                            assert_eq!(first.movement[0], 11.0);
+                            assert_eq!(native_weapon, 7);
+                            *entered = enter;
+                        }
+                        Incoming::Command { command, .. } => accepted.push(command),
+                        _ => {}
+                    }
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(result, usize::from(enter));
+            if enter {
+                assert_eq!(commands.delta_request(), None);
+                assert_eq!(accepted[0].server_time_ms, time + 1);
+                assert_eq!(accepted[0].duration_ms, 1);
+                assert_eq!(accepted[0].movement[0], 12.0);
+            }
+        }
+    }
+}

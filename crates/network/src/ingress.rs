@@ -279,6 +279,10 @@ pub enum Incoming<'a> {
     /// its retained command time. This synchronous boundary retains no bytes.
     MoveStart {
         output: Option<OutputConsumerId>,
+        first: qa_core::primitives::UserCmd,
+        native_weapon: u8,
+        /// A synchronous EnterWorld seeds lastUsercmd before filtering.
+        entered: &'a mut bool,
     },
     /// One accepted QW move record, including all admitted loss recovery.
     MoveBegin,

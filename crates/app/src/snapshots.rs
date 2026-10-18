@@ -709,6 +709,7 @@ impl SnapshotBinding {
         sequence: u32,
         time: qa_core::sys_events::EventTime,
         delta: Option<u32>,
+        flags: u8,
         bytes: &mut [u8],
     ) -> Result<usize, Error> {
         let native_client = self.native_client().ok_or(Error::Context)?;
@@ -765,7 +766,7 @@ impl SnapshotBinding {
         loop {
             let frame = self
                 .entities
-                .frame(sequence, time, &words, selection.entities)?;
+                .frame(sequence, time, flags, &words, selection.entities)?;
             match self.encode_candidate(
                 channel,
                 frame,
@@ -789,7 +790,8 @@ impl SnapshotBinding {
                                 entities: count,
                                 ..selection
                             };
-                            let frame = self.entities.frame(sequence, time, &words, count)?;
+                            let frame =
+                                self.entities.frame(sequence, time, flags, &words, count)?;
                             match self.encode_candidate(
                                 channel,
                                 frame,
@@ -812,9 +814,13 @@ impl SnapshotBinding {
                         }
                         // A failed last probe may have overwritten the buffer.
                         if !matches_buffer {
-                            let frame =
-                                self.entities
-                                    .frame(sequence, time, &words, selection.entities)?;
+                            let frame = self.entities.frame(
+                                sequence,
+                                time,
+                                flags,
+                                &words,
+                                selection.entities,
+                            )?;
                             length = self.encode_candidate(
                                 channel,
                                 frame,
@@ -827,7 +833,7 @@ impl SnapshotBinding {
                     }
                     channel.publish_written_snapshot(
                         self.entities
-                            .frame(sequence, time, &words, selection.entities)?,
+                            .frame(sequence, time, flags, &words, selection.entities)?,
                         request,
                     )?;
                     self.entities.count_selection(selection);

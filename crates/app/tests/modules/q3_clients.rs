@@ -386,6 +386,20 @@ fn tick(host: &mut FrameHost, milliseconds: u64) {
     );
 }
 
+fn enter_world(host: &mut FrameHost, client: ClientId) {
+    tick(host, 0);
+    assert!(host.runtime.send_client_command(
+        client,
+        &UserCmd::default(),
+        EventTime(0),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        },
+    ));
+    host.drain(&mut Default::default());
+}
+
 #[test]
 fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
     let (mut host, client, geometry) = fixture(0, Phase::Server, None);
@@ -412,7 +426,17 @@ fn q3_queued_commands_use_native_zero_once_and_import_the_module_pose() {
         (0, 1, 0)
     );
     assert_eq!(read(&mut host, USERINFO + 6), u32::from_le_bytes(*b"Test"));
-    assert_eq!((count(&mut host, 2), count(&mut host, 3)), (1, 1));
+    assert_eq!((count(&mut host, 2), count(&mut host, 3)), (1, 0));
+    enter_world(&mut host, client);
+    assert_eq!((count(&mut host, 3), count(&mut host, 7)), (1, 0));
+    // The zero-time command enters before old-usercmd rejection, and is not
+    // itself a ClientThink. Repeated zero-time commands cannot begin twice.
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize]
+            .command
+            .server_time_ms,
+        0
+    );
     let player = &host.runtime.server.clients[client.0 as usize].player;
     assert_eq!(player.body.position, Vec3([10.0, 0.0, 0.0]));
     assert_eq!(player.body.velocity, Vec3([64.0, 0.0, 0.0]));
@@ -808,6 +832,7 @@ fn q3_client_registration_requires_server_exports_and_freezes_its_native_capacit
     assert_eq!(host.client_info(MODULE).unwrap().clients, 2);
     host.connect_module_client(MODULE, client, b"\\name\\healthy")
         .unwrap();
+    enter_world(&mut host, client);
     let extra = host
         .runtime
         .connect_local(
@@ -841,10 +866,10 @@ fn q3_client_registration_requires_server_exports_and_freezes_its_native_capacit
 fn q3_failed_begin_disconnects_once_and_invalidates_only_that_common_lifetime() {
     let (mut host, client, _) = fixture_with(0, Phase::Server, None, true, false);
     let before = host.runtime.server.clients[client.0 as usize].entity;
-    let error = host
-        .connect_module_client(MODULE, client, b"\\name\\failed begin")
-        .unwrap_err();
-    assert!(error.starts_with("ClientBegin:"), "{error}");
+    host.connect_module_client(MODULE, client, b"\\name\\failed begin")
+        .unwrap();
+    assert_eq!(count(&mut host, 3), 0);
+    enter_world(&mut host, client);
     assert_eq!(
         (
             count(&mut host, 2),
@@ -1360,9 +1385,14 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
     command(&mut host, &mut wire, peer, &mut client, Some(cp.as_bytes()));
     assert_eq!(
         count(&mut host, 7),
-        thinks + 1,
-        "a denied packet must not consume the time of the following authenticated move"
+        thinks,
+        "the authenticated first command enters the new world without a second move"
     );
+    let begins = count(&mut host, 3);
+    wire.time = EventTime::from_milliseconds(230);
+    command(&mut host, &mut wire, peer, &mut client, None);
+    assert_eq!(count(&mut host, 7), thinks + 1);
+    assert_eq!(count(&mut host, 3), begins);
     wire.time = EventTime::from_milliseconds(240);
     command(&mut host, &mut wire, peer, &mut client, Some(b"vdr"));
     assert_eq!(count(&mut host, 7), thinks + 1);
@@ -1370,6 +1400,10 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
     assert_eq!(receive(&mut wire, &mut client, peer).len(), 1);
     wire.time = EventTime::from_milliseconds(250);
     command(&mut host, &mut wire, peer, &mut client, Some(cp.as_bytes()));
+    assert_eq!(count(&mut host, 7), thinks + 1);
+    assert_eq!(count(&mut host, 3), begins + 1);
+    wire.time = EventTime::from_milliseconds(255);
+    command(&mut host, &mut wire, peer, &mut client, None);
     assert_eq!(count(&mut host, 7), thinks + 2);
     let game_commands = count(&mut host, 6);
     let disconnects = count(&mut host, 5);
@@ -1422,4 +1456,70 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
     );
     assert_eq!(count(&mut host, 5), disconnects + 1);
     assert!(host.runtime.server.clients[stalled.0 as usize].is_active());
+}
+
+#[test]
+fn q3_native_snapshot_is_inactive_until_the_first_zero_time_move() {
+    use qa_core::loopback::Endpoint;
+    let (mut host, id, _) = fixture(0, Phase::Server, None);
+    host.connect_module_client(MODULE, id, b"\\name\\Primed")
+        .unwrap();
+    tick(&mut host, 0);
+    assert_eq!(count(&mut host, 3), 0);
+    // Exercise the shared SERVER serializer independently of the host's
+    // gamestate-ACK scheduling gate, before a usercmd has entered the player.
+    let snapshot = |host: &mut FrameHost, milliseconds: u64| {
+        assert!(host.runtime.send_snapshot(
+            id,
+            EventTime::from_milliseconds(milliseconds),
+            None,
+            &mut Source {
+                time: EventTime(0),
+                polls: 0
+            },
+            |_, _| None,
+            |_, _, _, _| None,
+        ));
+    };
+    snapshot(&mut host, 50);
+    let flags = |host: &FrameHost| {
+        let frame = host
+            .runtime
+            .network
+            .get(id, Endpoint::Server)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        let qa_network::snapshots::ReceivedFrame::Quake3(frame) = frame else {
+            panic!("expected Q3 snapshot")
+        };
+        frame.flags
+    };
+    assert_eq!(flags(&host), qa_network::snapshots::Q3_NOT_ACTIVE);
+    assert_eq!(count(&mut host, 3), 0);
+    assert!(host.runtime.send_client_command(
+        id,
+        &UserCmd::default(),
+        EventTime::from_milliseconds(50),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
+    host.drain(&mut Default::default());
+    assert_eq!((count(&mut host, 3), count(&mut host, 7)), (1, 0));
+    snapshot(&mut host, 100);
+    assert_eq!(flags(&host), 0);
+    assert!(host.runtime.send_client_command(
+        id,
+        &UserCmd::default(),
+        EventTime::from_milliseconds(100),
+        &mut Source {
+            time: EventTime(0),
+            polls: 0
+        }
+    ));
+    host.drain(&mut Default::default());
+    assert_eq!((count(&mut host, 3), count(&mut host, 7)), (1, 0));
 }
