@@ -695,6 +695,12 @@ fn run() -> Result<(), String> {
         Vec::new()
     };
     if !q3_modules.is_empty() {
+        qa_app::modules::complete_q3_clients(
+            &runtime,
+            &console.cvars,
+            &mut q3_modules,
+            &local_clients,
+        )?;
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
         qa_app::modules::load_q3(
             &mut runtime,

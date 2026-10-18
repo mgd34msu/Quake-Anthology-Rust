@@ -347,16 +347,23 @@ fn media_runtime(
         )
         .unwrap();
     let mut requests = vec![];
+    let mut specs = if pure {
+        Vec::new()
+    } else {
+        vec![Q3Spec::parse("cgame:0:vm/udp.qvm").unwrap()]
+    };
+    if pure {
+        qa_app::modules::complete_q3_clients(
+            &runtime,
+            &qa_console::cvars::Cvars::new().unwrap(),
+            &mut specs,
+            &[Some(old), None, None, None],
+        )
+        .unwrap();
+    }
     load_q3(
         &mut runtime,
-        &if pure {
-            vec![
-                Q3Spec::parse("cgame:0:vm/cgame.qvm").unwrap(),
-                Q3Spec::parse("ui:0:vm/ui.qvm").unwrap(),
-            ]
-        } else {
-            vec![Q3Spec::parse("cgame:0:vm/udp.qvm").unwrap()]
-        },
+        &specs,
         &mut requests,
         TickRate::FrameDriven,
         None,
