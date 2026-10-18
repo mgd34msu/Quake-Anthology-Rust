@@ -629,6 +629,22 @@ fn valid(host: &FrameHost, start: GuestStart, live_self: bool) -> bool {
     true
 }
 
+#[derive(Debug)]
+enum QvmFailure {
+    Execution(qvm::Trap),
+    Service(ServiceError),
+    Import(u32, ServiceError),
+}
+impl std::fmt::Display for QvmFailure {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Execution(error) => write!(output, "execution {error:?}"),
+            Self::Service(error) => write!(output, "service {error:?}"),
+            Self::Import(number, error) => write!(output, "import {number}: {error:?}"),
+        }
+    }
+}
+
 fn valid_frame(host: &FrameHost, start: GuestStart, backend: Option<&Backend>) -> bool {
     // QC keeps native self as a weak edict offset. A trigger may free it while
     // the suspended function remains executable. Its module anchor and selected
@@ -2305,68 +2321,92 @@ fn advance(
                 argument_selection: &mut frame.argument_selection,
                 unknown: &mut row.unknown,
             };
-            if entering {
-                let outer = !vm.is_active();
-                if outer {
-                    qvm::SystemCalls::begin_call(&mut calls, vm).map_err(|_| ())?;
+            let result = (|| -> Result<GuestStep, QvmFailure> {
+                if entering {
+                    let outer = !vm.is_active();
+                    if outer {
+                        qvm::SystemCalls::begin_call(&mut calls, vm)
+                            .map_err(QvmFailure::Execution)?;
+                    }
+                    let mut words = [0; 10];
+                    words[0] = start.entry as i32;
+                    for (to, word) in words[1..].iter_mut().zip(start.words()) {
+                        *to = word as u32 as i32;
+                    }
+                    let run = vm
+                        .begin_callback(words, row.request.instruction_budget, false)
+                        .map_err(QvmFailure::Execution)?;
+                    frame.backend = Some(Backend::Qvm { run, outer });
                 }
-                let mut words = [0; 10];
-                words[0] = start.entry as i32;
-                for (to, word) in words[1..].iter_mut().zip(start.words()) {
-                    *to = word as u32 as i32;
-                }
-                let run = vm
-                    .begin_callback(words, row.request.instruction_budget, false)
-                    .map_err(|_| ())?;
-                frame.backend = Some(Backend::Qvm { run, outer });
-            }
-            let Some(Backend::Qvm { run, outer }) = frame.backend.as_mut() else {
-                return Err(());
-            };
-            let mut imported = match frame.reply.take() {
-                Some((ReplyPoint::Qvm(continuation), value)) => Some(
-                    calls
-                        .resume_import(vm, continuation, value)
-                        .map_err(|_| ())?,
-                ),
-                Some(_) => return Err(()),
-                None => None,
-            };
-            let mut step = None;
-            loop {
-                if let Some(import) = imported.take() {
-                    match import {
-                        ImportStep::Return(value) => {
-                            step = Some(vm.resume(run, value as i32).map_err(|_| ())?)
+                let Some(Backend::Qvm { run, outer }) = frame.backend.as_mut() else {
+                    return Err(QvmFailure::Execution(qvm::Trap::Continuation));
+                };
+                let mut imported = match frame.reply.take() {
+                    Some((ReplyPoint::Qvm(continuation), value)) => Some(
+                        calls
+                            .resume_import(vm, continuation, value)
+                            .map_err(QvmFailure::Service)?,
+                    ),
+                    Some(_) => return Err(QvmFailure::Execution(qvm::Trap::Continuation)),
+                    None => None,
+                };
+                let mut step = None;
+                loop {
+                    if let Some(import) = imported.take() {
+                        match import {
+                            ImportStep::Return(value) => {
+                                step = Some(
+                                    vm.resume(run, value as i32)
+                                        .map_err(QvmFailure::Execution)?,
+                                )
+                            }
+                            ImportStep::Host {
+                                request,
+                                continuation,
+                            } => {
+                                return Ok(GuestStep::Host(request, ReplyPoint::Qvm(continuation)));
+                            }
                         }
-                        ImportStep::Host {
-                            request,
-                            continuation,
-                        } => return Ok(GuestStep::Host(request, ReplyPoint::Qvm(continuation))),
                     }
-                }
-                match step
-                    .take()
-                    .map_or_else(|| vm.advance(run), Ok)
-                    .map_err(|_| ())?
-                {
-                    qvm::Step::Syscall(syscall) => {
-                        imported = Some(calls.import(vm, &syscall).map_err(|_| ())?)
-                    }
-                    qvm::Step::Returned(value) => {
-                        if *outer {
-                            vm.publish_entities(
-                                calls.services,
-                                start.context,
-                                start.platform_time,
-                                Some(start.entry),
+                    match step
+                        .take()
+                        .map_or_else(|| vm.advance(run), Ok)
+                        .map_err(QvmFailure::Execution)?
+                    {
+                        qvm::Step::Syscall(syscall) => {
+                            imported = Some(
+                                calls
+                                    .import(vm, &syscall)
+                                    .map_err(|error| QvmFailure::Import(syscall.number, error))?,
                             )
-                            .map_err(|_| ())?;
                         }
-                        return Ok(GuestStep::Returned(ModuleResult::Qvm(value)));
+                        qvm::Step::Returned(value) => {
+                            if *outer {
+                                vm.publish_entities(
+                                    calls.services,
+                                    start.context,
+                                    start.platform_time,
+                                    Some(start.entry),
+                                )
+                                .map_err(QvmFailure::Service)?;
+                            }
+                            return Ok(GuestStep::Returned(ModuleResult::Qvm(value)));
+                        }
                     }
                 }
+            })();
+            if let Err(error) = &result
+                && row.counts.traps == 0
+            {
+                let _ = (qa_compat::services::ENGINE_CALLS.console_formatted)(
+                    calls.services,
+                    format_args!(
+                        "module {}: QVM export {}: {error}\n",
+                        start.module.0, start.entry
+                    ),
+                );
             }
+            result.map_err(|_| ())
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         Program::Native { vm, imports } => {

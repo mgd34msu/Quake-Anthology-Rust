@@ -849,6 +849,11 @@ fn run() -> Result<(), String> {
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
     if !host.runtime.quit {
         host.initialize_modules(qa_app::modules::Phase::Server);
+        qa_app::output::flush_console(
+            &mut host.runtime,
+            &mut host.console.scrollback,
+            &host.local_clients,
+        );
         host.registration_pending(qa_app::modules::Phase::Server)?;
     }
     for (seat, original) in startup_clients.into_iter().enumerate() {

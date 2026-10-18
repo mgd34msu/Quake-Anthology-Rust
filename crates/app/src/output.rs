@@ -50,6 +50,57 @@ impl OutputCounts {
     }
 }
 
+fn console_print(
+    scrollback: &mut qa_console::presentation::Scrollback,
+    local: &[Option<ClientId>; SeatId::COUNT],
+    event: qa_core::primitives::PrintEvent,
+    texts: &mut qa_core::events::TextStore,
+    counts: &mut OutputCounts,
+) {
+    counts.prints += 1;
+    if let Some(text) = texts.get(event.text) {
+        if event.client.is_none_or(|id| local.contains(&Some(id)))
+            && matches!(
+                event.kind,
+                PrintKind::Console | PrintKind::Notify | PrintKind::Chat
+            )
+        {
+            qa_console::logger::console_bytes(text);
+            if !scrollback.append(texts, event.text) {
+                counts.stale_texts += 1;
+            }
+        }
+    } else {
+        counts.stale_texts += 1;
+    }
+}
+
+/// Cold module prints use the normal console consumer and display leases.
+/// Audio, effects and other presentation records wait for their real backend.
+pub fn flush_console(
+    runtime: &mut Runtime,
+    scrollback: &mut qa_console::presentation::Scrollback,
+    local: &[Option<ClientId>; SeatId::COUNT],
+) -> OutputCounts {
+    let mut counts = OutputCounts::default();
+    let server = &mut runtime.server;
+    if server.events.resume_if_needed(&mut server.presentation) {
+        qa_core::events::dispatch_consumer(
+            &mut server.events,
+            server.presentation,
+            &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
+                if let FrameEvent::Print(event) = record.event {
+                    console_print(scrollback, local, event, texts, &mut counts);
+                    OutputSubmission::BestEffort
+                } else {
+                    OutputSubmission::Unsent
+                }
+            },
+        );
+    }
+    counts
+}
+
 fn complete_sound(
     clients: &mut [qa_session::clients::Client],
     snapshots: &mut [Option<crate::snapshots::SnapshotBinding>],
@@ -378,24 +429,7 @@ pub(crate) fn dispatch_frame(
                             true
                         }
                         FrameEvent::Print(event) => {
-                            counts.prints += 1;
-                            if let Some(text) = texts.get(event.text) {
-                                if event.client.is_none_or(|id| local.contains(&Some(id)))
-                                    && matches!(
-                                        event.kind,
-                                        PrintKind::Console | PrintKind::Notify | PrintKind::Chat
-                                    )
-                                {
-                                    qa_console::logger::console_bytes(text);
-                                    // Keep the original ring text alive for this
-                                    // independent display lifetime; no payload copy.
-                                    if !scrollback.append(texts, event.text) {
-                                        counts.stale_texts += 1;
-                                    }
-                                }
-                            } else {
-                                counts.stale_texts += 1;
-                            }
+                            console_print(scrollback, local, event, texts, &mut counts);
                             true
                         }
                         // Native messages have per-client channel delivery below;
@@ -1470,3 +1504,7 @@ fn project_cue(
         }
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/startup_output.rs"]
+mod tests;

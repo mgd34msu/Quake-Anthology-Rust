@@ -506,6 +506,17 @@ fn failed_initialization_is_not_retried_or_advanced_as_a_running_module() {
     host.shutdown_modules();
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
     assert_eq!(source.polls, 4);
+    assert_eq!(
+        host.console
+            .scrollback
+            .chunks(&host.runtime.server.events.texts)
+            .filter(|text| text
+                .windows(b"execution Budget".len())
+                .any(|part| part == b"execution Budget"))
+            .count(),
+        1
+    );
+    assert_eq!(result.output.prints, 0, "a trapped export reports once");
 }
 
 #[test]
