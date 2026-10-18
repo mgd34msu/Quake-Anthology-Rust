@@ -1744,6 +1744,7 @@ impl FrameHost {
         }
         self.flush_client_connect_requests(source);
         self.restart_video(source);
+        self.flush_q3_renderer_resets();
         if let Err(error) = self.restart_client_modules(
             crate::modules::RendererRestart::ChangedClient,
             &mut source.driver(),
@@ -2370,6 +2371,37 @@ impl FrameHost {
             .events
             .console_formatted(format_args!("Native CLIENT startup: {reason}\n"));
         self.received_client_disconnect(client);
+    }
+
+    fn flush_q3_renderer_resets(&mut self) {
+        use crate::client_resources::startup::Q3Phase;
+        for slot in 0..self.runtime.client_resources.len() {
+            let Some(resources) = self.runtime.client_resources[slot]
+                .as_mut()
+                .filter(|resources| resources.startup.q3() == Some(Q3Phase::RendererReset))
+            else {
+                continue;
+            };
+            let client = ClientId(slot as u32);
+            if !self.runtime.server.clients[slot].is_active()
+                || self.runtime.snapshots[slot]
+                    .as_ref()
+                    .is_none_or(|binding| binding.presentation_closed())
+            {
+                continue;
+            }
+            let Some(connection) = self
+                .runtime
+                .network
+                .get_mut(client, qa_core::loopback::Endpoint::Client)
+                .filter(|connection| connection.phase.is_connected())
+            else {
+                continue;
+            };
+            if let Err(error) = resources.queue_q3_renderer_reset(&mut connection.channel) {
+                self.reject_client_startup(client, format_args!("{error}"));
+            }
+        }
     }
 
     fn prime_q3_clients(&mut self) {

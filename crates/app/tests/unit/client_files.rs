@@ -227,3 +227,278 @@ fn downloaded_mounts_join_live_requests_but_cannot_escape_an_explicit_namespace(
     assert_eq!(live.state.file_source(), source);
     assert!(live.startup.q3() == Some(startup::Q3Phase::Downloading));
 }
+
+#[test]
+fn renderer_reset_waits_for_native_reliable_room_then_reports_reloaded_modules() {
+    use qa_core::{loopback::Endpoint, sys_events::EventTime};
+    use qa_network::{
+        channel::{Channel, commands::CommandContext},
+        commands::{
+            connection::Commands,
+            packet::{self, Record},
+        },
+    };
+    let mut files = support::Fixture::new(&[]);
+    let (_, checksum) = package(&mut files.vfs, "pak0.pk3", 0, b"module");
+    let mut client = client(&files.vfs, 0, None);
+    admit(&mut client, &files.vfs, &[checksum], 37);
+    client
+        .state
+        .configs
+        .set(
+            ConfigLayout::Q3_SYSTEM_INFO,
+            b"\\sv_pure\\1\\sv_serverid\\7",
+        )
+        .unwrap();
+    assert!(read(&files.vfs, &client, b"vm/cgame.qvm").is_some());
+    assert!(read(&files.vfs, &client, b"vm/ui.qvm").is_some());
+    let original = report(&files.vfs, &client);
+    let source = client.state.file_source();
+    client.startup.q3_primed();
+    client.startup.q3_snapshot(0);
+    client.begin_q3_renderer_reset(&files.vfs).unwrap();
+    assert!(matches!(
+        client.startup.q3(),
+        Some(startup::Q3Phase::RendererReset)
+    ));
+    assert!(!client.startup.allows_commands());
+    assert_eq!(client.state.file_source(), source);
+    let mut channel =
+        Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+    channel
+        .set_command_context(CommandContext {
+            server_id: 7,
+            checksum_feed: 37,
+            ..Default::default()
+        })
+        .unwrap();
+    for _ in 0..64 {
+        channel
+            .queue_client_command(Protocol::Quake3_68, b"x")
+            .unwrap();
+    }
+    assert!(!client.queue_q3_renderer_reset(&mut channel).unwrap());
+    assert_eq!(channel.command_state().unwrap().queued, 64);
+    assert!(matches!(
+        client.startup.q3(),
+        Some(startup::Q3Phase::RendererReset)
+    ));
+    let codec = Commands::load(Protocol::Quake3_68, 32768);
+    let mut bytes = [0; 32768];
+    let n = codec.encode_control(&channel, &mut bytes).unwrap();
+    channel
+        .prepare_move(&bytes[..n], EventTime(0), None, None)
+        .unwrap()
+        .unwrap();
+    let message = channel.send_state().sequence;
+    channel.submitted(EventTime(0)).unwrap();
+    assert_eq!(channel.command_state().unwrap().submitted, 64);
+    // The channel ACK parser has separate wire tests. This unit supplies its
+    // validated ACK result to isolate the startup transition under pressure.
+    channel.acknowledge_commands(64, message).unwrap();
+    assert!(client.queue_q3_renderer_reset(&mut channel).unwrap());
+    assert!(matches!(
+        client.startup.q3(),
+        Some(startup::Q3Phase::Loading)
+    ));
+    assert!(!client.startup.allows_commands());
+    assert!(
+        client
+            .queue_q3_references(&files.vfs, &mut channel)
+            .is_err()
+    );
+    assert_eq!(channel.command_state().unwrap().queued, 65);
+    assert!(read(&files.vfs, &client, b"vm/cgame.qvm").is_some());
+    assert!(
+        client
+            .queue_q3_references(&files.vfs, &mut channel)
+            .is_err()
+    );
+    assert!(read(&files.vfs, &client, b"vm/ui.qvm").is_some());
+    assert!(
+        client
+            .queue_q3_references(&files.vfs, &mut channel)
+            .unwrap()
+    );
+    let n = codec.encode_control(&channel, &mut bytes).unwrap();
+    let mut queued = Vec::new();
+    packet::read_with_commands(
+        Protocol::Quake3_68,
+        &mut bytes[..n],
+        0,
+        channel.command_key(None).unwrap(),
+        |record| {
+            if let Record::String { sequence, text } = record {
+                queued.push((sequence, text.to_vec()));
+            }
+            Ok(std::ops::ControlFlow::Continue(()))
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        queued,
+        [
+            (Some(65), b"vdr".to_vec()),
+            (Some(66), original.into_bytes())
+        ]
+    );
+    client.startup.q3_primed();
+    assert!(client.startup.allows_commands());
+}
+
+#[test]
+fn renderer_reset_drains_the_existing_queue_while_the_healthy_peer_and_ticks_continue() {
+    use crate::{
+        Runtime,
+        client_policy::ClientPolicy,
+        host::{FrameHost, FrameSource},
+        map::SpawnAnchor,
+        modules::{Driver, RendererRestart},
+    };
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{ClientId, EntityId, ModuleId},
+        sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
+    };
+    use qa_session::{clients::Connection, timing::TickRate};
+    use std::time::Duration;
+    struct Source(u64);
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_millis(self.0)
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            queue
+                .push(SysEvent {
+                    time: EventTime::from_milliseconds(self.0),
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, remaining: Duration) -> Duration {
+            self.0 += remaining.as_millis().max(1) as u64;
+            Duration::from_millis(self.0)
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+        fn reset_presentation(&mut self, _: ClientId, _: EntityId) -> bool {
+            true
+        }
+    }
+    let mut files = support::Fixture::new(&[]);
+    let (_, checksum) = package(&mut files.vfs, "pak0.pk3", 0, b"module");
+    let mut runtime = Runtime::load(2, []).unwrap();
+    runtime.vfs = std::mem::take(&mut files.vfs);
+    let id = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Default::default(),
+                angles: Default::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy {
+                input: RuleSetId::Quake3,
+                client: RuleSetId::Quake3,
+                movement: RuleSetId::Quake,
+                trace: RuleSetId::Quake2,
+            },
+            Protocol::Quake3_68,
+            0,
+        )
+        .unwrap();
+    let healthy = runtime
+        .server
+        .connect(Connection::Bot, ModuleId(2), None)
+        .unwrap();
+    let resources = runtime.client_resources[id.0 as usize].as_mut().unwrap();
+    admit(resources, &runtime.vfs, &[checksum], 0);
+    resources
+        .state
+        .configs
+        .set(
+            ConfigLayout::Q3_SERVER_INFO,
+            b"\\mapname\\waiting-for-media",
+        )
+        .unwrap();
+    assert!(read(&runtime.vfs, resources, b"vm/cgame.qvm").is_some());
+    assert!(read(&runtime.vfs, resources, b"vm/ui.qvm").is_some());
+    resources.startup.q3_primed();
+    resources.startup.q3_snapshot(0);
+    let channel = &mut runtime
+        .network
+        .get_mut(id, Endpoint::Client)
+        .unwrap()
+        .channel;
+    for _ in 0..64 {
+        channel
+            .queue_client_command(Protocol::Quake3_68, b"x")
+            .unwrap();
+    }
+    let mut host = Box::new(
+        FrameHost::load(
+            qa_console::commands::Console::new(Default::default()).unwrap(),
+            runtime,
+            TickRate::fixed(50).unwrap(),
+            vec![],
+        )
+        .unwrap(),
+    );
+    host.local_clients[0] = Some(id);
+    host.restart_client_modules(RendererRestart::Video, &mut Driver::cache_only())
+        .unwrap();
+    assert!(matches!(
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .startup
+            .q3(),
+        Some(startup::Q3Phase::RendererReset)
+    ));
+    host.frame(&mut Source(0), true);
+    assert!(matches!(
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .startup
+            .q3(),
+        Some(startup::Q3Phase::RendererReset)
+    ));
+    let before = host.runtime.server.world_frame;
+    for time in [50, 100, 150, 200] {
+        host.frame(&mut Source(time), true);
+    }
+    assert!(host.runtime.server.world_frame > before);
+    assert!(host.runtime.server.clients[healthy.0 as usize].is_active());
+    assert!(host.runtime.server.clients[id.0 as usize].is_active());
+    assert!(matches!(
+        host.runtime.client_resources[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .startup
+            .q3(),
+        Some(startup::Q3Phase::Loading)
+    ));
+    let client = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Client)
+        .unwrap()
+        .channel;
+    let state = client.command_state().unwrap();
+    // Initial userinfo retries behind the reset in this same native window.
+    assert_eq!(state.queued, 66);
+    assert!(state.acknowledged >= 65);
+    let server = &host
+        .runtime
+        .network
+        .get(id, Endpoint::Server)
+        .unwrap()
+        .channel;
+    let (sequence, text) = server.received_command().unwrap();
+    assert_eq!(sequence, 66);
+    assert!(text.starts_with(b"userinfo "));
+}

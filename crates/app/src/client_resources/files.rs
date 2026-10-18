@@ -19,10 +19,42 @@ impl ClientResources {
             .file_search()
             .q3_reference_command(vfs, context.server_id, self.state.q3_pure(), &mut command)
             .map_err(|error| format!("Q3 package report: {error}"))?;
-        match channel.queue_client_command(Protocol::Quake3_68, command.as_bytes()) {
+        Self::queue_q3_control(channel, command.as_bytes())
+    }
+
+    fn queue_q3_control(
+        channel: &mut qa_network::channel::Channel,
+        command: &[u8],
+    ) -> Result<bool, String> {
+        match channel.queue_client_command(Protocol::Quake3_68, command) {
             Ok(_) => Ok(true),
             Err(qa_network::channel::TransmitError::Full) => Ok(false),
-            Err(error) => Err(format!("Q3 package report submission: {error:?}")),
+            Err(error) => Err(format!("Q3 control submission: {error:?}")),
+        }
+    }
+
+    pub(crate) fn begin_q3_renderer_reset(
+        &mut self,
+        vfs: &qa_content::vfs::Vfs,
+    ) -> Result<(), String> {
+        if self.startup.q3_renderer_reset() {
+            self.state
+                .file_search()
+                .clear_q3_renderer_references(vfs)
+                .map_err(|error| format!("Q3 renderer package references: {error}"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn queue_q3_renderer_reset(
+        &mut self,
+        channel: &mut qa_network::channel::Channel,
+    ) -> Result<bool, String> {
+        if Self::queue_q3_control(channel, b"vdr")? {
+            self.startup.q3_renderer_reset_queued();
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

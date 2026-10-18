@@ -1649,6 +1649,12 @@ impl FrameHost {
                     .client_resources
                     .get(client.client.0 as usize)?
                     .as_ref();
+                if resources.is_some_and(|resources| {
+                    resources.startup.q3()
+                        == Some(crate::client_resources::startup::Q3Phase::RendererReset)
+                }) {
+                    return None;
+                }
                 if resources.is_none()
                     && row
                         .request
@@ -2102,6 +2108,9 @@ impl FrameHost {
                     }
                 }
                 if let Some(resources) = self.runtime.client_resources[client_index].as_mut() {
+                    if reason == RendererRestart::Video {
+                        resources.begin_q3_renderer_reset(&self.runtime.vfs)?;
+                    }
                     resources.state.request_presentation_reset(lifetime);
                 }
                 let _ = self.runtime.ensure_client_presentation_reset(client);

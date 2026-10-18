@@ -1758,6 +1758,46 @@ fn q3_references_follow_actual_selected_opens_and_native_report_order() {
     peer.q3_reference_command(&vfs, 9, false, &mut report)
         .unwrap();
     assert_eq!(report.as_bytes(), empty.as_bytes());
+    let peer_view = vfs.read_view(Some(&peer));
+    assert!(peer_view.open(b"vm/cgame.qvm").is_some());
+    assert!(peer_view.open(b"vm/ui.qvm").is_some());
+    peer.q3_reference_command(&vfs, 9, true, &mut report)
+        .unwrap();
+    let peer_report = report.as_str().to_owned();
+    tracked.clear_q3_renderer_references(&vfs).unwrap();
+    assert!(matches!(
+        tracked.q3_reference_command(&vfs, 9, true, &mut report),
+        Err(VfsError::Missing)
+    ));
+    tracked
+        .q3_reference_command(&vfs, 9, false, &mut report)
+        .unwrap();
+    assert_eq!(
+        report.as_str(),
+        format!(
+            "cp 9 @ {} {} {}",
+            world_word as i32,
+            module_word as i32,
+            (feed ^ world_word ^ module_word ^ 2) as i32
+        )
+    );
+    peer.q3_reference_command(&vfs, 9, true, &mut report)
+        .unwrap();
+    assert_eq!(report.as_str(), peer_report);
+    assert!(matches!(
+        tracked.clear_q3_renderer_references(&Vfs::default()),
+        Err(VfsError::Handle)
+    ));
+    assert!(view.open(b"vm/cgame.qvm").is_some());
+    assert!(matches!(
+        tracked.q3_reference_command(&vfs, 9, true, &mut report),
+        Err(VfsError::Missing)
+    ));
+    assert!(view.open(b"vm/ui.qvm").is_some());
+    tracked
+        .q3_reference_command(&vfs, 9, true, &mut report)
+        .unwrap();
+    assert_eq!(report.as_str(), expected);
     let mut short = FixedText::<4>::default();
     assert!(matches!(
         tracked.q3_reference_command(&vfs, 9, true, &mut short),

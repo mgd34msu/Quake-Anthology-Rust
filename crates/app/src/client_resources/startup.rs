@@ -74,6 +74,7 @@ pub(crate) enum Q3Phase {
     AwaitGamestate,
     Downloading,
     Loading,
+    RendererReset,
     Primed,
     Active,
 }
@@ -330,6 +331,22 @@ impl ClientStartup {
     pub(crate) fn q3_primed(&mut self) {
         if matches!(self, Self::Quake3(Q3Phase::Loading)) {
             *self = Self::Quake3(Q3Phase::Primed);
+        }
+    }
+    pub(crate) fn q3_renderer_reset(&mut self) -> bool {
+        if matches!(
+            self,
+            Self::Quake3(Q3Phase::Loading | Q3Phase::Primed | Q3Phase::Active)
+        ) {
+            *self = Self::Quake3(Q3Phase::RendererReset);
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn q3_renderer_reset_queued(&mut self) {
+        if self.q3() == Some(Q3Phase::RendererReset) {
+            *self = Self::Quake3(Q3Phase::Loading);
         }
     }
     pub(crate) fn q3_snapshot(&mut self, flags: u8) {

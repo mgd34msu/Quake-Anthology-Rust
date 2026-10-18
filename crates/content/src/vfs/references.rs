@@ -34,6 +34,20 @@ impl std::fmt::Debug for References {
     }
 }
 impl SearchView {
+    /// CL_Vid_Restart clears only UI/CGAME bits. General asset references and
+    /// other connections' accounts survive the renderer instance replacement.
+    pub fn clear_q3_renderer_references(&self, vfs: &Vfs) -> Result<(), VfsError> {
+        if !vfs.accepts_search(self) {
+            return Err(VfsError::Handle);
+        }
+        let references = self.references.as_ref().ok_or(VfsError::Handle)?;
+        let mut state = references.state.lock().map_err(|_| VfsError::Handle)?;
+        for flags in &mut state.flags {
+            *flags &= !(UI | CGAME);
+        }
+        Ok(())
+    }
+
     pub(super) fn record_open(&self, entry: &Entry, requested: &[u8]) -> Result<(), VfsError> {
         let Some(references) = &self.references else {
             return Ok(());
