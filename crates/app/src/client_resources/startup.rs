@@ -122,12 +122,7 @@ impl ClientStartup {
         &mut self,
         data: &qa_network::commands::startup::Q2ServerData<'_>,
     ) -> Result<(), &'static str> {
-        if data.game_directory.windows(2).any(|pair| pair == b"..")
-            || data
-                .game_directory
-                .iter()
-                .any(|byte| matches!(byte, b'/' | b'\\' | b':'))
-        {
+        if !qa_content::products::valid_game_directory(data.game_directory) {
             return Err("Q2 game directory must be a single relative component");
         }
         *self = Self::Quake2(Q2Signon::new(data)?);
@@ -201,12 +196,7 @@ impl ClientStartup {
         &mut self,
         data: &qa_network::commands::startup::QwServerData<'_>,
     ) -> Result<(), &'static str> {
-        if data.game_directory.windows(2).any(|pair| pair == b"..")
-            || data
-                .game_directory
-                .iter()
-                .any(|byte| matches!(byte, b'/' | b'\\' | b':'))
-        {
+        if !qa_content::products::valid_game_directory(data.game_directory) {
             return Err("QW game directory must be a single relative component");
         }
         let mut game_directory = qa_core::text::FixedText::default();

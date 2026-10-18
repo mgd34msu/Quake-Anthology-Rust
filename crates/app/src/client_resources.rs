@@ -34,7 +34,11 @@ pub(crate) fn model_world(
 
 pub struct ClientResources {
     pub state: ResourceState,
+    source_files: qa_content::vfs::FileSearch,
     requested_files: qa_content::vfs::FileSearch,
+    selected_game: Option<qa_core::text::FixedText<{ qa_core::names::MAX_PATH_BYTES }>>,
+    selected_game_revision: Option<u64>,
+    selected_files_revision: u64,
     pub(crate) udp_lease: Option<qa_platform::UdpLease>,
     pub(crate) downloads: Option<downloads::ClientDownload>,
     commands: qa_network::outputs::ConfigCommandReader,
@@ -179,7 +183,11 @@ impl ClientResources {
             .is_none()
             .then_some(qa_audio::SoundSource::DEFAULT);
         Ok(Some(Self {
+            source_files: files.clone(),
             requested_files: files.clone(),
+            selected_game: None,
+            selected_game_revision: None,
+            selected_files_revision: 0,
             udp_lease: None,
             downloads: None,
             commands: qa_network::outputs::ConfigCommandReader::load(),

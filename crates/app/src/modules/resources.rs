@@ -207,6 +207,7 @@ impl FrameHost {
         &mut self,
         mut preparer: Option<&mut dyn crate::renderer::AssetPreparer>,
     ) {
+        self.select_client_game_files();
         self.flush_client_downloads();
         let resource_settings_ready = if let Err(error) = self.refresh_resource_settings() {
             let _ = self

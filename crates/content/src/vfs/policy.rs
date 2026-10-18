@@ -11,11 +11,17 @@ pub(super) struct ReadPolicy {
     archives: Box<[bool]>,
     loose_suffixes: Box<[Box<[u8]>]>,
 }
+pub(super) fn admits(
+    view: Option<&SearchView>,
+    mount: &MountInfo,
+    path: &[u8],
+    read: bool,
+) -> bool {
+    view.and_then(SearchView::fixed)
+        .map_or(mount.default_visible, |view| view.rank(mount.id).is_some())
+        && (!read || view.is_none_or(|view| view.allows_read(mount, path)))
+}
 impl SearchView {
-    pub(super) fn admits(&self, mount: &MountInfo, path: &[u8], read: bool) -> bool {
-        (self.fixed().is_none() || self.rank(mount.id).is_some())
-            && (!read || self.allows_read(mount, path))
-    }
     pub(super) fn allows_archive(&self, mount: MountId) -> bool {
         self.read_policy.as_ref().is_none_or(|policy| {
             policy
@@ -62,7 +68,11 @@ impl Vfs {
             );
             return Ok(());
         }
-        output.extend(self.mounts().map(|mount| mount.id));
+        output.extend(
+            self.mounts()
+                .filter(|mount| mount.default_visible)
+                .map(|mount| mount.id),
+        );
         output.sort_unstable_by(|a, b| {
             self.mounts[b.0 as usize]
                 .precedence()

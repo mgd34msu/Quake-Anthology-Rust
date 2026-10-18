@@ -1724,6 +1724,15 @@ impl crate::host::FrameHost {
                 resources.downloads =
                     Some(ClientDownload::new(None, permissions, Protocol::Quake3_68));
             }
+            if resources
+                .downloads
+                .as_ref()
+                .is_some_and(|downloads| downloads.packages.is_none())
+                && let Err(error) = resources.select_game_files(&mut self.runtime.vfs)
+            {
+                self.reject_client_startup(client, format_args!("{error}"));
+                continue;
+            }
             let Some(downloads) = resources.downloads.as_mut() else {
                 continue;
             };
@@ -1753,7 +1762,7 @@ impl crate::host::FrameHost {
                             continue;
                         };
                         if let Err(error) = resources.admit_q3_files(
-                            &self.runtime.vfs,
+                            &mut self.runtime.vfs,
                             startup.checksum_feed,
                             self.cue_random.clone(),
                         ) {

@@ -31,6 +31,51 @@ impl ProductSpec {
         }
     }
 }
+
+/// Native connection defaults refer to the existing product ancestry. A world
+/// format or presentation choice does not select this content role.
+pub fn native_base(rules: RuleSetId) -> Option<ProductId> {
+    STOCK
+        .iter()
+        .position(|spec| {
+            spec.client_rules() == Some(rules)
+                && (spec.base.is_none() || spec.edition == Edition::QuakeWorld)
+        })
+        .map(|index| ProductId(index as u16))
+}
+
+pub fn remote_directory(
+    base: ProductId,
+    requested: &[u8],
+) -> Result<qa_core::text::FixedText<{ qa_core::names::MAX_PATH_BYTES }>, crate::vfs::VfsError> {
+    let spec = STOCK
+        .get(base.0 as usize)
+        .ok_or(crate::vfs::VfsError::Handle)?;
+    let requested = if requested.is_empty()
+        || spec.edition == Edition::QuakeWorld && requested.eq_ignore_ascii_case(b"id1")
+    {
+        spec.directory
+    } else {
+        requested
+    };
+    if !valid_game_directory(requested) {
+        return Err(crate::vfs::VfsError::Path);
+    }
+    let mut directory = qa_core::text::FixedText::default();
+    for byte in requested {
+        directory
+            .append_bytes(&[byte.to_ascii_lowercase()])
+            .map_err(|_| crate::vfs::VfsError::Path)?;
+    }
+    Ok(directory)
+}
+pub fn valid_game_directory(directory: &[u8]) -> bool {
+    directory != b"."
+        && !directory.windows(2).any(|pair| pair == b"..")
+        && directory
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+}
 macro_rules! product {
     ($key:literal,$dir:literal,$root:literal,$edition:ident,$map:literal,$base:expr) => {
         ProductSpec {
@@ -417,11 +462,7 @@ pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
     // Package membership is metadata; no game family compatibility filter.
     for product in &mut products {
         for mount in vfs.mounts() {
-            let path = if mount.kind == MountKind::Directory {
-                mount.path.as_path()
-            } else {
-                mount.path.parent().unwrap_or(&mount.path)
-            };
+            let path = vfs.product_directory(mount);
             if path == product.directory && !product.mounts.contains(&mount.id) {
                 product.mounts.push(mount.id);
             }

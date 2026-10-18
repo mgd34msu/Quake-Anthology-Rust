@@ -5,6 +5,8 @@ mod connection;
 #[path = "model_assets/support.rs"]
 #[allow(dead_code)]
 mod files;
+#[path = "cgame_restart/game_files.rs"]
+mod game_files;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "support/q3_lifecycle_image.rs"]
 mod lifecycle;
@@ -1344,13 +1346,27 @@ fn setup_renderers_with_images(
 }
 
 fn queue_gamestate(host: &mut FrameHost, client: ClientId, map: &str, native: u32) {
+    queue_game_directory(host, client, map, native, "");
+}
+fn queue_game_directory(
+    host: &mut FrameHost,
+    client: ClientId,
+    map: &str,
+    native: u32,
+    game: &str,
+) {
     let info = format!("\\mapname\\{map}");
+    let system = format!("\\fs_game\\{game}");
     let world = format!("maps/{map}.bsp");
     asset_frames::gamestate(
         host,
         client,
         native,
-        [(0, info.as_bytes()), (33, world.as_bytes())],
+        [
+            (0, info.as_bytes()),
+            (1, system.as_bytes()),
+            (33, world.as_bytes()),
+        ],
     );
 }
 fn query(
@@ -3699,6 +3715,7 @@ fn main() {
         std::process::exit(status);
     }
     verify_reloaded_module_source(qvm_file(), qvm_role(true, false));
+    game_files::verify(qvm_file(), qvm_role(true, false));
     connection::verify(false);
     connection::verify(true);
     verify_video_image_restart(
@@ -3725,6 +3742,7 @@ fn main() {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         verify_reloaded_module_source(native_file(), native_role(true, false));
+        game_files::verify(native_file(), native_role(true, false));
         verify_video_image_restart(
             native_role_with_graphics(false, false, true),
             native_role_with_graphics(true, false, true),

@@ -3,6 +3,8 @@ use qa_formats::archive::Archive;
 use qa_platform::files::ReadFile;
 use std::sync::Arc;
 
+#[path = "vfs/games.rs"]
+mod games;
 #[path = "../../formats/tests/support/stored_zip.rs"]
 mod zip;
 

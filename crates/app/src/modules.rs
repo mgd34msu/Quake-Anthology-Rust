@@ -2188,7 +2188,9 @@ impl FrameHost {
             true,
         )
         .and_then(|client| self.runtime.client_resources[client.client.0 as usize].as_ref())
-        .filter(|resources| resources.startup.q3().is_some() && resources.startup.allow_models());
+        .filter(|resources| {
+            resources.state.file_source().is_some() && resources.startup.allow_models()
+        });
         let selected = if let Some(files) = files {
             self.runtime
                 .vfs

@@ -2,6 +2,7 @@ use qa_core::{
     names::{MAX_PATH_BYTES, NameTable},
     primitives::{FileSearchId, IndexSpan},
 };
+mod games;
 mod list;
 mod policy;
 mod references;
@@ -92,17 +93,15 @@ impl<'vfs> ReadView<'vfs> {
     /// probes. Read admission and reference accounting still happen on opens.
     pub fn mounts(self) -> impl Iterator<Item = &'vfs MountInfo> {
         self.vfs.mounts().filter(move |mount| {
-            self.search
-                .is_none_or(|view| self.vfs.accepts_search(view) && view.admits(mount, &[], false))
+            self.search.is_none_or(|view| self.vfs.accepts_search(view))
+                && policy::admits(self.search, mount, &[], false)
         })
     }
     /// Physical candidates admitted for reads, before resolving duplicate names.
     pub fn files(self) -> impl Iterator<Item = (FileRef, &'vfs [u8])> {
         self.vfs.files().filter(move |(file, name)| {
-            self.search.is_none_or(|view| {
-                self.vfs.accepts_search(view)
-                    && view.admits(&self.vfs.mounts[file.entry.mount], name, true)
-            })
+            self.search.is_none_or(|view| self.vfs.accepts_search(view))
+                && policy::admits(self.search, &self.vfs.mounts[file.entry.mount], name, true)
         })
     }
     /// Retain the same selection after checking its VFS owner at this boundary.
@@ -141,10 +140,16 @@ impl<'vfs> ReadView<'vfs> {
     }
     fn prepare_read(self, file: &FileRef) -> Result<(), VfsError> {
         let entry = self.vfs.entry(file)?;
-        if self.search.is_some_and(|view| {
-            !self.vfs.accepts_search(view)
-                || !view.admits(&self.vfs.mounts[entry.mount], &entry.name, true)
-        }) {
+        if self
+            .search
+            .is_some_and(|view| !self.vfs.accepts_search(view))
+            || !policy::admits(
+                self.search,
+                &self.vfs.mounts[entry.mount],
+                &entry.name,
+                true,
+            )
+        {
             return Err(VfsError::Handle);
         }
         if let Some(view) = self.search
@@ -301,6 +306,7 @@ pub struct MountInfo {
     active: bool,
     settings_only: bool,
     writable: bool,
+    default_visible: bool,
     product: Option<MountId>,
     package: Option<PackagePrecedence>,
     contents: Option<MountContents>,
@@ -824,6 +830,8 @@ impl Vfs {
             active: true,
             settings_only,
             writable: false,
+            default_visible: product
+                .is_none_or(|root| self.mounts[root.0 as usize].default_visible),
             product,
             package,
             contents: Some(contents),
@@ -967,12 +975,10 @@ impl Vfs {
         read: bool,
     ) -> Option<u32> {
         let candidates = candidates.filter(|&slot| {
-            view.is_none_or(|view| {
-                let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref) else {
-                    return false;
-                };
-                view.admits(&self.mounts[entry.mount], &entry.name, read)
-            })
+            let Some(entry) = self.entries.get(slot as usize).and_then(Option::as_ref) else {
+                return false;
+            };
+            policy::admits(view, &self.mounts[entry.mount], &entry.name, read)
         });
         if let Some(view) = view.and_then(SearchView::fixed) {
             candidates
@@ -1016,6 +1022,7 @@ impl Vfs {
             };
             let mount = &self.mounts[entry.mount];
             mount.active
+                && policy::admits(None, mount, &entry.name, true)
                 && mount.kind == MountKind::Directory
                 && !mount.settings_only
                 && mount
