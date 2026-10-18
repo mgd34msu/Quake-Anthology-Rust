@@ -1639,6 +1639,7 @@ pub struct ConfigPublication {
     pub(crate) pure: qa_network::pure::Admission,
     pub(crate) pure_source: Option<(u32, Option<qa_core::primitives::FileSearchId>, u64)>,
     last_client_limit: Option<u32>,
+    pub(crate) server_info: [Option<u64>; 2],
 }
 #[derive(Clone, Copy, Default)]
 struct PublishedConfig {
@@ -1693,6 +1694,7 @@ impl ConfigPublication {
             pure: Default::default(),
             pure_source: None,
             last_client_limit: None,
+            server_info: [None; 2],
         }
     }
     /// Source capacities are fixed when the module set is loaded.
@@ -1725,6 +1727,7 @@ impl ConfigPublication {
         self.game_state_required = false;
         self.pure = Default::default();
         self.pure_source = None;
+        self.server_info = [None; 2];
         self.last_client_limit = None;
     }
     pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {

@@ -5,6 +5,7 @@ use qa_core::primitives::CommandArgs;
 pub const PACKAGE_LIMIT: usize = 1024;
 pub const REJECTION: &[u8] = b"Unpure client detected. Invalid .PK3 files referenced!";
 
+#[derive(PartialEq, Eq)]
 pub struct Policy {
     feed: u32,
     modules: [Option<u32>; 2],
@@ -70,6 +71,7 @@ pub enum Decision {
 #[derive(Default)]
 pub struct Admission {
     policy: Option<Policy>,
+    enabled: bool,
     authentic: bool,
     received: bool,
     phase: Phase,
@@ -89,8 +91,17 @@ impl Admission {
         self.phase = Phase::Connected;
     }
     pub fn configure(&mut self, policy: Option<Policy>, feed: u32, server_id: i32) {
+        self.enabled = policy.is_some();
         self.policy = policy;
         self.gamestate(feed, server_id);
+    }
+    /// Rechecking mounted metadata must not reset an unchanged connection.
+    pub fn refresh_policy(&mut self, policy: Policy, feed: u32, server_id: i32) -> bool {
+        if self.policy.as_ref() == Some(&policy) {
+            return false;
+        }
+        self.configure(Some(policy), feed, server_id);
+        true
     }
     pub fn gamestate(&mut self, feed: u32, server_id: i32) {
         if self.feed_epoch.is_none_or(|(old, _)| old != feed) {
@@ -103,7 +114,15 @@ impl Admission {
         self.authentic = false;
         self.received = false;
     }
+    /// A live sv_pure change preserves admission and its existing native cp.
+    /// Keep the load-prepared policy available while enforcement is disabled.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
     pub fn verify(&mut self, args: CommandArgs<'_>) -> Decision {
+        if !self.enabled {
+            return Decision::Ignored;
+        }
         let decision = self.policy.as_ref().map_or(Decision::Ignored, |policy| {
             self.feed_epoch
                 .filter(|(feed, _)| *feed == policy.feed)
@@ -118,7 +137,7 @@ impl Admission {
         decision
     }
     pub fn allows_movement(&self) -> bool {
-        self.policy.is_none() || self.authentic
+        !self.enabled || self.authentic
     }
     pub fn movement(&mut self) -> Movement {
         if self.phase == Phase::Connected {

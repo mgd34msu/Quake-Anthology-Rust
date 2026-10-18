@@ -187,3 +187,38 @@ fn native_connection_enters_only_after_gamestate_and_a_successful_begin() {
     assert_eq!(state.snapshot_flags(), Q3_NOT_ACTIVE);
     assert_eq!(state.movement(), Movement::EnterWorld);
 }
+
+#[test]
+fn live_enforcement_and_unchanged_package_refresh_preserve_native_admission() {
+    use qa_network::pure::Movement;
+    let mut state = Admission::default();
+    state.configure(Some(policy(99)), 99, 10);
+    state.set_enabled(false);
+    assert_eq!(state.movement(), Movement::EnterWorld);
+    state.entered_world();
+    assert_eq!(verify(&mut state, "cp malformed"), Decision::Ignored);
+    state.set_enabled(true);
+    assert_eq!(state.movement(), Movement::ResendGamestate);
+    assert_eq!(
+        verify(&mut state, "cp 10 -128 91 @ 99"),
+        Decision::Authentic
+    );
+    assert_eq!(state.movement(), Movement::Allowed);
+    assert!(!state.refresh_policy(policy(99), 99, 10));
+    assert_eq!(state.movement(), Movement::Allowed);
+    state.set_enabled(false);
+    assert_eq!(verify(&mut state, "cp 10 bad"), Decision::Ignored);
+    state.set_enabled(true);
+    assert_eq!(state.snapshot_flags(), 0);
+    assert!(state.received());
+    assert_eq!(state.movement(), Movement::Allowed);
+    assert!(state.refresh_policy(policy(100), 100, 20));
+    assert!(!state.received());
+    assert_eq!(state.movement(), Movement::Wait);
+    assert_eq!(verify(&mut state, "cp 10 -128 91 @ 99"), Decision::Ignored);
+    assert_eq!(
+        verify(&mut state, "cp 20 -128 91 @ 100"),
+        Decision::Authentic
+    );
+    assert_eq!(state.movement(), Movement::EnterWorld);
+}

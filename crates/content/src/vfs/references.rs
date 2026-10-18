@@ -24,6 +24,7 @@ pub(super) struct References {
     feed: u32,
     pure_checksums: Box<[Option<u32>]>,
     state: Mutex<State>,
+    revision: AtomicU64,
 }
 impl std::fmt::Debug for References {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,8 +43,13 @@ impl SearchView {
         }
         let references = self.references.as_ref().ok_or(VfsError::Handle)?;
         let mut state = references.state.lock().map_err(|_| VfsError::Handle)?;
+        let mut changed = false;
         for flags in &mut state.flags {
+            changed |= *flags & (UI | CGAME) != 0;
             *flags &= !(UI | CGAME);
+        }
+        if changed {
+            references.revision.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -58,6 +64,7 @@ impl SearchView {
         };
         if checksum.is_some() {
             let flags = state.flags.get_mut(entry.mount).ok_or(VfsError::Handle)?;
+            let before = *flags;
             let contains = |word: &[u8]| requested.windows(word.len()).any(|part| part == word);
             if *flags & GENERAL == 0
                 && ![
@@ -84,6 +91,9 @@ impl SearchView {
                     *flags |= flag;
                 }
             }
+            if *flags != before {
+                references.revision.fetch_add(1, Ordering::Relaxed);
+            }
         } else if !policy::Q3_LOOSE_SUFFIXES
             .iter()
             .any(|suffix| policy::has_suffix(requested, suffix))
@@ -91,6 +101,7 @@ impl SearchView {
             // Native fs_fakeChkSum is random wire rejection data for loose
             // assets. It is never computed from content or used as identity.
             state.loose = state.random.next_u32();
+            references.revision.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -182,6 +193,7 @@ impl Vfs {
         selected.references = Some(Arc::new(References {
             feed: checksum_feed,
             pure_checksums,
+            revision: AtomicU64::new(0),
             state: Mutex::new(State {
                 flags: vec![0; self.mounts.len()].into_boxed_slice(),
                 random,
@@ -193,14 +205,35 @@ impl Vfs {
 }
 
 impl ReadView<'_> {
-    fn q3_package_mounts(self) -> Result<Vec<MountId>, VfsError> {
-        let mut order = Vec::new();
-        self.vfs.mount_order(self.search, &mut order)?;
+    /// Semantic reference changes only. Probes and reports never advance it.
+    pub fn q3_reference_revision(self) -> Result<u64, VfsError> {
+        if self
+            .search
+            .is_some_and(|view| !self.vfs.accepts_search(view))
+        {
+            return Err(VfsError::Handle);
+        }
+        Ok(self
+            .search
+            .and_then(|view| view.references.as_ref())
+            .map_or(0, |references| references.revision.load(Ordering::Relaxed)))
+    }
+    fn q3_package_mounts(self, order: &mut Vec<MountId>) -> Result<(), VfsError> {
+        if self
+            .search
+            .is_some_and(|view| !self.vfs.accepts_search(view))
+        {
+            return Err(VfsError::Handle);
+        }
+        if order.capacity() < self.mounts().count() {
+            return Err(VfsError::Capacity);
+        }
+        self.vfs.mount_order(self.search, order)?;
         order.retain(|&id| {
             self.search.is_none_or(|view| view.allows_archive(id))
                 && self.vfs.q3_package_checksums(id).is_some()
         });
-        Ok(order)
+        Ok(())
     }
 
     /// FS_LoadedPak{Checksums,Names} and FS_ReferencedPak{Checksums,Names}.
@@ -212,6 +245,7 @@ impl ReadView<'_> {
         info: &mut [u8],
         length: &mut usize,
         rules: qa_core::text::InfoRules,
+        mounts: &mut Vec<MountId>,
     ) -> Result<(), VfsError> {
         let mut lists: [FixedText<{ qa_core::configstrings::MAX_TEXT - 1 }>; 4] =
             std::array::from_fn(|_| FixedText::default());
@@ -219,7 +253,8 @@ impl ReadView<'_> {
         let state = references
             .map(|references| references.state.lock().map_err(|_| VfsError::Handle))
             .transpose()?;
-        for id in self.q3_package_mounts()? {
+        self.q3_package_mounts(mounts)?;
+        for &id in mounts.iter() {
             let mount = &self.vfs.mounts[id.0 as usize];
             let checks = self.vfs.q3_package_checksums(id).ok_or(VfsError::Handle)?;
             let stem = mount
@@ -285,8 +320,9 @@ impl ReadView<'_> {
     /// FS_LoadedPakPureChecksums in native source order. Only metadata from the
     /// existing PK3 reader is used, never a second content identity.
     pub fn q3_loaded_pure_checksums(self, feed: u32) -> Result<Vec<u32>, VfsError> {
-        Ok(self
-            .q3_package_mounts()?
+        let mut mounts = Vec::with_capacity(self.mounts().count());
+        self.q3_package_mounts(&mut mounts)?;
+        Ok(mounts
             .into_iter()
             .filter_map(|id| {
                 self.vfs

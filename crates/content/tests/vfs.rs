@@ -2122,6 +2122,7 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
         filter: InfoBytes::Exact,
     };
     let mut info = [0; 8192];
+    let mut mounts = Vec::with_capacity(vfs.mounts().count());
     let stale = b"\\sv_serverid\\9\\sv_paks\\stale\\sv_pakNames\\stale";
     info[..stale.len()].copy_from_slice(stale);
     let mut length = stale.len();
@@ -2139,7 +2140,8 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
     };
     let checksums = signed(&order);
     let view = vfs.read_view(Some(&tracked));
-    view.q3_package_info(true, &mut info, &mut length, rules)
+    let before = view.q3_reference_revision().unwrap();
+    view.q3_package_info(true, &mut info, &mut length, rules, &mut mounts)
         .unwrap();
     assert_eq!(
         value(&info[..length], b"sv_paks").unwrap(),
@@ -2162,9 +2164,18 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
     // a required download. Opens use the same per-account reference primitive.
     assert!(view.query(b"vm/qagame.qvm").is_some());
     assert!(view.open(b"scripts/native.shader").is_some());
+    assert_eq!(view.q3_reference_revision().unwrap(), before);
     assert!(view.open(b"maps/native.bsp").is_some());
+    assert!(view.q3_reference_revision().unwrap() > before);
+    let opened = view.q3_reference_revision().unwrap();
+    assert!(view.open(b"maps/native.bsp").is_some());
+    assert_eq!(view.q3_reference_revision().unwrap(), opened);
+    assert_eq!(
+        vfs.read_view(Some(&peer)).q3_reference_revision().unwrap(),
+        before
+    );
     assert!(view.open(b"vm/qagame.qvm").is_some());
-    view.q3_package_info(false, &mut info, &mut length, rules)
+    view.q3_package_info(false, &mut info, &mut length, rules, &mut mounts)
         .unwrap();
     assert!(value(&info[..length], b"sv_paks").is_none());
     assert!(value(&info[..length], b"sv_pakNames").is_none());
@@ -2177,7 +2188,7 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
         b"missionpack/pak0 baseq3/pak2  baseq3/pak0"
     );
     vfs.read_view(Some(&peer))
-        .q3_package_info(true, &mut info, &mut length, rules)
+        .q3_package_info(true, &mut info, &mut length, rules, &mut mounts)
         .unwrap();
     assert_eq!(
         value(&info[..length], b"sv_referencedPaks").unwrap(),
@@ -2188,7 +2199,7 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
         .q3_search_view(Some(&tracked), &[base_checksum], false)
         .unwrap();
     vfs.read_view(Some(&restricted))
-        .q3_package_info(true, &mut info, &mut length, rules)
+        .q3_package_info(true, &mut info, &mut length, rules, &mut mounts)
         .unwrap();
     assert_eq!(
         value(&info[..length], b"sv_paks").unwrap(),
@@ -2198,17 +2209,23 @@ fn q3_server_package_info_uses_selected_native_order_and_actual_open_references(
     assert!(
         Vfs::default()
             .read_view(Some(&tracked))
-            .q3_package_info(true, &mut info, &mut length, rules)
+            .q3_package_info(true, &mut info, &mut length, rules, &mut mounts)
             .is_err()
     );
     let mut tiny = [0; 32];
     assert!(matches!(
-        view.q3_package_info(true, &mut tiny, &mut 0, InfoRules { bytes: 32, ..rules }),
+        view.q3_package_info(
+            true,
+            &mut tiny,
+            &mut 0,
+            InfoRules { bytes: 32, ..rules },
+            &mut mounts
+        ),
         Err(VfsError::Limit)
     ));
     assert!(vfs.unmount(base[3]));
     vfs.read_view(Some(&tracked))
-        .q3_package_info(true, &mut info, &mut length, rules)
+        .q3_package_info(true, &mut info, &mut length, rules, &mut mounts)
         .unwrap();
     assert_eq!(
         value(&info[..length], b"sv_pakNames").unwrap(),

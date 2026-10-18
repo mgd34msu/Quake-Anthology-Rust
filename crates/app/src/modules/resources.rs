@@ -1154,7 +1154,24 @@ impl FrameHost {
     /// Native Q3 SERVER storage supplies its own gamestate. Encoding borrows
     /// the source rows; only the existing output ring retains the message.
     pub(crate) fn publish_module_game_states(&mut self) {
-        let Some(modules) = &self.modules else { return };
+        let Some(modules) = &mut self.modules else {
+            return;
+        };
+        for row in modules.rows.iter_mut().flatten() {
+            if row.state != State::Running {
+                continue;
+            }
+            if let Some(info) = &mut row.server_info
+                && !info.prepare(
+                    &self.console.cvars,
+                    &self.runtime.vfs,
+                    modules.storage.file_search(row.request.context.module),
+                    modules.storage.file_source(row.request.context.module),
+                )
+            {
+                self.runtime.server.events.reject_publication();
+            }
+        }
         let runtime = &mut self.runtime;
         for (index, client) in runtime.server.clients.iter().enumerate() {
             let Some(output) = client.output else {
@@ -1193,6 +1210,46 @@ impl FrameHost {
             );
             publication.model_world(model_world);
             publication.require_game_state();
+            let Some(info) = row.server_info.as_ref().filter(|info| info.ready) else {
+                continue;
+            };
+            let channel = &mut connection.channel;
+            let Ok(mut context) = channel.command_context() else {
+                continue;
+            };
+            context.set_system_info(info.text(ConfigLayout::Q3_SYSTEM_INFO));
+            let source = modules.storage.file_search(client.module);
+            let key = Some((
+                context.checksum_feed,
+                modules.storage.file_source(client.module),
+                runtime.vfs.revision(),
+            ));
+            if publication.pure_source != key {
+                let view = runtime.vfs.read_view(source);
+                let feed = context.checksum_feed;
+                let loaded = match view.q3_loaded_pure_checksums(feed) {
+                    Ok(loaded) => loaded,
+                    Err(_) => {
+                        runtime.server.events.reject_publication();
+                        continue;
+                    }
+                };
+                let policy = qa_network::pure::Policy::new(
+                    feed,
+                    [b"vm/cgame.qvm".as_slice(), b"vm/ui.qvm"]
+                        .map(|name| view.q3_file_pure_checksum(name, feed)),
+                    loaded,
+                );
+                let changed = publication
+                    .pure
+                    .refresh_policy(policy, feed, context.server_id)
+                    || publication.pure_source.map(|key| key.1) != key.map(|key| key.1);
+                publication.pure_source = key;
+                if changed && publication.game_state_published() {
+                    publication.restart_game_state();
+                }
+            }
+            publication.pure.set_enabled(info.pure);
             if row.state != State::Running || publication.game_state_published() {
                 continue;
             }
@@ -1202,114 +1259,10 @@ impl FrameHost {
             else {
                 continue;
             };
-            let channel = &mut connection.channel;
-            let Ok(mut context) = channel.command_context() else {
-                continue;
-            };
-            let mut info = [[0; qa_core::configstrings::MAX_TEXT]; 2];
-            let info_context = qa_console::views::Context {
-                source: RuleSetId::Quake3,
-                side: qa_console::catalog::Scope::Server,
-                role: qa_console::views::Role::Engine,
-                ..row.request.context.console
-            };
-            let native_info = qa_compat::services::userinfo_rules(RuleSetId::Quake3);
-            let info_rules = [
-                native_info,
-                qa_core::text::InfoRules {
-                    bytes: qa_core::configstrings::MAX_TEXT,
-                    key_bytes: qa_core::configstrings::MAX_TEXT,
-                    value_bytes: qa_core::configstrings::MAX_TEXT,
-                    ..native_info
-                },
-            ];
-            // Native CVAR_SERVERINFO / CVAR_SYSTEMINFO use the unified table's
-            // source projection. They are engine rows, not game-module text.
-            let mut lengths = [0; 2];
-            let mut valid = true;
-            for (slot, flag) in [4, 8].into_iter().enumerate() {
-                match self.console.cvars.info_string(
-                    info_context,
-                    flag,
-                    info_rules[slot],
-                    &mut info[slot],
-                ) {
-                    Ok(length) => lengths[slot] = length,
-                    Err(_) => valid = false,
-                }
-            }
-            if !valid {
-                runtime.server.events.reject_publication();
-                continue;
-            }
-            context.set_system_info(&info[ConfigLayout::Q3_SYSTEM_INFO][..lengths[1]]);
-            let system_info = &info[ConfigLayout::Q3_SYSTEM_INFO][..lengths[1]];
-            let pure_enabled = qa_core::text::info_value(system_info, b"sv_pure", false)
-                .is_some_and(|range| qa_core::text::atoi_prefix(&system_info[range]) != 0);
-            let source = modules.storage.file_search(client.module);
-            if source.is_some_and(|source| !runtime.vfs.read_view(None).accepts_search(source)) {
-                runtime.server.events.reject_publication();
-                continue;
-            }
-            let view = runtime.vfs.read_view(source);
-            // The world was parsed before the game program. Account for its
-            // existing selected file without reading or decoding the BSP again.
-            if let Some(map) = self
-                .console
-                .cvars
-                .bind("mapname", info_context)
-                .and_then(|view| self.console.cvars.read(view).ok())
-                .filter(|name| !name.as_str().is_empty())
-                .and_then(|name| crate::map::virtual_path(name.as_str()).ok())
-            {
-                let _ = view.open(map.as_bytes());
-            }
-            if view
-                .q3_package_info(
-                    pure_enabled,
-                    &mut info[ConfigLayout::Q3_SYSTEM_INFO],
-                    &mut lengths[1],
-                    info_rules[1],
-                )
-                .is_err()
-            {
-                runtime.server.events.reject_publication();
-                continue;
-            }
-            let key = pure_enabled.then_some((
-                context.checksum_feed,
-                modules.storage.file_source(client.module),
-                runtime.vfs.revision(),
-            ));
-            if publication.pure_source != key {
-                let policy = if pure_enabled {
-                    let view = runtime.vfs.read_view(source);
-                    let feed = context.checksum_feed;
-                    let loaded = match view.q3_loaded_pure_checksums(feed) {
-                        Ok(loaded) => loaded,
-                        Err(_) => {
-                            runtime.server.events.reject_publication();
-                            continue;
-                        }
-                    };
-                    Some(qa_network::pure::Policy::new(
-                        feed,
-                        [b"vm/cgame.qvm".as_slice(), b"vm/ui.qvm"]
-                            .map(|name| view.q3_file_pure_checksum(name, feed)),
-                        loaded,
-                    ))
-                } else {
-                    None
-                };
-                publication
-                    .pure
-                    .configure(policy, context.checksum_feed, context.server_id);
-                publication.pure_source = key;
-            }
             let command_sequence = channel.command_state().map_or(0, |state| state.queued);
             let configs = (0..row.request.configstrings.max(2)).filter_map(|native_index| {
                 if native_index <= ConfigLayout::Q3_SYSTEM_INFO {
-                    Some((native_index, &info[native_index][..lengths[native_index]]))
+                    Some((native_index, info.text(native_index)))
                 } else {
                     modules
                         .storage
@@ -1362,6 +1315,7 @@ impl FrameHost {
                 .pure
                 .gamestate(context.checksum_feed, context.server_id);
             publication.publish_game_state(sequence);
+            publication.server_info = [0, 1].map(|index| Some(info.revision(index)));
             for native_index in 0..row.request.configstrings {
                 if let Ok((text, revision)) =
                     modules.storage.configstring(client.module, native_index)
@@ -1576,6 +1530,30 @@ impl FrameHost {
                 }
             }
             let Some(modules) = modules else { continue };
+            if target.rules == RuleSetId::Quake3
+                && publication.game_state_published()
+                && let Some(info) = modules
+                    .row(client.module)
+                    .and_then(|row| row.server_info.as_ref())
+                && info.ready
+            {
+                let system_published = info.publish(
+                    publication,
+                    &mut runtime.server.events,
+                    ClientId(index as u32),
+                    client.module,
+                );
+                if system_published
+                    && let Some(connection) = runtime
+                        .network
+                        .get_mut(ClientId(index as u32), qa_core::loopback::Endpoint::Server)
+                    && let Ok(mut context) = connection.channel.command_context()
+                {
+                    context.set_system_info(info.text(ConfigLayout::Q3_SYSTEM_INFO));
+                    let _ = connection.channel.set_command_context(context);
+                }
+            }
+
             let changed = modules
                 .rows
                 .iter()
@@ -1611,7 +1589,7 @@ impl FrameHost {
                     }
                     if source.rules == RuleSetId::Quake3
                         && target.rules == RuleSetId::Quake3
-                        && publication.game_state_published()
+                        && row.server_info.is_some()
                         && native_index <= ConfigLayout::Q3_SYSTEM_INFO
                     {
                         // SERVER info is projected from engine cvars, not a

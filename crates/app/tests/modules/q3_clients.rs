@@ -1093,6 +1093,52 @@ fn q3_gamestate_resend_and_pure_commands_share_native_ack_and_client_lifetimes()
     let hostname = host.console.cvars.bind("hostname", context).unwrap();
     host.console
         .cvars
+        .force_write(hostname, "live-update")
+        .unwrap();
+    let received_before = client.command_state().unwrap().received;
+    wire.time = EventTime::from_milliseconds(75);
+    host.frame(&mut wire, true);
+    assert!(
+        states(&mut host, observer).is_empty(),
+        "live info is not another gamestate"
+    );
+    assert!(receive(&mut wire, &mut client, peer).is_empty());
+    let received = client.command_state().unwrap().received;
+    assert!((received_before + 1..=received).any(|sequence| {
+        client.server_command(sequence).is_ok_and(|text| {
+            text.starts_with(b"cs 0 ")
+                && text
+                    .windows(b"live-update".len())
+                    .any(|part| part == b"live-update")
+        })
+    }));
+    let queued = host
+        .runtime
+        .network
+        .get(client_id, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued;
+    wire.time = EventTime::from_milliseconds(85);
+    host.frame(&mut wire, true);
+    receive(&mut wire, &mut client, peer);
+    assert_eq!(
+        host.runtime
+            .network
+            .get(client_id, Endpoint::Server)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .queued,
+        queued,
+        "unchanged native info must not add reliable commands"
+    );
+
+    host.console
+        .cvars
         .force_write(hostname, "after-download")
         .unwrap();
     let module_commands = count(&mut host, 6);

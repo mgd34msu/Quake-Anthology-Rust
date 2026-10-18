@@ -37,6 +37,7 @@ pub(crate) mod renderer_contexts;
 pub use execution::Driver;
 use execution::ModuleDispatch;
 pub(crate) use execution::{ExecutionSlot, TraceAccess};
+mod info;
 mod map_start;
 mod motion;
 mod resources;
@@ -417,6 +418,7 @@ struct Module {
     renderer_context: Option<renderer_contexts::Handle>,
     scene_role: crate::renderer::native::SceneRole,
     collision_role: qa_compat::services::ClientCollision,
+    server_info: Option<Box<info::ServerInfo>>,
 }
 impl Module {
     fn ready_for_callback(&self, active: bool) -> bool {
@@ -1052,8 +1054,18 @@ impl FrameHost {
             {
                 return Err("Q3 image recreation requires a CLIENT renderer role".into());
             }
+            let server_info = (request.phase == Phase::Server
+                && request.context.native_rules == RuleSetId::Quake3)
+                .then(|| {
+                    Box::new(info::ServerInfo::load(
+                        &host.console.cvars,
+                        request.context.console,
+                        host.runtime.vfs.mounts().count(),
+                    ))
+                });
             rows[index] = Some(Module {
                 request,
+                server_info,
                 geometry: host.runtime.collision.as_ref().map(|world| world.geometry),
                 scratch: host.runtime.geometry.scratch(),
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
