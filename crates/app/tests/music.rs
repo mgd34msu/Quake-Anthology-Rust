@@ -179,6 +179,7 @@ fn start(owner: MusicOwner, preserve: bool, smooth: bool) -> MusicControl {
         generation: 0,
     };
     MusicControl::Start {
+        file_search: None,
         owner,
         playback: MusicPlayback {
             wave_first: preserve,
@@ -200,6 +201,7 @@ fn numbered_tracks_use_prepared_vfs_priority_and_do_not_restart_on_repeated_requ
     let mut music = Music::load(&fixture.vfs);
     let mut mix = mixer();
     let control = |number, looping| MusicControl::Track {
+        file_search: None,
         owner: owner(1),
         playback: qa_gameplay::rules::music_playback(RuleSetId::Quake),
         number,

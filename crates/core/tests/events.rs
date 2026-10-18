@@ -1236,7 +1236,7 @@ fn music_paths_retire_with_presentation_and_an_independent_text_lease() {
         signed_stereo_bytes: true,
     };
     let sequence = ring
-        .music(owner, playback, b"music/intro.wav", b"music/loop.wav")
+        .music(owner, playback, b"music/intro.wav", b"music/loop.wav", None)
         .unwrap();
     let mut batch = ring.batch(healthy).unwrap();
     let record = ring.next(&mut batch).unwrap();
@@ -1278,7 +1278,7 @@ fn music_second_path_failure_rolls_back_first_path_and_counts_once() {
         signed_stereo_bytes: false,
     };
     assert_eq!(
-        ring.music(owner, playback, b"intro", b"loop"),
+        ring.music(owner, playback, b"intro", b"loop", None),
         Err(EventStorageError::TextCapacity)
     );
     assert_eq!(ring.rejected_publications(), 1);

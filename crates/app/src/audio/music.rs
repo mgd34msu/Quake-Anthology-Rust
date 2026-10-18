@@ -405,6 +405,7 @@ impl Music {
                 playback,
                 number,
                 looping,
+                ..
             } => {
                 if !self.enabled {
                     return true;

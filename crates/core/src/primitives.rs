@@ -323,6 +323,17 @@ pub struct WeaponId(pub u32);
 pub struct CvarHandle(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundId(pub u32);
+/// Process-local handle to a retained VFS selection, never a wire/content id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileSearchId(std::num::NonZeroU64);
+impl FileSearchId {
+    pub fn new(value: u64) -> Option<Self> {
+        std::num::NonZeroU64::new(value).map(Self)
+    }
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+}
 /// Exact publication owner; a reused CLIENT slot is a different lifetime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MusicOwner {
@@ -369,12 +380,14 @@ pub enum MusicControl {
     },
     Report(MusicQuery),
     Track {
+        file_search: Option<FileSearchId>,
         owner: MusicOwner,
         playback: MusicPlayback,
         number: u32,
         looping: bool,
     },
     Start {
+        file_search: Option<FileSearchId>,
         owner: MusicOwner,
         playback: MusicPlayback,
         intro: TextId,

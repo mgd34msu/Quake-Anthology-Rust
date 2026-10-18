@@ -1360,6 +1360,10 @@ fn main() {
     input::late_native_sounds(false);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     input::late_native_sounds(true);
+    music::queued_native_music_keeps_its_file_selection_after_module_rebind();
+    music::deferred_console_music_keeps_the_contexts_selected_files();
+    music::deferred_console_play_uses_the_selected_native_sound_namespace();
+    println!("retained native, deferred console music and scoped play sources passed");
     music::wire_music_reaches_shared_paint();
     music::console_cd_reaches_music_and_ordered_console_responses();
     music::native_music_reaches_shared_paint(qvm, false);

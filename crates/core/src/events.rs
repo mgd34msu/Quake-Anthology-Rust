@@ -862,6 +862,7 @@ impl EventRing {
         playback: crate::primitives::MusicPlayback,
         intro: &[u8],
         loop_track: &[u8],
+        file_search: Option<crate::primitives::FileSearchId>,
     ) -> Result<u64, EventStorageError> {
         if [intro, loop_track]
             .iter()
@@ -883,6 +884,7 @@ impl EventRing {
             return Err(EventStorageError::TextCapacity);
         };
         let result = self.music_control(crate::primitives::MusicControl::Start {
+            file_search,
             owner,
             playback,
             intro: first.id(),

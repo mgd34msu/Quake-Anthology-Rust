@@ -1780,6 +1780,7 @@ fn background_track_ordinals_publish_leased_paths_in_all_address_modes() {
             let mut batch = fixture.server.events.batch(fixture.output).unwrap();
             let record = fixture.server.events.next(&mut batch).unwrap();
             let FrameEvent::Music(qa_core::primitives::MusicControl::Start {
+                file_search: None,
                 owner,
                 playback,
                 intro,

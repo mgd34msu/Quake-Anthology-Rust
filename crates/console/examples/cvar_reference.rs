@@ -83,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
             let operand = |row: u16| operands[row as usize & 3].as_str();
             let context = Context {
+                file_search: None,
                 source,
                 side: Scope::Client,
                 role,

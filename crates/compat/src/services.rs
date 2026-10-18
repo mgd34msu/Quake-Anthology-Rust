@@ -358,7 +358,7 @@ struct ConfigRange {
     info_scratch: Box<[u8]>,
     span: IndexSpan,
     files: Option<IndexSpan>,
-    file_search: Option<qa_content::vfs::SearchView>,
+    file_search: Option<qa_content::vfs::FileSearch>,
     resources: Option<[IndexSpan; 3]>,
     resource_policies: [ResourceIndexPolicy; 3],
     message: Box<[u8]>,
@@ -427,7 +427,7 @@ impl ServiceStorage {
         self.file_listing
             .prepare(vfs)
             .map_err(|_| CallError::Capacity)?;
-        let default = vfs.default_view();
+        let default = vfs.bind_search(None).map_err(|_| CallError::File)?;
         for range in &mut self.ranges {
             range.file_search.get_or_insert_with(|| default.clone());
         }
@@ -437,6 +437,12 @@ impl ServiceStorage {
     pub fn file_search(&self, module: ModuleId) -> Option<&qa_content::vfs::SearchView> {
         self.range(module)
             .and_then(|range| range.file_search.as_ref())
+            .map(qa_content::vfs::FileSearch::view)
+    }
+    pub fn file_source(&self, module: ModuleId) -> Option<qa_core::primitives::FileSearchId> {
+        self.range(module)
+            .and_then(|range| range.file_search.as_ref())
+            .and_then(qa_content::vfs::FileSearch::id)
     }
     /// Bind an immutable source order at module load/restart. Rebinding closes
     /// this module's old handles; None restores the default shared search.
@@ -447,8 +453,7 @@ impl ServiceStorage {
         vfs: &Vfs,
     ) -> Result<(), CallError> {
         let view = vfs
-            .read_view(view.as_ref())
-            .retain()
+            .bind_search(view.as_ref())
             .map_err(|_| CallError::File)?;
         let range = self
             .ranges
@@ -458,7 +463,9 @@ impl ServiceStorage {
         if range
             .file_search
             .as_ref()
-            .is_some_and(|old| !old.same_selection(&view))
+            .map_or(view.id().is_some(), |old| {
+                !old.view().same_selection(view.view())
+            })
         {
             range.sound_revisions.fill(None);
             if let Some(bindings) = &mut range.sound_bindings {
@@ -1791,6 +1798,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .as_deref()
             .map(|connection| connection.identity(s.server))
             .transpose()?;
+        let file_search = s.storage.file_source(module);
         let row = s.storage.range_mut(module).ok_or(CallError::ConfigString)?;
         let owner = qa_core::primitives::MusicOwner {
             module: Some(module),
@@ -1799,7 +1807,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let sequence = s
             .server
             .events
-            .music(owner, playback, intro, loop_track)
+            .music(owner, playback, intro, loop_track, file_search)
             .map_err(|_| CallError::Capacity)?;
         row.music_owner = Some(owner);
         Ok(sequence)
@@ -1859,7 +1867,12 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_number: |s, view| s.cvars.numeric(view).map_err(|_| CallError::Cvar),
     cvar_integer: |s, view| s.cvars.integer_view(view).map_err(|_| CallError::Cvar),
     command: |s, c, t| s.command(c, t),
-    command_insert: |s, c, t| s.commands.insert_bytes(t, c).map_err(|_| CallError::Text),
+    command_insert: |s, c, t| {
+        let context = s.command_context(c);
+        s.commands
+            .insert_bytes(t, context)
+            .map_err(|_| CallError::Text)
+    },
     configstring: |s, m, i, t| s.configstring(m, i, t),
     lightstyle: |s, m, i, t| s.lightstyle(m, i, t),
     resource_index: |s, m, r, n| s.resource_register(m, r, n).map(|(ordinal, _)| ordinal),
@@ -2174,7 +2187,9 @@ impl EngineServices<'_> {
                     self.vfs,
                     config.text,
                     row.native_rules,
-                    row.file_search.as_ref(),
+                    row.file_search
+                        .as_ref()
+                        .map(qa_content::vfs::FileSearch::view),
                 ) {
                     Ok(sound) => sound,
                     Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
@@ -2464,7 +2479,14 @@ impl EngineServices<'_> {
         );
         Ok(())
     }
+    fn command_context(&self, mut context: Context) -> Context {
+        if let Some(producer) = context.producer {
+            context.file_search = self.storage.file_source(producer.module);
+        }
+        context
+    }
     pub fn command(&mut self, context: Context, text: &[u8]) -> Result<(), CallError> {
+        let context = self.command_context(context);
         self.commands
             .append_bytes(text, context)
             .map_err(|_| CallError::Text)

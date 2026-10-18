@@ -591,3 +591,32 @@ fn q3_registration_maps_only_native_delimiters_to_badname_before_lookup() {
     let control = cvars.register("raw\u{1}name", Some("raw"), 0, q3).unwrap();
     assert_ne!(control.canonical(), bad.canonical());
 }
+
+#[test]
+fn file_selection_metadata_does_not_split_cvar_policy_or_native_handles() {
+    use qa_core::primitives::FileSearchId;
+    let mut cvars = Cvars::new().unwrap();
+    let first = Context {
+        file_search: FileSearchId::new(1),
+        ..Context::default()
+    };
+    let second = Context {
+        file_search: FileSearchId::new(2),
+        ..first
+    };
+    cvars.select_context(first);
+    assert_eq!(cvars.context().file_search, None);
+    let one = cvars
+        .native_view(cvars.bind("s_volume", first).unwrap())
+        .unwrap();
+    cvars.select_context(second);
+    let two = cvars
+        .native_view(cvars.bind("s_volume", second).unwrap())
+        .unwrap();
+    assert_eq!(one, two);
+    assert_eq!(cvars.context().file_search, None);
+    assert_eq!(
+        Cvars::with_context(first).unwrap().context().file_search,
+        None
+    );
+}

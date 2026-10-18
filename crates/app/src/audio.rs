@@ -593,6 +593,11 @@ pub fn play(
     if args.len() < 2 {
         return Err(CommandError::Usage);
     }
+    let selected = runtime
+        .vfs
+        .file_search(context.file_search)
+        .map_err(|_| CommandError::Usage)?;
+    let search = selected.as_ref().map(qa_content::vfs::FileSearch::view);
     for path in args.iter().skip(1) {
         let mut name = qa_core::text::FixedText::<8192>::default();
         let valid = name.append_bytes(path.as_bytes()).is_ok()
@@ -603,12 +608,13 @@ pub fn play(
                 let assets = runtime.sound_assets.as_deref_mut()?;
                 if context.source == RuleSetId::Quake3 {
                     let handle = assets
-                        .register(&runtime.vfs, name.as_bytes(), context.source, None)
+                        .register(&runtime.vfs, name.as_bytes(), context.source, search)
                         .ok()?;
-                    assets.bank().registered_sound(handle)
+                    let scope = assets.source(runtime.vfs.read_view(search)).ok()??;
+                    assets.bank().registered_sound_in(scope, handle)
                 } else {
                     assets
-                        .precache(&runtime.vfs, name.as_bytes(), context.source, None)
+                        .precache(&runtime.vfs, name.as_bytes(), context.source, search)
                         .ok()
                         .flatten()
                 }
@@ -651,6 +657,13 @@ pub fn music(
     context: Context,
 ) -> Result<(), CommandError> {
     use qa_core::primitives::{MusicControl, MusicOwner};
+    let selected = runtime
+        .vfs
+        .file_search(context.file_search)
+        .map_err(|_| CommandError::Usage)?;
+    let view = runtime
+        .vfs
+        .read_view(selected.as_ref().map(qa_content::vfs::FileSearch::view));
     if args.len() < 2 {
         return Err(CommandError::Usage);
     }
@@ -687,9 +700,9 @@ pub fn music(
         if intro.is_empty() {
             return Err(CommandError::Usage);
         }
-        let intro = music_path(&runtime.vfs, intro.as_bytes())?;
+        let intro = music_path(view, intro.as_bytes())?;
         let loop_track = loop_track
-            .map(|name| music_path(&runtime.vfs, name.as_bytes()))
+            .map(|name| music_path(view, name.as_bytes()))
             .transpose()?;
         runtime
             .server
@@ -699,6 +712,7 @@ pub fn music(
                 qa_gameplay::rules::music_playback(context.source),
                 intro.as_bytes(),
                 loop_track.as_ref().map_or(&[][..], |name| name.as_bytes()),
+                context.file_search,
             )
             .is_ok()
     };
@@ -743,6 +757,7 @@ pub fn cd(
                 return Err(CommandError::Usage);
             }
             MusicControl::Track {
+                file_search: context.file_search,
                 owner: MusicOwner::default(),
                 playback: qa_gameplay::rules::music_playback(context.source),
                 number,
@@ -819,13 +834,13 @@ fn track_number(text: &str) -> Result<u32, CommandError> {
     u32::try_from(number).map_err(|_| CommandError::Usage)
 }
 fn music_path(
-    vfs: &qa_content::vfs::Vfs,
+    view: qa_content::vfs::ReadView<'_>,
     name: &[u8],
 ) -> Result<qa_core::text::FixedText<8192>, CommandError> {
     let mut path = qa_core::text::FixedText::default();
     // Explicit mounted paths remain usable outside music/. Bare names gain
     // that directory; the player resolves native extension preference.
-    if vfs.open(name).is_none() && !name.iter().any(|byte| matches!(byte, b'/' | b'\\')) {
+    if view.open(name).is_none() && !name.iter().any(|byte| matches!(byte, b'/' | b'\\')) {
         path.append_bytes(b"music/")
             .map_err(|_| CommandError::Usage)?;
     }
@@ -857,6 +872,7 @@ pub(crate) fn cd_track(runtime: &mut Runtime, client: qa_core::primitives::Clien
             .server
             .events
             .music_control(qa_core::primitives::MusicControl::Track {
+                file_search: None,
                 owner,
                 playback,
                 number,
@@ -904,14 +920,17 @@ pub(crate) fn config_music(
             .music_control(qa_core::primitives::MusicControl::Stop { only_active: false });
         return;
     }
-    let Ok(intro) = music_path(&runtime.vfs, intro) else {
+    let Ok(intro) = music_path(runtime.vfs.read_view(None), intro) else {
         return;
     };
-    let Ok(loop_track) = music_path(&runtime.vfs, loop_track) else {
+    let Ok(loop_track) = music_path(runtime.vfs.read_view(None), loop_track) else {
         return;
     };
-    let _ = runtime
-        .server
-        .events
-        .music(owner, playback, intro.as_bytes(), loop_track.as_bytes());
+    let _ = runtime.server.events.music(
+        owner,
+        playback,
+        intro.as_bytes(),
+        loop_track.as_bytes(),
+        None,
+    );
 }

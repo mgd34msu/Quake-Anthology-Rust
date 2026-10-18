@@ -258,6 +258,7 @@ impl Cvars {
         Self::with_context(Context::default())
     }
     pub fn with_context(context: Context) -> Result<Self, NamesError> {
+        let context = cvar_context(context);
         let names = NameTable::load_reserved(
             BINDINGS.iter().map(|b| b.name.as_bytes()),
             32768,
@@ -466,6 +467,7 @@ impl Cvars {
         self.runtime_policy = policy;
     }
     pub fn select_context(&mut self, context: Context) {
+        let context = cvar_context(context);
         if context == self.context {
             return;
         }
@@ -802,6 +804,7 @@ impl Cvars {
     /// Native handles refer to cached views of this registry, never another
     /// name/value table. Registration uses capacity reserved at registry load.
     pub fn native_view(&mut self, mut view: View) -> Result<u32, WriteError> {
+        view.context = cvar_context(view.context);
         view.context.event_time = None;
         view.context.key_source = None;
         view.context.producer = None;
@@ -1826,6 +1829,7 @@ impl Cvars {
             let projections = std::array::from_fn(|source| {
                 std::array::from_fn(|role| {
                     let context = Context {
+                        file_search: None,
                         source: RuleSetId::ALL[source],
                         side: self.context.side,
                         role: ROLES[role],
@@ -2077,4 +2081,11 @@ fn stock_role(names: &NameTable, binding_names: &[NameId], row: usize, source: R
 
 fn info_text(text: &str) -> bool {
     qa_core::text::info_valid_field(text.as_bytes(), qa_core::text::InfoBytes::Exact)
+}
+
+fn cvar_context(context: Context) -> Context {
+    Context {
+        file_search: None,
+        ..context
+    }
 }

@@ -391,3 +391,233 @@ pub(super) fn native_music_reaches_shared_paint(program: impl Fn() -> Program, c
         "native background controls reached ring, shared source stream and mixer: vorbis={compressed}"
     );
 }
+
+#[path = "../support/sound_registration.rs"]
+#[allow(dead_code)]
+mod effect_wave;
+
+struct SelectedMusic {
+    _files: [fixture::Fixture; 2],
+    host: FrameHost,
+    source: Source,
+    views: [qa_content::vfs::SearchView; 2],
+}
+impl SelectedMusic {
+    fn load() -> Self {
+        let mut low = fixture::Fixture::new();
+        let high = fixture::Fixture::new();
+        let high_root = high.vfs.mounts().next().unwrap().path.clone();
+        let path = high_root.join("music/intro.wav");
+        let mut wave = qa_platform::files::read(&path).unwrap();
+        for sample in wave[44..].chunks_exact_mut(2) {
+            sample.copy_from_slice(&(-7000i16).to_le_bytes());
+        }
+        qa_platform::files::write(path, wave).unwrap();
+        let low_mount = low.vfs.mounts().next().unwrap().id;
+        let low_root = low.vfs.mounts().next().unwrap().path.clone();
+        for (root, value) in [(&low_root, 1024i16), (&high_root, -7000i16)] {
+            let mut bytes = effect_wave::wav();
+            for sample in bytes[44..].chunks_exact_mut(2) {
+                sample.copy_from_slice(&value.to_le_bytes());
+            }
+            qa_platform::files::create_dir_all(root.join("sound")).unwrap();
+            qa_platform::files::write(root.join("sound/tone.wav"), bytes).unwrap();
+        }
+        low.vfs
+            .refresh_directory_prefix(low_mount, b"sound")
+            .unwrap();
+        let high_mount = low.vfs.mount_directory(&high_root, 20).unwrap();
+        let views = [
+            low.vfs.search_view([low_mount]).unwrap(),
+            low.vfs.search_view([high_mount]).unwrap(),
+        ];
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.vfs = std::mem::take(&mut low.vfs);
+        runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &runtime.vfs,
+            qa_audio::Bank::with_capacity(std::num::NonZeroU32::new(22050).unwrap(), 32, 4096)
+                .unwrap(),
+        )));
+        let host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        let source = Source {
+            bank: fixture::bank(),
+            mixer: fixture::mixer(),
+            music: qa_app::audio::music::Music::load(&host.runtime.vfs),
+            owner: None,
+            time: EventTime::default(),
+            updates: 0,
+            pcm: [0; 8],
+        };
+        Self {
+            _files: [low, high],
+            host,
+            source,
+            views,
+        }
+    }
+    fn dispatch(&mut self) -> qa_app::output::OutputCounts {
+        qa_app::output::dispatch(
+            &mut self.host.runtime,
+            &mut self.source,
+            &mut self.host.console.scrollback,
+            &[None; SeatId::COUNT],
+            EventTime::default(),
+            3.,
+            3.,
+        )
+    }
+    fn first_sample(&mut self) -> i16 {
+        self.source
+            .music
+            .update(&self.host.runtime.vfs, &mut self.source.mixer, 1.);
+        let mut pcm = [0; 4];
+        let bank = self
+            .host
+            .runtime
+            .sound_assets
+            .as_deref()
+            .map(qa_app::audio::SoundAssets::bank)
+            .unwrap_or(&self.source.bank);
+        self.source.mixer.paint(bank, &mut pcm);
+        pcm[0]
+    }
+}
+
+pub(super) fn queued_native_music_keeps_its_file_selection_after_module_rebind() {
+    use qa_compat::services::{ENGINE_CALLS, ServiceStorage};
+    let mut fixture = SelectedMusic::load();
+    let module = ModuleId(1);
+    let mut storage = ServiceStorage::load_native(
+        &[(module, 0, RuleSetId::Quake3)],
+        0,
+        &fixture.host.console.cvars,
+    )
+    .unwrap();
+    storage.prepare_files(&fixture.host.runtime.vfs).unwrap();
+    storage
+        .set_file_search(
+            module,
+            Some(fixture.views[0].clone()),
+            &fixture.host.runtime.vfs,
+        )
+        .unwrap();
+    let original = storage.file_source(module).unwrap();
+    let mut scratch = fixture.host.runtime.geometry.scratch();
+    {
+        let mut services = fixture.host.runtime.engine_services(
+            &mut fixture.host.console,
+            &mut storage,
+            &mut scratch,
+        );
+        (ENGINE_CALLS.background)(
+            &mut services,
+            module,
+            qa_gameplay::rules::music_playback(RuleSetId::Quake3),
+            b"music/intro.wav",
+            b"",
+        )
+        .unwrap();
+    }
+    storage
+        .set_file_search(
+            module,
+            Some(fixture.views[1].clone()),
+            &fixture.host.runtime.vfs,
+        )
+        .unwrap();
+    assert_ne!(storage.file_source(module), Some(original));
+    // A foreign handle must retire as a counted drop, preserving the valid
+    // preceding request and the rest of this consumer's progress.
+    let foreign = qa_content::vfs::Vfs::default();
+    let invalid = foreign
+        .bind_search(Some(&foreign.search_view([]).unwrap()))
+        .unwrap();
+    fixture
+        .host
+        .runtime
+        .server
+        .events
+        .music(
+            MusicOwner::default(),
+            qa_gameplay::rules::music_playback(RuleSetId::Quake3),
+            b"music/intro.wav",
+            b"",
+            invalid.id(),
+        )
+        .unwrap();
+    let counts = fixture.dispatch();
+    assert_eq!(counts.music, 2);
+    assert_eq!(counts.unhandled_music, 1);
+    assert!(fixture.first_sample() > 0);
+    assert!(fixture.host.runtime.server.events.is_empty());
+}
+
+pub(super) fn deferred_console_music_keeps_the_contexts_selected_files() {
+    let mut fixture = SelectedMusic::load();
+    let low = fixture
+        .host
+        .runtime
+        .vfs
+        .bind_search(Some(&fixture.views[0]))
+        .unwrap();
+    let high = fixture
+        .host
+        .runtime
+        .vfs
+        .bind_search(Some(&fixture.views[1]))
+        .unwrap();
+    let context = Context {
+        file_search: low.id(),
+        ..Context::default()
+    };
+    fixture
+        .host
+        .console
+        .append("music music/intro.wav\n", context)
+        .unwrap();
+    assert_ne!(context.file_search, high.id());
+    fixture
+        .host
+        .console
+        .execute_frame(&mut fixture.host.runtime);
+    let counts = fixture.dispatch();
+    assert_eq!(counts.music, 1);
+    assert_eq!(counts.unhandled_music, 0);
+    assert!(fixture.first_sample() > 0);
+    assert!(fixture.host.runtime.server.events.is_empty());
+}
+
+pub(super) fn deferred_console_play_uses_the_selected_native_sound_namespace() {
+    let mut fixture = SelectedMusic::load();
+    let low = fixture
+        .host
+        .runtime
+        .vfs
+        .bind_search(Some(&fixture.views[0]))
+        .unwrap();
+    fixture
+        .host
+        .console
+        .append(
+            "play sound/tone.wav\n",
+            Context {
+                file_search: low.id(),
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    fixture
+        .host
+        .console
+        .execute_frame(&mut fixture.host.runtime);
+    let counts = fixture.dispatch();
+    assert_eq!(counts.sounds, 1);
+    assert_eq!(counts.unhandled_sounds, 0);
+    assert!(fixture.first_sample() > 0);
+}

@@ -285,12 +285,28 @@ pub(crate) fn dispatch_frame(
                                 }
                                 _ => (None, None),
                             };
+                            let file_search = match control {
+                                qa_core::primitives::MusicControl::Start {
+                                    file_search, ..
+                                }
+                                | qa_core::primitives::MusicControl::Track {
+                                    file_search, ..
+                                } => file_search,
+                                _ => None,
+                            };
+                            let selected = match runtime.vfs.file_search(file_search) {
+                                Ok(selected) => selected,
+                                Err(_) => {
+                                    counts.unhandled_music += 1;
+                                    return OutputSubmission::BestEffort;
+                                }
+                            };
                             counts.unhandled_music += u64::from(!source.music(
                                 &runtime.vfs,
                                 control,
                                 paths.0,
                                 paths.1,
-                                None,
+                                selected.as_ref().map(qa_content::vfs::FileSearch::view),
                             ));
                             true
                         }

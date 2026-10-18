@@ -22,13 +22,21 @@ fn run() -> Result<(), String> {
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let mut collision = qa_world::collision::CollisionStore::new();
     let start = Stopwatch::start();
-    let input = map::read(&vfs, &name)?;
+    let input = map::read(vfs.read_view(None), &name)?;
     let presentation = input.native_source;
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
-    let source_palette =
-        qa_app::render_settings::palette(&vfs, &mut assets, input.native_source, &mut palettes)?;
-    let target_palette =
-        qa_app::render_settings::palette(&vfs, &mut assets, presentation, &mut palettes)?;
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::new(&vfs);
+    let source_palette = qa_app::render_settings::palette(
+        vfs.read_view(Some(input.search())),
+        &mut assets,
+        input.native_source,
+        &mut palettes,
+    )?;
+    let target_palette = qa_app::render_settings::palette(
+        vfs.read_view(None),
+        &mut assets,
+        presentation,
+        &mut palettes,
+    )?;
     let loaded = input.load(
         &vfs,
         &mut assets,

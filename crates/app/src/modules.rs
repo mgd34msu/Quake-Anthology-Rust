@@ -891,6 +891,7 @@ impl FrameHost {
                     &host.runtime.vfs,
                 )
                 .map_err(|error| format!("module filesystem binding: {error:?}"))?;
+            request.context.console.file_search = storage.file_source(request.context.module);
             if let Some((index, syntax)) = request.entity_source {
                 let source = host
                     .runtime

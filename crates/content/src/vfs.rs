@@ -1,6 +1,6 @@
 use qa_core::{
     names::{MAX_PATH_BYTES, NameTable},
-    primitives::IndexSpan,
+    primitives::{FileSearchId, IndexSpan},
 };
 mod list;
 mod selections;
@@ -13,7 +13,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -48,6 +48,23 @@ impl SearchView {
             .filter(|rank| *rank != u32::MAX)
     }
 }
+
+/// Registered selection and its optional deferred-reference handle. The live
+/// default needs no handle; explicit orders remain available until VFS drop.
+#[derive(Clone, Debug)]
+pub struct FileSearch {
+    view: SearchView,
+    id: Option<FileSearchId>,
+}
+impl FileSearch {
+    pub fn view(&self) -> &SearchView {
+        &self.view
+    }
+    pub fn id(&self) -> Option<FileSearchId> {
+        self.id
+    }
+}
+static NEXT_FILE_SEARCH: AtomicU64 = AtomicU64::new(1);
 
 /// Borrow the shared file table through one caller-selected search view.
 #[derive(Clone, Copy)]
@@ -313,6 +330,7 @@ impl From<io::Error> for VfsError {
 #[derive(Default)]
 pub struct Vfs {
     owner: Arc<()>,
+    file_searches: Mutex<Selections<FileSearchId>>,
     mounts: Vec<MountInfo>,
     entries: Vec<Option<Arc<Entry>>>,
     names: Option<NameTable>,
@@ -365,6 +383,43 @@ fn normalize_into(path: &[u8], normalized: &mut [u8; MAX_PATH_BYTES]) -> Result<
 }
 
 impl Vfs {
+    /// Cold binding uses the common selection table. Native file reads borrow
+    /// the returned view directly; only deferred controls resolve its handle.
+    pub fn bind_search(&self, search: Option<&SearchView>) -> Result<FileSearch, VfsError> {
+        let view = self.read_view(search).retain()?;
+        let id = if view.fixed().is_some() {
+            let mut searches = self.file_searches.lock().map_err(|_| VfsError::Handle)?;
+            let index = if let Some(index) = searches.find(&view) {
+                index
+            } else {
+                let sequence = NEXT_FILE_SEARCH
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| VfsError::Capacity)?;
+                let id = FileSearchId::new(sequence).ok_or(VfsError::Capacity)?;
+                searches.intern(view.clone(), usize::MAX, || id)?
+            };
+            Some(*searches.get(index))
+        } else {
+            None
+        };
+        Ok(FileSearch { view, id })
+    }
+    pub fn file_search(&self, id: Option<FileSearchId>) -> Result<Option<FileSearch>, VfsError> {
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let searches = self.file_searches.lock().map_err(|_| VfsError::Handle)?;
+        searches
+            .entries()
+            .find(|(_, stored)| **stored == id)
+            .map(|(view, _)| {
+                Some(FileSearch {
+                    view: view.clone(),
+                    id: Some(id),
+                })
+            })
+            .ok_or(VfsError::Handle)
+    }
     pub fn default_view(&self) -> SearchView {
         SearchView {
             owner: Arc::clone(&self.owner),

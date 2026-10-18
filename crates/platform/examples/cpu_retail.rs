@@ -473,7 +473,7 @@ fn run() -> Result<(), String> {
     let mut vfs = qa_content::vfs::Vfs::default();
     vfs.mount_product(&content, 0)
         .map_err(|e| format!("content mount: {e:?}"))?;
-    let input = map::read(&vfs, &options.map)?;
+    let input = map::read(vfs.read_view(None), &options.map)?;
     let names = input.catalog_names()?;
     let mut runtime = Runtime::load(64, names.iter().map(|name| name.as_ref()))?;
     drop(names);
@@ -499,15 +499,15 @@ fn run() -> Result<(), String> {
         return Err("copied saved profile contained no applicable settings".into());
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::new(&runtime.vfs);
     let source_palette = render_settings::palette(
-        &runtime.vfs,
+        runtime.vfs.read_view(Some(input.search())),
         &mut assets,
         input.native_source,
         &mut palettes,
     )?;
     let presentation_profile = render_settings::world_profile(
-        &runtime.vfs,
+        runtime.vfs.read_view(None),
         &mut assets,
         &console.cvars,
         source,

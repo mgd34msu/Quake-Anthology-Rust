@@ -1323,3 +1323,47 @@ fn loaded_listing_keeps_source_order_scopes_empty_directories_and_explicit_refre
     vfs.unmount(low_mount);
     assert!(list(&mut listing, &vfs, Some(&view), b"models/players", b"/").is_empty());
 }
+
+#[test]
+fn retained_file_search_handles_keep_explicit_orders_and_reject_other_vfs_owners() {
+    let root = Fixture::new("retained-search-handles");
+    let mut vfs = Vfs::default();
+    let mut mounts = Vec::new();
+    for (priority, text) in [(0, b"low".as_slice()), (1, b"high")] {
+        let path = root.0.join(priority.to_string());
+        qa_platform::files::create_dir_all(&path).unwrap();
+        qa_platform::files::write(path.join("same.txt"), text).unwrap();
+        mounts.push(vfs.mount_directory(&path, priority).unwrap());
+    }
+    let default = vfs.bind_search(None).unwrap();
+    assert_eq!(default.id(), None);
+    assert!(default.view().same_selection(&vfs.default_view()));
+    assert!(vfs.file_search(None).unwrap().is_none());
+    let low = vfs.search_view([mounts[0]]).unwrap();
+    let first = vfs.bind_search(Some(&low)).unwrap();
+    let low_id = first.id().unwrap();
+    let repeated = vfs
+        .bind_search(Some(&vfs.search_view([mounts[0], mounts[0]]).unwrap()))
+        .unwrap();
+    assert_eq!(repeated.id(), Some(low_id));
+    let high = vfs.search_view([mounts[1]]).unwrap();
+    let second = vfs.bind_search(Some(&high)).unwrap();
+    assert_ne!(second.id(), Some(low_id));
+    drop(first);
+    drop(low);
+    let restored = vfs.file_search(Some(low_id)).unwrap().unwrap();
+    assert_eq!(
+        vfs.read_view(Some(restored.view()))
+            .read_file(b"same.txt", 64, &mut Default::default())
+            .unwrap(),
+        b"low"
+    );
+    let foreign = Vfs::default();
+    assert!(foreign.file_search(Some(low_id)).is_err());
+    assert!(foreign.bind_search(Some(restored.view())).is_err());
+    let foreign_bound = foreign
+        .bind_search(Some(&foreign.search_view([]).unwrap()))
+        .unwrap();
+    assert!(vfs.file_search(foreign_bound.id()).is_err());
+    assert_eq!(vfs.bind_search(Some(default.view())).unwrap().id(), None);
+}

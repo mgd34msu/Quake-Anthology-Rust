@@ -10,6 +10,8 @@ pub enum Role {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Context {
+    /// Captured file selection for deferred module/connection commands.
+    pub file_search: Option<qa_core::primitives::FileSearchId>,
     pub source: RuleSetId,
     pub side: Scope,
     pub role: Role,
@@ -26,6 +28,7 @@ pub struct Context {
 impl Default for Context {
     fn default() -> Self {
         Self {
+            file_search: None,
             source: RuleSetId::Quake3,
             side: Scope::Client,
             role: Role::Engine,
