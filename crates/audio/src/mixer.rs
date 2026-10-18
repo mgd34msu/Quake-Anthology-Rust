@@ -1,22 +1,42 @@
 //! Load-owned PCM and voices; event admission never creates a second queue.
 use qa_core::{
+    bindings::OrdinalBindings,
     math,
     names::NameTable,
     primitives::{
         ClientId, EntityId, LoopDoppler, LoopGain, LoopLifetime, LoopOrigin, LoopPhase,
-        LoopPlayback, ModuleId, Pcm, ResourceNamespace, SoundAction, SoundBus, SoundEmitter,
-        SoundEvent, SoundId, SoundStartOrder, Vec3,
+        LoopPlayback, ModuleId, NameId, Pcm, ResourceNamespace, SoundAction, SoundBus,
+        SoundEmitter, SoundEvent, SoundId, SoundStartOrder, Vec3,
     },
     stamps::StampSet,
 };
 use std::num::NonZeroU32;
 
+/// Numeric registration partition. File-source ownership stays with the loader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundSource(u32);
+impl SoundSource {
+    pub const DEFAULT: Self = Self(0);
+}
+struct SourceBindings {
+    paths: OrdinalBindings<SoundId>,
+    handles: crate::SoundBindings,
+}
+impl SourceBindings {
+    fn load(capacity: usize) -> Self {
+        Self {
+            paths: OrdinalBindings::load(capacity, 0, 0, false),
+            handles: crate::SoundBindings::load_reserved(capacity, capacity, true),
+        }
+    }
+}
 pub struct Bank {
     names: NameTable,
+    paths: Box<[Option<NameId>]>,
     samples: Box<[Option<Pcm>]>,
     doppler: Box<[Option<crate::doppler::Prepared>]>,
-    attempts: StampSet,
-    handles: crate::SoundBindings,
+    sources: Vec<SourceBindings>,
+    next_sound: usize,
     pub rate: NonZeroU32,
 }
 impl Bank {
@@ -57,18 +77,32 @@ impl Bank {
     fn from_names(rate: NonZeroU32, names: NameTable) -> Result<Self, String> {
         let capacity = names.capacity();
         Self::check_capacity(capacity)?;
+        let mut paths = vec![None; capacity].into_boxed_slice();
+        paths[0] = Some(NameId(0));
         let mut bank = Self {
             names,
+            paths,
             samples: std::iter::repeat_with(|| None).take(capacity).collect(),
             doppler: std::iter::repeat_with(|| None).take(capacity).collect(),
-            attempts: StampSet::new(capacity),
-            handles: crate::SoundBindings::load_reserved(capacity, capacity, true),
+            sources: vec![SourceBindings::load(capacity)],
+            next_sound: 1,
             rate,
         };
-        // qsrc Q3 S_BeginRegistration registers this filename before any module.
-        // A missing default retains handle zero but does not invent PCM.
         bank.attempt_registration(Self::DEFAULT_SOUND, Some(Self::DEFAULT_SOUND))?;
         Ok(bank)
+    }
+
+    /// Cold registration reserves one independent native namespace, including
+    /// its default handle zero. All namespaces share the same PCM owner.
+    pub fn add_source(&mut self) -> Result<SoundSource, String> {
+        if self.next_sound >= self.samples.len() {
+            return Err("sound registration capacity".into());
+        }
+        let source =
+            SoundSource(u32::try_from(self.sources.len()).map_err(|_| "sound source capacity")?);
+        self.sources.push(SourceBindings::load(self.samples.len()));
+        self.attempt_registration_in(source, Self::DEFAULT_SOUND, Some(Self::DEFAULT_SOUND))?;
+        Ok(source)
     }
 
     /// Native sound ordinals are mapped to these handles at the module boundary.
@@ -79,8 +113,8 @@ impl Bank {
             .collect();
         let mut names =
             NameTable::load(paths.iter().map(|p| p.as_bytes())).map_err(|e| e.to_string())?;
-        // Bulk loading keeps its existing lexical SoundIds. Native handles use
-        // the same registration rows as staged loading, with zero reserved first.
+        // Native handles retain source registration order, with zero reserved
+        // first. PCM identities are independent of filename arena positions.
         let native_bytes = sources
             .iter()
             .try_fold(Self::DEFAULT_SOUND.len(), |sum, (name, _)| {
@@ -107,36 +141,61 @@ impl Bank {
     /// A name-present, PCM-absent row is a cached failed attempt after cold load.
     /// Repeated ready or failed lookups do not allocate or consume another row.
     pub fn attempted(&self, path: &[u8]) -> Option<SoundId> {
-        let id = self.names.find_path_bytes(path)?;
-        self.attempts
-            .contains(id.0 as usize)
-            .then_some(SoundId(id.0))
+        self.attempted_in(SoundSource::DEFAULT, path)
     }
-
+    pub fn attempted_in(&self, source: SoundSource, path: &[u8]) -> Option<SoundId> {
+        let name = self.names.find_path_bytes(path)?;
+        self.sources.get(source.0 as usize)?.paths.get(name.0)
+    }
     pub fn attempt(&mut self, path: &[u8]) -> Result<SoundId, String> {
+        self.attempt_in(SoundSource::DEFAULT, path)
+    }
+    pub fn attempt_in(&mut self, source: SoundSource, path: &[u8]) -> Result<SoundId, String> {
         if path.is_empty() {
             return Err("empty sound name".into());
         }
-        let id = self
+        let row = self
+            .sources
+            .get_mut(source.0 as usize)
+            .ok_or("sound source missing")?;
+        let name = self
             .names
             .intern_path_bytes(path)
             .map_err(|e| e.to_string())?;
-        self.attempts.mark(id.0 as usize);
-        Ok(SoundId(id.0))
+        if let Some(sound) = row.paths.get(name.0) {
+            return Ok(sound);
+        }
+        if self.next_sound >= self.samples.len() {
+            return Err("sound registration capacity".into());
+        }
+        let sound = SoundId(self.next_sound as u32);
+        row.paths
+            .set(name.0, Some(sound))
+            .map_err(|e| format!("sound path: {e:?}"))?;
+        self.paths[self.next_sound] = Some(name);
+        self.next_sound += 1;
+        Ok(sound)
     }
 
-    /// S_FindName uses ASCII-folded raw filenames, so slash and backslash
-    /// names retain different native handles while sharing canonical PCM.
-    /// The boolean reports a new PCM attempt, not a new native alias.
+    /// S_FindName folds ASCII but keeps slash and backslash native aliases
+    /// distinct. The boolean reports a new PCM attempt, not a new alias.
     pub fn attempt_registration(
         &mut self,
+        native: &[u8],
+        pcm_path: Option<&[u8]>,
+    ) -> Result<(SoundId, bool), String> {
+        self.attempt_registration_in(SoundSource::DEFAULT, native, pcm_path)
+    }
+    pub fn attempt_registration_in(
+        &mut self,
+        source: SoundSource,
         native: &[u8],
         pcm_path: Option<&[u8]>,
     ) -> Result<(SoundId, bool), String> {
         if native.is_empty() {
             return Err("empty sound name".into());
         }
-        let existing = pcm_path.and_then(|path| self.attempted(path));
+        let existing = pcm_path.and_then(|path| self.attempted_in(source, path));
         let name = match self.names.find_folded(native) {
             Some(name) => name,
             None => self.names.intern(native).map_err(|e| e.to_string())?,
@@ -144,36 +203,43 @@ impl Bank {
         let (sound, first) = match pcm_path {
             Some(path) => match existing {
                 Some(sound) => (sound, false),
-                None => (self.attempt(path)?, true),
+                None => (self.attempt_in(source, path)?, true),
             },
-            // The existing empty name row is the shared no-PCM sentinel; each
-            // failed native key still owns its distinct forward handle row.
             None => (SoundId(0), false),
         };
-        self.handles
+        self.sources
+            .get_mut(source.0 as usize)
+            .ok_or("sound source missing")?
+            .handles
             .register_named(name, sound)
             .map_err(|e| format!("sound handle: {e:?}"))?;
         Ok((sound, first))
     }
 
-    /// A native format constraint can reject its handle without destroying
-    /// canonical PCM that remains valid for other shared audio consumers.
+    /// Reject a native handle without destroying PCM valid for other consumers.
     pub fn reject_registration(&mut self, native: &[u8]) -> Result<(), String> {
+        self.reject_registration_in(SoundSource::DEFAULT, native)
+    }
+    pub fn reject_registration_in(
+        &mut self,
+        source: SoundSource,
+        native: &[u8],
+    ) -> Result<(), String> {
         let name = self
             .names
             .find_folded(native)
             .ok_or("sound registration missing")?;
-        self.handles
+        self.sources
+            .get_mut(source.0 as usize)
+            .ok_or("sound source missing")?
+            .handles
             .replace_named(name, SoundId(0))
             .map_err(|e| format!("sound handle: {e:?}"))
     }
 
     /// All decoded PCM enters through the one device-rate preparation path.
     pub fn admit(&mut self, sound: SoundId, pcm: Pcm) -> Result<(), String> {
-        if sound.0 == 0
-            || sound.0 as usize >= self.names.len()
-            || !self.attempts.contains(sound.0 as usize)
-        {
+        if sound.0 == 0 || self.paths.get(sound.0 as usize).is_none_or(Option::is_none) {
             return Err("sound registration missing".into());
         }
         let sample = &mut self.samples[sound.0 as usize];
@@ -194,7 +260,10 @@ impl Bank {
     }
     /// Frozen lookup returns only prepared PCM, never a failed attempted name.
     pub fn find_bytes(&self, path: &[u8]) -> Option<SoundId> {
-        let sound = self.attempted(path)?;
+        self.find_in(SoundSource::DEFAULT, path)
+    }
+    pub fn find_in(&self, source: SoundSource, path: &[u8]) -> Option<SoundId> {
+        let sound = self.attempted_in(source, path)?;
         self.sample(sound).map(|_| sound)
     }
     pub fn sample(&self, sound: SoundId) -> Option<&Pcm> {
@@ -203,9 +272,13 @@ impl Bank {
     /// Failed registrations return the native default handle without changing
     /// their retained ordinal. Unattempted frozen names remain distinguishable.
     pub fn registered_handle(&self, path: &[u8]) -> Option<i32> {
+        self.registered_handle_in(SoundSource::DEFAULT, path)
+    }
+    pub fn registered_handle_in(&self, source: SoundSource, path: &[u8]) -> Option<i32> {
         let name = self.names.find_folded(path)?;
-        let ordinal = self.handles.named(name)?;
-        let sound = self.handles.sound(ordinal)?;
+        let handles = &self.sources.get(source.0 as usize)?.handles;
+        let ordinal = handles.named(name)?;
+        let sound = handles.sound(ordinal)?;
         if self.sample(sound).is_some() {
             i32::try_from(ordinal).ok()
         } else {
@@ -213,19 +286,27 @@ impl Bank {
         }
     }
     pub fn registered_sound(&self, handle: i32) -> Option<SoundId> {
-        let sound = self.handles.sound(u32::try_from(handle).ok()?)?;
+        self.registered_sound_in(SoundSource::DEFAULT, handle)
+    }
+    pub fn registered_sound_in(&self, source: SoundSource, handle: i32) -> Option<SoundId> {
+        let sound = self
+            .sources
+            .get(source.0 as usize)?
+            .handles
+            .sound(u32::try_from(handle).ok()?)?;
         self.sample(sound).map(|_| sound)
     }
-    /// Numeric registered-name access; no path reconstruction or hashing.
+    /// All variants retain their shared canonical name without rebuilding it.
     pub fn name(&self, sound: SoundId) -> Option<&[u8]> {
-        self.names.get(qa_core::primitives::NameId(sound.0))
+        self.names
+            .get(self.paths.get(sound.0 as usize).copied().flatten()?)
     }
     pub fn has_loop_marker(&self, sound: SoundId) -> bool {
         self.sample(sound)
             .is_some_and(|pcm| pcm.loop_start.is_some())
     }
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.next_sound
     }
     pub fn capacity(&self) -> usize {
         self.samples.len()

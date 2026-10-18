@@ -1,8 +1,5 @@
 use qa_audio::Bank;
-use qa_core::{
-    names::NameTable,
-    primitives::{NameId, Pcm, PcmChannels, SoundId},
-};
+use qa_core::primitives::{Pcm, PcmChannels, SoundId};
 use std::num::NonZeroU32;
 
 fn rate() -> NonZeroU32 {
@@ -62,9 +59,8 @@ fn native_zero_default_and_failed_attempts_keep_registration_order() {
 }
 
 #[test]
-fn bulk_load_retains_lexical_sound_ids_and_uses_source_order_for_native_handles() {
+fn bulk_load_retains_paths_and_source_order_for_native_handles() {
     let paths = ["sound/z.wav", "sound/a.wav", "sound/m.wav"];
-    let old_names = NameTable::load(paths.iter().map(|path| path.as_bytes())).unwrap();
     let bank = Bank::load(
         rate(),
         paths
@@ -74,9 +70,8 @@ fn bulk_load_retains_lexical_sound_ids_and_uses_source_order_for_native_handles(
     )
     .unwrap();
     for (index, path) in paths.into_iter().enumerate() {
-        let name = old_names.find(path.as_bytes()).unwrap();
         let sound = bank.find(path).unwrap();
-        assert_eq!(sound, SoundId(name.0));
+        assert_eq!(bank.name(sound), Some(path.as_bytes()));
         assert_eq!(
             bank.registered_handle(path.as_bytes()),
             Some(index as i32 + 1)
@@ -85,7 +80,6 @@ fn bulk_load_retains_lexical_sound_ids_and_uses_source_order_for_native_handles(
         assert_eq!(bank.sample(sound).unwrap().samples, [1, 2]);
     }
     assert_eq!(bank.name(SoundId(0)), Some(b"".as_slice()));
-    assert_eq!(old_names.get(NameId(0)), bank.name(SoundId(0)));
     assert_eq!(bank.registered_sound(0), None);
 }
 
@@ -286,4 +280,54 @@ fn rejecting_native_stereo_keeps_ready_shared_pcm_and_failed_handle_order() {
     bank.admit(later, pcm(&[7])).unwrap();
     assert_eq!(bank.registered_handle(b"sound/later.wav"), Some(2));
     assert!(bank.reject_registration(b"sound/unseen.wav").is_err());
+}
+
+#[test]
+fn selected_sound_sources_keep_native_aliases_defaults_and_pcm_independent() {
+    use qa_audio::SoundSource;
+    let mut bank = Bank::with_capacity(rate(), 16, 512).unwrap();
+    let other = bank.add_source().unwrap();
+    let defaults = [SoundSource::DEFAULT, other]
+        .map(|source| bank.attempted_in(source, Bank::DEFAULT_SOUND).unwrap());
+    assert_ne!(defaults[0], defaults[1]);
+    bank.admit(defaults[0], pcm(&[10])).unwrap();
+    bank.admit(defaults[1], pcm(&[20])).unwrap();
+    let mut sounds = Vec::new();
+    for (source, value) in [(SoundSource::DEFAULT, 123), (other, -456)] {
+        let (sound, first) = bank
+            .attempt_registration_in(source, b"sound/shared.wav", Some(b"sound/shared.wav"))
+            .unwrap();
+        assert!(first);
+        bank.admit(sound, pcm(&[value, value])).unwrap();
+        assert_eq!(
+            bank.registered_handle_in(source, b"SOUND/SHARED.WAV"),
+            Some(1)
+        );
+        assert_eq!(
+            bank.attempt_registration_in(source, b"sound\\shared.wav", Some(b"sound/shared.wav"))
+                .unwrap(),
+            (sound, false)
+        );
+        assert_eq!(
+            bank.registered_handle_in(source, b"sound\\shared.wav"),
+            Some(2)
+        );
+        assert_eq!(bank.registered_sound_in(source, 2), Some(sound));
+        assert_eq!(bank.sample(sound).unwrap().samples, [value, value]);
+        sounds.push(sound);
+    }
+    assert_ne!(sounds[0], sounds[1]);
+    assert_eq!(bank.name(sounds[0]), bank.name(sounds[1]));
+    assert_eq!(bank.find("sound/shared.wav"), Some(sounds[0]));
+    bank.reject_registration_in(other, b"sound/shared.wav")
+        .unwrap();
+    assert_eq!(
+        bank.registered_handle_in(other, b"sound/shared.wav"),
+        Some(0)
+    );
+    assert_eq!(bank.registered_sound_in(other, 0), Some(defaults[1]));
+    assert_eq!(bank.registered_sound(0), Some(defaults[0]));
+    assert_eq!(bank.registered_handle(b"sound/shared.wav"), Some(1));
+    assert_eq!(bank.find_in(other, b"sound/shared.wav"), Some(sounds[1]));
+    assert_eq!(bank.sample(sounds[1]).unwrap().samples, [-456, -456]);
 }
