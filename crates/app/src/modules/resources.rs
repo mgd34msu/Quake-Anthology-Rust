@@ -277,18 +277,34 @@ impl FrameHost {
                 .map_or(resources.state.layout.rules, |module| {
                     module.request.context.native_rules
                 });
+            let handles = [
+                self.player_model_options.0.canonical(),
+                self.player_model_options.1.canonical(),
+            ];
+            let [no_skins, visible_weapons] = self
+                .console
+                .cvars
+                .client_handles(
+                    handles,
+                    (
+                        qa_core::primitives::ClientId(index as u32),
+                        runtime.server.clients[index].entity,
+                    ),
+                )
+                .unwrap_or(handles);
             resources
                 .state
                 .models
                 .player_options(crate::client_scene::PlayerModelOptions {
-                    no_skins: self.console.cvars.integer_in(
-                        self.player_model_options.0.canonical(),
-                        resources.state.layout.rules,
-                    ),
-                    visible_weapons: self.console.cvars.integer_in(
-                        self.player_model_options.1.canonical(),
-                        resources.state.layout.rules,
-                    ) != 0,
+                    no_skins: self
+                        .console
+                        .cvars
+                        .integer_in(no_skins, resources.state.layout.rules),
+                    visible_weapons: self
+                        .console
+                        .cvars
+                        .integer_in(visible_weapons, resources.state.layout.rules)
+                        != 0,
                 });
             let seat = runtime.snapshots[index]
                 .as_ref()

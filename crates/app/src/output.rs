@@ -141,8 +141,7 @@ pub fn dispatch(
         scrollback,
         local,
         time,
-        notify_time,
-        center_time,
+        |_, _| (notify_time, center_time),
         counts,
         |_, _, _, _| None,
     )
@@ -208,8 +207,7 @@ pub(crate) fn dispatch_frame(
     scrollback: &mut qa_console::presentation::Scrollback,
     local: &[Option<ClientId>; SeatId::COUNT],
     time: EventTime,
-    notify_time: f64,
-    center_time: f64,
+    hud_time: impl Fn(ClientId, qa_core::primitives::EntityId) -> (f64, f64),
     mut counts: OutputCounts,
     mut bound_model: impl FnMut(
         ModuleId,
@@ -1123,14 +1121,17 @@ pub(crate) fn dispatch_frame(
                             }
                             true
                         }
-                        FrameEvent::Print(event) => qa_ui::hud::print(
-                            &mut client.hud,
-                            texts,
-                            event,
-                            now,
-                            notify_time,
-                            center_time,
-                        ),
+                        FrameEvent::Print(event) => {
+                            let (notify_time, center_time) = hud_time(client_id, client.entity);
+                            qa_ui::hud::print(
+                                &mut client.hud,
+                                texts,
+                                event,
+                                now,
+                                notify_time,
+                                center_time,
+                            )
+                        }
                         _ => true,
                     };
                     if success {

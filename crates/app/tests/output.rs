@@ -774,3 +774,79 @@ fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack
         assert_eq!(host.runtime.server.events.rejected_publications(), 0);
     }
 }
+
+#[test]
+fn client_hud_durations_hold_independent_leases_after_ring_retirement() {
+    let mut runtime = Runtime::load(64, []).unwrap();
+    let clients = [ModuleId(1), ModuleId(2)].map(|module| {
+        runtime
+            .server
+            .connect(Connection::Local, module, None)
+            .unwrap()
+    });
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    for (seat, (client, notify, center)) in [(clients[0], "1", "2"), (clients[1], "4", "5")]
+        .into_iter()
+        .enumerate()
+    {
+        host.local_clients[seat] = Some(client);
+        let owner = (
+            client,
+            host.runtime.server.clients[client.0 as usize].entity,
+        );
+        host.console.cvars.load_client_values(owner).unwrap();
+        let context = Context {
+            client_lifetime: Some(owner),
+            ..Default::default()
+        };
+        for (name, text) in [("con_notifytime", notify), ("cg_centertime", center)] {
+            let view = host.console.cvars.bind(name, context).unwrap();
+            host.console.cvars.force_write(view, text).unwrap();
+        }
+    }
+    host.runtime
+        .print_event(None, PrintKind::Notify, format_args!("shared text"));
+    host.runtime
+        .print_event(None, PrintKind::Center, format_args!("center"));
+    let mut result = qa_app::host::FrameResult::default();
+    host.dispatch_output(&mut Source::default(), &mut result);
+    assert!(host.runtime.server.events.is_empty());
+    for (client, notify, center) in [(clients[0], 1.0, 2.0), (clients[1], 4.0, 5.0)] {
+        let hud = &host.runtime.server.clients[client.0 as usize].hud;
+        assert_eq!(hud.notify[3].as_ref().unwrap().until, notify);
+        assert_eq!(hud.centerprint.as_ref().unwrap().until, center);
+    }
+    let text = host.runtime.server.clients[clients[0].0 as usize]
+        .hud
+        .notify[3]
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    // Console history has its own display lease, separate from either HUD.
+    host.console
+        .scrollback
+        .clear(&mut host.runtime.server.events.texts);
+    let server = &mut host.runtime.server;
+    qa_ui::hud::expire_messages(
+        &mut server.clients[clients[0].0 as usize].hud,
+        &mut server.events.texts,
+        1.5,
+    );
+    assert_eq!(
+        server.events.texts.get(text),
+        Some(b"shared text".as_slice())
+    );
+    qa_ui::hud::expire_messages(
+        &mut server.clients[clients[1].0 as usize].hud,
+        &mut server.events.texts,
+        4.5,
+    );
+    assert!(server.events.texts.get(text).is_none());
+}

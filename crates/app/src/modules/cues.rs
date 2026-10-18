@@ -54,6 +54,7 @@ impl FrameHost {
         current: Option<ReceivedFrame<'_>>,
     ) -> Option<Vec3> {
         let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
+        let (alias_roll, smooth_clients) = self.client_appearance(client);
         crate::client_scene::ClientEntities {
             client,
             player: snapshot
@@ -65,8 +66,8 @@ impl FrameHost {
             projection: snapshot.entity_projection(),
             appearance: snapshot
                 .appearance_policy()?
-                .with_smooth_clients(self.smooth_clients()),
-            alias_roll: self.alias_roll(),
+                .with_smooth_clients(smooth_clients),
+            alias_roll,
             interpolation: crate::snapshots::Interpolation {
                 time: current.map_or(qa_core::primitives::ThinkTime::Milliseconds(0), |frame| {
                     frame.time()

@@ -677,7 +677,7 @@ fn run() -> Result<(), String> {
             );
             let player = &runtime.server.clients[client.0 as usize].player;
             println!(
-                "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"seat\":{index},\"spawned_clients\":{seat_count},\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
+                "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"seat\":{index},\"spawned_clients\":{seat_count},\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"profile_consumed\":{},\"native_input_policy\":false}}",
                 json(&loaded.virtual_path)?,
                 rules.name(),
                 traces.name(),
@@ -691,8 +691,6 @@ fn run() -> Result<(), String> {
                 player.view_angles.0,
                 player.body.mins.0,
                 player.body.maxs.0,
-                loaded.native_source == RuleSetId::Quake
-                    && rules != qa_core::primitives::RuleSetId::Quake,
                 imported_profile.consumed()
             );
             *slot = Some(client);

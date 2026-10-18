@@ -496,10 +496,8 @@ pub struct FrameHost {
     nq_identity: [(qa_console::cvars::View, qa_console::cvars::View); SeatId::COUNT],
     lighting_scales: [CvarHandle; 2],
     style_interpolation: CvarHandle,
-    roll_angle: CvarHandle,
-    roll_speed: CvarHandle,
+    appearance_handles: [CvarHandle; 3],
     kick_angles: CvarHandle,
-    smooth_clients: CvarHandle,
     time_nudge: CvarHandle,
     push_latency: qa_console::cvars::View,
     timescale: CvarHandle,
@@ -1628,10 +1626,8 @@ impl FrameHost {
                 .collect(),
             lighting_scales,
             style_interpolation,
-            roll_angle,
-            roll_speed,
+            appearance_handles: [roll_angle, roll_speed, smooth_clients],
             kick_angles,
-            smooth_clients,
             time_nudge,
             push_latency,
             timescale,
@@ -1973,7 +1969,7 @@ impl FrameHost {
                     .get(client, qa_core::loopback::Endpoint::Client)
                     .map(|connection| {
                         snapshot.view_presentation(&connection.channel, player, |number| {
-                            self.client_entities(client, player, self.alias_roll())?
+                            self.client_entities(client, player)?
                                 .get(number)
                                 .map(|pose| pose.origin)
                         })
@@ -2009,7 +2005,10 @@ impl FrameHost {
                     &connection.channel,
                     player,
                     snapshot.view_source().is_none_or(|source| {
-                        self.console.cvars.integer_in(self.kick_angles, source) != 0
+                        self.console
+                            .cvars
+                            .integer_in(self.client_cvar_handle(client, self.kick_angles), source)
+                            != 0
                     }),
                 )
             });
@@ -2108,31 +2107,40 @@ impl FrameHost {
         );
     }
 
-    pub(crate) fn smooth_clients(&self) -> bool {
-        self.console.cvars.integer(self.smooth_clients) != 0
+    fn client_cvar_handle(&self, client: ClientId, handle: CvarHandle) -> CvarHandle {
+        self.runtime
+            .server
+            .clients
+            .get(client.0 as usize)
+            .and_then(|row| {
+                self.console
+                    .cvars
+                    .client_handle(handle, (client, row.entity))
+            })
+            .unwrap_or(handle)
     }
 
-    pub(crate) fn alias_roll(&self) -> qa_gameplay::rules::appearance::AliasRoll {
-        qa_gameplay::rules::appearance::AliasRoll {
-            angle: self
-                .console
-                .cvars
-                .value_in(self.roll_angle, qa_core::primitives::RuleSetId::QuakeWorld),
-            speed: self
-                .console
-                .cvars
-                .value_in(self.roll_speed, qa_core::primitives::RuleSetId::QuakeWorld),
-        }
+    pub(crate) fn client_appearance(
+        &self,
+        client: ClientId,
+    ) -> (qa_gameplay::rules::appearance::AliasRoll, bool) {
+        appearance_values(
+            &self.console.cvars,
+            self.appearance_handles,
+            (
+                client,
+                self.runtime.server.clients[client.0 as usize].entity,
+            ),
+        )
     }
 
     /// Pose readers do not require a loaded renderer or model catalog.
     pub fn client_entities_inputs(
         &self,
     ) -> [Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT] {
-        let alias_roll = self.alias_roll();
         std::array::from_fn(|seat| {
             let (client, _, player) = self.local_seat(seat)?;
-            self.client_entities(client, player, alias_roll)
+            self.client_entities(client, player)
         })
     }
 
@@ -2140,8 +2148,8 @@ impl FrameHost {
         &'a self,
         client: ClientId,
         player: &'a qa_core::primitives::PlayerState,
-        alias_roll: qa_gameplay::rules::appearance::AliasRoll,
     ) -> Option<crate::client_scene::ClientEntities<'a>> {
+        let (alias_roll, smooth_clients) = self.client_appearance(client);
         let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
         let channel = &self
             .runtime
@@ -2156,7 +2164,7 @@ impl FrameHost {
             projection: snapshot.entity_projection(),
             appearance: snapshot
                 .appearance_policy()?
-                .with_smooth_clients(self.smooth_clients()),
+                .with_smooth_clients(smooth_clients),
             alias_roll,
             interpolation: snapshot.interpolation()?,
         })
@@ -2232,7 +2240,10 @@ impl FrameHost {
                 style_interpolation: self
                     .console
                     .cvars
-                    .native_integer(self.style_interpolation, resources.state.layout.rules)
+                    .native_integer(
+                        self.client_cvar_handle(client, self.style_interpolation),
+                        resources.state.layout.rules,
+                    )
                     .unwrap_or(0),
                 rules: row.client_rules,
                 time: self.time,
@@ -2318,8 +2329,8 @@ impl FrameHost {
     /// Accepted CLIENT rows publish to Presentation once per connection, not
     /// once per seat/view. No native guest or SERVER entity pose is observed.
     pub fn publish_client_loops(&mut self) {
-        let alias_roll = self.alias_roll();
-        let smooth_clients = self.smooth_clients();
+        let cvars = &self.console.cvars;
+        let handles = self.appearance_handles;
         let runtime = &mut self.runtime;
         let server = &mut runtime.server;
         let mut budget = (server.events.capacity() / 4).max(1);
@@ -2365,6 +2376,8 @@ impl FrameHost {
             else {
                 continue;
             };
+            let (alias_roll, smooth_clients) =
+                appearance_values(cvars, handles, (snapshot.client, client.entity));
             snapshot.publish_loops(
                 snapshot
                     .seat()
@@ -2747,6 +2760,14 @@ impl FrameHost {
             let mut text =
                 qa_core::text::FixedText::<{ qa_network::message::LEGACY_STRING_BYTES }>::default();
             let (name, color) = self.nq_identity[seat.index()];
+            let [name, color] = self
+                .console
+                .cvars
+                .client_views(
+                    [name, color],
+                    (client, self.runtime.server.clients[slot].entity),
+                )
+                .unwrap_or([name, color]);
             let formatted = match reply {
                 StartupReply::Prespawn => text.set("prespawn"),
                 StartupReply::Name => self
@@ -3154,14 +3175,21 @@ impl FrameHost {
             self.console.cvars.value(self.volume),
         );
         let counts = crate::output::retire_resync_clients(self, &mut source.driver());
+        let cvars = &self.console.cvars;
+        let hud_times = [self.notify_time, self.center_time];
         result.output = crate::output::dispatch_frame(
             &mut self.runtime,
             source,
             &mut self.console.scrollback,
             &self.local_clients,
             self.time,
-            f64::from(self.console.cvars.value(self.notify_time)),
-            f64::from(self.console.cvars.value(self.center_time)),
+            |client, lifetime| {
+                let handles = cvars
+                    .client_handles(hud_times, (client, lifetime))
+                    .unwrap_or(hud_times);
+                let [notify, center] = handles.map(|handle| f64::from(cvars.value(handle)));
+                (notify, center)
+            },
             counts,
             |module, ordinal, world, usage| {
                 self.modules
@@ -4194,13 +4222,17 @@ impl FrameHost {
                 {
                     continue;
                 }
+                let packet_dup = self
+                    .console
+                    .cvars
+                    .integer(self.client_cvar_handle(*id, self.packet_dup));
                 if let Some(commands) = self
                     .runtime
                     .network
                     .get_mut(*id, qa_core::loopback::Endpoint::Client)
                     .and_then(|connection| connection.commands.as_mut())
                 {
-                    commands.set_packet_dup(self.console.cvars.integer(self.packet_dup));
+                    commands.set_packet_dup(packet_dup);
                 }
                 self.runtime
                     .send_client_command(*id, &commands[seat], self.time, source);
@@ -4333,6 +4365,21 @@ impl FrameHost {
         }
         commands
     }
+}
+
+fn appearance_values(
+    vars: &qa_console::cvars::Cvars,
+    handles: [CvarHandle; 3],
+    owner: (ClientId, qa_core::primitives::EntityId),
+) -> (qa_gameplay::rules::appearance::AliasRoll, bool) {
+    let [angle, speed, smooth] = vars.client_handles(handles, owner).unwrap_or(handles);
+    (
+        qa_gameplay::rules::appearance::AliasRoll {
+            angle: vars.value_in(angle, RuleSetId::QuakeWorld),
+            speed: vars.value_in(speed, RuleSetId::QuakeWorld),
+        },
+        vars.integer(smooth) != 0,
+    )
 }
 
 struct ConsoleInput<'a> {
