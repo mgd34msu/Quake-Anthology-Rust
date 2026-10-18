@@ -1956,19 +1956,19 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map(|(ordinal, _)| ordinal))
     },
     model_precache: |s, module, path, rules| {
-        let (image, model) = if let Some(owner) = s.cvar_client() {
-            (
-                s.cvars
-                    .client_view(s.storage.image_search, owner)
-                    .ok_or(CallError::Cvar)?,
-                s.storage
-                    .model
-                    .for_client(s.cvars, owner)
-                    .ok_or(CallError::Cvar)?,
-            )
-        } else {
-            (s.storage.image_search, s.storage.model)
+        let context = Context {
+            client_lifetime: s.cvar_client(),
+            ..s.cvars.context()
         };
+        let image = s
+            .cvars
+            .value_view(s.storage.image_search, context)
+            .ok_or(CallError::Cvar)?;
+        let model = s
+            .storage
+            .model
+            .for_context(s.cvars, context)
+            .ok_or(CallError::Cvar)?;
         let text = s.cvars.read(image).map_err(|_| CallError::File)?;
         let order =
             qa_render::material::resources::ImageSearchOrder::parse(text.as_str().as_bytes())

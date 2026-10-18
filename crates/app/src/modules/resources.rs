@@ -1155,24 +1155,20 @@ impl FrameHost {
             let model_lod = crate::render_settings::model_lod_views(&self.console.cvars)?;
             let view_policy =
                 crate::renderer::ViewPolicyViews::bind(&self.console.cvars, profile.rules)?;
-            let (curve_error, model_lod, model_controls, view_policy) =
-                if let Some(owner) = context.client_lifetime {
-                    let vars = &self.console.cvars;
-                    (
-                        vars.client_view(curve_error, owner)
-                            .ok_or("missing CLIENT curve settings")?,
-                        vars.client_views(model_lod, owner)
-                            .ok_or("missing CLIENT LOD settings")?,
-                        self.model_controls
-                            .for_client(vars, owner)
-                            .ok_or("missing CLIENT model settings")?,
-                        view_policy
-                            .for_client(vars, owner)
-                            .ok_or("missing CLIENT view settings")?,
-                    )
-                } else {
-                    (curve_error, model_lod, self.model_controls, view_policy)
-                };
+            let vars = &self.console.cvars;
+            let curve_error = vars
+                .value_view(curve_error, context)
+                .ok_or("missing CLIENT curve settings")?;
+            let model_lod = vars
+                .value_views(model_lod, context)
+                .ok_or("missing CLIENT LOD settings")?;
+            let model_controls = self
+                .model_controls
+                .for_context(vars, context)
+                .ok_or("missing CLIENT model settings")?;
+            let view_policy = view_policy
+                .for_context(vars, context)
+                .ok_or("missing CLIENT view settings")?;
             row.scene_role.configure(
                 profile,
                 viewport,

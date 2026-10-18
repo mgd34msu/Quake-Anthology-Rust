@@ -481,7 +481,6 @@ fn run() -> Result<(), String> {
     let source = options.presentation.unwrap_or(input.native_source);
     let policy =
         qa_app::client_policy::ClientPolicy::select(None, input.client_rules, None, None, None)?;
-    let rules = policy.movement;
     let mut console = Console::<Runtime>::new(Context {
         source,
         ..Context::default()

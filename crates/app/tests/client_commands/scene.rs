@@ -1117,6 +1117,14 @@ fn scene_words(
 }
 
 fn sun_direction(host: &mut FrameHost, module: ModuleId, client: Option<ClientId>) -> Vec3 {
+    sun_view(host, module, client).0
+}
+
+fn sun_view(
+    host: &mut FrameHost,
+    module: ModuleId,
+    client: Option<ClientId>,
+) -> (Vec3, qa_render::scene::Refdef) {
     assert!(host.runtime.scene.as_mut().unwrap().begin_frame());
     assert_eq!(sun_probe(host, module, client, 13, 0, None), 0);
     assert_eq!(sun_probe(host, module, client, 3, 0, None), 0);
@@ -1130,8 +1138,9 @@ fn sun_direction(host: &mut FrameHost, module: ModuleId, client: Option<ClientId
         .lighting
         .unwrap()
         .direction;
+    let refdef = view.refdef;
     assert!(composer.recycle(packet).is_ok());
-    direction
+    (direction, refdef)
 }
 
 fn assert_sun(actual: Vec3, expected: [f32; 3]) {
@@ -1292,6 +1301,95 @@ fn sun_contexts(native: bool) {
         [1., 0., 0.],
     );
     assert_sun(sun_direction(&mut host, ModuleId(6), None), [1., 0., 0.]);
+
+    let offline = host.console.cvars.local_context(Context {
+        seat: SeatId::ALL[2],
+        ..Default::default()
+    });
+    assert!(offline.client_lifetime.is_none());
+    for (source, name, root, selected) in [
+        (RuleSetId::Quake3, "r_lodCurveError", "250", "37.5"),
+        (RuleSetId::Quake3, "r_lodscale", "5", "1.25"),
+        (RuleSetId::Quake3, "r_lodbias", "0", "2"),
+        (RuleSetId::Quake3, "r_novis", "0", "1"),
+        (RuleSetId::Quake3, "r_nocull", "0", "1"),
+        (RuleSetId::Quake3, "r_znear", "4", "2"),
+        (RuleSetId::Quake, "r_enhancedmodels", "0", "0.5"),
+        (RuleSetId::Quake, "r_model_distance", "64", "128"),
+        (RuleSetId::Quake2Rerelease, "gl_md5_load", "1", "1"),
+        (RuleSetId::Quake2Rerelease, "gl_md5_use", "1", "0.5"),
+    ] {
+        let global = host
+            .console
+            .cvars
+            .bind(
+                name,
+                Context {
+                    source,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        host.console.cvars.force_write(global, root).unwrap();
+        let view = host
+            .console
+            .cvars
+            .bind(name, Context { source, ..offline })
+            .unwrap();
+        host.console.cvars.force_write(view, selected).unwrap();
+    }
+    let peer_before = sun_view(&mut host, ModuleId(5), Some(clients[1])).1;
+    let first = sun_view(&mut host, ModuleId(6), None).1;
+    assert_eq!(
+        (
+            first.curve_error,
+            first.model_lod.scale,
+            first.model_lod.bias,
+            first.near
+        ),
+        (37.5, 1.25, 2, 2.)
+    );
+    assert!(first.policy.ignore_pvs && first.policy.ignore_areas && !first.policy.cull_bounds);
+    assert!(first.model_replacements[RuleSetId::Quake as usize].enabled);
+    assert!(!first.model_replacements[RuleSetId::Quake2 as usize].enabled);
+    assert_eq!(
+        first.model_replacements[RuleSetId::Quake as usize].distance,
+        128.
+    );
+    for (name, value) in [
+        ("r_lodCurveError", "9.5"),
+        ("r_lodscale", "0.75"),
+        ("r_lodbias", "-3"),
+        ("r_znear", "8"),
+    ] {
+        let view = host.console.cvars.bind(name, offline).unwrap();
+        host.console.cvars.force_write(view, value).unwrap();
+    }
+    let second = sun_view(&mut host, ModuleId(6), None).1;
+    assert_eq!(
+        (
+            second.curve_error,
+            second.model_lod.scale,
+            second.model_lod.bias,
+            second.near
+        ),
+        (9.5, 0.75, -3, 8.)
+    );
+    let peer_after = sun_view(&mut host, ModuleId(5), Some(clients[1])).1;
+    assert_eq!(
+        (
+            peer_after.curve_error,
+            peer_after.model_lod.scale,
+            peer_after.model_lod.bias,
+            peer_after.near
+        ),
+        (
+            peer_before.curve_error,
+            peer_before.model_lod.scale,
+            peer_before.model_lod.bias,
+            peer_before.near
+        )
+    );
 
     // A reached native prefix applies even when public registration returns zero.
     assert_eq!(

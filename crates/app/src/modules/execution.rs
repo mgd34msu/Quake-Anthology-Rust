@@ -224,7 +224,7 @@ struct ShaderRemap {
 }
 #[derive(Clone, Copy)]
 struct RendererScope {
-    client: Option<(ClientId, EntityId)>,
+    values: ConsoleContext,
     context: ShaderContextId,
     profile: ModelProfile,
     world: Option<WorldId>,
@@ -1565,7 +1565,10 @@ fn renderer_scope(
     let ui_fullscreen = host.renderer_fullscreen_ui();
     let row = host.module_row(module).ok_or("missing renderer module")?;
     Ok(RendererScope {
-        client: super::module_connection(host, module),
+        values: host.console.cvars.local_context(ConsoleContext {
+            client_lifetime: super::module_connection(host, module),
+            ..row.request.context.console
+        }),
         context,
         ui_fullscreen,
         profile: row
@@ -1713,19 +1716,15 @@ fn register_renderer(
     } else {
         crate::model_assets::RegistrationVariant::Guard(scope.ui_fullscreen)
     };
-    let (image_view, model_controls) = if let Some(client) = scope.client {
-        (
-            host.console
-                .cvars
-                .client_view(host.image_search, client)
-                .ok_or("missing CLIENT image settings")?,
-            host.model_controls
-                .for_client(&host.console.cvars, client)
-                .ok_or("missing CLIENT model settings")?,
-        )
-    } else {
-        (host.image_search, host.model_controls)
-    };
+    let image_view = host
+        .console
+        .cvars
+        .value_view(host.image_search, scope.values)
+        .ok_or("missing CLIENT image settings")?;
+    let model_controls = host
+        .model_controls
+        .for_context(&host.console.cvars, scope.values)
+        .ok_or("missing CLIENT model settings")?;
     let image_search = match variant {
         crate::model_assets::RegistrationVariant::Retained => None,
         crate::model_assets::RegistrationVariant::Guard(_) => Some(

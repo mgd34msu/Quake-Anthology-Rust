@@ -1900,9 +1900,13 @@ impl FrameHost {
             let (world, world_presentation) = self.local_worlds[seat]?;
             let owner = (client, row.entity);
             let vars = &self.console.cvars;
-            let curve = vars.client_view(self.curve_error, owner)?;
-            let lod = vars.client_views(self.model_lod, owner)?;
-            let controls = self.model_controls.for_client(vars, owner)?;
+            let context = qa_console::views::Context {
+                client_lifetime: Some(owner),
+                ..Default::default()
+            };
+            let curve = vars.value_view(self.curve_error, context)?;
+            let lod = vars.value_views(self.model_lod, context)?;
+            let controls = self.model_controls.for_context(vars, context)?;
             let curve_error = crate::render_settings::curve_error(vars, curve);
             let model_lod = crate::render_settings::model_lod(vars, lod);
             let model_replacements =
@@ -1928,7 +1932,7 @@ impl FrameHost {
                 })
                 .unwrap_or(row.client_rules);
             let (policy, near) = self.view_policy[rules as usize]
-                .for_client(vars, owner)?
+                .for_context(vars, context)?
                 .read(&self.console.cvars)
                 .ok()?;
             let camera = self.client_camera(client, player);

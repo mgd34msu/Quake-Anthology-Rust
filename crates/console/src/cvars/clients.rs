@@ -485,21 +485,40 @@ impl Cvars {
         Ok(())
     }
 
-    pub fn client_view(&self, mut view: View, owner: (ClientId, EntityId)) -> Option<View> {
-        view.context.client_lifetime = Some(owner);
-        view.context.cvar_seat = None;
+    /// Select a resolved view's value owner without repeating name lookup.
+    /// Its native alias, source, role and seat identity remain bound at load.
+    pub fn value_view(&self, mut view: View, selection: Context) -> Option<View> {
+        view.context.client_lifetime = selection.client_lifetime;
+        view.context.cvar_seat = selection.cvar_seat;
         view.handle = self.context_handle(view.handle, view.context)?;
         Some(view)
     }
-    pub fn client_views<const N: usize>(
+    pub fn value_views<const N: usize>(
         &self,
         mut views: [View; N],
-        owner: (ClientId, EntityId),
+        selection: Context,
     ) -> Option<[View; N]> {
         for view in &mut views {
-            *view = self.client_view(*view, owner)?;
+            *view = self.value_view(*view, selection)?;
         }
         Some(views)
+    }
+    pub fn client_view(&self, view: View, owner: (ClientId, EntityId)) -> Option<View> {
+        self.client_views([view], owner).map(|[view]| view)
+    }
+    pub fn client_views<const N: usize>(
+        &self,
+        views: [View; N],
+        owner: (ClientId, EntityId),
+    ) -> Option<[View; N]> {
+        self.value_views(
+            views,
+            Context {
+                client_lifetime: Some(owner),
+                cvar_seat: None,
+                ..self.context
+            },
+        )
     }
 
     pub fn client_handles<const N: usize>(

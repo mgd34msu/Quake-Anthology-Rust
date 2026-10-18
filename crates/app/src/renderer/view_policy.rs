@@ -12,13 +12,9 @@ pub(crate) struct ViewPolicyViews {
     views: [View; 5],
 }
 impl ViewPolicyViews {
-    pub(crate) fn for_client(
-        self,
-        vars: &Cvars,
-        owner: (qa_core::primitives::ClientId, qa_core::primitives::EntityId),
-    ) -> Option<Self> {
+    pub(crate) fn for_context(self, vars: &Cvars, context: Context) -> Option<Self> {
         Some(Self {
-            views: vars.client_views(self.views, owner)?,
+            views: vars.value_views(self.views, context)?,
             ..self
         })
     }
