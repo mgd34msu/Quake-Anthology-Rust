@@ -327,7 +327,7 @@ fn shader_reply(
     } else {
         services
             .model_lookup
-            .and_then(|lookup| lookup.shader_handle(request.name.as_bytes(), request.source))
+            .and_then(|lookup| lookup.shader_handle(request.name.as_bytes(), request.source, None))
             .unwrap_or(0)
     };
     handle as u32 as u64

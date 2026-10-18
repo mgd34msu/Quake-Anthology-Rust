@@ -32,7 +32,12 @@ impl ModelLookup for Catalog {
     ) -> Option<Bounds> {
         Some(BOUNDS)
     }
-    fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
+    fn shader_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
         if name == b"failed" {
             return match source {
                 RuleSetId::Quake2 => Some(93),
@@ -42,10 +47,20 @@ impl ModelLookup for Catalog {
         }
         (name != b"unknown").then_some(93)
     }
-    fn skin_handle(&self, name: &[u8], _: RuleSetId) -> Option<i32> {
+    fn skin_handle(
+        &self,
+        name: &[u8],
+        _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
         (name != b"unknown").then_some(92)
     }
-    fn model_handle(&self, name: &[u8], _: RuleSetId) -> Option<i32> {
+    fn model_handle(
+        &self,
+        name: &[u8],
+        _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
         (name != b"unknown").then_some(91)
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {
@@ -510,10 +525,20 @@ fn load_world_keeps_a_long_cached_name_out_of_the_host_request() {
             ) -> Option<Bounds> {
                 None
             }
-            fn shader_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
+            fn shader_handle(
+                &self,
+                _: &[u8],
+                _: RuleSetId,
+                _search: Option<&qa_content::vfs::SearchView>,
+            ) -> Option<i32> {
                 None
             }
-            fn model_handle(&self, _: &[u8], _: RuleSetId) -> Option<i32> {
+            fn model_handle(
+                &self,
+                _: &[u8],
+                _: RuleSetId,
+                _search: Option<&qa_content::vfs::SearchView>,
+            ) -> Option<i32> {
                 None
             }
             fn model_bounds(&self, _: i32) -> Option<Bounds> {

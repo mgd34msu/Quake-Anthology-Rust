@@ -472,7 +472,7 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
     assert_eq!(
         owner
             .catalog()
-            .shader_handle(b"ui/sibling", profile.source_rules),
+            .shader_handle(b"ui/sibling", profile.source_rules, None),
         Some(handle)
     );
     assert_eq!(

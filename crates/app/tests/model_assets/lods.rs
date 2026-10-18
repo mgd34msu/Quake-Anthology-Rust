@@ -75,7 +75,7 @@ fn md3_lod_family_keeps_native_discovery_order_and_independent_surface_skin_list
     let catalog = owner.catalog();
     assert_eq!(catalog.capacity().registrations, 1);
     for name in [b"models/family_1.md3".as_slice(), b"models/family_2.md3"] {
-        assert_eq!(catalog.model_handle(name, profile.source_rules), None);
+        assert_eq!(catalog.model_handle(name, profile.source_rules, None), None);
         assert_eq!(catalog.metadata(name, None), None);
     }
     let receipts = catalog
@@ -278,12 +278,14 @@ fn md3_unknown_magic_and_invalid_base_fail_the_family_without_publishing_suffix_
         assert_eq!(
             owner
                 .catalog()
-                .model_handle(b"models/family.md3", profile.source_rules),
+                .model_handle(b"models/family.md3", profile.source_rules, None),
             None
         );
         for suffix in [b"models/family_1.md3".as_slice(), b"models/family_2.md3"] {
             assert_eq!(
-                owner.catalog().model_handle(suffix, profile.source_rules),
+                owner
+                    .catalog()
+                    .model_handle(suffix, profile.source_rules, None),
                 None
             );
         }

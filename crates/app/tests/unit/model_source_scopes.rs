@@ -729,7 +729,20 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
     assert_eq!(owner.assets.counts(), counts);
     let (mut owner, mut cpu) = super::registration_tests::publish(owner);
     let equivalent_low = files.vfs.search_view([low_mount, low_mount]).unwrap();
+    files.vfs.take_lookup_count();
     for (view, (file, _)) in [&equivalent_low, &high].into_iter().zip(&records) {
+        assert_eq!(
+            owner
+                .catalog
+                .file_handle(request.path.as_bytes(), Some(view)),
+            Some(file.0 as i32)
+        );
+        assert_eq!(
+            owner
+                .catalog
+                .model_handle(request.path.as_bytes(), RuleSetId::Quake3, Some(view)),
+            Some(file.0 as i32)
+        );
         assert_eq!(
             owner
                 .catalog
@@ -759,6 +772,63 @@ fn retained_model_records_compile_and_paint_their_own_source_images() {
             .metadata(request.path.as_bytes(), Some(&foreign))
             .is_none()
     );
+    for (view, &(handle, _)) in [&equivalent_low, &high].into_iter().zip(&shaders) {
+        assert_eq!(
+            owner
+                .catalog
+                .shader_handle(b"textures/body", RuleSetId::Quake3, Some(view)),
+            Some(handle)
+        );
+    }
+    for (view, &(handle, _)) in [&equivalent_low, &high].into_iter().zip(&skins) {
+        assert_eq!(
+            owner
+                .catalog
+                .skin_handle(b"models/player.skin", RuleSetId::Quake3, Some(view)),
+            Some(handle)
+        );
+    }
+    assert_eq!(
+        owner.catalog.file_handle(request.path.as_bytes(), None),
+        Some(default_model)
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .model_handle(request.path.as_bytes(), RuleSetId::Quake3, None),
+        Some(default_model)
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .shader_handle(b"textures/body", RuleSetId::Quake3, None),
+        Some(default_shader)
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .file_handle(request.path.as_bytes(), Some(&foreign)),
+        None
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .model_handle(request.path.as_bytes(), RuleSetId::Quake3, Some(&foreign)),
+        None
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .shader_handle(b"textures/body", RuleSetId::Quake3, Some(&foreign)),
+        None
+    );
+    assert_eq!(
+        owner
+            .catalog
+            .skin_handle(b"models/player.skin", RuleSetId::Quake3, Some(&foreign)),
+        None
+    );
+    assert_eq!(files.vfs.take_lookup_count(), 0);
     for &(file, expected) in &records {
         let registration = owner
             .catalog

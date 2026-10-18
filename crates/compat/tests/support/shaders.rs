@@ -26,7 +26,12 @@ impl qa_compat::services::ModelLookup for ShaderLoader {
     ) -> Option<qa_core::primitives::Orientation> {
         None
     }
-    fn model_handle(&self, _: &[u8], _: qa_core::primitives::RuleSetId) -> Option<i32> {
+    fn model_handle(
+        &self,
+        _: &[u8],
+        _: qa_core::primitives::RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
         None
     }
     fn model_bounds(&self, _: i32) -> Option<qa_core::primitives::Bounds> {
@@ -40,7 +45,12 @@ impl qa_compat::services::ModelLookup for ShaderLoader {
     ) -> Option<qa_core::primitives::Bounds> {
         None
     }
-    fn shader_handle(&self, name: &[u8], _: RuleSetId) -> Option<i32> {
+    fn shader_handle(
+        &self,
+        name: &[u8],
+        _: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
         match name {
             b"ui/pic" => Some(42),
             b"ui/missing" => Some(0),

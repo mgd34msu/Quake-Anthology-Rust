@@ -2088,7 +2088,7 @@ fn queued_startup_prepares_world_and_retains_unready_output(factory: fn() -> (Pr
     assert_eq!(
         owner
             .catalog()
-            .shader_handle(b"ui/cold.tga", RuleSetId::Quake3),
+            .shader_handle(b"ui/cold.tga", RuleSetId::Quake3, None),
         Some(1)
     );
     assert!(host.local_worlds[0].is_some());
@@ -2201,7 +2201,7 @@ fn model_registration_uses_shared_services(factory: fn() -> (Program, u64)) {
     assert_eq!(call(&mut host, 0, 12, &[path]), Ok(handle));
     let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
     assert_eq!(
-        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3, None),
         Some(handle as i32)
     );
     assert!(

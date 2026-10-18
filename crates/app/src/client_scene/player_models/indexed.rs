@@ -274,7 +274,7 @@ impl PlayerBindings {
             };
             let Some(registration) = owner
                 .catalog()
-                .file_handle(model.text)
+                .file_handle(model.text, None)
                 .and_then(|handle| owner.catalog().renderer_registration(handle, *profile))
             else {
                 continue;

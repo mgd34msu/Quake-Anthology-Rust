@@ -1215,7 +1215,10 @@ fn published_pcx_refresh_retries_backend_admission_without_downloading_again() {
     settle(&mut host, &mut source);
     let owner = host.runtime.model_assets.as_ref().unwrap();
     let profile = owner.catalog().profiles().next().unwrap();
-    let handle = owner.catalog().file_handle(b"models/ready.md2").unwrap();
+    let handle = owner
+        .catalog()
+        .file_handle(b"models/ready.md2", None)
+        .unwrap();
     let registration = owner
         .catalog()
         .renderer_registration(handle, profile)

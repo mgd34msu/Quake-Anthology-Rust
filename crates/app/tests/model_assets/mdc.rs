@@ -115,7 +115,7 @@ fn compressed_mdc_mesh_tags_and_skinned_pixels_use_independent_source_and_presen
         let profile = request.profile();
         let native = owner
             .catalog()
-            .model_handle(request.path.as_bytes(), profile.source_rules)
+            .model_handle(request.path.as_bytes(), profile.source_rules, None)
             .unwrap();
         assert_eq!(*handle.get_or_insert(native), native);
         let registration = owner
@@ -335,13 +335,13 @@ fn requested_extension_prefers_its_format_and_missing_lod_alternates_preserve_sp
         assert_eq!(
             owner
                 .catalog()
-                .model_handle(b"models/mixed_2.md3", profile.source_rules),
+                .model_handle(b"models/mixed_2.md3", profile.source_rules, None),
             None
         );
         assert_eq!(
             owner
                 .catalog()
-                .model_handle(b"models/mixed_2.mdc", profile.source_rules),
+                .model_handle(b"models/mixed_2.mdc", profile.source_rules, None),
             None
         );
         fixture.vfs.take_lookup_count();

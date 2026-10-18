@@ -135,7 +135,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     let first_inline = owner.register_inline(first_world, 1).unwrap();
     let first_file = owner
         .catalog()
-        .file_handle(first.virtual_path.as_bytes())
+        .file_handle(first.virtual_path.as_bytes(), None)
         .unwrap();
     let first_binding = owner
         .catalog()
@@ -249,7 +249,7 @@ fn parsed_world_transaction_commits_staged_scratch_after_cpu_admission() {
     );
     assert_eq!(owner.catalog().capacity().inline_bindings, 4);
     assert_eq!(
-        owner.catalog().file_handle(b"maps/first.bsp"),
+        owner.catalog().file_handle(b"maps/first.bsp", None),
         Some(first_file)
     );
     assert_eq!(
@@ -500,7 +500,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
                 == Some("maps/large.bsp")
         })
         .unwrap() as i32;
-    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp"), None);
+    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp", None), None);
     let retained_material = owner.catalog().shader_binding(shader, profile).unwrap();
     let original = binding(owner.catalog(), "models/test/tris.md2", profile, 0).unwrap();
     let old_inline = owner.register_inline(old_world, 1).unwrap();
@@ -549,7 +549,7 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
     assert_eq!(geometry.geometries().collect::<Vec<_>>(), [old.collision]);
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(owner.catalog().capacity(), old_capacity);
-    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp"), None);
+    assert_eq!(owner.catalog().file_handle(b"maps/large.bsp", None), None);
     assert_eq!(
         owner.catalog().registration_cached(
             qa_compat::services::RendererRegistration::Skin,
@@ -641,7 +641,12 @@ fn rejected_world_registration_preserves_old_assets_and_same_name_can_retry() {
             .collision,
         Some(large.collision)
     );
-    assert!(owner.catalog().file_handle(b"maps/large.bsp").is_some());
+    assert!(
+        owner
+            .catalog()
+            .file_handle(b"maps/large.bsp", None)
+            .is_some()
+    );
     assert_eq!(
         owner
             .catalog()
@@ -688,7 +693,7 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     let original = binding(owner.catalog(), "models/test/tris.md2", profile, 0).unwrap();
     let original_handle = owner
         .catalog()
-        .file_handle(b"models/test/tris.md2")
+        .file_handle(b"models/test/tris.md2", None)
         .unwrap();
     let bounds = owner.catalog().model_bounds(original_handle).unwrap();
     let mut cpu = CpuBackend::load_with_limits(
@@ -740,7 +745,9 @@ fn rejected_cpu_registration_does_not_poison_later_assets_or_same_name_retries()
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(cpu.admitted_assets(), Some(initial));
     assert_eq!(
-        owner.catalog().shader_handle(b"ui/bad", RuleSetId::Quake2),
+        owner
+            .catalog()
+            .shader_handle(b"ui/bad", RuleSetId::Quake2, None),
         None
     );
     let capacity = owner.catalog().capacity();
@@ -945,7 +952,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
                 == Some("progs/test")
         })
         .unwrap() as i32;
-    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    assert_eq!(owner.catalog().file_handle(b"progs/test", None), None);
     let mut cpu = CpuBackend::load_with_limits(
         8,
         8,
@@ -976,7 +983,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
         )
         .unwrap_err();
     assert!(error.contains("image"), "{error}");
-    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    assert_eq!(owner.catalog().file_handle(b"progs/test", None), None);
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(
         owner.catalog().shader_binding(shader, shader_profile),
@@ -1027,7 +1034,7 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             )
             .is_err()
     );
-    assert_eq!(owner.catalog().file_handle(b"progs/test"), None);
+    assert_eq!(owner.catalog().file_handle(b"progs/test", None), None);
     assert_eq!(owner.assets().counts(), initial);
     let (handle, _, counts) = owner
         .prepare_registration(
@@ -1039,7 +1046,10 @@ fn late_model_retry_restores_a_preexisting_empty_name_and_exact_profile_failures
             |assets, _| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
-    assert_eq!(owner.catalog().file_handle(b"progs/test"), Some(handle));
+    assert_eq!(
+        owner.catalog().file_handle(b"progs/test", None),
+        Some(handle)
+    );
     assert_eq!(
         owner
             .catalog()
@@ -1177,7 +1187,7 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 assert_eq!(
                     owner
                         .catalog()
-                        .shader_handle(b"shared", profile.source_rules),
+                        .shader_handle(b"shared", profile.source_rules, None),
                     None
                 )
             }
@@ -1202,11 +1212,13 @@ fn late_registration_restores_old_folded_indices_and_private_inline_handles() {
                 assert_eq!(
                     owner
                         .catalog()
-                        .skin_handle(b"textures/alternate", profile.source_rules),
+                        .skin_handle(b"textures/alternate", profile.source_rules, None),
                     Some(handle)
                 );
                 assert_eq!(
-                    owner.catalog().skin_handle(b"shared", profile.source_rules),
+                    owner
+                        .catalog()
+                        .skin_handle(b"shared", profile.source_rules, None),
                     None
                 );
             }
@@ -1377,19 +1389,19 @@ fn late_exact_profile_bindings_wait_for_backend_admission_and_owner_publication(
     assert_eq!(
         owner
             .catalog()
-            .model_handle(b"models/later/tris.md2", profile.source_rules),
+            .model_handle(b"models/later/tris.md2", profile.source_rules, None),
         Some(later)
     );
     assert_eq!(
         owner
             .catalog()
-            .skin_handle(b"players/later/skin.pcx", profile.source_rules),
+            .skin_handle(b"players/later/skin.pcx", profile.source_rules, None),
         Some(skin)
     );
     assert_eq!(
         owner
             .catalog()
-            .shader_handle(b"ui/later.tga", profile.source_rules),
+            .shader_handle(b"ui/later.tga", profile.source_rules, None),
         Some(shader)
     );
     // File metadata remains readable and does not grant rendering authority.
@@ -1804,7 +1816,7 @@ fn native_skins_resolve_once_for_each_profile_and_preserve_first_mapping() {
         );
         let ModelView { assets, catalog } = owner.view();
         assert_eq!(
-            catalog.skin_handle(b"models/test.skin", RuleSetId::Quake3),
+            catalog.skin_handle(b"models/test.skin", RuleSetId::Quake3, None),
             Some(skin)
         );
         let mut profile_materials = Vec::new();
@@ -2003,7 +2015,7 @@ fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
         );
         let missing = owner
             .catalog()
-            .skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3)
+            .skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3, None)
             .unwrap();
         fixture.remove("models/test/skin1.pcx");
         assert_eq!(
@@ -2012,15 +2024,15 @@ fn bitmap_player_skins_use_native_alias_materials_and_missing_skins_fail() {
         );
         let ModelView { assets, catalog } = owner.view();
         assert_eq!(
-            catalog.skin_handle(skin_path, RuleSetId::Quake2),
+            catalog.skin_handle(skin_path, RuleSetId::Quake2, None),
             Some(skin)
         );
         assert_eq!(
-            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake2),
+            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake2, None),
             Some(0)
         );
         assert_eq!(
-            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3),
+            catalog.skin_handle(b"players/missing/skin.pcx", RuleSetId::Quake3, None),
             Some(missing)
         );
         assert!(!catalog.renderer_skin(missing, native.profile()));
@@ -2275,11 +2287,11 @@ fn native_model_handles_share_file_registration_and_bounds() {
     assert_eq!(catalog.capacity(), capacity);
     assert_eq!(catalog.capacity().registrations, 1);
     assert_eq!(
-        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3),
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake3, None),
         Some(handle)
     );
     assert_eq!(
-        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2),
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2, None),
         None
     );
     assert_eq!(catalog.model_bounds(handle), Some(native_bounds));
@@ -2809,7 +2821,7 @@ fn missing_optional_model_shaders_keep_native_bounds_and_mesh_with_default_indic
         first_frame
     );
     assert_eq!(
-        catalog.model_handle(b"models/test.md3", RuleSetId::Quake3),
+        catalog.model_handle(b"models/test.md3", RuleSetId::Quake3, None),
         Some(handle)
     );
     assert_eq!(catalog.model_bounds(handle), Some(first_frame));
@@ -2870,11 +2882,11 @@ fn cached_native_model_admission_keeps_failed_source_profiles_separate() {
     fixture.remove("textures/body.tga");
     let catalog = owner.catalog();
     assert_eq!(
-        catalog.model_handle(b"MODELS\\TEST.MD2", RuleSetId::Quake3),
+        catalog.model_handle(b"MODELS\\TEST.MD2", RuleSetId::Quake3, None),
         Some(handle)
     );
     assert_eq!(
-        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2),
+        catalog.model_handle(b"models/test.md2", RuleSetId::Quake2, None),
         None
     );
     assert_eq!(catalog.model_bounds(handle), Some(bounds));
@@ -2919,7 +2931,7 @@ fn native_shader_first_registration_keeps_mips_display_and_exact_profiles() {
         );
         let ModelView { assets, catalog } = owner.view();
         assert_eq!(
-            catalog.shader_handle(b"uI/pIC", RuleSetId::Quake3),
+            catalog.shader_handle(b"uI/pIC", RuleSetId::Quake3, None),
             Some(handle)
         );
         assert_eq!(catalog.shader_name(handle), Some(b"UI/Pic".as_slice()));
@@ -3066,7 +3078,9 @@ fn native_shader_sources_keep_their_first_filename_and_mipmap_choice() {
             assert_eq!(owner.assets().counts(), counts);
         }
         assert_eq!(
-            owner.catalog().shader_handle(b"Ui", RuleSetId::Quake3),
+            owner
+                .catalog()
+                .shader_handle(b"Ui", RuleSetId::Quake3, None),
             handle
         );
         assert_eq!(
@@ -3186,7 +3200,10 @@ fn borrowed_renderer_request_keeps_long_ordinary_model_names() {
         )
         .unwrap();
     assert_eq!(cpu.admitted_assets(), Some(counts));
-    assert_eq!(owner.catalog().file_handle(path.as_bytes()), Some(handle));
+    assert_eq!(
+        owner.catalog().file_handle(path.as_bytes(), None),
+        Some(handle)
+    );
     assert!(
         owner
             .catalog()
@@ -3254,7 +3271,9 @@ fn cold_shader_source_failure_does_not_hide_another_source_or_repeat_the_attempt
     assert_eq!(owner.assets().counts(), counts);
     assert_eq!(owner.catalog().diagnostics.len(), diagnostics);
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", first.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", first.source_rules, None),
         Some(handle)
     );
     assert_eq!(
@@ -3351,7 +3370,9 @@ fn late_shader_source_rollback_keeps_admitted_sources_and_retries_only_new_slots
     assert_eq!(owner.assets().counts(), before);
     assert_eq!(cpu.admitted_assets(), Some(before));
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", first.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", first.source_rules, None),
         Some(handle)
     );
     assert_eq!(
@@ -3512,7 +3533,9 @@ fn late_shader_exact_profile_failure_restores_all_new_source_slots() {
         assert_eq!(owner.catalog().diagnostics.len(), negative_diagnostics);
     }
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", first.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", first.source_rules, None),
         Some(handle)
     );
     assert_eq!(
@@ -3889,15 +3912,21 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     assert!(fixture.vfs.take_lookup_count() > 0);
     assert_eq!(owner.assets().counts(), before);
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", first.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", first.source_rules, None),
         Some(handle)
     );
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", second.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", second.source_rules, None),
         Some(0)
     );
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", third.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", third.source_rules, None),
         None
     );
     assert_eq!(
@@ -3967,7 +3996,9 @@ fn late_shader_failed_source_is_zero_while_other_sources_remain_independent() {
     );
     assert!(owner.catalog().shader_binding(handle, third).is_some());
     assert_eq!(
-        owner.catalog().shader_handle(b"ui", second.source_rules),
+        owner
+            .catalog()
+            .shader_handle(b"ui", second.source_rules, None),
         Some(0)
     );
     fixture.vfs.take_lookup_count();
@@ -4142,7 +4173,7 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
     );
     let catalog = owner.catalog();
     assert_eq!(
-        catalog.shader_handle(b"ui/missing", RuleSetId::Quake3),
+        catalog.shader_handle(b"ui/missing", RuleSetId::Quake3, None),
         Some(0)
     );
     let missing = catalog
@@ -4159,7 +4190,7 @@ fn native_shader_first_dot_folded_key_keeps_separator_identities_and_named_misse
     );
     assert_ne!(missing.shader, qa_render::ShaderBindingId(0));
     assert_eq!(
-        catalog.shader_handle(b"ui/unknown", RuleSetId::Quake3),
+        catalog.shader_handle(b"ui/unknown", RuleSetId::Quake3, None),
         None
     );
     assert_eq!(

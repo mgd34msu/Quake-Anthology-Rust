@@ -886,7 +886,7 @@ impl ClientModelBindings {
                     let (world, presentation) = world.selected()?;
                     Some((lookup.inline_handle(world, index)?, Some(presentation)))
                 } else {
-                    Some((lookup.file_handle(row.text)?, None))
+                    Some((lookup.file_handle(row.text, None)?, None))
                 }
             });
             let features = policy.model_features(row.text);

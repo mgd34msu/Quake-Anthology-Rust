@@ -995,7 +995,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
                 == Some("progs/test.mdl")
         })
         .unwrap() as i32;
-    assert_eq!(owner.catalog().file_handle(b"progs/test.mdl"), None);
+    assert_eq!(owner.catalog().file_handle(b"progs/test.mdl", None), None);
     assert_eq!(owner.catalog().capacity().registrations, 0);
     let mut cpu = cpu(&mut owner);
     let (profile, _) = owner
@@ -1573,11 +1573,11 @@ fn first_fullscreen_shader_and_skin_remain_visible_to_frozen_source_lookup() {
     fixture.vfs.take_lookup_count();
     let frozen: &dyn ModelLookup = owner.catalog();
     assert_eq!(
-        frozen.shader_handle(b"textures/glow", profile.source_rules),
+        frozen.shader_handle(b"textures/glow", profile.source_rules, None),
         Some(shader)
     );
     assert_eq!(
-        frozen.skin_handle(b"models/test.skin", profile.source_rules),
+        frozen.skin_handle(b"models/test.skin", profile.source_rules, None),
         Some(skin)
     );
     assert_eq!(fixture.vfs.take_lookup_count(), 0);

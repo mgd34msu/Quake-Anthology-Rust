@@ -98,7 +98,7 @@ fn indexed_player_variants_share_source_and_publish_exact_dual_color_bodies() {
     assert_eq!(
         owner
             .catalog()
-            .skin_handle(b"skins/test.pcx", RuleSetId::QuakeWorld),
+            .skin_handle(b"skins/test.pcx", RuleSetId::QuakeWorld, None),
         None
     );
     let old_rgba = first_image.rgba.clone();

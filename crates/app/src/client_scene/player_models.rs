@@ -468,7 +468,7 @@ impl ClientAssets<'_> {
                 }
             }
             Self::Frozen { catalog, profile } => ModelCapture::Bound(ClientModel::Mesh(
-                catalog.renderer_registration(catalog.file_handle(path)?, (*profile)?)?,
+                catalog.renderer_registration(catalog.file_handle(path, None)?, (*profile)?)?,
             )),
             Self::Prepared { .. } => {
                 let handle = self.prepare(path, RendererRegistration::Model)?;
@@ -499,7 +499,7 @@ impl ClientAssets<'_> {
                 .filter(|&handle| handle > 0),
             Self::Frozen { catalog, profile } => {
                 let handle = catalog
-                    .skin_handle(path, (*profile)?.source_rules)
+                    .skin_handle(path, (*profile)?.source_rules, None)
                     .filter(|&handle| handle > 0)?;
                 catalog.renderer_skin(handle, (*profile)?).then_some(handle)
             }

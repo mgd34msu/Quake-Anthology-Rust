@@ -7086,7 +7086,12 @@ impl ModelAssets {
     }
 }
 
-fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<i32> {
+fn shader_handle(
+    catalog: &ModelCatalog,
+    raw: &[u8],
+    source: RuleSetId,
+    search: Option<&SearchView>,
+) -> Option<i32> {
     if raw.is_empty() {
         return Some(0);
     }
@@ -7094,7 +7099,7 @@ fn shader_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Optio
         &catalog.names,
         &catalog.shader_indices,
         raw,
-        &catalog.registration_vfs,
+        search.unwrap_or(&catalog.registration_vfs),
     )?;
     let index = index?;
     catalog.shader_source_handle(
@@ -7123,7 +7128,12 @@ fn find_skin_index(
     let group = names.find_path_group(raw)?;
     Some((group, indices.find(source, group).map(|index| index.0)))
 }
-fn skin_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<i32> {
+fn skin_handle(
+    catalog: &ModelCatalog,
+    raw: &[u8],
+    source: RuleSetId,
+    search: Option<&SearchView>,
+) -> Option<i32> {
     if raw.is_empty() {
         return Some(0);
     }
@@ -7131,7 +7141,7 @@ fn skin_handle(catalog: &ModelCatalog, raw: &[u8], source: RuleSetId) -> Option<
         &catalog.names,
         &catalog.skin_indices,
         raw,
-        &catalog.registration_vfs,
+        search.unwrap_or(&catalog.registration_vfs),
     )?;
     let handle = i32::try_from(index?.checked_add(1)?).ok()?;
     catalog.skin_source_handle(handle, source, RegistrationVariant::Retained)
@@ -7310,13 +7320,13 @@ impl ModelLoader for ModelAssets {
     }
 }
 impl ModelLookup for ModelCatalog {
-    fn file_handle(&self, path: &[u8]) -> Option<i32> {
+    fn file_handle(&self, path: &[u8], search: Option<&SearchView>) -> Option<i32> {
         model_handle(
             &self.names,
             &self.files,
             path,
             None,
-            Some(&self.registration_vfs),
+            Some(search.unwrap_or(&self.registration_vfs)),
         )
     }
     fn inline_handle(&self, world: WorldId, index: u32) -> Option<i32> {
@@ -7371,19 +7381,34 @@ impl ModelLookup for ModelCatalog {
         )?
         .bounds(&self.sources)
     }
-    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
-        skin_handle(self, name, source)
+    fn skin_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Option<i32> {
+        skin_handle(self, name, source, search)
     }
-    fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
-        shader_handle(self, name, source)
+    fn shader_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Option<i32> {
+        shader_handle(self, name, source, search)
     }
-    fn model_handle(&self, path: &[u8], source: RuleSetId) -> Option<i32> {
+    fn model_handle(
+        &self,
+        path: &[u8],
+        source: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Option<i32> {
         model_handle(
             &self.names,
             &self.files,
             path,
             Some(source),
-            Some(&self.registration_vfs),
+            Some(search.unwrap_or(&self.registration_vfs)),
         )
     }
     fn model_bounds(&self, handle: i32) -> Option<Bounds> {

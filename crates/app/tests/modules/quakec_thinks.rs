@@ -1107,7 +1107,7 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 assert!(
                     builder
                         .catalog()
-                        .model_handle(b"progs/test.mdl", RuleSetId::QuakeWorld)
+                        .model_handle(b"progs/test.mdl", RuleSetId::QuakeWorld, None)
                         .is_none()
                 );
             }

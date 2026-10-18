@@ -1423,7 +1423,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assert_eq!(
         owner
             .catalog()
-            .shader_handle(vertex.name, profile.source_rules),
+            .shader_handle(vertex.name, profile.source_rules, None),
         None
     );
     assert_eq!(
@@ -1492,7 +1492,7 @@ fn exact_world_lighting_requests_share_the_batch_transaction_and_keep_ordinary_h
     assert_eq!(
         owner
             .catalog()
-            .shader_handle(missing.name, profile.source_rules),
+            .shader_handle(missing.name, profile.source_rules, None),
         Some(0)
     );
     fixture.vfs.take_lookup_count();

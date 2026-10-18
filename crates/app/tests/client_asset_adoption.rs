@@ -139,7 +139,7 @@ fn queued_unbound_q3_config_uses_client_profile_in_the_same_frame_and_waits_for_
         let owner = host.runtime.model_assets.as_ref().unwrap();
         let handle = owner
             .catalog()
-            .model_handle(path.as_bytes(), profile.source_rules)
+            .model_handle(path.as_bytes(), profile.source_rules, None)
             .unwrap();
         assert!(
             owner

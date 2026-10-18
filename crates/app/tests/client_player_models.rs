@@ -310,7 +310,7 @@ fn draw(
 }
 fn model(host: &FrameHost, profile: ModelProfile, path: &[u8]) -> qa_render::SceneModel {
     let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
-    let handle = catalog.file_handle(path).unwrap();
+    let handle = catalog.file_handle(path, None).unwrap();
     let registration = catalog.renderer_registration(handle, profile).unwrap();
     catalog
         .bindings(registration, 0, Default::default())
@@ -358,11 +358,13 @@ fn configured_player_models_and_weapons_survive_initial_registration_and_static_
         );
         let catalog = host.runtime.model_assets.as_ref().unwrap().catalog();
         let skin_handle = catalog
-            .skin_handle(b"players/female/red.pcx", rules)
+            .skin_handle(b"players/female/red.pcx", rules, None)
             .unwrap();
         let registration = catalog
             .renderer_registration(
-                catalog.file_handle(b"players/female/tris.md2").unwrap(),
+                catalog
+                    .file_handle(b"players/female/tris.md2", None)
+                    .unwrap(),
                 profile,
             )
             .unwrap();

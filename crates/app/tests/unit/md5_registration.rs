@@ -224,7 +224,7 @@ fn paired_md5_meshes_share_one_skeleton_and_named_receipts_across_profiles() {
     assert_eq!(lods.native_count(), 1);
     let handle = owner
         .catalog()
-        .model_handle(first.path.as_bytes(), first.source_rules)
+        .model_handle(first.path.as_bytes(), first.source_rules, None)
         .unwrap();
     let receipts = owner
         .catalog()
@@ -772,7 +772,7 @@ fn native_mdl_replacement_retains_parent_groups_and_requires_every_mesh_skin_mem
     assert!(
         owner
             .catalog()
-            .model_handle(b"models/paired.md5mesh", profile.source_rules)
+            .model_handle(b"models/paired.md5mesh", profile.source_rules, None)
             .is_none()
     );
     let replacement_meshes = replacement
@@ -882,7 +882,7 @@ fn native_md2_replacement_uses_inserted_skin_directory_and_one_native_public_han
     assert!(
         owner
             .catalog()
-            .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules)
+            .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules, None)
             .is_none()
     );
     assert_eq!(
@@ -1094,7 +1094,7 @@ fn replacement_discovery_compares_actual_mount_precedence_without_public_candida
         assert!(
             owner
                 .catalog()
-                .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules)
+                .model_handle(b"models/test/md5/tris.md5mesh", profile.source_rules, None)
                 .is_none()
         );
     }
@@ -1280,7 +1280,7 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
         assert_eq!(
             owner
                 .catalog()
-                .model_handle(b"models/test/tris.md2", profile.source_rules),
+                .model_handle(b"models/test/tris.md2", profile.source_rules, None),
             Some(handle)
         );
         assert_eq!(

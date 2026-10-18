@@ -130,8 +130,12 @@ impl ClientCollision {
 /// The cold and frozen model catalog share the same native metadata owner.
 pub trait ModelLookup {
     /// Cold retained resources capture the file before their CLIENT profile is bound.
-    fn file_handle(&self, path: &[u8]) -> Option<i32> {
-        let _ = path;
+    fn file_handle(
+        &self,
+        path: &[u8],
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
+        let _ = (path, search);
         None
     }
     fn inline_handle(&self, world: qa_render::world::WorldId, index: u32) -> Option<i32> {
@@ -149,12 +153,27 @@ pub trait ModelLookup {
         source: RuleSetId,
         search: Option<&qa_content::vfs::SearchView>,
     ) -> Option<Bounds>;
-    fn shader_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
-    fn skin_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32> {
-        let _ = (name, source);
+    fn shader_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32>;
+    fn skin_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32> {
+        let _ = (name, source, search);
         None
     }
-    fn model_handle(&self, name: &[u8], source: RuleSetId) -> Option<i32>;
+    fn model_handle(
+        &self,
+        name: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Option<i32>;
     fn model_bounds(&self, handle: i32) -> Option<Bounds>;
     fn model_has_tags(&self, handle: i32) -> bool;
     fn lerp_tag(
@@ -212,7 +231,7 @@ pub trait ModelLoader {
     ) -> Result<i32, CallError> {
         self.precache(vfs, name, source, None)?;
         self.lookup()
-            .model_handle(name, source)
+            .model_handle(name, source, None)
             .ok_or(CallError::File)
     }
 }

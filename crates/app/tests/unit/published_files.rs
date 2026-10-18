@@ -165,7 +165,7 @@ fn published_model_retries_the_same_client_ordinal_without_replacing_ready_resou
             .is_some()
     );
     assert_eq!(
-        owner.catalog.file_handle(b"models/later.md2"),
+        owner.catalog.file_handle(b"models/later.md2", None),
         Some(name.0 as i32)
     );
     assert_eq!(
