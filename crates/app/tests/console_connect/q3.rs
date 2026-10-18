@@ -355,7 +355,10 @@ fn media_assets(runtime: &mut Runtime) -> (Source, qa_app::model_assets::ModelPr
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([Some(palette); 5]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &runtime.vfs,
+                [Some(palette); 5],
+            ),
         )
         .unwrap();
     let backend = asset_frames::Source::load(owner.assets());

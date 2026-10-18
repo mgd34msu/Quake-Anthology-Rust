@@ -20,13 +20,10 @@ fn owner(vfs: &Vfs) -> ModelAssets {
     registered_assets(
         vfs,
         assets,
-        qa_app::render_settings::PaletteRegistrations::from_registered([
-            None,
-            None,
-            Some(palette),
-            Some(palette),
-            None,
-        ]),
+        qa_app::render_settings::PaletteRegistrations::from_registered(
+            vfs,
+            [None, None, Some(palette), Some(palette), None],
+        ),
     )
 }
 

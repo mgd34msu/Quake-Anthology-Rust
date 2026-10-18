@@ -90,13 +90,10 @@ fn model_owner(
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &host.runtime.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let backend = asset_frames::Source::load(owner.assets());

@@ -38,9 +38,17 @@ use qa_render::{
 use std::sync::Arc;
 
 mod files;
+use crate::resource_scopes as scopes;
 use files::ModelFiles;
-mod scopes;
-use scopes::{RegistrationIndex, ScopedBindings};
+use scopes::ScopedBindings;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RegistrationIndex(u32);
+impl qa_core::bindings::BindingId for RegistrationIndex {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 mod sources;
 use sources::{ModelSourceId, ModelSources};
 
@@ -1572,7 +1580,7 @@ impl<'a> ModelView<'a> {
 struct RegistrationCheckpoint {
     assets: AssetCounts,
     admitted_assets: Option<AssetCounts>,
-    palettes: [Option<PaletteId>; 5],
+    palettes: crate::render_settings::PaletteRegistrations,
     file_count: usize,
     capacity: ModelCapacity,
     registrations: usize,
@@ -2538,6 +2546,7 @@ impl ModelAssets {
         if !self.initial_registration
             || self.catalog.admitted_assets.is_some()
             || !self.palettes.is_empty()
+            || !palettes.owned_by(&self.catalog.registration_vfs)
             || !palettes.validate(&self.assets)
         {
             return Err(
@@ -2568,8 +2577,12 @@ impl ModelAssets {
     }
     /// Pending palette suffixes cannot become presentation bindings before
     /// the backend has admitted their resource prefix.
-    pub fn published_palette(&self, source: RuleSetId) -> Option<PaletteId> {
-        let id = self.palettes.get(source)?;
+    pub fn published_palette(
+        &self,
+        source: RuleSetId,
+        search: Option<&SearchView>,
+    ) -> Option<PaletteId> {
+        let id = self.palettes.get(source, search)?;
         let admitted = self.catalog.admitted_assets?;
         ((id.0 as usize) < admitted.palettes && self.assets.palette(id).is_some()).then_some(id)
     }
@@ -2584,7 +2597,7 @@ impl ModelAssets {
         self.check_registration_vfs(vfs)
             .map_err(|error| format!("renderer VFS owner: {error:?}"))?;
         let palette = match crate::render_settings::palette_resource(
-            vfs,
+            vfs.read_view(None),
             &mut self.assets,
             rules,
             &mut self.palettes,
@@ -2821,6 +2834,7 @@ impl ModelAssets {
         presentation_rules: RuleSetId,
         image_settings: ImageSettings,
         finish: MaterialFinishPolicy,
+        search: Option<&SearchView>,
         prepare: impl FnOnce(&Assets) -> Result<(), String>,
     ) -> Result<(ModelProfile, AssetCounts), String> {
         self.check_registration_vfs(vfs)
@@ -2831,13 +2845,13 @@ impl ModelAssets {
         let checkpoint = ProfileCheckpoint::capture(self)?;
         let result = (|| {
             let source_palette = crate::render_settings::palette(
-                vfs,
+                vfs.read_view(search),
                 &mut self.assets,
                 source_rules,
                 &mut self.palettes,
             )?;
             let palette = crate::render_settings::palette(
-                vfs,
+                vfs.read_view(search),
                 &mut self.assets,
                 presentation_rules,
                 &mut self.palettes,
@@ -3240,7 +3254,7 @@ impl ModelAssets {
         };
         Ok(Self {
             assets,
-            palettes: Default::default(),
+            palettes: crate::render_settings::PaletteRegistrations::new(vfs),
             initial_registration: true,
             image_transaction_active: None,
             replacement_load: [true; 2],
@@ -4079,7 +4093,7 @@ impl ModelAssets {
         let mut created = None;
         let result = (|| {
             let source_palette = crate::render_settings::palette(
-                vfs,
+                vfs.read_view(None),
                 &mut self.assets,
                 input.native_source,
                 &mut self.palettes,
@@ -5193,7 +5207,7 @@ impl ModelAssets {
                         })
                 }) {
                 crate::render_settings::palette_resource(
-                    vfs,
+                    vfs.read_view(None),
                     &mut self.assets,
                     RuleSetId::Quake,
                     &mut self.palettes,

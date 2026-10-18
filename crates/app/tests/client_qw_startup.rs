@@ -185,13 +185,10 @@ fn setup(files: &[(&str, Vec<u8>)], clients: usize) -> (support::Fixture, FrameH
         ModelAssets::new(&fixture.vfs, assets, [profile], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let mut runtime = Runtime::load(clients, []).unwrap();

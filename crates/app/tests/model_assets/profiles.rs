@@ -136,6 +136,7 @@ fn precreated_profiles_follow_first_published_source_request_not_profile_order()
                 native.rules,
                 settings,
                 native.finish,
+                None,
                 |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
             .unwrap();
@@ -231,6 +232,7 @@ fn positive_skin_source_survives_unlink_and_new_finish_backend_rejection() {
             first.rules,
             first.image_settings,
             finish,
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -405,6 +407,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
         RuleSetId::Quake,
         settings,
         qa_render::material::MaterialFinishPolicy::default(),
+        None,
         |assets| {
             assert_eq!(assets.counts().palettes, before.palettes + 2);
             let target = PaletteId((before.palettes + 1) as u32);
@@ -416,7 +419,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
     assert_eq!(owner.assets().counts(), before);
     assert_eq!(owner.catalog().capacity(), capacity);
     for source in RuleSetId::ALL {
-        assert_eq!(owner.palettes().get(source), None);
+        assert_eq!(owner.palettes().get(source, None), None);
     }
     assert_eq!(cpu.admitted_assets(), Some(before));
     let (profile, counts) = owner
@@ -426,6 +429,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
             RuleSetId::Quake,
             settings,
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| {
                 assert!(
                     assets
@@ -442,9 +446,12 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
     assert_eq!(counts.palettes, before.palettes + 2);
     assert_eq!(
         profile.source_palette,
-        owner.palettes().get(RuleSetId::Quake2Rerelease)
+        owner.palettes().get(RuleSetId::Quake2Rerelease, None)
     );
-    assert_eq!(profile.palette, owner.palettes().get(RuleSetId::QuakeWorld));
+    assert_eq!(
+        profile.palette,
+        owner.palettes().get(RuleSetId::QuakeWorld, None)
+    );
     assert_ne!(profile.source_palette, profile.palette);
     let target = profile.palette.unwrap();
     assert_eq!(
@@ -474,6 +481,7 @@ fn late_profile_palette_admission_rolls_back_and_installs_fallback_only_after_ba
                 RuleSetId::Quake,
                 settings,
                 qa_render::material::MaterialFinishPolicy::default(),
+                None,
                 |_| { panic!("unchanged exact profile must not prepare again") }
             )
             .unwrap(),
@@ -527,13 +535,10 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                None,
-                None,
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [None, None, Some(palette), Some(palette), None],
+            ),
         )
         .unwrap();
     let models = [b"models/a.md2".as_slice(), b"models/b.md2".as_slice()].map(|path| {
@@ -593,6 +598,7 @@ fn appended_profile_membership_keeps_old_model_shader_skin_and_color_bindings_st
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -800,6 +806,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
                 first.rules,
                 settings,
                 qa_render::material::MaterialFinishPolicy::default(),
+                None,
                 |_| Err("profile reject".to_owned())
             )
             .is_err()
@@ -817,6 +824,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             first.rules,
             settings,
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -870,6 +878,7 @@ fn late_profile_rollback_preserves_source_shader_first_request_and_new_source_in
             RuleSetId::Quake3,
             settings,
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -962,13 +971,10 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
     let mut owner = ModelAssets::new(&fixture.vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     owner
@@ -993,6 +999,7 @@ fn metadata_only_model_gets_its_first_stable_row_when_a_profile_is_admitted() {
             RuleSetId::Quake,
             ImageSettings::native(RuleSetId::Quake),
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -1051,12 +1058,13 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
     assert_eq!(profile.source_palette, Some(PaletteId(0)));
     assert_eq!(profile.palette, None);
-    assert_eq!(owner.palettes().get(RuleSetId::Quake), None);
+    assert_eq!(owner.palettes().get(RuleSetId::Quake, None), None);
     let mut geometry = CollisionStore::new();
     assert!(
         owner
@@ -1074,9 +1082,9 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
             .is_err()
     );
     assert_eq!(owner.assets().counts(), profile_counts);
-    assert_eq!(owner.palettes().get(RuleSetId::Quake), None);
+    assert_eq!(owner.palettes().get(RuleSetId::Quake, None), None);
     assert_eq!(
-        owner.palettes().get(RuleSetId::Quake2),
+        owner.palettes().get(RuleSetId::Quake2, None),
         profile.source_palette
     );
     assert_eq!(geometry.geometries().count(), 0);
@@ -1095,8 +1103,14 @@ fn world_source_palette_is_resolved_inside_its_own_transaction_independently_of_
         .unwrap();
     append.commit();
     assert_eq!(counts.palettes, profile_counts.palettes + 1);
-    assert_eq!(owner.palettes().get(RuleSetId::Quake), Some(PaletteId(1)));
-    assert_eq!(owner.palettes().get(RuleSetId::Quake2), Some(PaletteId(0)));
+    assert_eq!(
+        owner.palettes().get(RuleSetId::Quake, None),
+        Some(PaletteId(1))
+    );
+    assert_eq!(
+        owner.palettes().get(RuleSetId::Quake2, None),
+        Some(PaletteId(0))
+    );
     assert_eq!(loaded.native_source, RuleSetId::Quake);
     assert_eq!(
         loaded.render.presentations[0].profile.rules,
@@ -1151,6 +1165,7 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
                 second.rules,
                 second.image_settings,
                 qa_render::material::MaterialFinishPolicy::default(),
+                None,
                 |assets| {
                     assert_eq!(assets.counts().images, before.images + 1);
                     assert_eq!(assets.counts().shader_bindings, before.shader_bindings + 1);
@@ -1170,6 +1185,7 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
             second.rules,
             second.image_settings,
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -1200,6 +1216,7 @@ fn eager_native_default_profile_rolls_back_backend_failure_and_keeps_published_p
                 second.rules,
                 second.image_settings,
                 qa_render::material::MaterialFinishPolicy::default(),
+                None,
                 |_| panic!("cached profile must not reprepare")
             )
             .unwrap(),
@@ -1316,6 +1333,7 @@ fn finish_profiles_share_image_storage_and_guard_variants_publish_atomically() {
             first.rules,
             first.image_settings,
             finish,
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

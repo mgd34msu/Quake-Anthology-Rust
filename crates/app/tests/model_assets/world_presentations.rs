@@ -108,13 +108,10 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     owner
@@ -227,6 +224,7 @@ fn older_world_adds_exact_presentations_through_one_compiler_without_bsp_io_or_n
                 target,
                 ImageSettings::native(target),
                 qa_render::material::MaterialFinishPolicy::default(),
+                None,
                 |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
             )
             .unwrap();
@@ -402,13 +400,10 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let mut cpu = CpuBackend::load_with_limits(
@@ -432,6 +427,7 @@ fn failed_presentation_staging_and_cpu_admission_restore_old_membership_and_reci
             RuleSetId::Quake3,
             ImageSettings::native(RuleSetId::Quake3),
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

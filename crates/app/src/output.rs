@@ -350,7 +350,7 @@ pub(crate) fn dispatch_frame(
                                     runtime
                                         .model_assets
                                         .as_ref()?
-                                        .published_palette(definition.source)
+                                        .published_palette(definition.source, None)
                                 });
                             let sent = ready && source.effect(palette, event);
                             counts.unhandled_effects += u64::from(!sent);

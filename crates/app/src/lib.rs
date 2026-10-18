@@ -17,6 +17,7 @@ pub mod output_namespace;
 pub mod profile;
 pub mod render_settings;
 pub mod renderer;
+mod resource_scopes;
 mod server_downloads;
 pub mod snapshots;
 pub mod startup;

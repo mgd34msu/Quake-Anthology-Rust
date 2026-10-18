@@ -179,13 +179,10 @@ fn model_owner(
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                None,
-                None,
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &host.runtime.vfs,
+                [None, None, Some(palette), Some(palette), None],
+            ),
         )
         .unwrap();
     let backend = asset_frames::Source::load(owner.assets());

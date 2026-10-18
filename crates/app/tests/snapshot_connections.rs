@@ -3245,13 +3245,10 @@ fn install_received_world_owner(
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &host.runtime.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     owner

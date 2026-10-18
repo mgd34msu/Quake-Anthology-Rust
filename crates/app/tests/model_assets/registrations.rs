@@ -448,6 +448,7 @@ fn admitted_positive_profile_survives_new_default_sibling_and_keeps_source_handl
             profile.rules,
             settings,
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

@@ -1,10 +1,11 @@
 //! Cold presentation settings from the one cvar table, selected per world.
+use crate::resource_scopes::Selections;
 use qa_console::{
     cvars::{Cvars, View},
     pending::PendingSettings,
     views::{Context, Role, RuleSetId},
 };
-use qa_content::vfs::Vfs;
+use qa_content::vfs::{ReadView, SearchView, Vfs};
 use qa_core::presentation::RendererConfiguration;
 use qa_render::{
     Assets,
@@ -17,39 +18,53 @@ use qa_render::{
     world::{WorldLighting, WorldRenderSettings},
 };
 
-#[derive(Default)]
+#[derive(Clone)]
 pub struct PaletteRegistrations {
-    ids: [Option<PaletteId>; 5],
+    owner: SearchView,
+    sources: Selections<[Option<PaletteId>; 5]>,
 }
 impl PaletteRegistrations {
-    /// Adopt already registered resources at the startup owner boundary.
-    pub fn from_registered(ids: [Option<PaletteId>; 5]) -> Self {
-        Self { ids }
+    pub fn new(vfs: &Vfs) -> Self {
+        Self::from_registered(vfs, [None; 5])
     }
-    pub fn get(&self, rules: RuleSetId) -> Option<PaletteId> {
-        self.ids[rules as usize]
+    /// Adopt resources registered through this VFS's default selection at startup.
+    pub fn from_registered(vfs: &Vfs, ids: [Option<PaletteId>; 5]) -> Self {
+        let owner = vfs.default_view();
+        Self {
+            sources: Selections::from_entry(owner.clone(), ids),
+            owner,
+        }
     }
-    pub(crate) fn checkpoint(&self) -> [Option<PaletteId>; 5] {
-        self.ids
+    pub fn get(&self, rules: RuleSetId, search: Option<&SearchView>) -> Option<PaletteId> {
+        let scope = self.sources.find(search.unwrap_or(&self.owner))?;
+        self.sources.get(scope)[rules as usize]
     }
-    pub(crate) fn restore(&mut self, ids: [Option<PaletteId>; 5]) {
-        self.ids = ids;
+    pub(crate) fn owned_by(&self, owner: &SearchView) -> bool {
+        self.owner.same_selection(owner)
+    }
+    pub(crate) fn checkpoint(&self) -> Self {
+        self.clone()
+    }
+    pub(crate) fn restore(&mut self, state: Self) {
+        *self = state;
     }
     pub(crate) fn validate(&self, assets: &Assets) -> bool {
-        self.ids
-            .iter()
-            .flatten()
+        self.sources
+            .values()
+            .flat_map(|ids| ids.iter().flatten())
             .all(|&id| assets.palette(id).is_some())
     }
     pub(crate) fn is_empty(&self) -> bool {
-        self.ids.iter().all(Option::is_none)
+        self.sources
+            .values()
+            .all(|ids| ids.iter().all(Option::is_none))
     }
 }
 
 /// Palette resources are registered once for their exact native source, even
 /// when multiple source/presentation roles request the same resource.
 pub fn palette(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     assets: &mut Assets,
     rules: RuleSetId,
     registered: &mut PaletteRegistrations,
@@ -58,28 +73,41 @@ pub fn palette(
 }
 
 pub(crate) fn palette_resource(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     assets: &mut Assets,
     rules: RuleSetId,
     registered: &mut PaletteRegistrations,
 ) -> Result<Option<PaletteId>, ResourceError> {
+    if !vfs.accepts_search(&registered.owner) {
+        return Err(ResourceError::Vfs(qa_content::vfs::VfsError::Handle));
+    }
+    let view = vfs.retain().map_err(ResourceError::Vfs)?;
     let Some(source) = PaletteSource::native(rules) else {
         return Ok(None);
     };
-    if let Some(id) = registered.get(rules) {
+    if let Some(id) = registered.get(rules, Some(&view)) {
         return Ok(Some(id));
     }
-    let id = load_palette((vfs).read_view(None), assets, source)?;
+    let id = load_palette(vfs, assets, source)?;
+    let capacity = assets
+        .counts()
+        .palettes
+        .checked_add(1)
+        .ok_or(ResourceError::Vfs(qa_content::vfs::VfsError::Capacity))?;
+    let scope = registered
+        .sources
+        .intern(view, capacity, || [None; 5])
+        .map_err(|_| ResourceError::Vfs(qa_content::vfs::VfsError::Allocation))?;
     for rule in RuleSetId::ALL {
         if PaletteSource::native(rule) == Some(source) {
-            registered.ids[rule as usize] = Some(id);
+            registered.sources.get_mut(scope)[rule as usize] = Some(id);
         }
     }
     Ok(Some(id))
 }
 
 pub fn world_profile(
-    vfs: &Vfs,
+    vfs: ReadView<'_>,
     assets: &mut Assets,
     vars: &Cvars,
     rules: RuleSetId,

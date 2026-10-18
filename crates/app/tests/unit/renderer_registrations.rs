@@ -1675,13 +1675,10 @@ fn grouped_mdl_parent_frames_and_recipe_survive_profile_and_forced_reload_withou
     owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
     owner
         .adopt_palettes(
-            crate::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            crate::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let models_before = owner.assets().counts().models;
@@ -2066,13 +2063,10 @@ fn grouped_spr_keeps_one_mesh_and_authored_frames_through_source_unlink_and_refr
     owner.set_image_search_order(ImageSearchOrder::parse(b"").unwrap());
     owner
         .adopt_palettes(
-            crate::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            crate::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let models_before = owner.assets().counts().models;

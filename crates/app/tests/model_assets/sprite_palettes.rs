@@ -71,8 +71,11 @@ fn indexed_models_resolve_native_source_under_q3_without_changing_profile_or_tar
         assert!(owner.catalog().diagnostics.is_empty());
         assert_eq!(owner.assets().counts().palettes, before.palettes + 1);
         assert!(owner.catalog().profiles().all(|actual| actual == profile));
-        let source = owner.palettes().get(RuleSetId::Quake).unwrap();
-        assert_eq!(owner.palettes().get(RuleSetId::QuakeWorld), Some(source));
+        let source = owner.palettes().get(RuleSetId::Quake, None).unwrap();
+        assert_eq!(
+            owner.palettes().get(RuleSetId::QuakeWorld, None),
+            Some(source)
+        );
         for (path, authored) in [("progs/test.mdl", 1u8), ("progs/test.spr", 11)] {
             let image = first_image(&owner, path, profile);
             assert_eq!(
@@ -103,7 +106,7 @@ fn explicit_indexed_source_wins_without_native_palette_files() {
     request.palette = None;
     let owner = load(&fixture, assets, &[request], Default::default()).unwrap();
     assert_eq!(owner.assets().counts().palettes, 1);
-    assert!(owner.palettes().get(RuleSetId::Quake).is_none());
+    assert!(owner.palettes().get(RuleSetId::Quake, None).is_none());
     assert_eq!(
         &first_image(&owner, request.path, request.profile()).rgba[..4],
         &[112, 143, 56, 255]
@@ -151,7 +154,7 @@ fn rejected_source_palette_and_translation_are_rebuilt_by_the_same_registration(
         .unwrap_err();
     assert!(error.contains("reject prepared sprite"), "{error}");
     assert_eq!(owner.assets().counts(), before);
-    assert!(owner.palettes().get(RuleSetId::Quake).is_none());
+    assert!(owner.palettes().get(RuleSetId::Quake, None).is_none());
     let replacement_root = replacement.vfs.mounts().next().unwrap().path.clone();
     first.vfs.mount_directory(&replacement_root, 10).unwrap();
     owner

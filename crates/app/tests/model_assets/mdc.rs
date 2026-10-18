@@ -481,6 +481,7 @@ fn retained_mdc_profile_rebuild_rolls_back_and_retries_after_model_and_skin_file
             profile.rules,
             settings,
             profile.finish,
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

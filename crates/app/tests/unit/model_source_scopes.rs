@@ -1182,3 +1182,154 @@ fn indexed_skins_and_model_colors_keep_the_selected_file_source() {
         }
     }
 }
+
+#[test]
+fn palette_registration_keeps_source_aliases_and_rollback_in_the_owned_vfs() {
+    use crate::render_settings::{PaletteRegistrations, palette_resource};
+    let mut low_bytes = support::pcx_dimensions(256, 320, 16);
+    let mut high_bytes = low_bytes.clone();
+    let first = low_bytes.len() - 768 + 16 * 3;
+    low_bytes[first..first + 3].copy_from_slice(&[201, 1, 2]);
+    high_bytes[first..first + 3].copy_from_slice(&[3, 5, 207]);
+    let mut files = support::Fixture::new(&[("pics/colormap.pcx", low_bytes)]);
+    let high_files = support::Fixture::new(&[("pics/colormap.pcx", high_bytes)]);
+    let low_mount = files.vfs.mounts().next().unwrap().id;
+    let high_root = high_files.vfs.mounts().next().unwrap().path.clone();
+    let high_mount = files.vfs.mount_directory(&high_root, 10).unwrap();
+    let low = files.vfs.search_view([low_mount]).unwrap();
+    let high = files.vfs.search_view([high_mount]).unwrap();
+    let mut registered = PaletteRegistrations::new(&files.vfs);
+    let mut assets = Assets::load().unwrap();
+    let low_id = palette_resource(
+        files.vfs.read_view(Some(&low)),
+        &mut assets,
+        RuleSetId::Quake2,
+        &mut registered,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        assets.palette(low_id).unwrap().color(16).to_le_bytes(),
+        [201, 1, 2, 255]
+    );
+    let prefix = assets.counts();
+    let checkpoint = registered.checkpoint();
+    let high_id = palette_resource(
+        files.vfs.read_view(Some(&high)),
+        &mut assets,
+        RuleSetId::Quake2Rerelease,
+        &mut registered,
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(low_id, high_id);
+    assert_eq!(
+        assets.palette(high_id).unwrap().color(16).to_le_bytes(),
+        [3, 5, 207, 255]
+    );
+    registered.restore(checkpoint);
+    assets.discard_registration_suffix(prefix).unwrap();
+    assert_eq!(registered.get(RuleSetId::Quake2, Some(&low)), Some(low_id));
+    assert_eq!(registered.get(RuleSetId::Quake2, Some(&high)), None);
+    let high_id = palette_resource(
+        files.vfs.read_view(Some(&high)),
+        &mut assets,
+        RuleSetId::Quake2,
+        &mut registered,
+    )
+    .unwrap()
+    .unwrap();
+    let default_id = palette_resource(
+        files.vfs.read_view(None),
+        &mut assets,
+        RuleSetId::Quake2,
+        &mut registered,
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(high_id, default_id);
+    assert_eq!(
+        assets.palette(default_id).unwrap().color(16).to_le_bytes(),
+        [3, 5, 207, 255]
+    );
+    let equivalent = files.vfs.search_view([low_mount, low_mount]).unwrap();
+    let counts = assets.counts();
+    files.vfs.take_lookup_count();
+    for (view, expected) in [(&equivalent, low_id), (&high, high_id)] {
+        assert_eq!(
+            palette_resource(
+                files.vfs.read_view(Some(view)),
+                &mut assets,
+                RuleSetId::Quake2Rerelease,
+                &mut registered
+            )
+            .unwrap(),
+            Some(expected)
+        );
+    }
+    assert_eq!(files.vfs.take_lookup_count(), 0);
+    assert_eq!(assets.counts(), counts);
+    let foreign = Vfs::default();
+    for read in [
+        foreign.read_view(None),
+        files.vfs.read_view(Some(&foreign.default_view())),
+    ] {
+        assert!(matches!(
+            palette_resource(read, &mut assets, RuleSetId::Quake2, &mut registered),
+            Err(ResourceError::Vfs(qa_content::vfs::VfsError::Handle))
+        ));
+    }
+    assert_eq!(assets.counts(), counts);
+    let mut owner = ModelAssets::new(&files.vfs, assets, [], [], Default::default()).unwrap();
+    assert!(
+        owner
+            .adopt_palettes(PaletteRegistrations::from_registered(
+                &foreign,
+                [Some(low_id); 5]
+            ))
+            .is_err()
+    );
+    owner.adopt_palettes(registered).unwrap();
+    assert_eq!(
+        owner.palettes().get(RuleSetId::Quake2, Some(&low)),
+        Some(low_id)
+    );
+    assert_eq!(
+        owner.palettes().get(RuleSetId::Quake2, None),
+        Some(default_id)
+    );
+    let (mut owner, mut cpu) = super::registration_tests::publish(owner);
+    for (view, expected) in [(&low, low_id), (&high, high_id)] {
+        let (profile, _) = owner
+            .prepare_profile(
+                &files.vfs,
+                RuleSetId::Quake2,
+                RuleSetId::Quake2,
+                ImageSettings::native(RuleSetId::Quake2),
+                MaterialFinishPolicy::default(),
+                Some(view),
+                |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
+            )
+            .unwrap();
+        assert_eq!(profile.source_palette, Some(expected));
+        assert_eq!(profile.palette, Some(expected));
+    }
+    let extra = files.vfs.search_view([low_mount, high_mount]).unwrap();
+    let prefix = owner.assets().counts();
+    let rejected = owner.prepare_profile(
+        &files.vfs,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2,
+        ImageSettings::native(RuleSetId::Quake2),
+        MaterialFinishPolicy::default(),
+        Some(&extra),
+        |_| Err("reject selected palette profile".into()),
+    );
+    assert_eq!(rejected.unwrap_err(), "reject selected palette profile");
+    assert_eq!(owner.assets().counts(), prefix);
+    assert_eq!(owner.palettes().get(RuleSetId::Quake2, Some(&extra)), None);
+    assert_eq!(
+        owner.palettes().get(RuleSetId::Quake2, Some(&low)),
+        Some(low_id)
+    );
+}

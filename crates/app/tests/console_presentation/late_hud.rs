@@ -132,7 +132,7 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
     owner.publish_admission(initial).unwrap();
     owner.end_initial_registration();
     assert!(scene.asset_stage_ready());
-    assert!(owner.palettes().get(RuleSetId::Quake).is_none());
+    assert!(owner.palettes().get(RuleSetId::Quake, None).is_none());
     let rejected = owner.prepare_hud(
         &vfs,
         RuleSetId::Quake,
@@ -155,7 +155,7 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
     assert!(scene.asset_stage_ready());
     assert_eq!(owner.assets().counts(), initial);
     assert_eq!(cpu.admitted_assets(), Some(initial));
-    assert!(owner.palettes().get(RuleSetId::Quake).is_none());
+    assert!(owner.palettes().get(RuleSetId::Quake, None).is_none());
 
     let (staged, counts) = owner
         .prepare_hud(
@@ -184,8 +184,8 @@ fn late_hud_backend_rejection_restores_palette_and_frontend_before_retry() {
     staged.commit();
     assert_eq!(cpu.admitted_assets(), Some(counts));
     assert_eq!(
-        owner.palettes().get(RuleSetId::Quake),
-        owner.palettes().get(RuleSetId::QuakeWorld)
+        owner.palettes().get(RuleSetId::Quake, None),
+        owner.palettes().get(RuleSetId::QuakeWorld, None)
     );
     let stats = draw_hud(&mut scene, &owner, &mut cpu, RuleSetId::Quake, limits);
     assert_eq!(stats.glyphs, 1);
@@ -209,13 +209,10 @@ fn initial_renderer_reserves_all_hud_roles_and_lends_the_console_font() {
     let mut owner = ModelAssets::new(&vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &vfs,
+                [Some(palette), Some(palette), None, None, None],
+            ),
         )
         .unwrap();
     let console = ConsoleAssets::load(

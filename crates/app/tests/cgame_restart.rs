@@ -1132,13 +1132,10 @@ fn setup_renderers_with_images(
     }
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                None,
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &runtime.vfs,
+                [Some(palette), None, None, None, None],
+            ),
         )
         .unwrap();
     let console = graphics.then(|| {

@@ -526,7 +526,7 @@ fn run() -> Result<(), String> {
         &console.cvars,
         qa_app::render_settings::image_search_view(&console.cvars)?,
     )?);
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::new(&runtime.vfs);
     if let Some((input, policy)) = staged_map {
         let virtual_name = input
             .virtual_path
@@ -550,7 +550,7 @@ fn run() -> Result<(), String> {
             .force_write(map_view, mapname)
             .map_err(|error| format!("native mapname: {error:?}"))?;
         let source_palette = qa_app::render_settings::palette(
-            &runtime.vfs,
+            runtime.vfs.read_view(None),
             &mut assets,
             input.native_source,
             &mut palettes,
@@ -559,7 +559,7 @@ fn run() -> Result<(), String> {
             .iter()
             .map(|rules| {
                 qa_app::render_settings::world_profile(
-                    &runtime.vfs,
+                    runtime.vfs.read_view(None),
                     &mut assets,
                     &console.cvars,
                     rules.or(presentation_rules).unwrap_or(input.native_source),
@@ -760,13 +760,13 @@ fn run() -> Result<(), String> {
             continue;
         }
         let source_palette = qa_app::render_settings::palette(
-            &host.runtime.vfs,
+            host.runtime.vfs.read_view(None),
             &mut assets,
             source_rules,
             &mut palettes,
         )?;
         let default = qa_app::render_settings::world_profile(
-            &host.runtime.vfs,
+            host.runtime.vfs.read_view(None),
             &mut assets,
             &host.console.cvars,
             presentation_rules.unwrap_or(source_rules),
@@ -1056,7 +1056,7 @@ fn run() -> Result<(), String> {
     let effect_bindings = vec![None; effect_catalog.len() + 1];
     let (assets, palettes) = owner.unpublished_assets()?;
     let _ = qa_app::render_settings::palette(
-        &host.runtime.vfs,
+        host.runtime.vfs.read_view(None),
         assets,
         qa_core::primitives::RuleSetId::Quake,
         palettes,

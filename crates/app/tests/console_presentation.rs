@@ -36,7 +36,11 @@ fn retail_rerelease_png_font_is_shared_and_retains_a_software_palette() {
     assert!(vfs.open(b"pics/conchars.png").is_some());
     assert!(vfs.open(b"pics/conchars.pcx").is_none());
     let assets = Assets::load().unwrap();
-    let mut owner = registered_assets(&vfs, assets, Default::default());
+    let mut owner = registered_assets(
+        &vfs,
+        assets,
+        qa_app::render_settings::PaletteRegistrations::new(&vfs),
+    );
     let font = qa_app::renderer::console::FontAssets::load(
         &vfs,
         &mut owner,
@@ -205,9 +209,10 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
         let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = (rules != RuleSetId::Quake3).then(|| palette(&mut assets));
-        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
-            palette, palette, palette, palette, None,
-        ]);
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered(
+            &vfs,
+            [palette, palette, palette, palette, None],
+        );
         let mut owner = registered_assets(&vfs, assets, palettes);
         let mut console = ConsoleAssets::load(
             &vfs,
@@ -291,13 +296,16 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
         let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
-        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
-            Some(palette),
-            Some(palette),
-            Some(palette),
-            Some(palette),
-            None,
-        ]);
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered(
+            &vfs,
+            [
+                Some(palette),
+                Some(palette),
+                Some(palette),
+                Some(palette),
+                None,
+            ],
+        );
         let settings = ImageSettings::native(rules);
         let mut owner = registered_assets(&vfs, assets, palettes);
         let console = ConsoleAssets::load(
@@ -386,7 +394,11 @@ fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
 #[test]
 fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
     let vfs = Vfs::default();
-    let mut owner = registered_assets(&vfs, Assets::load().unwrap(), Default::default());
+    let mut owner = registered_assets(
+        &vfs,
+        Assets::load().unwrap(),
+        qa_app::render_settings::PaletteRegistrations::new(&vfs),
+    );
     let mut console = ConsoleAssets::load(
         &vfs,
         &mut owner,
@@ -522,13 +534,16 @@ fn quake_background_uses_one_alpha_material_with_native_backend_opacity() {
         let vfs = root.vfs();
         let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets);
-        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered([
-            Some(palette),
-            Some(palette),
-            Some(palette),
-            Some(palette),
-            None,
-        ]);
+        let palettes = qa_app::render_settings::PaletteRegistrations::from_registered(
+            &vfs,
+            [
+                Some(palette),
+                Some(palette),
+                Some(palette),
+                Some(palette),
+                None,
+            ],
+        );
         let mut owner = registered_assets(&vfs, assets, palettes);
         let mut console = ConsoleAssets::load(
             &vfs,
@@ -693,13 +708,10 @@ fn shared_native_bitmap_name_keeps_console_opaque_and_hud_index255_transparent()
     let mut owner = registered_assets(
         &vfs,
         assets,
-        qa_app::render_settings::PaletteRegistrations::from_registered([
-            None,
-            None,
-            Some(palette),
-            Some(palette),
-            None,
-        ]),
+        qa_app::render_settings::PaletteRegistrations::from_registered(
+            &vfs,
+            [None, None, Some(palette), Some(palette), None],
+        ),
     );
     let mut console = ConsoleAssets::load(
         &vfs,

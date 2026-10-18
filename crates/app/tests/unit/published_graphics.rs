@@ -27,13 +27,16 @@ fn setup(rules: RuleSetId) -> (support::Fixture, FrameHost, frames::Source) {
     let mut owner = ModelAssets::new(&files.vfs, assets, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            crate::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            crate::render_settings::PaletteRegistrations::from_registered(
+                &files.vfs,
+                [
+                    Some(palette),
+                    Some(palette),
+                    Some(palette),
+                    Some(palette),
+                    None,
+                ],
+            ),
         )
         .unwrap();
     let console = console::ConsoleAssets::load(

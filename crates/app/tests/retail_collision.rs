@@ -17,11 +17,17 @@ fn load_input(
     geometry: &mut CollisionStore,
     rules: RuleSetId,
 ) -> qa_app::map::LoadedMap {
-    let mut palettes = qa_app::render_settings::PaletteRegistrations::default();
-    let source = qa_app::render_settings::palette(vfs, assets, input.native_source, &mut palettes)
-        .expect("source palette");
-    let target = qa_app::render_settings::palette(vfs, assets, rules, &mut palettes)
-        .expect("target palette");
+    let mut palettes = qa_app::render_settings::PaletteRegistrations::new(vfs);
+    let source = qa_app::render_settings::palette(
+        vfs.read_view(None),
+        assets,
+        input.native_source,
+        &mut palettes,
+    )
+    .expect("source palette");
+    let target =
+        qa_app::render_settings::palette(vfs.read_view(None), assets, rules, &mut palettes)
+            .expect("target palette");
     input
         .load(
             vfs,

@@ -462,7 +462,8 @@ fn optional_md5_scale_diagnostics_and_retained_pair_survive_reload_rollback() {
                 request.rules,
                 request.image_settings,
                 finish,
-                |_| Err("reject paired profile".to_owned()),
+                None,
+                |_| Err("reject paired profile".to_owned())
             )
             .is_err()
     );
@@ -475,6 +476,7 @@ fn optional_md5_scale_diagnostics_and_retained_pair_survive_reload_rollback() {
             request.rules,
             request.image_settings,
             finish,
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();
@@ -651,6 +653,7 @@ fn replacement_owner(vfs: &Vfs, assets: Assets, profile: ModelProfile) -> ModelA
     owner
         .adopt_palettes(
             crate::render_settings::PaletteRegistrations::from_registered(
+                vfs,
                 [profile.source_palette; 5],
             ),
         )
@@ -980,6 +983,7 @@ fn optional_replacement_pair_failure_and_load_controls_keep_native_registration_
             owner
                 .adopt_palettes(
                     crate::render_settings::PaletteRegistrations::from_registered(
+                        &fixture.vfs,
                         [profile.source_palette; 5],
                     ),
                 )
@@ -1164,6 +1168,7 @@ fn retained_native_and_replacement_sources_survive_profile_reload_and_late_rejec
             profile.rules,
             profile.image_settings,
             finish,
+            None,
             |assets| raster.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

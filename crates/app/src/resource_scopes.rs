@@ -6,31 +6,29 @@ use qa_core::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SelectionId(usize);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RegistrationIndex(pub(super) u32);
-impl BindingId for RegistrationIndex {
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
+pub(crate) struct SelectionId(usize);
 #[derive(Clone)]
-pub(super) struct Selections<T> {
+pub(crate) struct Selections<T> {
     entries: Vec<(SearchView, T)>,
 }
 impl<T> Selections<T> {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
-    pub(super) fn find(&self, view: &SearchView) -> Option<SelectionId> {
+    pub(crate) fn from_entry(view: SearchView, value: T) -> Self {
+        Self {
+            entries: vec![(view, value)],
+        }
+    }
+    pub(crate) fn find(&self, view: &SearchView) -> Option<SelectionId> {
         self.entries
             .iter()
             .position(|(selected, _)| selected.same_selection(view))
             .map(SelectionId)
     }
-    pub(super) fn intern(
+    pub(crate) fn intern(
         &mut self,
         view: SearchView,
         capacity: usize,
@@ -50,35 +48,35 @@ impl<T> Selections<T> {
     fn view(&self, id: SelectionId) -> &SearchView {
         &self.entries[id.0].0
     }
-    pub(super) fn get(&self, id: SelectionId) -> &T {
+    pub(crate) fn get(&self, id: SelectionId) -> &T {
         &self.entries[id.0].1
     }
-    fn get_mut(&mut self, id: SelectionId) -> &mut T {
+    pub(crate) fn get_mut(&mut self, id: SelectionId) -> &mut T {
         &mut self.entries[id.0].1
     }
-    fn values(&self) -> impl Iterator<Item = &T> {
+    pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
         self.entries.iter().map(|(_, value)| value)
     }
 }
 
 #[derive(Clone)]
-pub(super) struct ScopedBindings<K> {
+pub(crate) struct ScopedBindings<K> {
     scopes: Selections<OrdinalBindings<K>>,
     names: usize,
     capacity: usize,
 }
 impl<K: BindingId> ScopedBindings<K> {
-    pub(super) fn load(names: usize, capacity: usize) -> Self {
+    pub(crate) fn load(names: usize, capacity: usize) -> Self {
         Self {
             scopes: Selections::new(),
             names,
             capacity,
         }
     }
-    pub(super) fn find(&self, view: &SearchView, name: NameId) -> Option<K> {
+    pub(crate) fn find(&self, view: &SearchView, name: NameId) -> Option<K> {
         self.scopes.get(self.scopes.find(view)?).get(name.0)
     }
-    pub(super) fn bind(
+    pub(crate) fn bind(
         &mut self,
         view: SearchView,
         name: NameId,
@@ -97,29 +95,29 @@ impl<K: BindingId> ScopedBindings<K> {
             .map_err(|_| ())?;
         Ok(id)
     }
-    pub(super) fn view(&self, id: SelectionId) -> &SearchView {
+    pub(crate) fn view(&self, id: SelectionId) -> &SearchView {
         self.scopes.view(id)
     }
-    pub(super) fn named(&self, name: NameId) -> impl Iterator<Item = K> + '_ {
+    pub(crate) fn named(&self, name: NameId) -> impl Iterator<Item = K> + '_ {
         self.scopes
             .values()
             .filter_map(move |names| names.get(name.0))
     }
-    pub(super) fn entries(&self, source: &SearchView) -> impl Iterator<Item = (NameId, K)> + '_ {
+    pub(crate) fn entries(&self, source: &SearchView) -> impl Iterator<Item = (NameId, K)> + '_ {
         let names = self.scopes.find(source).map(|id| self.scopes.get(id));
         (0..self.names).filter_map(move |ordinal| {
             let ordinal = u32::try_from(ordinal).ok()?;
             Some((NameId(ordinal), names?.get(ordinal)?))
         })
     }
-    pub(super) fn all_entries(&self) -> impl Iterator<Item = (&SearchView, NameId, K)> + '_ {
+    pub(crate) fn all_entries(&self) -> impl Iterator<Item = (&SearchView, NameId, K)> + '_ {
         self.scopes.entries.iter().flat_map(|(view, _)| {
             self.entries(view)
                 .map(move |(name, record)| (view, name, record))
         })
     }
     /// Records append during cold admission; rollback removes only the rejected suffix.
-    pub(super) fn discard_suffix(&mut self, records: usize) -> Result<(), ()> {
+    pub(crate) fn discard_suffix(&mut self, records: usize) -> Result<(), ()> {
         for (_, names) in &mut self.scopes.entries {
             for ordinal in 0..names.capacity() {
                 let ordinal = u32::try_from(ordinal).map_err(|_| ())?;

@@ -28,13 +28,10 @@ fn assets(rules: RuleSetId, width: u32) -> (ModelAssets, HudAssets) {
     let mut owner = ModelAssets::new(&fixture.vfs, render, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                None,
-                None,
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [None, None, Some(palette), Some(palette), None],
+            ),
         )
         .unwrap();
     let font = FontAssets::load(
@@ -474,13 +471,10 @@ fn hud_picture_registration_survives_removed_files_and_received_config_replaceme
     let mut owner = ModelAssets::new(&fixture.vfs, render, [], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                None,
-                None,
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [None, None, Some(palette), Some(palette), None],
+            ),
         )
         .unwrap();
     let settings = qa_render::material::resources::ImageSettings::native(RuleSetId::Quake2);

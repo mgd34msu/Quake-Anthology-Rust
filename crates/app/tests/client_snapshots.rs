@@ -1552,13 +1552,10 @@ fn install_cgame_world_assets(
         ModelAssets::new(&host.runtime.vfs, assets, [profile], [], Default::default()).unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                None,
-                None,
-                None,
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &host.runtime.vfs,
+                [Some(palette), None, None, None, None],
+            ),
         )
         .unwrap();
     let source = asset_frames::Source::load(owner.assets());

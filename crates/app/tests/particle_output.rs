@@ -636,7 +636,7 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
             .model_assets
             .as_ref()
             .unwrap()
-            .published_palette(RuleSetId::Quake),
+            .published_palette(RuleSetId::Quake, None),
         None
     );
     publish(&mut host, NativeTarget::Client(client));
@@ -670,6 +670,7 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
         RuleSetId::Quake3,
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
         qa_render::material::MaterialFinishPolicy::default(),
+        None,
         |assets| {
             assert!(assets.counts().palettes > retained.palettes);
             source.renderer.prepare_assets(
@@ -683,7 +684,7 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
     );
     assert!(rejected.is_err());
     assert_eq!(owner.assets().counts(), retained);
-    assert_eq!(owner.published_palette(RuleSetId::Quake), None);
+    assert_eq!(owner.published_palette(RuleSetId::Quake, None), None);
     assert_eq!(source.renderer.admitted_assets(), Some(retained));
     publish(&mut host, NativeTarget::Client(client));
     host.frame(&mut source, true);
@@ -705,10 +706,11 @@ fn queued_particles_use_only_the_late_backend_admitted_palette_in_the_real_rende
             RuleSetId::Quake3,
             qa_render::material::resources::ImageSettings::native(RuleSetId::Quake3),
             qa_render::material::MaterialFinishPolicy::default(),
+            None,
             |assets| source.renderer.prepare_assets(assets, None),
         )
         .unwrap();
-    let palette = owner.published_palette(RuleSetId::Quake).unwrap();
+    let palette = owner.published_palette(RuleSetId::Quake, None).unwrap();
     assert_eq!(
         source.renderer.admitted_assets(),
         Some(owner.assets().counts())

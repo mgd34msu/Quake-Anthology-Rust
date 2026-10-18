@@ -344,6 +344,7 @@ fn md3_profile_rebuild_retains_lod_sources_and_rolls_back_backend_rejection() {
             profile.rules,
             settings,
             profile.finish,
+            None,
             |assets| cpu.prepare_assets(assets, None).map_err(str::to_owned),
         )
         .unwrap();

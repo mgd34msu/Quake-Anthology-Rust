@@ -252,13 +252,16 @@ fn setup(
     .unwrap();
     owner
         .adopt_palettes(
-            qa_app::render_settings::PaletteRegistrations::from_registered([
-                Some(palette),
-                Some(palette),
-                Some(palette),
-                Some(palette),
-                None,
-            ]),
+            qa_app::render_settings::PaletteRegistrations::from_registered(
+                &fixture.vfs,
+                [
+                    Some(palette),
+                    Some(palette),
+                    Some(palette),
+                    Some(palette),
+                    None,
+                ],
+            ),
         )
         .unwrap();
     let mut runtime = Runtime::load(protocols.len(), []).unwrap();

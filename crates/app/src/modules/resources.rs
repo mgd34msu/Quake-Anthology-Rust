@@ -703,6 +703,7 @@ impl FrameHost {
                 presentation_rules,
                 image_settings,
                 crate::render_settings::material_finish(&self.console.cvars)?,
+                None,
                 |assets| preparer.prepare_assets(assets, None),
             )?;
             let current = || {
