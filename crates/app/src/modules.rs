@@ -453,7 +453,11 @@ impl Modules {
     }
     pub(crate) fn for_each_native_sound(
         &self,
-        mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
+        mut visit: impl FnMut(
+            &[u8],
+            RuleSetId,
+            Option<&qa_content::vfs::SearchView>,
+        ) -> Result<(), String>,
     ) -> Result<(), String> {
         let modules = self;
         for row in modules.rows.iter().flatten() {
@@ -468,7 +472,11 @@ impl Modules {
                         .configstring(row.request.context.module, ordinal)
                         .map_err(|e| format!("native sound precache: {e:?}"))?;
                     if !name.is_empty() {
-                        visit(name, row.request.context.native_rules)?;
+                        visit(
+                            name,
+                            row.request.context.native_rules,
+                            modules.storage.file_search(row.request.context.module),
+                        )?;
                     }
                 }
             }
@@ -1210,7 +1218,7 @@ impl FrameHost {
     /// Inspect native resource ordinals without borrowing the PCM owner.
     pub fn for_each_native_sound(
         &self,
-        visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
+        visit: impl FnMut(&[u8], RuleSetId, Option<&qa_content::vfs::SearchView>) -> Result<(), String>,
     ) -> Result<(), String> {
         match &self.modules {
             Some(modules) => modules.for_each_native_sound(visit),
@@ -1249,9 +1257,20 @@ impl FrameHost {
                     .resources(row.request.context.module)
                     .map(|ranges| ranges[1])
                 {
+                    let source = self
+                        .runtime
+                        .sound_assets
+                        .as_deref()
+                        .ok_or("sound assets unavailable")?
+                        .source(
+                            self.runtime
+                                .vfs
+                                .read_view(modules.storage.file_search(row.request.context.module)),
+                        )
+                        .map_err(|e| format!("native sound source: {e:?}"))?;
                     modules
                         .storage
-                        .bind_sound_bank(row.request.context.module, sounds, bank)
+                        .bind_sound_bank(row.request.context.module, sounds, bank, source)
                         .map_err(|e| format!("native sound binding: {e:?}"))?;
                 }
             }

@@ -239,7 +239,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .body
         .position;
     let mut precached = Vec::new();
-    host.for_each_native_sound(|name, _| {
+    host.for_each_native_sound(|name, _, _| {
         precached.push(name.to_vec());
         Ok(())
     })

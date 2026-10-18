@@ -167,8 +167,24 @@ impl SoundBindings {
         name: &[u8],
         rules: RuleSetId,
     ) -> Result<(), SoundBindingError> {
+        self.bind_name_in(
+            bank,
+            Some(crate::SoundSource::DEFAULT),
+            ordinal,
+            name,
+            rules,
+        )
+    }
+    pub fn bind_name_in(
+        &mut self,
+        bank: Option<&Bank>,
+        source: Option<crate::SoundSource>,
+        ordinal: u32,
+        name: &[u8],
+        rules: RuleSetId,
+    ) -> Result<(), SoundBindingError> {
         match sound_path(name, rules)? {
-            Some(path) => self.bind_path(bank, ordinal, path.as_bytes()),
+            Some(path) => self.bind_path_in(bank, source, ordinal, path.as_bytes()),
             None => self.set(ordinal, None),
         }
     }
@@ -179,7 +195,18 @@ impl SoundBindings {
         ordinal: u32,
         path: &[u8],
     ) -> Result<(), SoundBindingError> {
-        let sound = bank.and_then(|bank| bank.find_bytes(path));
+        self.bind_path_in(bank, Some(crate::SoundSource::DEFAULT), ordinal, path)
+    }
+    pub fn bind_path_in(
+        &mut self,
+        bank: Option<&Bank>,
+        source: Option<crate::SoundSource>,
+        ordinal: u32,
+        path: &[u8],
+    ) -> Result<(), SoundBindingError> {
+        let sound = bank
+            .zip(source)
+            .and_then(|(bank, source)| bank.find_in(source, path));
         self.set(ordinal, sound)
     }
 }

@@ -126,7 +126,7 @@ fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, Ca
 fn register_sound(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let sample = c.memory.cstring(c.required_pointer(0)?)?;
     // Native Q3 ignores the compressed argument, including its value/width.
-    (ENGINE_CALLS.register_sound)(c.services, sample, c.context.native_rules)
+    (ENGINE_CALLS.register_sound)(c.services, c.context.module, sample, c.context.native_rules)
         .map(|handle| handle as u32 as u64)
 }
 fn register_renderer(

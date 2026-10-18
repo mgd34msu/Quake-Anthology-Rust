@@ -2441,19 +2441,24 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
         },
     ] {
         assert!(matches!(
-            services.storage.bind_sound_bank(module, bad, &bank),
+            services.storage.bind_sound_bank(
+                module,
+                bad,
+                &bank,
+                Some(qa_audio::SoundSource::DEFAULT)
+            ),
             Err(qa_compat::services::CallError::ConfigString)
         ));
     }
     services.configstring(module, 3, b"world/amb.wav").unwrap();
     services
         .storage
-        .bind_sound_bank(module, range, &bank)
+        .bind_sound_bank(module, range, &bank, Some(qa_audio::SoundSource::DEFAULT))
         .unwrap();
     services.configstring(other, 3, b"world/amb.wav").unwrap();
     services
         .storage
-        .bind_sound_bank(other, range, &bank)
+        .bind_sound_bank(other, range, &bank, Some(qa_audio::SoundSource::DEFAULT))
         .unwrap();
     let read = |services: &mut qa_compat::services::EngineServices<'_>, index| {
         (ENGINE_CALLS.sound_id)(services, module, range, index)

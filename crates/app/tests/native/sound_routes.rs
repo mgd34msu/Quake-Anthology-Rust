@@ -554,7 +554,10 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                 .into(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         host.call_module_export(
             ModuleId(1),
@@ -668,7 +671,10 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                 .into(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         host.runtime
             .server
@@ -869,7 +875,10 @@ pub(super) fn unsupported_resource_names_drop_only_the_unrepresentable_client_de
             .into(),
     )
     .unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     host.call_module_export(
         ModuleId(1),
@@ -959,7 +968,10 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
                 .into(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         // The staged message publishes A first, then gi.positioned_sound
         // publishes B on the same world-edict/nonzero-channel key.
@@ -1130,7 +1142,10 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                 .into(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let a = host
             .runtime
@@ -1437,7 +1452,10 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                 .into(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let a = host
             .runtime
@@ -1678,7 +1696,10 @@ pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
         )],
     )
     .unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let mut source = AudioSource::default();
     // Actual resource publication and native packet ACKs, with no readiness override.

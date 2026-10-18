@@ -2098,7 +2098,10 @@ fn queued_netquake_serverinfo_reset_fence_retires_old_ambient_before_new_sound_w
     .unwrap();
     let old = bank.find("sound/old.wav").unwrap();
     let new = bank.find("sound/new.wav").unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let mut source = ServerInfoAudio {
         mixer: qa_audio::Mixer::load(rate, 8, 2),

@@ -1381,7 +1381,7 @@ impl ResourceState {
             let sound = if config.text.is_empty() {
                 Ok(None)
             } else {
-                assets.precache(vfs, config.text, self.layout.rules)
+                assets.precache(vfs, config.text, self.layout.rules, None)
             };
             let admitted = sound.as_ref().ok().copied().flatten();
             self.rejected += u64::from(sound.is_err());

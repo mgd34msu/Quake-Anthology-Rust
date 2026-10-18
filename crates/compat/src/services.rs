@@ -245,14 +245,25 @@ pub struct RendererRequest<N = qa_core::text::FixedText<64>> {
 
 /// Sound registration extends the one retained bank through scoped service borrows.
 pub trait SoundRegistrar {
-    fn register(&mut self, vfs: &Vfs, sample: &[u8], source: RuleSetId) -> Result<i32, CallError>;
+    fn register(
+        &mut self,
+        vfs: &Vfs,
+        sample: &[u8],
+        source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
+    ) -> Result<i32, CallError>;
     /// Native config resources admit PCM without claiming Q3 engine handles.
     fn precache(
         &mut self,
         vfs: &Vfs,
         sample: &[u8],
         source: RuleSetId,
+        search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError>;
+    fn source(
+        &self,
+        view: qa_content::vfs::ReadView<'_>,
+    ) -> Result<Option<qa_audio::SoundSource>, CallError>;
     fn bank(&self) -> &qa_audio::Bank;
 }
 
@@ -444,6 +455,16 @@ impl ServiceStorage {
             .iter_mut()
             .find(|range| range.module == module)
             .ok_or(CallError::File)?;
+        if range
+            .file_search
+            .as_ref()
+            .is_some_and(|old| !old.same_selection(&view))
+        {
+            range.sound_revisions.fill(None);
+            if let Some(bindings) = &mut range.sound_bindings {
+                bindings.clear();
+            }
+        }
         range.file_search = Some(view);
         for file in self
             .files
@@ -961,6 +982,7 @@ impl ServiceStorage {
         module: ModuleId,
         sounds: IndexSpan,
         bank: &qa_audio::Bank,
+        source: Option<qa_audio::SoundSource>,
     ) -> Result<(), CallError> {
         if sounds.count == 0 {
             return Err(CallError::ConfigString);
@@ -990,7 +1012,13 @@ impl ServiceStorage {
                 row.sound_bindings
                     .as_mut()
                     .ok_or(CallError::ConfigString)?
-                    .bind_name(Some(bank), ordinal as u32, config.text, row.native_rules)
+                    .bind_name_in(
+                        Some(bank),
+                        source,
+                        ordinal as u32,
+                        config.text,
+                        row.native_rules,
+                    )
                     .map_err(|_| CallError::Text)?;
                 row.sound_revisions[ordinal] = Some(config.revision);
             }
@@ -1393,12 +1421,16 @@ pub struct EngineCallTable {
         &[u8],
     ) -> Result<u64, CallError>,
     pub stop_background: fn(&mut EngineServices<'_>) -> Result<u64, CallError>,
-    pub register_sound: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<i32, CallError>,
+    pub register_sound:
+        fn(&mut EngineServices<'_>, ModuleId, &[u8], RuleSetId) -> Result<i32, CallError>,
     pub registered_model_bounds: fn(&EngineServices<'_>, i32) -> Option<Bounds>,
     pub lerp_tag: fn(&EngineServices<'_>, i32, i32, i32, f32, &[u8]) -> Option<Orientation>,
     pub model_has_tags: fn(&EngineServices<'_>, i32) -> bool,
-    pub registered_sound:
-        fn(&EngineServices<'_>, i32) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
+    pub registered_sound: fn(
+        &EngineServices<'_>,
+        ModuleId,
+        i32,
+    ) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub static_entity:
         fn(&mut EngineServices<'_>, CallContext, EntityRecord) -> Result<u32, CallError>,
     pub ambient: fn(&mut EngineServices<'_>, CallContext, AmbientSound) -> Result<u32, CallError>,
@@ -1780,7 +1812,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map_err(|_| CallError::Capacity)?;
         Ok(sequence)
     },
-    register_sound: |s, sample, source| s.register_sound(sample, source),
+    register_sound: |s, module, sample, source| s.register_sound(module, sample, source),
     registered_model_bounds: |s, handle| s.models()?.model_bounds(handle),
     model_has_tags: |s, handle| {
         s.models()
@@ -1789,7 +1821,10 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     lerp_tag: |s, handle, start, end, fraction, name| {
         s.models()?.lerp_tag(handle, start, end, fraction, name)
     },
-    registered_sound: |s, handle| Ok(s.registered_bank()?.registered_sound(handle)),
+    registered_sound: |s, module, handle| {
+        let (bank, source) = s.registered_source(module)?;
+        Ok(source.and_then(|source| bank.registered_sound_in(source, handle)))
+    },
     ambient: |s, context, sound| {
         let result = s.storage.register_ambient(context, sound);
         if result == Err(CallError::Capacity) {
@@ -2108,6 +2143,11 @@ impl EngineServices<'_> {
         Ok(())
     }
     fn prepare_sound_at(&mut self, module: ModuleId, index: usize) -> Result<(), CallError> {
+        let fallback_source = if self.sound_loader.is_none() && self.sound_bank.is_some() {
+            self.registered_source(module)?.1
+        } else {
+            None
+        };
         let row = self
             .storage
             .ranges
@@ -2130,7 +2170,12 @@ impl EngineServices<'_> {
             if ordinal == 0 || config.text.is_empty() {
                 None
             } else {
-                match loader.precache(self.vfs, config.text, row.native_rules) {
+                match loader.precache(
+                    self.vfs,
+                    config.text,
+                    row.native_rules,
+                    row.file_search.as_ref(),
+                ) {
                     Ok(sound) => sound,
                     Err(error @ (CallError::File | CallError::Capacity | CallError::Text)) => {
                         Self::registration_diagnostic(&mut self.server.events, "sound", error);
@@ -2143,7 +2188,13 @@ impl EngineServices<'_> {
             row.attach_sounds(bank)?;
             let bindings = row.sound_bindings.as_mut().ok_or(CallError::ConfigString)?;
             bindings
-                .bind_name(Some(bank), ordinal as u32, config.text, row.native_rules)
+                .bind_name_in(
+                    Some(bank),
+                    fallback_source,
+                    ordinal as u32,
+                    config.text,
+                    row.native_rules,
+                )
                 .map_err(|_| CallError::Text)?;
             row.sound_revisions[ordinal] = Some(config.revision);
             return Ok(());
@@ -2170,14 +2221,29 @@ impl EngineServices<'_> {
             format_args!("{kind} registration rejected: {error:?}\n"),
         );
     }
-    fn registered_bank(&self) -> Result<&qa_audio::Bank, CallError> {
-        self.sound_loader
-            .as_deref()
-            .map(SoundRegistrar::bank)
-            .or(self.sound_bank)
-            .ok_or(CallError::Unsupported)
+    fn registered_source(
+        &self,
+        module: ModuleId,
+    ) -> Result<(&qa_audio::Bank, Option<qa_audio::SoundSource>), CallError> {
+        let view = self.vfs.read_view(self.storage.file_search(module));
+        if let Some(loader) = self.sound_loader.as_deref() {
+            Ok((loader.bank(), loader.source(view)?))
+        } else {
+            view.retain().map_err(|_| CallError::File)?;
+            // A supplied PCM-only bank has no file provenance. Production
+            // file-backed banks resolve through SoundRegistrar above.
+            Ok((
+                self.sound_bank.ok_or(CallError::Unsupported)?,
+                Some(qa_audio::SoundSource::DEFAULT),
+            ))
+        }
     }
-    pub fn register_sound(&mut self, sample: &[u8], source: RuleSetId) -> Result<i32, CallError> {
+    pub fn register_sound(
+        &mut self,
+        module: ModuleId,
+        sample: &[u8],
+        source: RuleSetId,
+    ) -> Result<i32, CallError> {
         if sample.is_empty() {
             return Err(CallError::Text);
         }
@@ -2186,10 +2252,11 @@ impl EngineServices<'_> {
         let result = if sample.len() >= 64 {
             Err(CallError::Text)
         } else if let Some(loader) = self.sound_loader.as_deref_mut() {
-            loader.register(self.vfs, sample, source)
+            loader.register(self.vfs, sample, source, self.storage.file_search(module))
         } else {
-            self.registered_bank()?
-                .registered_handle(sample)
+            let (bank, source) = self.registered_source(module)?;
+            source
+                .and_then(|source| bank.registered_handle_in(source, sample))
                 .ok_or(CallError::File)
         };
         self.registration_result("sound", result)

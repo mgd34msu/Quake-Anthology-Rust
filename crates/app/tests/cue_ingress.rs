@@ -157,7 +157,10 @@ fn native_dynamic_sound_packets_reach_the_one_ring_and_real_pcm_for_nq_and_qw() 
         )
         .unwrap();
         host.local_clients[0] = Some(client);
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let index = host.runtime.client_resources[client.0 as usize]
             .as_ref()

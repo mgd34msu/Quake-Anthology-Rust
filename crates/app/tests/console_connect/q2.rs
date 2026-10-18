@@ -189,7 +189,7 @@ fn model_owner(
     host.runtime.model_assets = Some(owner);
     host.runtime.scene = Some(scene);
     host.runtime.sound_assets = Some(Box::new(
-        qa_app::audio::SoundAssets::load(32, 4096).unwrap(),
+        qa_app::audio::SoundAssets::load(&host.runtime.vfs, 32, 4096).unwrap(),
     ));
     host.publish_model_admission(backend.cpu.admitted_assets().unwrap())
         .unwrap();

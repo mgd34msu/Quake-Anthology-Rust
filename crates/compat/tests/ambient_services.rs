@@ -136,7 +136,12 @@ fn attach(services: &mut EngineServices<'_>, context: CallContext, bank: &Arc<qa
     let sounds = services.storage.resources(context.module).unwrap()[1];
     services
         .storage
-        .bind_sound_bank(context.module, sounds, bank.as_ref())
+        .bind_sound_bank(
+            context.module,
+            sounds,
+            bank.as_ref(),
+            Some(qa_audio::SoundSource::DEFAULT),
+        )
         .unwrap();
 }
 fn descriptor(source_ordinal: u32) -> AmbientSound {

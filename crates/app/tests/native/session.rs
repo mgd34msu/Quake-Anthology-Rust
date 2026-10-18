@@ -2188,7 +2188,7 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
     };
     host.frame(&mut source, true);
     let mut precached = Vec::new();
-    host.for_each_native_sound(|name, source| {
+    host.for_each_native_sound(|name, source, _| {
         precached.push((name.to_vec(), source));
         Ok(())
     })
@@ -4755,6 +4755,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         console.execute_frame(&mut runtime);
         let rate = std::num::NonZeroU32::new(44100).unwrap();
         runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &runtime.vfs,
             qa_audio::Bank::load(
                 rate,
                 vec![(
@@ -4776,6 +4777,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 ModuleId(1),
                 game.vm.resource_ranges().unwrap()[1],
                 runtime.sound_bank().unwrap(),
+                Some(qa_audio::SoundSource::DEFAULT),
             )
             .unwrap();
         let source = {

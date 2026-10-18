@@ -8,7 +8,6 @@ use qa_core::{
         LoopPlayback, ModuleId, NameId, Pcm, ResourceNamespace, SoundAction, SoundBus,
         SoundEmitter, SoundEvent, SoundId, SoundStartOrder, Vec3,
     },
-    stamps::StampSet,
 };
 use std::num::NonZeroU32;
 

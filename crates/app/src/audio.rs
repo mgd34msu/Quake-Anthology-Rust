@@ -1,10 +1,11 @@
 //! The client presentation consumer owns one mixer and one platform stream.
 use crate::Runtime;
-use qa_audio::{Bank, Mixer};
+use qa_audio::{Bank, Mixer, SoundSource};
 use qa_console::{
     commands::{CommandError, Console},
     views::Context,
 };
+use qa_content::vfs::{ReadView, SearchView, Selections, Vfs};
 use qa_core::{
     events::FrameEvent,
     primitives::{RuleSetId, SoundAction, SoundEvent, Vec3},
@@ -123,6 +124,8 @@ impl Output {
 /// remain in the same Bank throughout registration and presentation.
 pub struct SoundAssets {
     bank: Bank,
+    registration_vfs: SearchView,
+    sources: Selections<Option<SoundSource>>,
     reader: qa_formats::archive::ArchiveReader,
     failures: Box<[Option<SoundFailure>]>,
     initial_registration: bool,
@@ -145,25 +148,63 @@ struct Attempt {
 impl SoundAssets {
     /// Extra paths and bytes are reserved once before any module Init. The
     /// native default owns handle zero even when its actual PCM is absent.
-    pub fn load(additional_paths: usize, additional_path_bytes: usize) -> Result<Self, String> {
+    pub fn load(
+        vfs: &Vfs,
+        additional_paths: usize,
+        additional_path_bytes: usize,
+    ) -> Result<Self, String> {
         let rate = NonZeroU32::new(44100).ok_or("invalid device rate")?;
         let bank = Bank::with_capacity(rate, additional_paths, additional_path_bytes)?;
-        let mut assets = Self::from_bank(bank);
+        let mut assets = Self::from_bank(vfs, bank);
         assets.initial_registration = true;
         Ok(assets)
     }
-    pub fn from_bank(bank: Bank) -> Self {
+    pub fn from_bank(vfs: &Vfs, bank: Bank) -> Self {
         let failures = std::iter::repeat_with(|| None)
             .take(bank.capacity())
             .collect();
+        let registration_vfs = vfs.default_view();
         Self {
             bank,
+            sources: Selections::from_entry(registration_vfs.clone(), Some(SoundSource::DEFAULT)),
+            registration_vfs,
             reader: qa_formats::archive::ArchiveReader::default(),
             failures,
             initial_registration: false,
             reads: 0,
             decodes: 0,
         }
+    }
+    fn selection(&self, view: ReadView<'_>) -> Result<SearchView, qa_compat::services::CallError> {
+        use qa_compat::services::CallError;
+        if !view.accepts_search(&self.registration_vfs) {
+            return Err(CallError::File);
+        }
+        view.retain().map_err(|_| CallError::File)
+    }
+    fn admit_source(
+        &mut self,
+        view: ReadView<'_>,
+    ) -> Result<SoundSource, qa_compat::services::CallError> {
+        let search = self.selection(view)?;
+        let bank = &mut self.bank;
+        let id = self
+            .sources
+            .intern(search, bank.capacity(), || bank.add_source().ok())
+            .map_err(|_| qa_compat::services::CallError::Capacity)?;
+        self.sources
+            .get(id)
+            .ok_or(qa_compat::services::CallError::Capacity)
+    }
+    pub fn source(
+        &self,
+        view: ReadView<'_>,
+    ) -> Result<Option<SoundSource>, qa_compat::services::CallError> {
+        let search = self.selection(view)?;
+        Ok(self
+            .sources
+            .find(&search)
+            .and_then(|id| *self.sources.get(id)))
     }
     pub fn bank(&self) -> &Bank {
         &self.bank
@@ -175,18 +216,23 @@ impl SoundAssets {
         // Other source roles may already have loaded the default PCM. Native
         // handles keep Q3's mono restriction even without a cold cgame call.
         if let Some(sound) = self.bank.find_bytes(Bank::DEFAULT_SOUND) {
-            let _ = self.validate_registration(Bank::DEFAULT_SOUND, sound, RuleSetId::Quake3);
+            let _ = self.validate_registration(
+                Bank::DEFAULT_SOUND,
+                sound,
+                RuleSetId::Quake3,
+                SoundSource::DEFAULT,
+            );
         }
         self.initial_registration = false;
     }
-    fn read(&mut self, vfs: &qa_content::vfs::Vfs, sound: qa_core::primitives::SoundId) {
+    fn read(&mut self, view: ReadView<'_>, sound: qa_core::primitives::SoundId) {
         // The path is borrowed from the sole canonical name row. No second
         // normalized path or PCM catalog is built by this loader.
         let Some(path) = self.bank.name(sound) else {
             return;
         };
         self.reads += 1;
-        let bytes = match vfs.read_file(path, 256 * 1024 * 1024, &mut self.reader) {
+        let bytes = match view.read_file(path, 256 * 1024 * 1024, &mut self.reader) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.failures[sound.0 as usize] = Some(SoundFailure {
@@ -209,24 +255,25 @@ impl SoundAssets {
     }
     fn attempt(
         &mut self,
-        vfs: &qa_content::vfs::Vfs,
+        view: ReadView<'_>,
+        scope: SoundSource,
         path: &[u8],
     ) -> Result<Attempt, qa_compat::services::CallError> {
-        if let Some(sound) = self.bank.attempted(path) {
+        if let Some(sound) = self.bank.attempted_in(scope, path) {
             // The default name is reserved before its first load. Completed
             // attempts always contain either PCM or a retained failure.
             let first =
                 self.bank.sample(sound).is_none() && self.failures[sound.0 as usize].is_none();
             if first {
-                self.read(vfs, sound);
+                self.read(view, sound);
             }
             return Ok(Attempt { sound, first });
         }
         let sound = self
             .bank
-            .attempt(path)
+            .attempt_in(scope, path)
             .map_err(|_| qa_compat::services::CallError::Capacity)?;
-        self.read(vfs, sound);
+        self.read(view, sound);
         Ok(Attempt { sound, first: true })
     }
     /// Explicit precaches are full VFS paths. Optional missing files warn once;
@@ -237,9 +284,14 @@ impl SoundAssets {
         path: &[u8],
         source: RuleSetId,
         required: bool,
+        search: Option<&SearchView>,
     ) -> Result<Option<String>, String> {
+        let view = vfs.read_view(search);
+        let scope = self
+            .admit_source(view)
+            .map_err(|error| format!("sound source: {error:?}"))?;
         let attempt = self
-            .attempt(vfs, path)
+            .attempt(view, scope, path)
             .map_err(|error| format!("sound registration: {error:?}"))?;
         if self.invalid_loops(attempt.sound, source) {
             return Err("sound decode: invalid native loop metadata".into());
@@ -266,6 +318,7 @@ impl SoundAssets {
         native: &[u8],
         sound: qa_core::primitives::SoundId,
         source: RuleSetId,
+        scope: SoundSource,
     ) -> Result<(), qa_compat::services::CallError> {
         use qa_compat::services::CallError;
         let pcm = self.bank.sample(sound).ok_or(CallError::File)?;
@@ -276,7 +329,7 @@ impl SoundAssets {
             // Native Q3 S_LoadSound rejects stereo effects. Its failed handle
             // stays occupied while common stereo PCM remains available.
             self.bank
-                .reject_registration(native)
+                .reject_registration_in(scope, native)
                 .map_err(|_| CallError::Capacity)?;
             return Err(CallError::File);
         }
@@ -290,13 +343,14 @@ impl SoundAssets {
         vfs: &qa_content::vfs::Vfs,
         sample: &[u8],
         source: RuleSetId,
+        search: Option<&SearchView>,
     ) -> Result<Option<String>, String> {
         let Some(path) = qa_audio::sound_path(sample, source)
             .map_err(|error| format!("sound path: {error:?}"))?
         else {
             return Ok(None);
         };
-        self.precache_path(vfs, path.as_bytes(), source, false)
+        self.precache_path(vfs, path.as_bytes(), source, false, search)
     }
 }
 impl qa_compat::services::SoundRegistrar for SoundAssets {
@@ -305,18 +359,21 @@ impl qa_compat::services::SoundRegistrar for SoundAssets {
         vfs: &qa_content::vfs::Vfs,
         sample: &[u8],
         source: RuleSetId,
+        search: Option<&SearchView>,
     ) -> Result<i32, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
+        let view = vfs.read_view(search);
+        let scope = self.admit_source(view)?;
         if source == RuleSetId::Quake3 {
-            let default = self.attempt(vfs, Bank::DEFAULT_SOUND)?;
+            let default = self.attempt(view, scope, Bank::DEFAULT_SOUND)?;
             // A missing/rejected default does not prevent another native sample.
-            let _ = self.validate_registration(Bank::DEFAULT_SOUND, default.sound, source);
+            let _ = self.validate_registration(Bank::DEFAULT_SOUND, default.sound, source, scope);
         }
         if source == RuleSetId::Quake3 && sample.starts_with(b"*") {
             // S_FindName admits a handle before S_LoadSound rejects player-
             // specific names, without reading a literal '*' file.
             self.bank
-                .attempt_registration(sample, None)
+                .attempt_registration_in(scope, sample, None)
                 .map_err(|_| CallError::Capacity)?;
             return Err(CallError::File);
         }
@@ -324,23 +381,29 @@ impl qa_compat::services::SoundRegistrar for SoundAssets {
             return Ok(0);
         };
         self.bank
-            .attempt_registration(sample, Some(path.as_bytes()))
+            .attempt_registration_in(scope, sample, Some(path.as_bytes()))
             .map_err(|_| CallError::Capacity)?;
-        let attempt = self.attempt(vfs, path.as_bytes())?;
-        self.validate_registration(sample, attempt.sound, source)?;
-        self.bank.registered_handle(sample).ok_or(CallError::File)
+        let attempt = self.attempt(view, scope, path.as_bytes())?;
+        self.validate_registration(sample, attempt.sound, source, scope)?;
+        self.bank
+            .registered_handle_in(scope, sample)
+            .ok_or(CallError::File)
     }
     fn precache(
         &mut self,
         vfs: &qa_content::vfs::Vfs,
         sample: &[u8],
         source: RuleSetId,
+        search: Option<&SearchView>,
     ) -> Result<Option<qa_core::primitives::SoundId>, qa_compat::services::CallError> {
         use qa_compat::services::CallError;
+        let view = vfs.read_view(search);
         let Some(path) = qa_audio::sound_path(sample, source).map_err(|_| CallError::Text)? else {
+            self.selection(view)?;
             return Ok(None);
         };
-        let attempt = self.attempt(vfs, path.as_bytes())?;
+        let scope = self.admit_source(view)?;
+        let attempt = self.attempt(view, scope, path.as_bytes())?;
         if self.invalid_loops(attempt.sound, source) {
             return Err(CallError::File);
         }
@@ -348,6 +411,12 @@ impl qa_compat::services::SoundRegistrar for SoundAssets {
             .sample(attempt.sound)
             .map(|_| Some(attempt.sound))
             .ok_or(CallError::File)
+    }
+    fn source(
+        &self,
+        view: ReadView<'_>,
+    ) -> Result<Option<SoundSource>, qa_compat::services::CallError> {
+        SoundAssets::source(self, view)
     }
     fn bank(&self) -> &Bank {
         &self.bank
@@ -388,9 +457,9 @@ pub fn begin_registration(
         count = count.checked_add(1).ok_or("sound registration capacity")?;
         bytes = bytes.checked_add(path.len()).ok_or("sound path capacity")?;
     }
-    let mut loader = SoundAssets::load(count, bytes)?;
+    let mut loader = SoundAssets::load(&host.runtime.vfs, count, bytes)?;
     for path in paths {
-        loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true)?;
+        loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true, None)?;
     }
     host.runtime.sound_assets = Some(Box::new(loader));
     Ok(())
@@ -407,75 +476,77 @@ pub fn load_registered_sounds(
         .as_deref_mut()
         .ok_or("sound registration not started")?;
     let mut warnings = Vec::new();
-    let result = (|| {
-        for path in paths {
-            loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true)?;
-        }
-        if let Some(modules) = &host.modules {
-            modules.for_each_native_sound(|sample, source| {
-                if let Some(warning) = loader.precache_native(&host.runtime.vfs, sample, source)? {
-                    warnings.push(warning);
-                }
-                Ok(())
-            })?;
-        }
-        // Native cue sources, not map or movement roles, select this cold
-        // recipe admission. A foreign client protocol can still receive cues.
-        let q2_cues = host.runtime.snapshots.iter().flatten().any(|client| {
-            matches!(
-                client.protocol,
-                qa_network::commands::packet::Protocol::Quake2_34
-                    | qa_network::commands::packet::Protocol::Quake2Repro1038
-            )
-        }) || host.modules.as_ref().is_some_and(|modules| {
-            modules.has_sound_source(RuleSetId::Quake2)
-                || modules.has_sound_source(RuleSetId::Quake2Rerelease)
-        });
-        if q2_cues {
-            for path in qa_gameplay::rules::q2::sounds::PATHS {
-                if let Some(warning) = loader.precache_path(
-                    &host.runtime.vfs,
-                    path.as_bytes(),
-                    RuleSetId::Quake2,
-                    false,
-                )? {
-                    warnings.push(warning);
-                }
+    let result =
+        (|| {
+            for path in paths {
+                loader.precache_path(&host.runtime.vfs, path.as_bytes(), rules, true, None)?;
             }
-        }
-        let q3_cues = host
-            .runtime
-            .snapshots
-            .iter()
-            .flatten()
-            .any(|client| client.protocol == qa_network::commands::packet::Protocol::Quake3_68)
-            || host
-                .modules
-                .as_ref()
-                .is_some_and(|modules| modules.has_sound_source(RuleSetId::Quake3));
-        if q3_cues {
-            for path in qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS {
-                let attempted = loader.bank.registered_handle(path.as_bytes()).is_some();
-                match qa_compat::services::SoundRegistrar::register(
-                    loader,
-                    &host.runtime.vfs,
-                    path.as_bytes(),
-                    RuleSetId::Quake3,
-                ) {
-                    Ok(_) => {}
-                    Err(qa_compat::services::CallError::File) => {
-                        // Native registration failures retain handle zero. A
-                        // repeated cold call never reopens or repeats the warning.
-                        if !attempted {
-                            warnings.push(format!("sound {path}: native media unavailable"));
-                        }
+            if let Some(modules) = &host.modules {
+                modules.for_each_native_sound(|sample, source, search| {
+                    if let Some(warning) =
+                        loader.precache_native(&host.runtime.vfs, sample, source, search)?
+                    {
+                        warnings.push(warning);
                     }
-                    Err(error) => return Err(format!("player sound registration: {error:?}")),
+                    Ok(())
+                })?;
+            }
+            // Native cue sources, not map or movement roles, select this cold
+            // recipe admission. A foreign client protocol can still receive cues.
+            let q2_cues = host.runtime.snapshots.iter().flatten().any(|client| {
+                matches!(
+                    client.protocol,
+                    qa_network::commands::packet::Protocol::Quake2_34
+                        | qa_network::commands::packet::Protocol::Quake2Repro1038
+                )
+            }) || host.modules.as_ref().is_some_and(|modules| {
+                modules.has_sound_source(RuleSetId::Quake2)
+                    || modules.has_sound_source(RuleSetId::Quake2Rerelease)
+            });
+            if q2_cues {
+                for path in qa_gameplay::rules::q2::sounds::PATHS {
+                    if let Some(warning) = loader.precache_path(
+                        &host.runtime.vfs,
+                        path.as_bytes(),
+                        RuleSetId::Quake2,
+                        false,
+                        None,
+                    )? {
+                        warnings.push(warning);
+                    }
                 }
             }
-        }
-        Ok(())
-    })();
+            let q3_cues =
+                host.runtime.snapshots.iter().flatten().any(|client| {
+                    client.protocol == qa_network::commands::packet::Protocol::Quake3_68
+                }) || host
+                    .modules
+                    .as_ref()
+                    .is_some_and(|modules| modules.has_sound_source(RuleSetId::Quake3));
+            if q3_cues {
+                for path in qa_gameplay::rules::feedback::PLAYER_SOUND_PATHS {
+                    let attempted = loader.bank.registered_handle(path.as_bytes()).is_some();
+                    match qa_compat::services::SoundRegistrar::register(
+                        loader,
+                        &host.runtime.vfs,
+                        path.as_bytes(),
+                        RuleSetId::Quake3,
+                        None,
+                    ) {
+                        Ok(_) => {}
+                        Err(qa_compat::services::CallError::File) => {
+                            // Native registration failures retain handle zero. A
+                            // repeated cold call never reopens or repeats the warning.
+                            if !attempted {
+                                warnings.push(format!("sound {path}: native media unavailable"));
+                            }
+                        }
+                        Err(error) => return Err(format!("player sound registration: {error:?}")),
+                    }
+                }
+            }
+            Ok(())
+        })();
     for warning in warnings {
         host.runtime.print_event(
             None,
@@ -532,12 +603,12 @@ pub fn play(
                 let assets = runtime.sound_assets.as_deref_mut()?;
                 if context.source == RuleSetId::Quake3 {
                     let handle = assets
-                        .register(&runtime.vfs, name.as_bytes(), context.source)
+                        .register(&runtime.vfs, name.as_bytes(), context.source, None)
                         .ok()?;
                     assets.bank().registered_sound(handle)
                 } else {
                     assets
-                        .precache(&runtime.vfs, name.as_bytes(), context.source)
+                        .precache(&runtime.vfs, name.as_bytes(), context.source, None)
                         .ok()
                         .flatten()
                 }

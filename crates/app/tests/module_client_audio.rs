@@ -120,6 +120,7 @@ fn request(
             data[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
     }
+    data[160..177].copy_from_slice(b"sound/steady.wav\0");
     ModuleRequest {
         search: None,
         q3_image: None,
@@ -179,7 +180,10 @@ fn fixture(
     .unwrap();
     let handle = bank.registered_handle(b"sound/steady.wav").unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
-    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &runtime.vfs,
+        bank,
+    )));
     let client = protocol.map(|protocol| {
         runtime
             .connect_local(
@@ -489,4 +493,87 @@ fn native_loop_velocity_reaches_the_ring_and_mixer_on_foreign_connections() {
         assert_eq!(source.last_loop.unwrap().doppler, None);
         assert_eq!(source.pcm, [expected(45); 8]);
     }
+}
+
+#[test]
+fn qvm_modules_play_their_selected_same_name_pcm_through_the_shared_ring_and_mixer() {
+    #[path = "support/sound_registration.rs"]
+    mod wav;
+    struct Files(std::path::PathBuf);
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = qa_platform::files::remove_dir_all(&self.0);
+        }
+    }
+    let files = Files(
+        std::env::temp_dir().join(format!("qa-module-selected-audio-{}", std::process::id())),
+    );
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut requests = Vec::new();
+    for (index, sample) in [(1, 1024i16), (2, -2048i16)] {
+        let path = files.0.join(index.to_string());
+        qa_platform::files::create_dir_all(path.join("sound/feedback")).unwrap();
+        let mut bytes = wav::wav();
+        for frame in bytes[44..].chunks_exact_mut(2) {
+            frame.copy_from_slice(&sample.to_le_bytes());
+        }
+        qa_platform::files::write(path.join("sound/feedback/hit.wav"), &bytes).unwrap();
+        qa_platform::files::write(path.join("sound/steady.wav"), &bytes).unwrap();
+        let mount = runtime.vfs.mount_directory(&path, index).unwrap();
+        let mut module = request(&mut runtime, ModuleId(index as u16), &Q3_UI, None);
+        module.search = Some(runtime.vfs.search_view([mount]).unwrap());
+        requests.push(module);
+    }
+    runtime.sound_assets = Some(Box::new(
+        qa_app::audio::SoundAssets::load(&runtime.vfs, 16, 4096).unwrap(),
+    ));
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        mixer: Mixer::load(NonZeroU32::new(44100).unwrap(), 16, SeatId::COUNT),
+        time: EventTime::from_milliseconds(100),
+        last_sound: None,
+        last_loop: None,
+        pcm: [0; 8],
+    };
+    let mut ids = Vec::new();
+    for (module, positive) in [(ModuleId(1), true), (ModuleId(2), false)] {
+        host.call_module_export(
+            module,
+            Export::words(CallbackId(0), &[31, 160, 0]),
+            ThinkTime::Milliseconds(0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(module).unwrap().last_result,
+            Some(qa_app::modules::ModuleResult::Qvm(1))
+        );
+        host.call_module_export(
+            module,
+            Export::words(CallbackId(0), &[32, 1, 7]),
+            ThinkTime::Milliseconds(0),
+        )
+        .unwrap();
+        frame(&mut host, &mut source);
+        let event = source.last_sound.unwrap();
+        ids.push(event.sound);
+        assert_eq!(event.bus, SoundBus::Local);
+        assert!(
+            source
+                .pcm
+                .iter()
+                .all(|&value| if positive { value > 0 } else { value < 0 }),
+            "{:?}",
+            source.pcm
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+    assert_ne!(ids[0], ids[1]);
+    let bank = host.runtime.sound_assets.as_deref().unwrap().bank();
+    assert_eq!(bank.name(ids[0]), bank.name(ids[1]));
 }

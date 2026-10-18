@@ -240,6 +240,7 @@ fn bank_free_static_prefix_preserves_pending_ambient_order_until_bank_attachment
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
                 bank.as_ref(),
+                Some(qa_audio::SoundSource::DEFAULT),
             )
             .unwrap();
         assert_eq!(
@@ -296,6 +297,7 @@ fn bank_backed_extent_is_fixed_and_new_connection_and_module_lifetimes_restart_i
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
                 bank.as_ref(),
+                Some(qa_audio::SoundSource::DEFAULT),
             )
             .unwrap();
         assert_eq!(
@@ -456,6 +458,7 @@ fn one_resync_recipient_does_not_consume_its_extent_or_block_another_recipient()
                 context.module,
                 ConfigLayout::for_rules(context.native_rules).resources[1],
                 bank.as_ref(),
+                Some(qa_audio::SoundSource::DEFAULT),
             )
             .unwrap();
         let mut stalled_cursor = SignonCursor::default();

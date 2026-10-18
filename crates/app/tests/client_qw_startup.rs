@@ -196,7 +196,7 @@ fn setup(files: &[(&str, Vec<u8>)], clients: usize) -> (support::Fixture, FrameH
     runtime.model_assets = Some(owner);
     runtime.scene = Some(scene);
     runtime.sound_assets = Some(Box::new(
-        qa_app::audio::SoundAssets::load(32, 4096).unwrap(),
+        qa_app::audio::SoundAssets::load(&runtime.vfs, 32, 4096).unwrap(),
     ));
     let servers: Vec<_> = (0..clients)
         .map(|index| Server::new(ClientId(index as u32)))

@@ -211,7 +211,10 @@ fn fixture_owned(owned: bool) -> (Box<FrameHost>, ClientId, Source) {
     )
     .unwrap();
     let mut runtime = Runtime::load(2, []).unwrap();
-    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &runtime.vfs,
+        bank,
+    )));
     let client = runtime
         .connect_local(
             SeatId::FIRST,

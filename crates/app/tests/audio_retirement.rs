@@ -68,7 +68,10 @@ fn fixture(capacity: usize) -> (Runtime, Source) {
         })],
         1.0,
     );
-    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &runtime.vfs,
+        bank,
+    )));
     (
         runtime,
         Source {

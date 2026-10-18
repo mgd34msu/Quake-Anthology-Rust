@@ -122,7 +122,10 @@ fn fixture(
     for (seat, &client) in ids.iter().enumerate() {
         host.local_clients[seat] = Some(client);
     }
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let mut mixer = Mixer::load(rate, voices, clients);
     mixer.listen(
@@ -972,7 +975,15 @@ fn q3_player_loop_uses_the_existing_emitter_without_a_packet_self_row() {
     host.publish_client_loops();
     dispatch(&mut host, &mut source);
     assert_eq!(starts(&source), 3);
-    assert_eq!(source.observations.last().unwrap().1, SoundId(2));
+    let expected = host
+        .runtime
+        .sound_assets
+        .as_deref()
+        .unwrap()
+        .bank()
+        .find("sound/second.wav")
+        .unwrap();
+    assert_eq!(source.observations.last().unwrap().1, expected);
     assert!(paint(&host, &mut source).iter().any(|sample| *sample != 0));
 }
 fn main() {

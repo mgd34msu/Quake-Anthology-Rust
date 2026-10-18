@@ -1404,7 +1404,10 @@ fn qw_sound_builtin_uses_sv_phs_before_foreign_sound_encoding_and_ring_retiremen
     )
     .unwrap();
     let sound = bank.find("sound/hearing.wav").unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let mut peers: [Channel; 2] = std::array::from_fn(|index| {
         let mut peer =

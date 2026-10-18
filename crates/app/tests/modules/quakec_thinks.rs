@@ -631,7 +631,10 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
         )
         .unwrap();
         let sound = bank.find("sound/ambient.wav").unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let mut initial = host.runtime.server.events.batch(cursor).unwrap();
         let mut starts = 0;
@@ -813,7 +816,10 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                     .into(),
             )
             .unwrap();
-            host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+            host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+                &host.runtime.vfs,
+                bank,
+            )));
             host.bind_sounds().unwrap();
             let first_sound = protocol.config_layout().unwrap().resources[1].first as usize;
             let resources = host.runtime.client_resources[client.0 as usize]
@@ -1077,7 +1083,10 @@ fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_sce
                 .unwrap();
         }
         let bank = qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let end = host.runtime.server.events.sequence_range().end;
         assert!(
@@ -2893,7 +2902,10 @@ fn quakec_step_contacts_ground_before_touch_then_relinks_sounds_thinks_and_reuse
     )
     .unwrap();
     let landing = bank.find("sound/demon/dland2.wav").unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let observer = host
         .runtime
@@ -3567,7 +3579,10 @@ fn quakec_water_entry_writes_native_state_and_publishes_one_shared_sound() {
     )
     .unwrap();
     let splash = bank.find("sound/misc/h2ohit1.wav").unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     let observer = host
         .runtime

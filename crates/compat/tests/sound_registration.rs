@@ -37,6 +37,7 @@ impl SoundRegistrar for Registrar {
         _: &qa_content::vfs::Vfs,
         sample: &[u8],
         source: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<i32, CallError> {
         self.calls.push((sample.to_vec(), source));
         let Some(path) = qa_audio::sound_path(sample, source).map_err(|_| CallError::Text)? else {
@@ -55,6 +56,7 @@ impl SoundRegistrar for Registrar {
         _: &qa_content::vfs::Vfs,
         sample: &[u8],
         source: RuleSetId,
+        _search: Option<&qa_content::vfs::SearchView>,
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError> {
         self.calls.push((sample.to_vec(), source));
         let Some(path) = qa_audio::sound_path(sample, source).map_err(|_| CallError::Text)? else {
@@ -73,6 +75,13 @@ impl SoundRegistrar for Registrar {
             return Err(CallError::File);
         }
         Ok(Some(sound))
+    }
+    fn source(
+        &self,
+        view: qa_content::vfs::ReadView<'_>,
+    ) -> Result<Option<qa_audio::SoundSource>, CallError> {
+        view.retain().map_err(|_| CallError::File)?;
+        Ok(Some(qa_audio::SoundSource::DEFAULT))
     }
     fn bank(&self) -> &qa_audio::Bank {
         &self.bank
@@ -599,16 +608,19 @@ fn cgame_and_ui_use_one_bank_with_valid_engine_handle_zero_in_each_address_mode(
                 Ok(positive as u64)
             );
             assert_eq!(
-                (ENGINE_CALLS.registered_sound)(&services, 0),
+                (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), 0),
                 Ok(Some(default))
             );
             assert_eq!(
-                (ENGINE_CALLS.registered_sound)(&services, positive),
+                (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), positive),
                 Ok(Some(expected))
             );
-            assert_eq!((ENGINE_CALLS.registered_sound)(&services, -1), Ok(None));
             assert_eq!(
-                (ENGINE_CALLS.registered_sound)(&services, i32::MAX),
+                (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), -1),
+                Ok(None)
+            );
+            assert_eq!(
+                (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), i32::MAX),
                 Ok(None)
             );
             let sounds =
@@ -740,6 +752,7 @@ fn failed_attempts_keep_their_shared_engine_handle_order_after_freezing() {
             assert_eq!(
                 (ENGINE_CALLS.register_sound)(
                     &mut services,
+                    ModuleId(1),
                     b"sound/missing.wav",
                     RuleSetId::Quake3
                 ),
@@ -766,12 +779,20 @@ fn failed_attempts_keep_their_shared_engine_handle_order_after_freezing() {
     );
     let mut services = fixture.engine(false);
     assert_eq!(
-        (ENGINE_CALLS.register_sound)(&mut services, b"sound/missing.wav", RuleSetId::Quake3),
+        (ENGINE_CALLS.register_sound)(
+            &mut services,
+            ModuleId(1),
+            b"sound/missing.wav",
+            RuleSetId::Quake3
+        ),
         Ok(0)
     );
-    assert_eq!((ENGINE_CALLS.registered_sound)(&services, 3), Ok(None));
     assert_eq!(
-        (ENGINE_CALLS.registered_sound)(&services, 4),
+        (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), 3),
+        Ok(None)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), 4),
         Ok(Some(late))
     );
 }
@@ -788,21 +809,36 @@ fn native_separator_aliases_keep_distinct_engine_handles_while_sharing_pcm() {
     let alias;
     {
         let mut services = fixture.engine(true);
-        alias = (ENGINE_CALLS.register_sound)(&mut services, b"sound\\a.wav", RuleSetId::Quake3)
-            .unwrap();
+        alias = (ENGINE_CALLS.register_sound)(
+            &mut services,
+            ModuleId(1),
+            b"sound\\a.wav",
+            RuleSetId::Quake3,
+        )
+        .unwrap();
         assert_ne!(alias, original);
         assert_eq!(
-            (ENGINE_CALLS.registered_sound)(&services, alias),
+            (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), alias),
             Ok(Some(expected))
         );
     }
     let mut services = fixture.engine(false);
     assert_eq!(
-        (ENGINE_CALLS.register_sound)(&mut services, b"SOUND/A.WAV", RuleSetId::Quake3),
+        (ENGINE_CALLS.register_sound)(
+            &mut services,
+            ModuleId(1),
+            b"SOUND/A.WAV",
+            RuleSetId::Quake3
+        ),
         Ok(original)
     );
     assert_eq!(
-        (ENGINE_CALLS.register_sound)(&mut services, b"SOUND\\A.WAV", RuleSetId::Quake3),
+        (ENGINE_CALLS.register_sound)(
+            &mut services,
+            ModuleId(1),
+            b"SOUND\\A.WAV",
+            RuleSetId::Quake3
+        ),
         Ok(alias)
     );
 }
@@ -878,7 +914,12 @@ fn cold_native_config_sound_uses_the_existing_numeric_cache_then_rebinds_frozen_
         let bank = Arc::new(fixture.registrar.bank);
         fixture
             .storage
-            .bind_sound_bank(ModuleId(1), sounds, bank.as_ref())
+            .bind_sound_bank(
+                ModuleId(1),
+                sounds,
+                bank.as_ref(),
+                Some(qa_audio::SoundSource::DEFAULT),
+            )
             .unwrap();
         // Frozen native rewrites use the same per-row binder, with no registrar.
         let new_name = if rules == RuleSetId::Quake3 {
@@ -1037,18 +1078,23 @@ fn rejected_native_loop_metadata_stays_unbound_while_q3_uses_the_shared_pcm() {
         // canonical PCM that remains valid for a different source capability.
         fixture
             .storage
-            .bind_sound_bank(ModuleId(1), sounds, &fixture.registrar.bank)
+            .bind_sound_bank(
+                ModuleId(1),
+                sounds,
+                &fixture.registrar.bank,
+                Some(qa_audio::SoundSource::DEFAULT),
+            )
             .unwrap();
         assert_eq!(fixture.storage.bound_sound(ModuleId(1), 1), None);
         let handle;
         {
             let mut services = fixture.engine(true);
             handle = services
-                .register_sound(b"sound/bad-loop.wav", RuleSetId::Quake3)
+                .register_sound(ModuleId(1), b"sound/bad-loop.wav", RuleSetId::Quake3)
                 .unwrap();
             assert!(handle > 0);
             assert_eq!(
-                (ENGINE_CALLS.registered_sound)(&services, handle),
+                (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), handle),
                 Ok(Some(sound))
             );
             assert_eq!(services.sound_id(ModuleId(1), sounds, 1), Ok(None));
@@ -1217,7 +1263,7 @@ fn native_config_precache_cannot_claim_a_cgame_handle_for_a_different_file() {
         .unwrap() as i32;
         assert_eq!(handle, 3);
         assert_eq!(
-            (ENGINE_CALLS.registered_sound)(&services, handle),
+            (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), handle),
             Ok(Some(root_sample))
         );
         assert_eq!(
@@ -1237,7 +1283,7 @@ fn native_config_precache_cannot_claim_a_cgame_handle_for_a_different_file() {
         Ok(handle as u64)
     );
     assert_eq!(
-        (ENGINE_CALLS.registered_sound)(&services, handle),
+        (ENGINE_CALLS.registered_sound)(&services, ModuleId(1), handle),
         Ok(Some(root_sample))
     );
 }

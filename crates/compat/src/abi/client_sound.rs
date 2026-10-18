@@ -69,7 +69,7 @@ fn sound(
     index: usize,
 ) -> Result<Option<(SoundId, u32)>, CallError> {
     let handle = integer(c, index)?;
-    let sound = (ENGINE_CALLS.registered_sound)(c.services, handle)?;
+    let sound = (ENGINE_CALLS.registered_sound)(c.services, c.context.module, handle)?;
     if sound.is_none() {
         let _ = (ENGINE_CALLS.console_formatted)(
             c.services,

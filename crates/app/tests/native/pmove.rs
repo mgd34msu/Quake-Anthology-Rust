@@ -404,7 +404,10 @@ pub(super) fn commands_move_a_native_client_once() {
                 .collect(),
         )
         .unwrap();
-        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+        host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+            &host.runtime.vfs,
+            bank,
+        )));
         host.bind_sounds().unwrap();
         let other_seat = SeatId::new(1).unwrap();
         let other_angles = Vec3([10.0, 217.0, -5.0]);

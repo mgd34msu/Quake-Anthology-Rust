@@ -1509,7 +1509,12 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
             calls
                 .services
                 .storage
-                .bind_sound_bank(calls.context.module, sounds, bank.as_ref())
+                .bind_sound_bank(
+                    calls.context.module,
+                    sounds,
+                    bank.as_ref(),
+                    Some(qa_audio::SoundSource::DEFAULT),
+                )
                 .unwrap();
             calls.context.sound_policy = qa_gameplay::rules::sound_policy(RuleSetId::Quake3);
             let client = calls
@@ -5062,7 +5067,12 @@ fn bind_native_message_sound(calls: &mut QuakeCCalls<'_, '_>) -> SoundId {
     calls
         .services
         .storage
-        .bind_sound_bank(ModuleId(1), sounds, bank.as_ref())
+        .bind_sound_bank(
+            ModuleId(1),
+            sounds,
+            bank.as_ref(),
+            Some(qa_audio::SoundSource::DEFAULT),
+        )
         .unwrap();
     sound
 }
@@ -5516,7 +5526,12 @@ fn makestatic_copies_native_signon_values_then_frees_the_original_lifetime() {
             calls
                 .services
                 .storage
-                .bind_sound_bank(calls.context.module, sounds, bank.as_ref())
+                .bind_sound_bank(
+                    calls.context.module,
+                    sounds,
+                    bank.as_ref(),
+                    Some(qa_audio::SoundSource::DEFAULT),
+                )
                 .unwrap();
             assert_eq!(
                 calls.services.storage.publish_signon(
@@ -5605,7 +5620,12 @@ fn makestatic_rejects_protected_and_malformed_removal_without_retained_ghosts() 
         calls
             .services
             .storage
-            .bind_sound_bank(calls.context.module, sounds, bank.as_ref())
+            .bind_sound_bank(
+                calls.context.module,
+                sounds,
+                bank.as_ref(),
+                Some(qa_audio::SoundSource::DEFAULT),
+            )
             .unwrap();
         let client = calls
             .services

@@ -365,7 +365,7 @@ fn media_assets(runtime: &mut Runtime) -> (Source, qa_app::model_assets::ModelPr
     runtime.model_assets = Some(owner);
     runtime.scene = Some(scene);
     runtime.sound_assets = Some(Box::new(
-        qa_app::audio::SoundAssets::load(32, 4096).unwrap(),
+        qa_app::audio::SoundAssets::load(&runtime.vfs, 32, 4096).unwrap(),
     ));
     let mut source = source();
     source.backend = Some(backend);

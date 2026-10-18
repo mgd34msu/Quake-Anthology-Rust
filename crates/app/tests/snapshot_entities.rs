@@ -1474,7 +1474,10 @@ fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog
         )],
     )?;
     let sound = bank.find("sound/test.wav").unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     let mut source = AudioClock {
         clock: Clock::default(),
         mixer: qa_audio::Mixer::load(rate, 1, 1),

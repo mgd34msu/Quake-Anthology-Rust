@@ -149,7 +149,10 @@ fn host(clients: usize) -> FrameHost {
         )],
     )
     .unwrap();
-    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(bank)));
+    host.runtime.sound_assets = Some(Box::new(qa_app::audio::SoundAssets::from_bank(
+        &host.runtime.vfs,
+        bank,
+    )));
     host.bind_sounds().unwrap();
     assert!(host.runtime.server.events.is_empty());
     host
